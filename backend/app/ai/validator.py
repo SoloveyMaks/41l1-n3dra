@@ -19,6 +19,43 @@ class AiResponseValidator:
             self.valid_cves = set()
             self.valid_fixed_versions = set()
 
+    def validate_json_shape(self, ai_data: Any) -> List[str]:
+        """Validate only the transport shape before grounding checks.
+
+        This catches non-JSON, missing fields and wrong types. Grounding
+        (finding IDs, CVEs, fixed versions) is enforced by validate().
+        """
+        errors: List[str] = []
+        if not isinstance(ai_data, dict):
+            return ["Ответ AI не является JSON-объектом"]
+
+        summary = ai_data.get("summary")
+        if summary is not None and not isinstance(summary, str):
+            errors.append("Поле 'summary' должно быть строкой")
+
+        items = ai_data.get("items")
+        if not isinstance(items, list):
+            errors.append("Поле 'items' отсутствует или не является списком")
+            return errors
+        if not items:
+            errors.append("Поле 'items' пустое")
+
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(f"Элемент #{idx} не является объектом")
+                continue
+            finding_id = item.get("findingId")
+            if not isinstance(finding_id, str) or not finding_id.strip():
+                errors.append(f"Элемент #{idx}: findingId должен быть непустой строкой")
+            for field_name in ("explanation", "remediation"):
+                value = item.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"Элемент #{idx}: {field_name} должен быть непустой строкой")
+            fixed_version = item.get("suggestedFixedVersion")
+            if fixed_version is not None and not isinstance(fixed_version, str):
+                errors.append(f"Элемент #{idx}: suggestedFixedVersion должен быть строкой или null")
+        return errors
+
     def validate(self, ai_data: Dict[str, Any], original_findings: List[Finding]) -> Tuple[bool, List[str], List[AiItem]]:
         """
         Validates AI response against actual run findings and the official CVE catalog.
