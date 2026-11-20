@@ -18,11 +18,12 @@ API пока не принимает workspace в запросах: процес
 
 1. Применяет миграции C через ledger `public.schema_migrations` (filename + sha256,
    advisory lock); повторный запуск их не повторяет, изменённый файл — ошибка.
-2. Проверяет `runtime.schema_meta`. Нет версии и есть старые таблицы — понятная
-   ошибка: runtime-слой до workspace isolation не переносится автоматически.
-3. Создаёт/проверяет schema `runtime` версии 2.
-4. Заводит identity-строку workspace в `data_contract.workspaces`
+2. Заводит identity-строку workspace в `data_contract.workspaces`
    (`runtime:<uuid>`), если её нет. Других записей в C-схему runtime не делает.
+3. Проверяет `runtime.schema_meta` и приводит runtime schema к версии 3:
+   старая схема без workspace-колонок обновляется с сохранением строк,
+   версия 2 дополняется immutability-триггерами.
+4. Создаёт свежую schema `runtime` версии 3, если база пустая.
 
 ## Границы runtime-слоя
 
@@ -35,19 +36,24 @@ API пока не принимает workspace в запросах: процес
 - Ни одного `ON DELETE CASCADE`: удалить run/workspace/workflow с историей нельзя,
   FK не уносит факты прогонов.
 - Никакого `INSERT OR REPLACE`: только точечный `ON CONFLICT ... DO UPDATE` в
-  пределах своего ключа (workspace + run).
+  пределах своего ключа (workspace + run), а артефакт при конфликте только
+  сверяется и не перезаписывается (`ArtifactImmutableError`).
+- Версия 3 запрещает триггерами менять/удалять `workflow_revisions` и
+  `artifacts`; у run-а можно менять только статус/вердикт/счётчики/время,
+  identity-поля и удаление неизменны.
 - Интерфейс `DatabaseRepository` и ключи возвращаемых словарей прежние;
   `workspace_id` наружу не отдаётся.
 
 ## Чего здесь нет
 
-- C published facts не подключены к API: `analysis_bundles`, `publish_bundle`,
-  `scan_outcomes`, `coverage`, `graph_coverage`, `published_*` runtime не пишет и
-  не читает. Никакой подделки publish/coverage/verdict нет: отчёт строится по
-  своим findings, а не по опубликованному bundle C.
-- `ai_explanations`, `comparisons`, `remediation_examples` не затрагиваются.
-- `croniter` заявлен в зависимостях для расписаний A; текущий scheduler пока
-  разбирает `interval:`/cron вручную и этот слой не меняет.
+Runtime — compatibility layer, а не canonical `data_contract`. C published facts
+к API не подключены: `analysis_bundles`, `publish_bundle`, `scan_outcomes`,
+`coverage`, `graph_coverage`, `published_*` runtime не пишет и не читает.
+Никакой подделки publish/coverage/verdict нет: отчёт строится по своим
+findings, а не по опубликованному bundle C, и не считается подтверждением
+C-фактов. `ai_explanations`, `comparisons`, `remediation_examples` не
+затрагиваются. `croniter` заявлен в зависимостях для расписаний A; текущий
+scheduler пока разбирает `interval:`/cron вручную и этот слой не меняет.
 
 ## Локальная проверка
 
@@ -62,8 +68,24 @@ python -c "from backend.app.storage.database import DatabaseRepository as R; R()
 artifact → run → findings → report. Проверка изоляции: заведите строку в другом
 workspace и убедитесь, что `get_run`/`get_artifact` по её id возвращают `None`.
 
-## Обновление схемы
+## Обновление схемы и dev-баз
 
-Версия runtime-слоя — `runtime.schema_meta`. Меняете таблицы — поднимайте
-`RUNTIME_SCHEMA_VERSION` в `storage/database.py` и добавляйте явный путь
-обновления. Молча работать на незнакомой версии нельзя.
+Версия runtime-слоя — `runtime.schema_meta` (сейчас 3). Обновление идёт
+транзакционно при старте, C-миграции 001/002 не редактируются:
+
+| Было | Что делает старт |
+|---|---|
+| пустая БД | создаёт schema `runtime` v3 |
+| v1 (819f4de, без workspace-колонок) | переименовывает старую schema в `runtime_legacy_v1`, создаёт v3, копирует все строки в workspace процесса, ставит версию 3 |
+| v2 (workspace isolation без триггеров) | добавляет immutability-триггеры, поднимает версию до 3 |
+| другая версия | понятная ошибка, молча работать нельзя |
+
+`runtime_legacy_v1` после обновления остаётся бэкапом; удалить вручную, когда
+убедились, что данные читаются. Данные в нём не теряются и не переписываются.
+
+## Секреты в ошибках
+
+Публичный отказ подключения содержит только тип причины
+(`OperationalError` и т.п.) — текст драйвера с DSN наружу не выводится.
+Поэтому `DATABASE_URL` не попадает в exception, ответ API или лог. Остальные
+ошибки runtime называют объект/таблицу, но не строку подключения.

@@ -6,6 +6,10 @@ ledger-мигратор (``backend.app.storage.migrate``) и не ослабля
 поэтому DTO не меняются, но каждая строка привязана к workspace, а
 finding/node_run/report/event — ещё и к run.
 
+Это compatibility layer, а не canonical C facts: ``analysis_bundles``,
+``publish_bundle``, ``scan_outcomes`` и ``coverage`` здесь не пишутся и не
+читаются, published/coverage не подделываются.
+
 Настройки: ``DATABASE_URL`` (обязательно) и ``RUNTIME_WORKSPACE_ID`` (uuid,
 необязательно). API пока не умеет выбирать workspace, поэтому процесс работает
 в одном workspace и не отдаёт строки чужих workspace.
@@ -13,6 +17,7 @@ finding/node_run/report/event — ещё и к run.
 
 import atexit
 import json
+import logging
 import os
 import threading
 import uuid
@@ -23,8 +28,12 @@ from typing import Any, Dict, List, Optional
 
 from backend.app.storage.migrate import ensure_contract_schema
 
+logger = logging.getLogger("RuntimeSchema")
+
 RUNTIME_SCHEMA_PATH = Path(__file__).with_name("runtime_schema.sql")
-RUNTIME_SCHEMA_VERSION = 2
+RUNTIME_GUARDS_PATH = Path(__file__).with_name("runtime_guards.sql")
+RUNTIME_SCHEMA_VERSION = 3
+LEGACY_RUNTIME_SCHEMA = "runtime_legacy_v1"
 DEFAULT_WORKSPACE_ID = uuid.uuid5(uuid.NAMESPACE_URL, "41l1-n3dra/default-workspace")
 
 _driver: Optional[SimpleNamespace] = None
@@ -45,6 +54,10 @@ atexit.register(_close_pool)
 
 class DatabaseUnavailable(RuntimeError):
     """Понятный отказ: нет драйвера, DATABASE_URL, workspace или доступной БД."""
+
+
+class ArtifactImmutableError(RuntimeError):
+    """Попытка переписать уже сохранённый артефакт."""
 
 
 def _dsn() -> str:
@@ -115,10 +128,12 @@ def get_pool():
             except Exception as exc:
                 if pool is not None:
                     pool.close()
+                # Наружу только тип причины: текст драйвера может содержать DSN.
                 raise DatabaseUnavailable(
-                    "PostgreSQL недоступен по DATABASE_URL: "
-                    f"{exc}. Проверьте, что сервер запущен и база существует."
-                ) from exc
+                    "PostgreSQL недоступен по DATABASE_URL "
+                    f"(причина: {type(exc).__name__}). Проверьте, что сервер запущен "
+                    "и база существует."
+                ) from None
             _pool = pool
     return _pool
 
@@ -149,13 +164,101 @@ def _json_text(value: Any) -> Optional[str]:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+_COPY_COLUMNS = (
+    ("workflows", "id, name, description, created_at, updated_at, latest_revision_id"),
+    ("workflow_revisions", "id, workflow_id, revision_num, draft_json, created_at"),
+    ("artifacts", "id, filename, hash_sha256, size_bytes, uncompressed_size_bytes, "
+                  "file_count, kotlin_count, gradle_count, extracted_path, created_at"),
+    ("runs", "id, workflow_id, revision_id, artifact_id, trigger_type, execution_status, "
+             "security_verdict, total_findings, critical_count, high_count, medium_count, "
+             "low_count, info_count, started_at, finished_at, created_at"),
+    ("node_runs", "id, run_id, node_id, kind, status, started_at, finished_at, duration_ms, "
+                  "error_message, input_data_json, output_data_json"),
+    ("findings", "id, run_id, fingerprint, analyzer, rule_id, rule_version, severity, "
+                 "severity_basis, confidence, confidence_basis, status, primary_location_json, "
+                 "related_locations_json, trace_json, redacted_evidence, advisory_ids_json, "
+                 "coverage_warnings_json"),
+    ("reports", "run_id, verdict, passport_json, ai_summary, ai_items_json, ai_status, "
+                "readable_markdown, official_json, created_at"),
+    ("run_events", "seq, run_id, timestamp, type, node_id, payload_json"),
+    ("schedules", "id, workflow_id, artifact_id, enabled, cron_or_interval, timezone, "
+                  "last_run_at, next_fire_at, created_at"),
+    ("deliveries", "id, run_id, channel, status, target, status_code, message, timestamp"),
+)
+
+
+def _exec_script(conn, path: Path) -> None:
+    conn.execute(path.read_text(encoding="utf-8"))
+
+
+def _create_schema_meta(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS runtime.schema_meta (version integer PRIMARY KEY)")
+
+
+def _install_fresh_runtime(conn) -> None:
+    _exec_script(conn, RUNTIME_SCHEMA_PATH)
+    _exec_script(conn, RUNTIME_GUARDS_PATH)
+    conn.execute(
+        "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
+        (RUNTIME_SCHEMA_VERSION,),
+    )
+
+
+def _upgrade_legacy_runtime(conn, workspace_id: uuid.UUID) -> None:
+    """v1 (819f4de, без workspace) -> текущая версия без потери строк.
+
+    Старые таблицы не удаляются: schema переименовывается в
+    ``runtime_legacy_v1`` и остаётся бэкапом для разбора.
+    """
+    taken = conn.execute(
+        "SELECT count(*) AS n FROM pg_namespace WHERE nspname = %s",
+        (LEGACY_RUNTIME_SCHEMA,),
+    ).fetchone()["n"]
+    if taken:
+        raise DatabaseUnavailable(
+            f"Схема {LEGACY_RUNTIME_SCHEMA} уже существует: автоматическое обновление "
+            "runtime остановлено, разберите dev-базу вручную."
+        )
+    conn.execute(f"ALTER SCHEMA runtime RENAME TO {LEGACY_RUNTIME_SCHEMA}")
+    conn.execute("CREATE SCHEMA runtime")
+    _create_schema_meta(conn)
+    _exec_script(conn, RUNTIME_SCHEMA_PATH)
+    for table, columns in _COPY_COLUMNS:
+        conn.execute(
+            f"INSERT INTO runtime.{table} (workspace_id, {columns}) "
+            f"SELECT %s, {columns} FROM {LEGACY_RUNTIME_SCHEMA}.{table}",
+            (workspace_id,),
+        )
+    conn.execute(
+        "SELECT setval(pg_get_serial_sequence('runtime.run_events', 'seq'), "
+        "COALESCE((SELECT max(seq) FROM runtime.run_events), 1), "
+        "EXISTS (SELECT 1 FROM runtime.run_events))"
+    )
+    _exec_script(conn, RUNTIME_GUARDS_PATH)
+    conn.execute(
+        "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
+        (RUNTIME_SCHEMA_VERSION,),
+    )
+    logger.warning(
+        "runtime schema обновлена до v%s; старые таблицы сохранены в %s",
+        RUNTIME_SCHEMA_VERSION,
+        LEGACY_RUNTIME_SCHEMA,
+    )
+
+
 def init_db(workspace_id: uuid.UUID) -> None:
-    """Применить C-миграции и создать/проверить runtime schema."""
+    """Применить C-миграции и создать/обновить runtime schema."""
     pool = get_pool()
     ensure_contract_schema(_dsn())
     with pool.connection() as conn:
+        # Идентичность workspace живёт в C-схеме; runtime пишет только эту строку.
+        conn.execute(
+            "INSERT INTO data_contract.workspaces (workspace_id, name) VALUES (%s, %s) "
+            "ON CONFLICT (workspace_id) DO NOTHING",
+            (workspace_id, f"runtime:{workspace_id}"),
+        )
         conn.execute("CREATE SCHEMA IF NOT EXISTS runtime")
-        conn.execute("CREATE TABLE IF NOT EXISTS runtime.schema_meta (version integer PRIMARY KEY)")
+        _create_schema_meta(conn)
         meta = conn.execute("SELECT max(version) AS version FROM runtime.schema_meta").fetchone()
         version = meta["version"] if meta else None
         if version is None:
@@ -164,14 +267,14 @@ def init_db(workspace_id: uuid.UUID) -> None:
                 "WHERE schemaname = 'runtime' AND tablename <> 'schema_meta'"
             ).fetchone()["tables"]
             if legacy:
-                raise DatabaseUnavailable(
-                    "В базе есть runtime schema без schema_meta (версия до workspace isolation). "
-                    "В dev удалите schema runtime и перезапустите: история тестовых прогонов "
-                    "не переносится автоматически."
-                )
-            conn.execute(RUNTIME_SCHEMA_PATH.read_text(encoding="utf-8"))
+                _upgrade_legacy_runtime(conn, workspace_id)
+            else:
+                _install_fresh_runtime(conn)
+        elif version == 2:
+            # v2 = workspace isolation; v3 добавляет immutability-триггеры.
+            _exec_script(conn, RUNTIME_GUARDS_PATH)
             conn.execute(
-                "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
+                "UPDATE runtime.schema_meta SET version = %s",
                 (RUNTIME_SCHEMA_VERSION,),
             )
         elif version != RUNTIME_SCHEMA_VERSION:
@@ -179,12 +282,6 @@ def init_db(workspace_id: uuid.UUID) -> None:
                 f"runtime schema version={version}, ожидается {RUNTIME_SCHEMA_VERSION}. "
                 "Нужна миграция runtime-слоя, молча работать на чужой версии нельзя."
             )
-        # Идентичность workspace живёт в C-схеме; runtime пишет только эту строку.
-        conn.execute(
-            "INSERT INTO data_contract.workspaces (workspace_id, name) VALUES (%s, %s) "
-            "ON CONFLICT (workspace_id) DO NOTHING",
-            (workspace_id, f"runtime:{workspace_id}"),
-        )
 
 
 class DatabaseRepository:
@@ -294,23 +391,19 @@ class DatabaseRepository:
 
     # Artifact operations
     def save_artifact(self, manifest: Dict[str, Any]) -> None:
+        wanted = (
+            manifest["hash_sha256"], manifest["size_bytes"],
+            manifest["uncompressed_size_bytes"], manifest["extracted_path"],
+        )
         with get_pool().connection() as conn:
-            conn.execute(
+            inserted = conn.execute(
                 """
                 INSERT INTO runtime.artifacts (
                     workspace_id, id, filename, hash_sha256, size_bytes, uncompressed_size_bytes,
                     file_count, kotlin_count, gradle_count, extracted_path, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (workspace_id, id) DO UPDATE SET
-                    filename = EXCLUDED.filename,
-                    hash_sha256 = EXCLUDED.hash_sha256,
-                    size_bytes = EXCLUDED.size_bytes,
-                    uncompressed_size_bytes = EXCLUDED.uncompressed_size_bytes,
-                    file_count = EXCLUDED.file_count,
-                    kotlin_count = EXCLUDED.kotlin_count,
-                    gradle_count = EXCLUDED.gradle_count,
-                    extracted_path = EXCLUDED.extracted_path,
-                    created_at = EXCLUDED.created_at
+                ON CONFLICT (workspace_id, id) DO NOTHING
+                RETURNING id
                 """,
                 (
                     self.workspace_id, manifest["id"], manifest["filename"],
@@ -319,7 +412,23 @@ class DatabaseRepository:
                     manifest["kotlin_file_count"], manifest["gradle_file_count"],
                     manifest["extracted_path"], manifest["created_at"],
                 ),
+            ).fetchone()
+            if inserted is not None:
+                return
+            existing = conn.execute(
+                "SELECT hash_sha256, size_bytes, uncompressed_size_bytes, extracted_path "
+                "FROM runtime.artifacts WHERE workspace_id = %s AND id = %s",
+                (self.workspace_id, manifest["id"]),
+            ).fetchone()
+            current = None if existing is None else (
+                existing["hash_sha256"], existing["size_bytes"],
+                existing["uncompressed_size_bytes"], existing["extracted_path"],
             )
+            if current != wanted:
+                raise ArtifactImmutableError(
+                    f"Артефакт {manifest['id']} уже сохранён с другими данными; "
+                    "перезапись запрещена."
+                )
 
     def get_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
         with get_pool().connection() as conn:

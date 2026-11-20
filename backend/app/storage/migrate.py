@@ -43,7 +43,13 @@ def _connect(dsn: str):
         raise MigrationError(
             "Нет драйвера PostgreSQL (psycopg). Установите: pip install -r backend/requirements.txt"
         ) from exc
-    return psycopg.connect(dsn, autocommit=True, connect_timeout=10, row_factory=dict_row)
+    try:
+        return psycopg.connect(dsn, autocommit=True, connect_timeout=10, row_factory=dict_row)
+    except Exception as exc:
+        # Текст драйвера может содержать DSN; наружу только тип причины.
+        raise MigrationError(
+            f"PostgreSQL недоступен (причина: {type(exc).__name__})"
+        ) from None
 
 
 def _apply_file(conn: Any, path: Path) -> None:
