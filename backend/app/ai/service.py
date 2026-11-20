@@ -22,7 +22,9 @@ SYSTEM_PROMPT = """Ты аналитик безопасности Kotlin/Spring 
 {"summary":"строка","items":[{"findingId":"id из входа","explanation":"строка","remediation":"строка","suggestedFixedVersion":null или строка}]}
 Правила:
 - explanation и remediation непустые, по-русски, без пересказа сырых секретов.
-- suggestedFixedVersion заполняй только значением из allowedFixedVersions; иначе null.
+- suggestedFixedVersion заполняй только значением из allowedFixedVersions этой находки; иначе null.
+- Верни ровно один item на каждый findingId, без дублей и пропусков.
+- Упоминай только CVE из advisoryIds соответствующей находки, в summary тоже.
 - Не добавляй items для findingId, которых нет во входе.
 - Если данных мало, скажи это в explanation, но не придумывай факты."""
 
@@ -104,6 +106,8 @@ class AiService:
         summary_text = mask_sensitive_text(
             str(generated_data.get("summary") or "Анализ находок безопасности выполнен.")
         )
+        if any("summary" in error.lower() for error in validation_errors):
+            summary_text = "AI-сводка отклонена валидатором: в ней есть CVE вне advisoryIds находок."
         for item in validated_items:
             item.explanation = mask_sensitive_text(item.explanation)
             item.remediation = mask_sensitive_text(item.remediation)
@@ -193,12 +197,12 @@ class AiService:
                 "file": f.primaryLocation.path,
                 "line": f.primaryLocation.startLine,
                 "advisoryIds": list(f.advisoryIds),
+                "allowedFixedVersions": self.validator.allowed_fixed_versions_for(f),
                 "redactedEvidence": mask_sensitive_text(f.redactedEvidence or "")[:800],
             })
         return {
             "task": "explain_only_these_findings",
             "outputLanguage": "ru",
-            "allowedFixedVersions": sorted(self.validator.valid_fixed_versions),
             "findings": masked_findings,
         }
 
