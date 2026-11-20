@@ -1,0 +1,39 @@
+body {
+  margin: 0;
+  background: #e5ecf4;
+}
+.sm-demo {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 26px;
+}
+.sm-demo > p {
+  font: 13px/1.5 system-ui;
+  color: #4b6380;
+}
+.sm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 20px;
+  font: 13px system-ui;
+}
+.sm-toolbar select,
+.sm-toolbar button {
+  padding: 8px;
+  border: 1px solid #b9c9d9;
+  background: #fff;
+  border-radius: 7px;
+}
+.sm-toolbar output {
+  color: #47617b;
+}
+@media (max-width: 850px) {
+  .sm-demo {
+    padding: 10px;
+  }
+  .sm-toolbar select {
+    max-width: 100%;
+  }
+}

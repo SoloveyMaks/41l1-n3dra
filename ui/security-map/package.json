@@ -1,0 +1,30 @@
+{
+  "name": "@41l1-n3dra/security-map",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./preview": "./src/preview.tsx",
+    "./style.css": "./src/style.css"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "check": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1 || ^19.0.0",
+    "react-dom": "^18.3.1 || ^19.0.0",
+    "@xyflow/react": "^12.10.0"
+  },
+  "devDependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@xyflow/react": "^12.10.0",
+    "typescript": "5.9.3",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "^18.3.7",
+    "vite": "^7.3.6"
+  }
+}
