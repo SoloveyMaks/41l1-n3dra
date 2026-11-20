@@ -1,29 +1,28 @@
 # AI и optional vector runtime
 
-Коротко: `backend/app/ai/service.py` вызывает настоящий OpenAI-compatible
-`/chat/completions`, проверяет JSON и grounding, пишет provenance модели. Любая
-ошибка провайдера, ключа или валидатора даёт детерминированный fallback и не
-ломает отчёт. Exact pgvector retrieval — отдельный optional шаг с typed
-`unavailable`; он не откатывает scan/report.
+Коротко: `backend/app/ai/service.py` вызывает ReformBoss через
+OpenAI-compatible `/chat/completions`, проверяет JSON и grounding, пишет
+provenance модели. Любая ошибка провайдера, ключа или валидатора даёт
+детерминированный fallback и не ломает отчёт. Exact pgvector retrieval —
+отдельный optional шаг с typed `unavailable`; он не откатывает scan/report.
 
 ## Chat provider
 
-Ключи только из env, в код/логи/provenance не попадают.
+Провайдер один — ReformBoss. Другие ключи и провайдеры не используются.
 
 | Env | Значение |
 | --- | --- |
-| `AI_PROVIDER` | `reformboss` или `wikivibe`; пусто — выбрать по доступному ключу |
-| `REFORMBOSS_API_KEY` | ключ ReformBoss, base URL `https://api.reformboss.com/v1` |
-| `WIKIVIBE_GPT_KEY` | ключ WikiVibe GPT, base URL `https://api.wikivibe.dev/v1` |
-| `AI_BASE_URL` | override base URL |
-| `AI_MODEL` / `LLM_MODEL` | override модели; defaults: `deepseek-v4.1-flash-1017` / `deepseek-v4.1-flash` |
+| `REFORMBOSS_API_KEY` | ключ ReformBoss из окружения сервера |
+| `AI_MODEL` / `LLM_MODEL` | override модели; default `deepseek-v4.1-flash-1017` |
+| `AI_BASE_URL` | override base URL; default `https://api.reformboss.com/v1` |
 | `AI_TIMEOUT_SECONDS` | таймаут запроса, default 30 |
 | `AI_MAX_TOKENS` | default 2048 (reasoning-моделям нужно ≥2048) |
 | `AI_TEMPERATURE` | default 0 |
 | `AI_JSON_MODE` | `1` только если шлюз реально поддерживает `response_format=json_object` |
 
-Порядок выбора: явный `AI_PROVIDER` → `REFORMBOSS_API_KEY` → `WIKIVIBE_GPT_KEY`.
-Нет ключа → `status=fallback`, `provenance.fallback_reason=provider_not_configured`.
+Если `REFORMBOSS_API_KEY` не задан в процессе, ключ читается внутри процесса
+из `~/.omp/agent/.env`. В argv, логи, provenance и отчёт ключ не попадает. Нет
+ключа → `status=fallback`, `provenance.fallback_reason=provider_not_configured`.
 
 ## Что проверяется
 
@@ -35,8 +34,8 @@
    отбрасываются.
 4. `ExplainResult.provenance` фиксирует provider/model/endpoint/request id,
    latency, usage, `finish_reason`, SHA-256 контента и причину fallback.
-5. Запрос к модели собирается из `redactedEvidence` и дополнительно маскируется
-   (`sk-...`, Bearer, private keys, `password=...`).
+5. Запрос собирается из `redactedEvidence` и дополнительно маскируется
+   (`sk-...`, Bearer, private keys, `password=...`). Ответ тоже маскируется.
 
 ## Optional exact retrieval
 
@@ -44,34 +43,30 @@ SQL-контракт: `db/optional/003_exact_vector.up.sql` (`exact_similar_fixe
 Код: `backend/app/ai/vector_runtime.py`. Включён только при
 `VECTOR_RETRIEVAL_ENABLED=true`; иначе `retrieval.status=disabled`.
 
-Нужны: `VECTOR_RETRIEVAL_DSN` (или `DATABASE_URL`), `VECTOR_WORKSPACE_ID`,
-`VECTOR_EMBEDDING_SPEC_ID`, `VECTOR_EMBEDDING_BASE_URL`,
+Нужны явные значения: `VECTOR_RETRIEVAL_DSN` (или `DATABASE_URL`),
+`VECTOR_WORKSPACE_ID`, `VECTOR_EMBEDDING_SPEC_ID`, `VECTOR_EMBEDDING_MODEL`,
+`VECTOR_EMBEDDING_VERSION`, `VECTOR_EMBEDDING_DIMENSION`,
+`VECTOR_EMBEDDING_METRIC`, `VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION`,
+`VECTOR_EMBEDDING_DOCUMENT_PREPARATION_VERSION`,
+`VECTOR_EMBEDDING_REDACTION_VERSION`, `VECTOR_EMBEDDING_BASE_URL`,
 `VECTOR_EMBEDDING_API_KEY`. Драйвер PostgreSQL (`psycopg` или `psycopg2`) —
-optional dependency; без него typed `unavailable`.
+optional dependency.
 
-Chat-провайдер не даёт подтверждённой embedding-модели в `/v1/models`, поэтому
-endpoint эмбеддингов задаётся отдельно через `VECTOR_EMBEDDING_*`.
+В коде нет default embedding model/version/dimension/metric: размерность и
+модель нельзя выдумывать. Значения заполняются только после реального
+`POST /embeddings` и сверки с active row `embedding_specs`. Проверка каталога
+ReformBoss `/v1/models` не показывает embedding-модель, поэтому рабочие
+embeddings сейчас не заявляются, а retrieval остаётся `unavailable`, пока
+интегратор/D не даст подтверждённый endpoint и spec. Реальный POST
+`/v1/embeddings` с `text-embedding-3-small` вернул 403
+`token_model_not_allowed`; размерность из ответа не получена и не выдумывается.
 
-Зафиксированный embedding spec по умолчанию (менять только вместе с active row
-`embedding_specs` и переиндексацией):
+`VECTOR_RULE_FAMILY_MAP` переводит `ruleId` в `rule_family`; без маппинга
+используется сам `ruleId`. Значения language, framework и rule family должны
+совпадать с `remediation_examples`, иначе exact retrieval честно вернёт пустую
+выдачу. Запросы фильтруются по workspace, language, framework, rule family и
+spec. Меньше distance — лучше; distance не выдаётся за человеческую оценку
+применимости.
 
-| Параметр | Значение |
-| --- | --- |
-| model | `text-embedding-3-small` |
-| version | `2024-02` |
-| dimension | `1536` |
-| metric | `cosine` |
-| query preparation | `1` |
-| document preparation | `1` |
-| redaction | `1` |
-
-Фактические значения также в `.env.example`; модель и размерность не
-подставляются молча в БД. `VECTOR_RULE_FAMILY_MAP` переводит `ruleId` в
-`rule_family`; без маппинга используется сам `ruleId`. Значения language,
-framework и rule family должны совпадать с `remediation_examples`, иначе exact
-retrieval честно вернёт пустую выдачу. Запросы фильтруются по workspace, language, framework,
-rule family и spec. Меньше distance — лучше; distance не выдаётся за
-человеческую оценку применимости.
-
-Статусы: `disabled`, `unavailable`, `ready`, `ok`, `partial`.
-Ошибка retrieval никогда не меняет findings, вердикт или отчёт.
+Статусы: `disabled`, `unavailable`, `ready`, `ok`, `partial`. Ошибка retrieval
+никогда не меняет findings, вердикт или отчёт.

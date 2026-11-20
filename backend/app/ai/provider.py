@@ -1,12 +1,8 @@
 """Small OpenAI-compatible chat client used by the AI explanation layer.
 
-Configuration comes only from the environment. API keys are never logged,
-stored in provenance or returned to callers.
-
-Provider selection:
-  * AI_PROVIDER=reformboss|wikivibe (optional; inferred from the key below)
-  * REFORMBOSS_API_KEY   -> https://api.reformboss.com/v1
-  * WIKIVIBE_GPT_KEY     -> https://api.wikivibe.dev/v1
+The only provider is ReformBoss. The key is read from REFORMBOSS_API_KEY in
+the process environment, or from ~/.omp/agent/.env when the variable is unset.
+The key is never logged, stored in provenance or returned to callers.
 
 The base URL, model and limits can be overridden with AI_BASE_URL,
 AI_MODEL/LLM_MODEL, AI_TIMEOUT_SECONDS, AI_MAX_TOKENS and AI_TEMPERATURE.
@@ -22,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from backend.app.contracts.schemas import AiProvenance
@@ -47,9 +44,8 @@ def open_same_host(request: urllib.request.Request, timeout: float):
 
 
 REFORMBOSS_BASE_URL = "https://api.reformboss.com/v1"
-WIKIVIBE_BASE_URL = "https://api.wikivibe.dev/v1"
 REFORMBOSS_DEFAULT_MODEL = "deepseek-v4.1-flash-1017"
-WIKIVIBE_DEFAULT_MODEL = "deepseek-v4.1-flash"
+AGENT_ENV_FILE = Path.home() / ".omp" / "agent" / ".env"
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}"), "***"),
@@ -109,38 +105,44 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def _read_agent_env_value(name: str) -> str:
+    """Read one value from ~/.omp/agent/.env without exposing the file."""
+    try:
+        lines = AGENT_ENV_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() != name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value.strip()
+    return ""
+
+
 def resolve_provider_config() -> Optional[ProviderConfig]:
-    """Return an active provider config, or None when no key is configured."""
-    explicit = os.getenv("AI_PROVIDER", "").strip().lower()
-    reform_key = os.getenv("REFORMBOSS_API_KEY", "").strip()
-    wikivibe_key = os.getenv("WIKIVIBE_GPT_KEY", "").strip()
-
-    if explicit == "reformboss":
-        provider, key, default_base, default_model = (
-            "reformboss", reform_key, REFORMBOSS_BASE_URL, REFORMBOSS_DEFAULT_MODEL
-        )
-    elif explicit == "wikivibe":
-        provider, key, default_base, default_model = (
-            "wikivibe", wikivibe_key, WIKIVIBE_BASE_URL, WIKIVIBE_DEFAULT_MODEL
-        )
-    elif reform_key:
-        provider, key, default_base, default_model = (
-            "reformboss", reform_key, REFORMBOSS_BASE_URL, REFORMBOSS_DEFAULT_MODEL
-        )
-    elif wikivibe_key:
-        provider, key, default_base, default_model = (
-            "wikivibe", wikivibe_key, WIKIVIBE_BASE_URL, WIKIVIBE_DEFAULT_MODEL
-        )
-    else:
-        return None
-
+    """Return ReformBoss config, or None when REFORMBOSS_API_KEY is absent."""
+    key = os.getenv("REFORMBOSS_API_KEY", "").strip() or _read_agent_env_value("REFORMBOSS_API_KEY")
     if not key:
         return None
 
-    base_url = os.getenv("AI_BASE_URL", "").strip() or default_base
-    model = os.getenv("AI_MODEL", "").strip() or os.getenv("LLM_MODEL", "").strip() or default_model
+    base_url = os.getenv("AI_BASE_URL", "").strip() or REFORMBOSS_BASE_URL
+    model = (
+        os.getenv("AI_MODEL", "").strip()
+        or os.getenv("LLM_MODEL", "").strip()
+        or REFORMBOSS_DEFAULT_MODEL
+    )
     return ProviderConfig(
-        provider=provider,
+        provider="reformboss",
         base_url=base_url.rstrip("/"),
         api_key=key,
         model=model,

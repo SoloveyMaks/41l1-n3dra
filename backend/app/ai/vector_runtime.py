@@ -5,8 +5,8 @@ deliberately fail-open: any missing config, missing driver, provider failure or
 database error becomes a typed `unavailable` result and never raises into the
 main analysis.
 
-Configuration is env-only (see .env.example and docs/ai-runtime.md). The code
-never logs the query text, the embedding vector or the API key.
+Configuration is env-only (see docs/ai-runtime.md). The code never logs the
+query text, the embedding vector or the API key.
 """
 from __future__ import annotations
 
@@ -21,10 +21,6 @@ from backend.app.ai.provider import mask_sensitive_text, open_same_host
 from backend.app.contracts.schemas import Finding, RetrievalInfo, SimilarFix
 
 _ALLOWED_METRICS = {"cosine", "l2", "inner_product"}
-_DEFAULT_MODEL = "text-embedding-3-small"
-_DEFAULT_VERSION = "2024-02"
-_DEFAULT_DIMENSION = 1536
-_DEFAULT_METRIC = "cosine"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -40,6 +36,19 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
     except ValueError:
         return default
     return max(low, min(high, value))
+
+
+def _env_optional_int(name: str, low: int, high: int) -> Optional[int]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < low or value > high:
+        return None
+    return value
 
 
 def _env_float(name: str, default: float, low: float, high: float) -> float:
@@ -71,13 +80,13 @@ class VectorConfig:
     dsn: str = ""
     workspace_id: str = ""
     embedding_spec_id: str = ""
-    model: str = _DEFAULT_MODEL
-    version: str = _DEFAULT_VERSION
-    dimension: int = _DEFAULT_DIMENSION
-    metric: str = _DEFAULT_METRIC
-    query_preparation_version: str = "1"
-    document_preparation_version: str = "1"
-    redaction_version: str = "1"
+    model: str = ""
+    version: str = ""
+    dimension: Optional[int] = None
+    metric: str = ""
+    query_preparation_version: str = ""
+    document_preparation_version: str = ""
+    redaction_version: str = ""
     embedding_base_url: str = ""
     embedding_api_key: str = ""
     embedding_timeout_seconds: float = 15.0
@@ -95,11 +104,16 @@ class VectorConfig:
             "VECTOR_EMBEDDING_SPEC_ID": self.embedding_spec_id,
             "VECTOR_EMBEDDING_BASE_URL": self.embedding_base_url,
             "VECTOR_EMBEDDING_API_KEY": self.embedding_api_key,
+            "VECTOR_EMBEDDING_MODEL": self.model,
+            "VECTOR_EMBEDDING_VERSION": self.version,
+            "VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION": self.query_preparation_version,
+            "VECTOR_EMBEDDING_DOCUMENT_PREPARATION_VERSION": self.document_preparation_version,
+            "VECTOR_EMBEDDING_REDACTION_VERSION": self.redaction_version,
         }
         missing = [name for name, value in required.items() if not value]
         if self.metric not in _ALLOWED_METRICS:
             missing.append("VECTOR_EMBEDDING_METRIC")
-        if self.dimension <= 0:
+        if self.dimension is None or self.dimension <= 0:
             missing.append("VECTOR_EMBEDDING_DIMENSION")
         return missing
 
@@ -110,13 +124,13 @@ def resolve_vector_config() -> VectorConfig:
         dsn=(os.getenv("VECTOR_RETRIEVAL_DSN") or os.getenv("DATABASE_URL") or "").strip(),
         workspace_id=os.getenv("VECTOR_WORKSPACE_ID", "").strip(),
         embedding_spec_id=os.getenv("VECTOR_EMBEDDING_SPEC_ID", "").strip(),
-        model=os.getenv("VECTOR_EMBEDDING_MODEL", "").strip() or _DEFAULT_MODEL,
-        version=os.getenv("VECTOR_EMBEDDING_VERSION", "").strip() or _DEFAULT_VERSION,
-        dimension=_env_int("VECTOR_EMBEDDING_DIMENSION", _DEFAULT_DIMENSION, 1, 8192),
-        metric=os.getenv("VECTOR_EMBEDDING_METRIC", "").strip().lower() or _DEFAULT_METRIC,
-        query_preparation_version=os.getenv("VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION", "1").strip() or "1",
-        document_preparation_version=os.getenv("VECTOR_EMBEDDING_DOCUMENT_PREPARATION_VERSION", "1").strip() or "1",
-        redaction_version=os.getenv("VECTOR_EMBEDDING_REDACTION_VERSION", "1").strip() or "1",
+        model=os.getenv("VECTOR_EMBEDDING_MODEL", "").strip(),
+        version=os.getenv("VECTOR_EMBEDDING_VERSION", "").strip(),
+        dimension=_env_optional_int("VECTOR_EMBEDDING_DIMENSION", 1, 8192),
+        metric=os.getenv("VECTOR_EMBEDDING_METRIC", "").strip().lower(),
+        query_preparation_version=os.getenv("VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION", "").strip(),
+        document_preparation_version=os.getenv("VECTOR_EMBEDDING_DOCUMENT_PREPARATION_VERSION", "").strip(),
+        redaction_version=os.getenv("VECTOR_EMBEDDING_REDACTION_VERSION", "").strip(),
         embedding_base_url=os.getenv("VECTOR_EMBEDDING_BASE_URL", "").strip().rstrip("/"),
         embedding_api_key=os.getenv("VECTOR_EMBEDDING_API_KEY", "").strip(),
         embedding_timeout_seconds=_env_float("VECTOR_EMBEDDING_TIMEOUT_SECONDS", 15.0, 3.0, 120.0),
@@ -225,7 +239,7 @@ class VectorRuntime:
         except Exception as exc:
             return "unavailable", [], f"embedding unavailable: {_sanitize(exc)}"
 
-        if len(vector) != cfg.dimension:
+        if cfg.dimension is None or len(vector) != cfg.dimension:
             return (
                 "unavailable",
                 [],
