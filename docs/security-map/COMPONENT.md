@@ -63,3 +63,7 @@ npm run dev --prefix ui/security-map -- --port 4317 --strictPort
 Явные `edge.resolution=partial/unknown` имеют приоритет над `coverage.status=complete`: badge остаётся «Частичная картина», появляется предупреждение с числом незавершённых связей; сами стрелки пунктирные и подписаны resolution. Полная summary не скрывает причины/диагностику и не означает «безопасно».
 
 Дополнительный browser probe `Unknown edge / complete summary` — явно ручная проверка представления, не анализатор: `loadState=ready`, coverage summary complete и одна unknown edge. Реальный DOM показал badge «Частичная картина», предупреждение с числом 1, `flows_to · unknown`, `strokeDasharray="6, 5"`. Снимок `review/unknown-summary.png` сохраняет этот отрицательный визуальный сценарий.
+
+## Независимое ревью после интеграции
+
+Read-only проверка приняла положительный синтетический DTO через production gate/model/render и проверила отрицательные scope/source/ref случаи. Чужой workspace/run/snapshot, устаревший source hash/location и сломанные graph/finding refs отклоняются; до клика по evidence source не раскрывается. Strict TypeScript дал 0 diagnostics, production entry собрался отдельно от dev harness. Новых блокеров не найдено. Это contract scenario, не настоящий scanner run; браузерные клики и 390px описаны выше, backend/auth/TTL/redaction остаются интеграцией A/B.
