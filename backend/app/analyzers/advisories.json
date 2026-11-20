@@ -1,0 +1,38 @@
+[
+  {
+    "id": "CVE-2021-44228",
+    "package": "org.apache.logging.log4j:log4j-core",
+    "vulnerable_ranges": ["< 2.15.0"],
+    "fixed_version": "2.17.1",
+    "severity": "critical",
+    "title": "Log4Shell Remote Code Execution",
+    "description": "Apache Log4j2 JNDI features do not protect against attacker controlled LDAP and other JNDI related endpoints."
+  },
+  {
+    "id": "CVE-2022-22965",
+    "package": "org.springframework.boot:spring-boot-starter-web",
+    "vulnerable_ranges": [">= 2.5.0, < 2.5.12", ">= 2.6.0, < 2.6.6"],
+    "fixed_version": "2.5.12",
+    "severity": "critical",
+    "title": "Spring4Shell ClassLoader Access RCE",
+    "description": "Spring Framework RCE via Data Binding on JDK 9+ when deployed as WAR in Tomcat."
+  },
+  {
+    "id": "CVE-2020-36518",
+    "package": "com.fasterxml.jackson.core:jackson-databind",
+    "vulnerable_ranges": [">= 2.0.0, < 2.12.7", ">= 2.13.0, < 2.13.2.1"],
+    "fixed_version": "2.13.2.1",
+    "severity": "high",
+    "title": "Jackson Databind Deserialization DoS",
+    "description": "jackson-databind Java stack overflow exception when deeply nested structures are processed."
+  },
+  {
+    "id": "CVE-2021-22118",
+    "package": "org.springframework.security:spring-security-web",
+    "vulnerable_ranges": [">= 5.4.0, < 5.4.7", ">= 5.3.0, < 5.3.10"],
+    "fixed_version": "5.4.7",
+    "severity": "medium",
+    "title": "Spring Security Web HTTP Request Header Bypass",
+    "description": "Spring Security regex matching does not consider line terminators, potentially bypassing authorization."
+  }
+]

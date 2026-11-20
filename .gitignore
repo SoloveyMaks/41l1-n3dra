@@ -1,6 +1,22 @@
+# Dependencies
 node_modules/
+frontend/node_modules/
 .venv/
+
+# Python cache & runtime
 __pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Databases & local data
+*.db
+*.db-wal
+*.db-shm
+backend/data/
+data/
+
+# Environment & Secrets
 .env
 .env.*
 !.env.example
@@ -8,6 +24,7 @@ secrets/
 tools_local/
 research/
 artifacts/
-*.zip
-*.log
+
+# OS files
 .DS_Store
+Thumbs.db
