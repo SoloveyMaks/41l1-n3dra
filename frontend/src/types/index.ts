@@ -186,3 +186,5 @@ export interface ReportData {
   official_json: string;
   created_at: string;
 }
+
+export type AppTab = 'editor' | 'live' | 'findings' | 'map' | 'report' | 'schedule';
