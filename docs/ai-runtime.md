@@ -29,9 +29,11 @@ provenance модели. Любая ошибка провайдера, ключ�
 1. HTTP-ответ провайдера разобран как JSON-объект (markdown-фенсы снимаются).
 2. `validate_json_shape`: `summary`, непустые `items`, строковые
    `findingId/explanation/remediation`, `suggestedFixedVersion: string|null`.
-3. `AiResponseValidator.validate`: только реальные `findingId`, только известные
-   CVE и `suggestedFixedVersion` из эталонного справочника; не-SCA версии
-   отбрасываются.
+3. `AiResponseValidator.validate`: CVE допустимы только из `advisoryIds`
+   конкретной находки; `suggestedFixedVersion` — только версия из advisory
+   этой же находки. Не-SCA версии, чужие версии и CVE в `summary` вне
+   `advisoryIds` находок отклоняются. Duplicate, missing и вымышленные
+   `findingId` не дают статус `succeeded`.
 4. `ExplainResult.provenance` фиксирует provider/model/endpoint/request id,
    latency, usage, `finish_reason`, SHA-256 контента и причину fallback.
 5. Запрос собирается из `redactedEvidence` и дополнительно маскируется
