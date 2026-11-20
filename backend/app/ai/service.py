@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.ai.provider import (
@@ -9,6 +10,7 @@ from backend.app.ai.provider import (
 from backend.app.ai.validator import AiResponseValidator
 from backend.app.ai.vector_runtime import VectorRuntime
 from backend.app.contracts.schemas import (
+    AiBatchProvenance,
     AiItem,
     AiProvenance,
     ExplainResult,
@@ -37,6 +39,10 @@ class AiService:
             self.provider_config.model if self.provider_config else "deterministic-expert-v1"
         )
         self.vector_runtime = VectorRuntime()
+        try:
+            self.batch_size = max(1, min(8, int(os.getenv("AI_BATCH_SIZE", "4"))))
+        except ValueError:
+            self.batch_size = 4
 
     def explain_findings(self, findings: List[Finding], force_fallback: bool = False) -> ExplainResult:
         """
@@ -73,76 +79,156 @@ class AiService:
             )
             return self._attach_retrieval(result, findings, execute=True)
 
-        try:
-            generated_data, provenance = self._generate_ai_json(findings)
-        except AiProviderError as exc:
-            reason = mask_sensitive_text(str(exc))
-            result = self._generate_expert_fallback(
-                findings,
-                summary_prefix=f"[ОШИБКА AI-ПРОВАЙДЕРА]: {reason}. Использован резервный генератор:",
-                provenance=self._fallback_provenance(reason),
-            )
-            return self._attach_retrieval(result, findings, execute=True)
-        except Exception as exc:
-            reason = mask_sensitive_text(str(exc))
-            result = self._generate_expert_fallback(
-                findings,
-                summary_prefix=f"[ОШИБКА AI]: {reason}. Использован резервный генератор:",
-                provenance=self._fallback_provenance(reason),
-            )
-            return self._attach_retrieval(result, findings, execute=True)
+        return self._explain_with_batches(findings)
 
-        structural_errors = self.validator.validate_json_shape(generated_data)
-        if structural_errors:
-            reason = "JSON: " + "; ".join(structural_errors)
-            result = self._generate_expert_fallback(
-                findings,
-                summary_prefix=f"[ВАЛИДАТОР JSON ОТКЛОНИЛ AI-ОТВЕТ]: {reason}. Применен fallback:",
-                provenance=provenance.model_copy(update={"fallback_reason": reason}),
-            )
-            return self._attach_retrieval(result, findings, execute=True)
+    def _explain_with_batches(self, findings: List[Finding]) -> ExplainResult:
+        """Explain findings in bounded batches; a failed batch becomes explicit fallback."""
+        batches = [
+            findings[index:index + self.batch_size]
+            for index in range(0, len(findings), self.batch_size)
+        ]
+        all_items: List[AiItem] = []
+        batch_records: List[AiBatchProvenance] = []
+        errors: List[str] = []
+        summaries: List[str] = []
+        succeeded_batches = 0
+        fallback_batches = 0
 
-        is_valid, validation_errors, validated_items = self.validator.validate(generated_data, findings)
-        summary_text = mask_sensitive_text(
-            str(generated_data.get("summary") or "Анализ находок безопасности выполнен.")
+        for batch_index, batch in enumerate(batches, start=1):
+            finding_ids = [finding.id for finding in batch]
+            try:
+                generated_data, provenance = self._generate_ai_json(
+                    batch,
+                    max_tokens=self._batch_max_tokens(len(batch)),
+                )
+                structural_errors = self.validator.validate_json_shape(generated_data)
+                if structural_errors:
+                    is_valid = False
+                    validation_errors = ["JSON: " + "; ".join(structural_errors)]
+                    validated_items = []
+                    summary = ""
+                else:
+                    is_valid, validation_errors, validated_items = self.validator.validate(
+                        generated_data, batch
+                    )
+                    for item in validated_items:
+                        item.explanation = mask_sensitive_text(item.explanation)
+                        item.remediation = mask_sensitive_text(item.remediation)
+
+                    summary = mask_sensitive_text(str(generated_data.get("summary") or ""))
+                    if any("summary" in error.lower() for error in validation_errors):
+                        summary = (
+                            f"Батч {batch_index}: AI-сводка отклонена валидатором "
+                            "(CVE вне advisoryIds)."
+                        )
+
+                returned_ids = {item.findingId for item in validated_items}
+                missing = [finding for finding in batch if finding.id not in returned_ids]
+                fallback_items = self._fallback_items(missing) if missing else []
+                all_items.extend(validated_items)
+                all_items.extend(fallback_items)
+
+                if is_valid and not missing:
+                    succeeded_batches += 1
+                    summaries.append(
+                        summary or f"Батч {batch_index}: AI-объяснения приняты валидатором."
+                    )
+                    batch_status = "succeeded"
+                    batch_error = None
+                else:
+                    fallback_batches += 1
+                    errors.extend(
+                        f"Батч {batch_index} ({', '.join(finding_ids)}): {error}"
+                        for error in validation_errors
+                    )
+                    if missing:
+                        errors.append(
+                            f"Батч {batch_index}: deterministic fallback для "
+                            + ", ".join(finding.id for finding in missing)
+                        )
+                    summaries.append(
+                        f"[ЧАСТИЧНЫЙ FALLBACK БАТЧ {batch_index}] "
+                        + (summary or "AI-ответ отклонён валидатором.")
+                    )
+                    batch_status = "fallback"
+                    batch_error = (
+                        "; ".join(validation_errors)[:600] or "partial validation"
+                    )
+
+                batch_records.append(AiBatchProvenance(
+                    batchIndex=batch_index,
+                    findingIds=finding_ids,
+                    status=batch_status,
+                    itemCount=len(validated_items) + len(fallback_items),
+                    error=batch_error,
+                    provenance=provenance,
+                ))
+            except Exception as exc:
+                reason = mask_sensitive_text(str(exc))
+                fallback_items = self._fallback_items(batch)
+                all_items.extend(fallback_items)
+                fallback_batches += 1
+                errors.append(
+                    f"Батч {batch_index} ({', '.join(finding_ids)}): {reason}"
+                )
+                summaries.append(f"[FALLBACK БАТЧ {batch_index}] {reason}")
+                cfg = self.provider_config
+                batch_records.append(AiBatchProvenance(
+                    batchIndex=batch_index,
+                    findingIds=finding_ids,
+                    status="fallback",
+                    itemCount=len(fallback_items),
+                    error=reason[:600],
+                    provenance=AiProvenance(
+                        provider=cfg.provider if cfg else "none",
+                        model=cfg.model if cfg else "deterministic-expert-v1",
+                        endpoint=cfg.endpoint if cfg else "",
+                        request_id=getattr(exc, "request_id", None),
+                        latency_ms=getattr(exc, "latency_ms", 0.0),
+                        finish_reason=getattr(exc, "finish_reason", None),
+                        fallback_reason=reason[:300],
+                    ),
+                ))
+
+        by_id = {item.findingId: item for item in all_items}
+        missing_global = [finding for finding in findings if finding.id not in by_id]
+        if missing_global:
+            extra = self._fallback_items(missing_global)
+            all_items.extend(extra)
+            for item in extra:
+                by_id[item.findingId] = item
+            errors.append(
+                "После батчей отсутствовали items; добавлен deterministic fallback: "
+                + ", ".join(finding.id for finding in missing_global)
+            )
+
+        ordered_items = [by_id[finding.id] for finding in findings if finding.id in by_id]
+        status = (
+            "succeeded"
+            if (
+                succeeded_batches == len(batches)
+                and fallback_batches == 0
+                and not errors
+                and len(ordered_items) == len(findings)
+            )
+            else "fallback"
         )
-        if any("summary" in error.lower() for error in validation_errors):
-            summary_text = "AI-сводка отклонена валидатором: в ней есть CVE вне advisoryIds находок."
-        for item in validated_items:
-            item.explanation = mask_sensitive_text(item.explanation)
-            item.remediation = mask_sensitive_text(item.remediation)
+        model = self._aggregate_model(batch_records, fallback_batches, len(batches))
+        summary = " ".join(part.strip() for part in summaries if part and part.strip())
+        if not summary:
+            summary = "Анализ находок безопасности выполнен."
 
-        if is_valid:
-            result = ExplainResult(
-                status="succeeded",
-                model=provenance.model or self.model_name,
-                summary=summary_text,
-                items=validated_items,
-                validation_errors=[],
-                raw_secrets_checked=True,
-                provenance=provenance,
-            )
-            return self._attach_retrieval(result, findings, execute=True)
-
-        if validated_items:
-            result = ExplainResult(
-                status="fallback",
-                model=provenance.model or self.model_name,
-                summary=summary_text,
-                items=validated_items,
-                validation_errors=validation_errors,
-                raw_secrets_checked=True,
-                provenance=provenance.model_copy(
-                    update={"fallback_reason": "validator rejected part of the response"}
-                ),
-            )
-            return self._attach_retrieval(result, findings, execute=True)
-
-        reason = "; ".join(validation_errors)
-        result = self._generate_expert_fallback(
-            findings,
-            summary_prefix=f"[ВАЛИДАТОР ОТКЛОНИЛ AI-ОТВЕТ]: Применен безопасный детерминированный fallback. Ошибки: {reason}",
-            provenance=provenance.model_copy(update={"fallback_reason": "validator rejected all items"}),
+        result = ExplainResult(
+            status=status,
+            model=model,
+            summary=summary[:3000],
+            items=ordered_items,
+            validation_errors=errors,
+            raw_secrets_checked=True,
+            provenance=self._aggregate_provenance(
+                batch_records, fallback_batches, len(batches), model
+            ),
+            batch_provenance=batch_records,
         )
         return self._attach_retrieval(result, findings, execute=True)
 
@@ -177,12 +263,89 @@ class AiService:
             "accepted_items_count": len(valid_items)
         }
 
-    def _generate_ai_json(self, findings: List[Finding]) -> Tuple[Dict[str, Any], AiProvenance]:
+    def _generate_ai_json(
+        self,
+        findings: List[Finding],
+        max_tokens: Optional[int] = None,
+    ) -> Tuple[Dict[str, Any], AiProvenance]:
         """Call the configured OpenAI-compatible provider with masked context."""
         if not self.provider_config:
             raise AiProviderError("provider is not configured")
         payload = self._build_masked_payload(findings)
-        return complete_json(self.provider_config, SYSTEM_PROMPT, payload)
+        return complete_json(self.provider_config, SYSTEM_PROMPT, payload, max_tokens=max_tokens)
+
+    def _batch_max_tokens(self, count: int) -> int:
+        """Bounded per-batch output budget, never unlimited."""
+        if not self.provider_config:
+            return 2048
+        budget = 1024 + 640 * max(1, count)
+        return max(2048, min(self.provider_config.max_tokens, budget))
+
+    def _fallback_items(self, findings: List[Finding]) -> List[AiItem]:
+        items = []
+        for f in findings:
+            exp, rem, fixed_ver = self._get_finding_advice(f)
+            items.append(AiItem(
+                findingId=f.id,
+                explanation=exp,
+                remediation=rem,
+                suggestedFixedVersion=fixed_ver,
+            ))
+        return items
+
+    def _aggregate_model(
+        self,
+        records: List[AiBatchProvenance],
+        fallback_batches: int,
+        batch_count: int,
+    ) -> str:
+        cfg = self.provider_config
+        default_model = cfg.model if cfg else "deterministic-expert-v1"
+        ai_model = next(
+            (
+                record.provenance.model
+                for record in records
+                if record.status == "succeeded" and record.provenance and record.provenance.model
+            ),
+            default_model,
+        )
+        if fallback_batches == batch_count:
+            return "deterministic-expert-v1"
+        if fallback_batches:
+            return f"{ai_model} + deterministic-expert-v1"
+        return ai_model
+
+    def _aggregate_provenance(
+        self,
+        records: List[AiBatchProvenance],
+        fallback_batches: int,
+        batch_count: int,
+        model: str,
+    ) -> AiProvenance:
+        cfg = self.provider_config
+        provs = [record.provenance for record in records if record.provenance]
+
+        def total(field: str) -> Optional[int]:
+            values = [getattr(prov, field) for prov in provs if getattr(prov, field) is not None]
+            return sum(values) if values else None
+
+        single = provs[0] if len(provs) == 1 else None
+        return AiProvenance(
+            provider=cfg.provider if cfg else "none",
+            model=model,
+            endpoint=cfg.endpoint if cfg else "",
+            request_id=single.request_id if single else None,
+            latency_ms=round(sum(prov.latency_ms for prov in provs), 1),
+            prompt_tokens=total("prompt_tokens"),
+            completion_tokens=total("completion_tokens"),
+            total_tokens=total("total_tokens"),
+            finish_reason=single.finish_reason if single else None,
+            response_sha256=single.response_sha256 if single else None,
+            fallback_reason=(
+                f"{fallback_batches} из {batch_count} батчей fallback"
+                if fallback_batches else None
+            ),
+        )
 
     def _build_masked_payload(self, findings: List[Finding]) -> Dict[str, Any]:
         masked_findings = []
@@ -212,16 +375,7 @@ class AiService:
         summary_prefix: str,
         provenance: Optional[AiProvenance] = None,
     ) -> ExplainResult:
-        items = []
-        for f in findings:
-            exp, rem, fixed_ver = self._get_finding_advice(f)
-            items.append(AiItem(
-                findingId=f.id,
-                explanation=exp,
-                remediation=rem,
-                suggestedFixedVersion=fixed_ver
-            ))
-
+        items = self._fallback_items(findings)
         return ExplainResult(
             status="fallback",
             model="deterministic-expert-v1",

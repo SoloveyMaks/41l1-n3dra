@@ -94,6 +94,12 @@ class ReportBuilder:
                     f"**Провайдер:** `{prov.provider}/{prov.model}`; endpoint: `{prov.endpoint or '—'}`; "
                     f"request: `{prov.request_id or '—'}`; {prov.latency_ms:.0f} ms{fallback}\n"
                 )
+            if ai_result.batch_provenance:
+                batches = ", ".join(
+                    f"{batch.batchIndex}:{batch.status} ({batch.itemCount} items)"
+                    for batch in ai_result.batch_provenance
+                )
+                md.append(f"**AI batches:** {batches}\n")
             if ai_result.retrieval and ai_result.retrieval.status != "disabled":
                 retrieval = ai_result.retrieval
                 md.append(
@@ -170,6 +176,10 @@ class ReportBuilder:
                 "validationErrors": ai_result.validation_errors if ai_result else [],
                 "provenance": (
                     ai_result.provenance.model_dump() if ai_result and ai_result.provenance else None
+                ),
+                "batchProvenance": (
+                    [batch.model_dump() for batch in ai_result.batch_provenance]
+                    if ai_result else []
                 ),
                 "retrieval": (
                     ai_result.retrieval.model_dump() if ai_result and ai_result.retrieval else None
