@@ -17,7 +17,9 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from backend.app.storage.canonical import CanonicalConflictError, _uuid, _require, _enum, _text, _arr, _obj
+from backend.app.storage.canonical import (
+    CanonicalConflictError, _arr, _enum, _lock, _obj, _require, _text, _uuid,
+)
 from backend.app.storage.database import _workspace_id, get_pool
 
 STATUSES = ("persistent", "introduced", "changed", "resolved", "inconclusive", "file_deleted")
@@ -53,17 +55,28 @@ class ComparisonStore:
                  for index, raw in enumerate(_arr(item_input.get("items"), "comparison.items"))]
 
         with get_pool().connection() as conn:
+            _lock(conn, "comparison", self.workspace_id, comparison_id)
             existing = conn.execute(
-                "SELECT comparison_id FROM data_contract.comparisons "
+                "SELECT baseline_run_id, baseline_snapshot_id, current_run_id, current_snapshot_id,"
+                " comparable, reasons FROM data_contract.comparisons "
                 "WHERE workspace_id = %s AND comparison_id = %s AND published_at IS NOT NULL",
                 (self.workspace_id, comparison_id),
             ).fetchone()
             if existing is not None:
+                same_header = (
+                    str(existing["baseline_run_id"]) == baseline_run
+                    and str(existing["baseline_snapshot_id"]) == baseline_snapshot
+                    and str(existing["current_run_id"]) == current_run
+                    and str(existing["current_snapshot_id"]) == current_snapshot
+                    and existing["comparable"] == comparable
+                    and list(existing["reasons"]) == reasons
+                )
                 stored = self._get_with_conn(conn, comparison_id)
-                if (stored["comparable"] != comparable or stored["reasons"] != reasons
+                if (not same_header
+                        or stored is None
                         or self._item_key(stored["items"]) != self._item_key(items)):
                     raise ComparisonConflictError(
-                        "comparison id is already published with different content"
+                        "comparison id is already published with a different header or items"
                     )
                 return stored
 

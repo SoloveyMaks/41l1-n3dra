@@ -160,23 +160,34 @@ bytes отклоняются как immutable identity conflict.
 ## Comparison storage
 
 `backend/app/storage/comparisons.py` — сохранение результата comparison engine:
-`ComparisonStore.save(dto)` вставляет draft `comparisons` + `comparison_items`,
-затем публикует header; `guard_comparison` проверяет published bundles,
-совместимость signature, fingerprints и coverage. `get(comparison_id)` возвращает
-DTO с `items` и вычисленными `deletedFiles` по двум sealed manifest; повторный
-save того же id идемпотентен, другой payload — conflict. Pseudo-publish нет.
+`ComparisonStore.save(dto)` берёт advisory lock на comparison id, вставляет draft
+`comparisons` + `comparison_items`, затем публикует header; `guard_comparison`
+проверяет published bundles, совместимость signature, fingerprints и coverage.
+Повторный save сверяет **всю header identity** (baseline/current run+snapshot,
+comparable, reasons) и items: совпадение идемпотентно, любое отличие — conflict;
+параллельные save одного id сериализуются. `get(comparison_id)` возвращает DTO с
+`items` и вычисленными `deletedFiles` по двум sealed manifest. Pseudo-publish нет.
 
 ## Remediation examples
 
 `backend/app/storage/remediation.py` — `RemediationStore.save/get/list` для
-`data_contract.remediation_examples`. `vetted` требует published source (и
-published fixed bundle при наличии), `verificationBasis`, `reviewedBy`,
-`reviewedAt` и непустые `limitations`; иначе только `draft`. Content hash
-фиксирует sourceRef/rule/scenario/redacted before-fix. AI-совет не переводится в
-`vetted`. Подготовлены 3 примера: один vetted по live-проверке `SastAnalyzer`
-(before finding `KOTLIN-SQL-INJECTION`, after 0 findings) и два draft, пока фикс не
-перепроверен. Их envelope-ы — synthetic adapter probe (`contract_scenario`), не
-настоящий scanner run; это записано в limitations.
+`data_contract.remediation_examples`. `vetted` — узкий автоматический допуск, не
+произвольный текст: published source и **обязательный** published fixed bundle,
+оба с `origin='scanner'` и `expected_scopes_verified=true`, совместимые
+`static_signature`, checked coverage выбранного `category/path/rule` в обоих
+run-ах и отсутствие того же fingerprint в fixed run. Только тогда плюс
+`verificationBasis`, `reviewedBy`, `reviewedAt`, `limitations`. Synthetic
+`contract_scenario`/`manual_fixture` не может стать vetted; 0 findings после regex
+без checked coverage — тоже. Content hash и source/verification identity
+фиксируются, повтор exampleId с другой identity — conflict.
+
+Подготовлены 3 remediation examples, все **draft**: SQL before/after с живым
+`SastAnalyzer` (before `KOTLIN-SQL-INJECTION`, after 0 findings) и два варианта
+фикса без перепроверки. Envelope-ы — synthetic adapter probe
+(`contract_scenario`), поэтому автоматический vetted-допуск их отклоняет; vetted
+появится только после настоящего scanner publish от adapter. Fake vetted с
+synthetic provenance проверен отрицательным probe: `RemediationValidationError`,
+строка не создаётся.
 
 ## Локальная проверка
 

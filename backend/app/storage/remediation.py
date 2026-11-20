@@ -22,6 +22,7 @@ from backend.app.storage.canonical import (
     _arr,
     _canonical_bytes,
     _enum,
+    _lock,
     _obj,
     _require,
     _sha,
@@ -60,6 +61,9 @@ class RemediationStore:
     def save(self, example: Mapping[str, Any]) -> Dict[str, Any]:
         row = self._normalize(example)
         with get_pool().connection() as conn:
+            _lock(conn, "remediation", self.workspace_id, row["exampleId"])
+            if row["status"] == "vetted":
+                self._require_vetted_evidence(conn, row)
             conn.execute(
                 """
                 INSERT INTO data_contract.remediation_examples (
@@ -91,10 +95,16 @@ class RemediationStore:
             stored = self._get_with_conn(conn, row["exampleId"])
             if stored is None:  # pragma: no cover
                 raise RemediationValidationError("example insert was not persisted")
-            if stored["contentHash"] != row["contentHash"]:
-                raise CanonicalConflictError(
-                    "remediation example id already exists with a different content hash"
-                )
+            identity_fields = (
+                "sourceRunId", "sourceSnapshotId", "sourceFindingId",
+                "fixedRunId", "fixedSnapshotId", "sourceRef", "contentHash",
+                "status", "verificationBasis", "reviewedBy", "reviewedAt",
+            )
+            for field in identity_fields:
+                if stored[field] != row[field]:
+                    raise CanonicalConflictError(
+                        f"remediation example id already exists with a different {field}"
+                    )
             return stored
 
     def get(self, example_id: str) -> Optional[Dict[str, Any]]:
@@ -146,6 +156,7 @@ class RemediationStore:
             for i, x in enumerate(_arr(item.get("limitations"), "example.limitations"))
         ]
         if status == "vetted":
+            _require(fixed_run is not None, "example: vetted requires a published fixed bundle")
             _require(verification_basis is not None, "example: vetted requires verificationBasis")
             _require(reviewed_by is not None, "example: vetted requires reviewedBy")
             _require(reviewed_at is not None, "example: vetted requires reviewedAt")
@@ -177,6 +188,81 @@ class RemediationStore:
             _require(_sha(provided_hash, "example.contentHash") == row["contentHash"],
                      "example: contentHash differs from the canonical recipe")
         return row
+
+    def _require_vetted_evidence(self, conn, row: Mapping[str, Any]) -> None:
+        """Automated vetted admission: real scanner provenance + checked rule + disappearance."""
+        def bundle(run_id: str, snapshot_id: str, label: str) -> None:
+            item = conn.execute(
+                """
+                SELECT be.origin, be.expected_scopes_verified, ab.published_at
+                  FROM data_contract.analysis_bundles ab
+                  JOIN data_contract.bundle_envelopes be
+                    USING (workspace_id, run_id, snapshot_id)
+                 WHERE ab.workspace_id = %s AND ab.run_id = %s AND ab.snapshot_id = %s
+                """,
+                (self.workspace_id, run_id, snapshot_id),
+            ).fetchone()
+            if item is None or item["published_at"] is None:
+                raise RemediationValidationError(f"{label}: bundle is not published")
+            if item["origin"] != "scanner":
+                raise RemediationValidationError(
+                    f"{label}: vetted requires real scanner provenance, got {item['origin']!r}; "
+                    "synthetic contract_scenario stays draft"
+                )
+            if not item["expected_scopes_verified"]:
+                raise RemediationValidationError(f"{label}: expected scopes are not verified")
+
+        bundle(row["sourceRunId"], row["sourceSnapshotId"], "source")
+        bundle(row["fixedRunId"], row["fixedSnapshotId"], "fixed")
+
+        compatible = conn.execute(
+            "SELECT data_contract.static_signature(%s, %s) = data_contract.static_signature(%s, %s) AS same",
+            (self.workspace_id, row["sourceRunId"], self.workspace_id, row["fixedRunId"]),
+        ).fetchone()["same"]
+        if not compatible:
+            raise RemediationValidationError("source and fixed bundles have incompatible analysis signatures")
+
+        finding = conn.execute(
+            """
+            SELECT f.category, f.rule_id, f.fingerprint, e.path
+              FROM data_contract.findings f
+              JOIN data_contract.evidence e
+                ON e.workspace_id = f.workspace_id AND e.run_id = f.run_id
+               AND e.snapshot_id = f.snapshot_id AND e.evidence_id = f.primary_evidence_id
+             WHERE f.workspace_id = %s AND f.run_id = %s AND f.snapshot_id = %s
+               AND f.finding_id = %s
+            """,
+            (self.workspace_id, row["sourceRunId"], row["sourceSnapshotId"], row["sourceFindingId"]),
+        ).fetchone()
+        if finding is None:
+            raise RemediationValidationError("source finding is not part of the published source bundle")
+
+        for run_id, snapshot_id, label in (
+            (row["sourceRunId"], row["sourceSnapshotId"], "source"),
+            (row["fixedRunId"], row["fixedSnapshotId"], "fixed"),
+        ):
+            checked = conn.execute(
+                """
+                SELECT count(*) AS n FROM data_contract.coverage
+                 WHERE workspace_id = %s AND run_id = %s AND snapshot_id = %s
+                   AND category = %s AND path = %s AND rule_id = %s AND status = 'checked'
+                """,
+                (self.workspace_id, run_id, snapshot_id, finding["category"],
+                 finding["path"], finding["rule_id"]),
+            ).fetchone()["n"]
+            if not checked:
+                raise RemediationValidationError(
+                    f"{label}: selected path/rule/rule-family is not checked; 0 findings after a regex "
+                    "does not prove coverage"
+                )
+
+        still_present = conn.execute(
+            "SELECT count(*) AS n FROM data_contract.findings "
+            "WHERE workspace_id = %s AND run_id = %s AND snapshot_id = %s AND fingerprint = %s",
+            (self.workspace_id, row["fixedRunId"], row["fixedSnapshotId"], finding["fingerprint"]),
+        ).fetchone()["n"]
+        if still_present:
+            raise RemediationValidationError("source finding fingerprint is still present in the fixed bundle")
 
     def _get_with_conn(self, conn, example_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
