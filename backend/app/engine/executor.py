@@ -18,6 +18,7 @@ from backend.app.contracts.schemas import (
 from backend.app.codefacts.extractor import RULE_DEFINITIONS, extract_facts
 from backend.app.codefacts.identity import run_uuid, workspace_id
 from backend.app.codefacts.map_builder import build_run_map, ensure_artifact_meta
+from backend.app.codefacts.publish import publish_run_artifact
 from backend.app.codefacts.source import load_snapshot_sources
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.engine.notify_policy import validate_webhook_url
@@ -274,6 +275,10 @@ class WorkflowExecutor:
             "verdict": final_verdict.value,
             "findings_summary": counts
         })
+        try:
+            await asyncio.to_thread(self._publish_canonical, run_id, workflow_id, revision_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Canonical publish failed for %s: %s", run_id, exc)
 
     async def _run_node_logic(self, run_id: str, node: WorkflowNode, inputs: Dict[str, Any],
                              default_artifact_id: Optional[str], trigger_type: str,
@@ -393,7 +398,7 @@ class WorkflowExecutor:
             if artifact_id:
                 try:
                     all_findings, codefacts_facts, map_error = await asyncio.to_thread(
-                        self._integrate_codefacts, run_id, artifact_id, all_findings,
+                        self._integrate_codefacts, run_id, artifact_id, all_findings, scan_results,
                     )
                 except Exception as exc:  # noqa: BLE001 - карта не должна скрывать находки
                     logger.warning("Code facts integration failed for %s: %s", run_id, exc)
@@ -729,6 +734,42 @@ class WorkflowExecutor:
         else:
             raise ValueError(f"Неизвестный тип ноды для исполнения: {kind}")
 
+    def _publish_canonical(self, run_id: str, workflow_id: str, revision_id: str) -> None:
+        workspace = workspace_id()
+        store = CodeFactsStore()
+        payload = store.load_run(workspace, run_uuid(run_id))
+        if not payload:
+            return
+        run = self.db.get_run(run_id) or {}
+        artifact_id = str(run.get("artifact_id") or "")
+        artifact = self.db.get_artifact(artifact_id) if artifact_id else None
+        workflow = self.db.get_workflow(workflow_id) or {}
+        if not artifact:
+            payload["publication"] = {"published": False, "reason": "artifact row missing"}
+            store.save_run(workspace, run_uuid(run_id), payload)
+            return
+        meta = store.load_artifact_meta(workspace, artifact_id) or {}
+        if meta.get("expiresAt") and not artifact.get("expires_at"):
+            artifact = {**artifact, "expires_at": meta["expiresAt"]}
+        snapshot = store.load_snapshot(workspace, str(payload["identity"]["snapshotId"]))
+        if not snapshot:
+            payload["publication"] = {"published": False, "reason": "snapshot missing"}
+            store.save_run(workspace, run_uuid(run_id), payload)
+            return
+        result = publish_run_artifact(
+            workspace=workspace,
+            run_artifact=payload,
+            snapshot=snapshot,
+            artifact=artifact,
+            workflow=workflow,
+            run=run,
+            revision_id=revision_id,
+        )
+        payload["publication"] = result
+        store.save_run(workspace, run_uuid(run_id), payload)
+        if not result.get("published"):
+            logger.info("Immutable bundle not published for %s: %s", run_id, result.get("reason"))
+
     def _resolve_artifact_path(self, artifact_id: str) -> str:
         artifact = self.db.get_artifact(artifact_id)
         if not artifact:
@@ -739,7 +780,8 @@ class WorkflowExecutor:
         return str(path)
 
     def _integrate_codefacts(self, run_id: str, artifact_id: str,
-                             findings: List[Finding]) -> Tuple[List[Finding], Any, Optional[str]]:
+                             findings: List[Finding],
+                             scan_results: Optional[List[ScanResult]] = None) -> Tuple[List[Finding], Any, Optional[str]]:
         """Строит CF-находки и immutable run-карту. Вызывается в отдельном потоке."""
         run_row = self.db.get_run(run_id) or {}
         artifact = self.db.get_artifact(artifact_id)
@@ -779,6 +821,7 @@ class WorkflowExecutor:
                 snapshot=snapshot,
                 sources=sources,
                 facts=facts,
+                scan_results=scan_results,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Security map build failed for %s: %s", run_id, exc)

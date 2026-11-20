@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -43,7 +44,6 @@ from backend.app.codefacts.source import (
 )
 from backend.app.contracts.schemas import Finding as BackendFinding
 
-ANCHOR_KEY = os.getenv("CG_ANCHOR_HMAC_KEY", "cg-anchor-hmac/v1").encode("utf-8")
 PRODUCER_VERSION = "cg-evidence/1.0.0"
 ANALYZER_CATEGORY = {"secret": "SECRET", "sca": "SCA", "sast": "SAST", "codefacts": "SAST"}
 CONFIDENCE_MAP = {"confirmed": "high", "potential": "medium", "inconclusive": "low"}
@@ -83,7 +83,8 @@ class CanonicalMapBuilder:
                  artifact_hash: str, snapshot_manifest_hash: str,
                  workflow_revision_id: str, facts: ExtractionResult,
                  sources: Dict[str, SourceFile], snapshot_files: List[Dict[str, Any]],
-                 backend_findings: List[BackendFinding]):
+                 backend_findings: List[BackendFinding],
+                 scan_results: Optional[List[Any]] = None):
         self.workspace_id = workspace_id
         self.run_id = run_id
         self.snapshot_id = snapshot_id
@@ -94,11 +95,17 @@ class CanonicalMapBuilder:
         self.sources = sources
         self.snapshot_files = snapshot_files
         self.backend_findings = backend_findings
+        self.scan_results = list(scan_results or [])
         self.file_hash = {str(item["path"]): str(item["sha256"]) for item in snapshot_files}
         self.evidence: Dict[str, Dict[str, Any]] = {}
         self.evidence_by_location: Dict[Tuple[Any, ...], str] = {}
         self.diagnostics: List[Dict[str, Any]] = []
         self._diag_ordinal = 0
+        self._publishable = True
+        self._anchor_key = (
+            os.getenv("CG_ANCHOR_HMAC_KEY", "").strip()
+            or os.getenv("CG_SESSION_SECRET", "").strip()
+        ).encode("utf-8") or None
 
     # --- public ----------------------------------------------------------
     def build(self) -> Dict[str, Any]:
@@ -133,8 +140,14 @@ class CanonicalMapBuilder:
             "findingNodeLinks": links,
         }
         map_dto["bundleHash"] = bundle_hash(map_dto)
-        return {"identity": identity, "map": map_dto, "findings": findings,
-                "redactionVersion": REDACTION_VERSION}
+        self._built_nodes = nodes
+        self._built_edges = edges
+        result = {"identity": identity, "map": map_dto, "findings": findings,
+                  "redactionVersion": REDACTION_VERSION}
+        analysis_bundle = self._build_analysis_bundle(identity, signature, findings, coverage)
+        if analysis_bundle is not None:
+            result["analysisBundle"] = analysis_bundle
+        return result
 
     # --- evidence --------------------------------------------------------
     def _register_evidence(self, item: Dict[str, Any]) -> str:
@@ -349,8 +362,17 @@ class CanonicalMapBuilder:
                 "secretHmac": None,
             }
             if category == "SECRET":
+                if self._anchor_key is None:
+                    self._publishable = False
+                    if not any(d["code"] == "CF-ANCHOR-HMAC-UNAVAILABLE" for d in self.diagnostics):
+                        self._diag(
+                            "CF-ANCHOR-HMAC-UNAVAILABLE",
+                            "CG_ANCHOR_HMAC_KEY/CG_SESSION_SECRET не задан: SECRET findings "
+                            "не выводятся в canonical map и bundle не публикуется.",
+                        )
+                    continue
                 anchor["secretHmac"] = hmac_evidence(
-                    ANCHOR_KEY, "SECRET", finding.ruleId,
+                    self._anchor_key, "SECRET", finding.ruleId,
                     primary_location["path"], str(primary_location["line"]), context,
                 )
             fingerprint = _fingerprint(category, finding.ruleId, anchor)
@@ -495,6 +517,106 @@ class CanonicalMapBuilder:
             "limitsReached": limits,
         }
         return coverage, parser_errors
+
+    # --- AnalysisBundle --------------------------------------------------
+    def _scan_diagnostics(self, scan: Any, category: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+        diagnostics: List[Dict[str, Any]] = []
+        parser_errors: List[str] = []
+        for idx, diag in enumerate(getattr(scan, "diagnostics", []) or [], start=1):
+            details = getattr(diag, "details", {}) or {}
+            code = str(details.get("code") or getattr(diag, "source", "") or "SCANNER-DIAGNOSTIC")
+            code = re.sub(r"[^A-Za-z0-9_.-]+", "-", code).strip("-") or "SCANNER-DIAGNOSTIC"
+            diag_id = diagnostic_uuid(
+                self.workspace_id, self.run_id,
+                f"scan:{getattr(scan, 'analyzer', 'scanner')}:{code}", idx,
+            )
+            diagnostics.append({
+                "workspaceId": self.workspace_id,
+                "runId": self.run_id,
+                "snapshotId": self.snapshot_id,
+                "id": diag_id,
+                "category": category,
+                "code": code,
+                "message": str(getattr(diag, "message", code)),
+                "evidenceId": None,
+            })
+            if getattr(diag, "level", "") == "error":
+                parser_errors.append(diag_id)
+        return diagnostics, parser_errors
+
+    def _build_analysis_bundle(self, identity: Dict[str, Any], signature: Dict[str, Any],
+                               findings: List[Dict[str, Any]],
+                               coverage: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not self.scan_results or not self._publishable:
+            return None
+        by_category: Dict[str, Any] = {}
+        for scan in self.scan_results:
+            category = ANALYZER_CATEGORY.get(str(getattr(scan, "analyzer", "")))
+            if category and category not in by_category:
+                by_category[category] = scan
+        if set(by_category) != {"SECRET", "SCA", "SAST"}:
+            return None
+        total = len(self.snapshot_files)
+        scan_results: List[Dict[str, Any]] = []
+        for category in ("SECRET", "SCA", "SAST"):
+            scan = by_category[category]
+            category_findings = [item for item in findings if item["category"] == category]
+            refs: List[str] = []
+            for finding in category_findings:
+                for evidence_id in [finding["primaryEvidenceId"], *finding["relatedEvidenceIds"],
+                                    *finding["traceEvidenceIds"]]:
+                    if evidence_id not in refs:
+                        refs.append(evidence_id)
+            evidence = [self.evidence[evidence_id] for evidence_id in refs if evidence_id in self.evidence]
+            diagnostics, parser_errors = self._scan_diagnostics(scan, category)
+            raw_coverage = getattr(scan, "coverage", None)
+            visited = int(getattr(raw_coverage, "files_scanned", 0) or 0) if raw_coverage else 0
+            visited = min(max(visited, 0), total)
+            rules = list(getattr(raw_coverage, "rules_executed", []) or []) if raw_coverage else []
+            producer = f"{getattr(scan, 'analyzer', 'scanner')}/1.0.0"
+            if any(str(finding.get("ruleId", "")).startswith("CF-") for finding in category_findings):
+                producer = f"{getattr(scan, 'analyzer', 'scanner')}+codefacts/1.0.0"
+            scan_results.append({
+                "schemaVersion": "0.1",
+                "identity": identity,
+                "signature": signature,
+                "category": category,
+                "status": "partial" if visited > 0 else "unsupported",
+                "producerVersion": producer,
+                "durationMs": int(round(float(getattr(scan, "duration_ms", 0.0) or 0.0))),
+                "findings": category_findings,
+                "evidence": evidence,
+                "diagnostics": diagnostics,
+                "coverage": {
+                    "status": "partial",
+                    "filesTotal": total,
+                    "filesVisited": visited,
+                    "rulesApplied": rules,
+                    "scopes": [],
+                    "skippedScopes": ["scanner-scope-only"] if visited < total else [],
+                    "parserErrors": parser_errors,
+                    "unresolvedSymbols": [],
+                    "limitsReached": [],
+                },
+            })
+        code_facts = {
+            "schemaVersion": "0.1",
+            "identity": identity,
+            "signature": signature,
+            "nodes": getattr(self, "_built_nodes", []),
+            "edges": getattr(self, "_built_edges", []),
+            "evidence": sorted(self.evidence.values(), key=lambda item: item["id"]),
+            "coverage": coverage,
+            "policyInputs": [],
+            "diagnostics": self.diagnostics,
+        }
+        return {
+            "schemaVersion": "0.1",
+            "identity": identity,
+            "signature": signature,
+            "scanResults": scan_results,
+            "codeFacts": code_facts,
+        }
 
     # --- signature -------------------------------------------------------
     def _build_signature(self) -> Dict[str, Any]:

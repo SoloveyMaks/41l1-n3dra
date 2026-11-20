@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +49,9 @@ def ensure_artifact_meta(store: CodeFactsStore, workspace: str, artifact_row: Di
         "gradleFileCount": int(artifact_row.get("gradle_count") or 0),
         "filename": str(artifact_row.get("filename") or "project.zip"),
         "createdAt": str(artifact_row.get("created_at") or _now()),
+        "expiresAt": artifact_row.get("expires_at") or (
+            datetime.now(timezone.utc) + timedelta(days=7)
+        ).isoformat(),
     }
     store.save_artifact_meta(workspace, artifact_id, meta)
     return meta
@@ -61,7 +64,8 @@ def build_run_map(*, workspace: str, internal_run_id: str, run_id: str,
                   meta: Optional[Dict[str, Any]] = None,
                   snapshot: Optional[Dict[str, Any]] = None,
                   sources: Optional[Dict[str, Any]] = None,
-                  facts: Optional[Any] = None) -> Dict[str, Any]:
+                  facts: Optional[Any] = None,
+                  scan_results: Optional[List[Any]] = None) -> Dict[str, Any]:
     store = store or CodeFactsStore()
     artifact_id = str(artifact_row.get("id", ""))
     if meta is None:
@@ -109,6 +113,7 @@ def build_run_map(*, workspace: str, internal_run_id: str, run_id: str,
         sources=sources,
         snapshot_files=files,
         backend_findings=backend_findings,
+        scan_results=scan_results,
     )
     payload = builder.build()
     self_check(payload["map"], payload["findings"])
@@ -122,6 +127,7 @@ def build_run_map(*, workspace: str, internal_run_id: str, run_id: str,
         "map": payload["map"],
         "findings": payload["findings"],
         "redactionVersion": payload["redactionVersion"],
+        "analysisBundle": payload.get("analysisBundle"),
         "createdAt": _now(),
         "limitations": [
             "Статический анализ исходников; код не исполнялся.",

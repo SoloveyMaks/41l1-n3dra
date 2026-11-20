@@ -5,9 +5,10 @@
 годится только для локального demo, о чём main пишет warning.
 
 Печать: cookie HttpOnly/SameSite=Lax, HMAC-SHA256 над workspace/issued/nonce.
-Same-origin запросы без cookie получают сессию на GET; unsafe-методы без
-валидной сессии отклоняются. Это не заменяет настоящий login, но убирает
-публичную запись в API и CSRF с чужих origin.
+Локальный режим может выдать сессию на GET; режим `CG_PUBLIC_DEMO=1` требует
+passphrase `CG_ACCESS_CODE`, не выдаёт cookie автоматически и закрывает весь
+`/api` кроме `/api/session` и `/api/health`. Секрет подписи и access code живут
+только в окружении сервера, не в репозитории.
 """
 
 from __future__ import annotations
@@ -28,6 +29,40 @@ from backend.app.codefacts.identity import workspace_id
 SESSION_COOKIE = "cg_session"
 SESSION_TTL_SECONDS = int(os.getenv("CG_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
 _EPHEMERAL_SECRET = secrets.token_urlsafe(48)
+
+
+def public_demo() -> bool:
+    return (os.getenv("CG_PUBLIC_DEMO", "").strip().lower() in {"1", "true", "yes", "on"})
+
+
+def access_code() -> str:
+    return os.getenv("CG_ACCESS_CODE", "").strip()
+
+
+def public_config_error() -> Optional[str]:
+    if not public_demo():
+        return None
+    missing = []
+    if not os.getenv("CG_SESSION_SECRET", "").strip():
+        missing.append("CG_SESSION_SECRET")
+    if not access_code():
+        missing.append("CG_ACCESS_CODE")
+    if missing:
+        return "CG_PUBLIC_DEMO=1 требует " + ", ".join(missing)
+    return None
+
+
+def verify_access_code(value: Optional[str]) -> bool:
+    expected = access_code()
+    if not expected:
+        return not public_demo()
+    if not isinstance(value, str):
+        return False
+    return hmac.compare_digest(value.strip(), expected)
+
+
+def auth_required() -> bool:
+    return public_demo()
 
 
 def session_secret() -> bytes:

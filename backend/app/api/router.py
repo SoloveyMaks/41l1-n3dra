@@ -13,15 +13,19 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from backend.app.ai.service import AiService
 from backend.app.api.session import (
     SESSION_TTL_SECONDS,
+    auth_required,
     issue_session,
+    public_demo,
     request_workspace,
     session_from_request,
     set_session_cookie,
+    verify_access_code,
 )
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
 from backend.app.artifacts.sample_source import build_zip_from_directory
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
+from backend.app.codefacts.publish import get_published_envelope, map_from_analysis_bundle
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
 from backend.app.contracts.schemas import Finding, WorkflowDraft
@@ -113,29 +117,59 @@ def request_workspace_default() -> str:
 
 
 # --- Session (same-origin demo) ---
+@api_router.get("/health")
+def health():
+    return {"status": "ok", "authRequired": auth_required()}
+
+
 @api_router.get("/session")
 def get_session(request: Request, response: Response):
     session = session_from_request(request)
-    if not session:
-        token = issue_session(request_workspace(request))
-        set_session_cookie(response, token, request)
+    if session:
         return {
             "authenticated": True,
-            "workspaceId": request_workspace(request),
+            "authRequired": auth_required(),
+            "workspaceId": session["workspaceId"],
             "expiresInSec": SESSION_TTL_SECONDS,
         }
+    if public_demo():
+        # Публичный режим: без passphrase cookie не выдаётся.
+        return {
+            "authenticated": False,
+            "authRequired": True,
+            "workspaceId": request_workspace(request),
+            "expiresInSec": 0,
+        }
+    token = issue_session(request_workspace(request))
+    set_session_cookie(response, token, request)
     return {
         "authenticated": True,
-        "workspaceId": session["workspaceId"],
+        "authRequired": False,
+        "workspaceId": request_workspace(request),
         "expiresInSec": SESSION_TTL_SECONDS,
     }
 
 
 @api_router.post("/session")
-def create_session(request: Request, response: Response):
+def create_session(request: Request, response: Response,
+                   payload: Optional[Dict[str, Any]] = None):
+    payload = payload or {}
+    if public_demo():
+        code = payload.get("accessCode", payload.get("access_code"))
+        if not verify_access_code(code if isinstance(code, str) else None):
+            raise HTTPException(
+                status_code=401,
+                detail="Неверный код доступа",
+                headers={"WWW-Authenticate": "AccessCode"},
+            )
     token = issue_session(request_workspace(request))
     set_session_cookie(response, token, request)
-    return {"authenticated": True, "workspaceId": request_workspace(request), "expiresInSec": SESSION_TTL_SECONDS}
+    return {
+        "authenticated": True,
+        "authRequired": auth_required(),
+        "workspaceId": request_workspace(request),
+        "expiresInSec": SESSION_TTL_SECONDS,
+    }
 
 
 # --- Node Registry ---
@@ -203,6 +237,7 @@ def load_training_artifact():
                 "gradleFileCount": manifest["gradle_file_count"],
                 "filename": manifest["filename"],
                 "createdAt": manifest["created_at"],
+                "expiresAt": manifest.get("expires_at"),
                 "sourceRef": source_ref,
             },
         )
@@ -298,7 +333,7 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
     if not db_repo.get_artifact(artifact_id):
         raise HTTPException(status_code=404, detail="Артефакт не найден")
 
-    run_id = f"run_{uuid.uuid4().hex[:8]}"
+    run_id = str(uuid.uuid4())
     db_repo.create_run(
         run_id=run_id,
         workflow_id=workflow_id,
@@ -365,13 +400,38 @@ def _load_run_artifact(run_id: str, workspace: str) -> Optional[Dict[str, Any]]:
     return codefacts_store.load_run(workspace, run_uuid(run_id))
 
 
+def _load_published_map(run_id: str, workspace: str,
+                        local_payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Финальный источник — storage canonical; локальный файл только fallback."""
+    local_payload = local_payload or _load_run_artifact(run_id, workspace)
+    snapshot_id = None
+    if local_payload:
+        snapshot_id = local_payload.get("identity", {}).get("snapshotId")
+    run = db_repo.get_run(run_id) or {}
+    if not snapshot_id and run.get("artifact_id"):
+        meta = codefacts_store.load_artifact_meta(workspace, str(run["artifact_id"]))
+        snapshot_id = (meta or {}).get("snapshotId")
+    if not snapshot_id:
+        return None
+    published = get_published_envelope(workspace, run_uuid(run_id), str(snapshot_id))
+    if not published:
+        return None
+    mapped = map_from_analysis_bundle(published["bundle"], published.get("bundleHash"))
+    if not mapped:
+        return None
+    mapped["redactionVersion"] = "cg-redaction/1"
+    return mapped
+
+
 @api_router.get("/runs/{run_id}/security-map")
 def get_security_map(run_id: str, request: Request):
     workspace = request_workspace(request)
     run = db_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    payload = _load_run_artifact(run_id, workspace)
+    payload = _load_published_map(run_id, workspace)
+    if not payload:
+        payload = _load_run_artifact(run_id, workspace)
     if not payload:
         raise HTTPException(
             status_code=409,
@@ -395,7 +455,9 @@ def get_evidence(run_id: str, evidence_id: str, request: Request):
     run = db_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    payload = _load_run_artifact(run_id, workspace)
+    payload = _load_published_map(run_id, workspace)
+    if not payload:
+        payload = _load_run_artifact(run_id, workspace)
     if not payload:
         raise HTTPException(status_code=409, detail="Карта ещё не построена")
     identity = payload["identity"]

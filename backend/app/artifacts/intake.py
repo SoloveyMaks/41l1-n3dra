@@ -24,7 +24,7 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -49,6 +49,7 @@ MAX_FILE_BYTES = int(os.getenv("CG_MAX_FILE_BYTES", str(25 * 1024 * 1024)))
 MAX_COMPRESSION_RATIO = int(os.getenv("CG_MAX_COMPRESSION_RATIO", "200"))
 MAX_PATH_DEPTH = int(os.getenv("CG_MAX_PATH_DEPTH", "32"))
 MAX_PATH_LENGTH = 512
+ARTIFACT_TTL_SECONDS = int(os.getenv("CG_ARTIFACT_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 CHUNK = 1024 * 1024
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -378,6 +379,9 @@ class SafeArtifactIntake:
             "gradle_file_count": _count_gradle(paths),
             "extracted_path": str(target_dir),
             "created_at": _now(),
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=max(60, ARTIFACT_TTL_SECONDS))
+            ).isoformat(),
             "workspace_id": ws,
             "snapshot_id": sid,
             "snapshot_manifest_hash": mhash,
@@ -395,6 +399,7 @@ class SafeArtifactIntake:
             "gradleFileCount": manifest["gradle_file_count"],
             "filename": safe_name,
             "createdAt": manifest["created_at"],
+            "expiresAt": manifest["expires_at"],
         }
         self.store.save_artifact_meta(ws, artifact_id, meta)
         return manifest

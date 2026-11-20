@@ -18,7 +18,8 @@ from typing import Any, Dict, Iterable
 
 NS_URL = uuid.NAMESPACE_URL
 
-DEFAULT_WORKSPACE_SEED = "cyber-garden-demo-workspace"
+DEFAULT_WORKSPACE_SEED = "41l1-n3dra/default-workspace"
+DEFAULT_WORKSPACE_ID = str(uuid.uuid5(NS_URL, DEFAULT_WORKSPACE_SEED))
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
 
 
@@ -37,13 +38,17 @@ def _is_uuid(value: str) -> bool:
 
 def workspace_id(seed: str | None = None) -> str:
     """UUID workspace. `CG_WORKSPACE_ID` может быть UUID или произвольным seed."""
-    raw = seed or os.getenv("CG_WORKSPACE_ID") or DEFAULT_WORKSPACE_SEED
+    raw = (seed or os.getenv("CG_WORKSPACE_ID") or os.getenv("RUNTIME_WORKSPACE_ID") or "").strip()
+    if not raw:
+        return DEFAULT_WORKSPACE_ID
     if _is_uuid(raw):
         return str(uuid.UUID(raw))
     return str(uuid.uuid5(NS_URL, f"cg-workspace:{raw}"))
 
 
 def run_uuid(internal_run_id: str) -> str:
+    if _is_uuid(internal_run_id):
+        return str(uuid.UUID(internal_run_id))
     return str(uuid.uuid5(NS_URL, f"cg-run:{internal_run_id}"))
 
 
@@ -53,6 +58,10 @@ def snapshot_uuid(manifest_hash: str) -> str:
 
 def revision_uuid(revision_id: str) -> str:
     return str(uuid.uuid5(NS_URL, f"cg-revision:{revision_id}"))
+
+
+def workflow_uuid(workflow_id: str) -> str:
+    return str(uuid.uuid5(NS_URL, f"cg-workflow:{workflow_id}"))
 
 
 def artifact_scope_uuid(workspace: str, artifact_id: str) -> str:
