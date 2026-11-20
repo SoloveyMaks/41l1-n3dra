@@ -134,6 +134,12 @@ function anchorKey(finding) {
   return stable([finding.category, finding.ruleId, a.normalizedPath, a.symbolKey, a.role]);
 }
 
+// A candidate can veto disappearance/introduction, never prove a renamed identity.
+function symbolRenameKey(finding) {
+  const a = finding.anchor;
+  return stable([finding.category, finding.ruleId, a.normalizedPath, a.role, a.normalizedContextHash]);
+}
+
 function fingerprintKey(finding) {
   return finding.fingerprint;
 }
@@ -173,7 +179,8 @@ function graphComplete(bundle) {
   const c = bundle.codeFacts?.coverage;
   return Boolean(c && c.status === 'complete' && c.skippedScopes.length === 0 &&
     c.parserErrors.length === 0 && c.unresolvedSymbols.length === 0 && c.limitsReached.length === 0 &&
-    c.scopes.every(scope => scope.status === 'checked'));
+    c.scopes.every(scope => scope.status === 'checked') &&
+    bundle.codeFacts.edges.every(edge => edge.resolution === 'resolved'));
 }
 
 function itemId(comparisonId, status, baseline, current) {
@@ -191,7 +198,16 @@ function coverageProblems(bundle, finding, side, requireScope = true) {
     }
   }
   if (requireScope && !checkedScope(bundle, finding)) problems.push(`${side}: нет checked для ${finding.anchor.normalizedPath} / ${finding.ruleId}`);
-  if (!graphComplete(bundle)) problems.push(`${side}: покрытие графа неполное; ${[...bundle.codeFacts.coverage.skippedScopes, ...bundle.codeFacts.coverage.unresolvedSymbols, ...bundle.codeFacts.coverage.limitsReached].join('; ')}`);
+  if (!graphComplete(bundle)) {
+    const unresolvedEdges = bundle.codeFacts.edges.filter(edge => edge.resolution !== 'resolved');
+    const details = [
+      ...bundle.codeFacts.coverage.skippedScopes,
+      ...bundle.codeFacts.coverage.unresolvedSymbols,
+      ...bundle.codeFacts.coverage.limitsReached,
+      ...unresolvedEdges.map(edge => `связь графа ${edge.resolution === 'partial' ? 'разрешена частично' : 'не разрешена'}: ${edge.resolutionReason}`)
+    ];
+    problems.push(`${side}: покрытие графа неполное${details.length ? `; ${details.join('; ')}` : ''}`);
+  }
   if (finding.coverageWarnings.length) problems.push('Находка содержит предупреждения о покрытии');
   return problems;
 }
@@ -215,6 +231,8 @@ function compareFindings(comparisonId, before, after, comparable, beforeManifest
   const afterFp = group(current, fingerprintKey);
   const beforeAnchor = group(baseline, anchorKey);
   const afterAnchor = group(current, anchorKey);
+  const beforeSymbolCandidates = group(baseline, symbolRenameKey);
+  const afterSymbolCandidates = group(current, symbolRenameKey);
   const usedBefore = new Set();
   const usedAfter = new Set();
   const items = [];
@@ -273,7 +291,9 @@ function compareFindings(comparisonId, before, after, comparable, beforeManifest
     if (pathGone) add('file_deleted', 'none', 'Путь отсутствует в полном current manifest; удаление отдельно от исправления, переименование не исключено', b, undefined);
     else if (!comparable) add('inconclusive', 'none', 'Основания анализа несовместимы или не подтверждены; исчезновение не доказывает исправление', b, undefined);
     else if (!beforeManifest?.has(path) || !afterManifest?.has(path)) add('inconclusive', 'none', 'Нет двух полных manifests, подтверждающих сохранение файла', b);
-    else if (gaps.length) {
+    else if (afterSymbolCandidates.get(symbolRenameKey(b.finding))?.some(x => x.finding.anchor.symbolKey !== b.finding.anchor.symbolKey)) {
+      add('inconclusive', 'ambiguous', 'Тот же паттерн найден в другом symbolKey; возможно переименование символа, без утверждённой карты исчезновение не доказано', b);
+    } else if (gaps.length) {
       add('inconclusive', 'none', gaps.join('; '), b, undefined);
     } else {
       const sameAnchor = afterAnchor.has(anchorKey(b.finding));
@@ -290,7 +310,9 @@ function compareFindings(comparisonId, before, after, comparable, beforeManifest
     if (!comparable) add('inconclusive', 'none', 'Основания анализа несовместимы или не подтверждены; появление не доказано', undefined, c);
     else if (!beforeManifest || !afterManifest) add('inconclusive', 'none', 'Без двух полных manifests нельзя отличить новый файл от непроверенного baseline scope', undefined, c);
     else if (beforeAnchor.has(anchorKey(c.finding))) add('inconclusive', 'ambiguous', 'На том же baseline anchor уже была находка; introduced запрещён', undefined, c);
-    else if (!baselinePathExists && possibleRename) add('inconclusive', 'none', 'Одновременно исчезли старые пути и появился новый; без явной карты переименований появление не доказано', undefined, c);
+    else if (beforeSymbolCandidates.get(symbolRenameKey(c.finding))?.some(x => x.finding.anchor.symbolKey !== c.finding.anchor.symbolKey)) {
+      add('inconclusive', 'ambiguous', 'Тот же паттерн был в другом symbolKey; возможно переименование символа, без утверждённой карты появление не доказано', undefined, c);
+    } else if (!baselinePathExists && possibleRename) add('inconclusive', 'none', 'Одновременно исчезли старые пути и появился новый; без явной карты переименований появление не доказано', undefined, c);
     else if (gaps.length) {
       add('inconclusive', 'none', gaps.join('; '), undefined, c);
     } else {
