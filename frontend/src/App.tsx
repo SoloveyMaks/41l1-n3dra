@@ -6,11 +6,13 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { LiveRunView } from './components/LiveRunView';
 import { FindingsView } from './components/FindingsView';
 import { ReportView } from './components/ReportView';
+import { SecurityMapScreen } from './components/SecurityMapScreen';
 import { UploadModal } from './components/UploadModal';
 import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
 
 import {
+  AppTab,
   ArtifactManifest,
   Finding,
   NodeKind,
@@ -25,7 +27,7 @@ import { apiClient } from './api/client';
 
 export const App: React.FC = () => {
   // Navigation
-  const [activeTab, setActiveTab] = useState<'editor' | 'live' | 'findings' | 'report' | 'schedule'>('editor');
+  const [activeTab, setActiveTab] = useState<AppTab>('editor');
 
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -336,6 +338,10 @@ export const App: React.FC = () => {
         )}
 
         {activeTab === 'findings' && <FindingsView findings={findings} />}
+
+        {activeTab === 'map' && (
+          <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
+        )}
 
         {activeTab === 'report' && <ReportView report={report} runId={currentRunId} />}
 

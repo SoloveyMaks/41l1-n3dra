@@ -8,7 +8,12 @@ import {
   WorkflowDraft
 } from '../types';
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+// Same-origin by default; VITE_API_BASE_URL overrides the whole API base
+// (e.g. "/api" behind a proxy or "https://host/api" for a split deployment).
+const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
+export const API_BASE = configuredBase
+  ? configuredBase.replace(/\/+$/, '')
+  : '/api';
 
 export const apiClient = {
   async getNodeTypes(): Promise<NodeDefinition[]> {
