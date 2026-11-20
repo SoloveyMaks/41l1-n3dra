@@ -109,9 +109,18 @@ result = publisher.publish(
 Публикация одной транзакцией: artifact (только opaque `storage_ref`, без исходников)
 → open+seal snapshot → run в `queued/pending` → draft `analysis_bundles` → все
 `scan_outcomes/coverage/graph_coverage/evidence/findings/code_nodes/code_edges/
-*_evidence/finding_nodes/diagnostics/domain_policy_revisions` → expected counts из проверенного входа (до INSERT) → `bundle_document_hash` → `publish_bundle(...)` → immutable
-raw envelope в `data_contract.bundle_envelopes` (ledger migration `004`) → run
-status. `published_at`/`bundle_hash` выставляет только SQL.
+*_evidence/finding_nodes/diagnostics/domain_policy_revisions` → expected counts из проверенного входа (до INSERT) → `bundle_document_hash` → `publish_bundle(...)` → immutable envelopes в `data_contract.bundle_envelopes` (ledger migrations `004`+`005`) → run status. `published_at`/`bundle_hash` выставляет только SQL.
+
+Две явные копии, без расхождения правды:
+
+- `source_envelope` — ровно то, что отдал B; immutable для аудита. `document_hash`
+  считается по нему + manifest (`compute_document_hash`), `envelope_hash` — SQL
+  hash его jsonb.
+- `canonical_envelope` — тот же envelope с coverage/status, которые реально
+  сохранены в SQL после честного downgrade (expectedScopesVerified=false или
+  complete-with-holes). `canonical_hash` — SQL hash этой копии. `get_published_envelope`
+  отдаёт именно canonical, поэтому UI/comparison не видят «complete», которого нет
+  в facts. `get_source_envelope` отдаёт исходник и оба hash отдельно.
 
 Идемпотентность: тот же identity + `document_hash` возвращает существующий
 `bundleHash` (`idempotent=true`); другой payload для уже published identity —
@@ -121,9 +130,11 @@ status. `published_at`/`bundle_hash` выставляет только SQL.
 
 ```python
 publisher.get_published_envelope(run_id, snapshot_id)
-# {bundle, manifest: {complete, workspaceId, snapshotId, hash, files},
-#  provenance: {published, bundleHash, normalizationVersion, origin,
-#               expectedScopesVerified, domainPolicyApplicability}}
+# {bundle: <canonical AnalysisBundle>, manifest: {...},
+#  provenance: {...}, envelopeHash, canonicalHash, documentHash, publishedAt}
+publisher.get_source_envelope(run_id, snapshot_id)
+# {bundle: <source AnalysisBundle>, documentHash, envelopeHash, canonicalHash,
+#  manifestHash, bundleHash, publishedAt}
 publisher.list_published_runs(limit=50)
 ```
 
@@ -172,7 +183,7 @@ published fixed bundle при наличии), `verificationBasis`, `reviewedBy`
 ```bash
 # временная БД (пример; креды — локальные, в репозиторий не попадают)
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/runtime_check
-python -m backend.app.storage.migrate     # применить миграции C + 004 (+003 при DB_ENABLE_VECTOR=1)
+python -m backend.app.storage.migrate     # применить миграции C + 004/005 (+003 при DB_ENABLE_VECTOR=1)
 python -c "from backend.app.storage.database import DatabaseRepository as R; R()"
 ```
 
@@ -202,6 +213,12 @@ workspace и убедитесь, что `get_run`/`get_artifact` по её id в
 
 `runtime_legacy_v1` после обновления остаётся бэкапом; удалить вручную, когда
 убедились, что данные читаются. Данные в нём не теряются и не переписываются.
+
+`005_canonical_envelope.up.sql` отделяет source envelope от canonical и
+бэкфиллит старые строки `canonical_envelope = source_envelope` (у них ещё не было
+downgrade-копии). Если старая строка публиковалась с downgrade, её canonical
+coverage совпадает с source только формально; для честного canonical её нужно
+перепубликовать. Новые публикации сразу пишут обе копии и оба hash.
 
 ## Секреты в ошибках
 

@@ -24,6 +24,11 @@ MARKERS: Dict[str, str] = {
     "001_core.up.sql": "to_regclass('data_contract.workspaces') IS NOT NULL",
     "002_integrity_publish.up.sql": "to_regclass('data_contract.published_bundles') IS NOT NULL",
     "004_bundle_envelopes.up.sql": "to_regclass('data_contract.bundle_envelopes') IS NOT NULL",
+    "005_canonical_envelope.up.sql": (
+        "EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'data_contract' AND table_name = 'bundle_envelopes' "
+        "AND column_name = 'canonical_envelope')"
+    ),
 }
 
 VECTOR_FLAG = "DB_ENABLE_VECTOR"

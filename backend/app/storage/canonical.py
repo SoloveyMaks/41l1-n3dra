@@ -703,6 +703,21 @@ def _downgrade_unverified(data: Dict[str, Any], reason: str) -> None:
         graph["limitsReached"] = list(dict.fromkeys([*graph["limitsReached"], reason]))
 
 
+def _canonical_bundle(envelope: Mapping[str, Any], normalized: Mapping[str, Any]) -> Dict[str, Any]:
+    """Copy B's envelope and apply exactly the coverage/status stored in SQL.
+
+    This is explicit, not a silent substitution: the source envelope and its
+    document hash stay immutable in bundle_envelopes.source_envelope, while the
+    returned/canonical copy carries the honest partial coverage.
+    """
+    canonical = json.loads(json.dumps(envelope))
+    for index, outcome in enumerate(normalized["scan_outcomes"]):
+        canonical["scanResults"][index]["status"] = outcome["status"]
+        canonical["scanResults"][index]["coverage"] = outcome["coverage"]
+    canonical["codeFacts"]["coverage"] = normalized["graph_coverage"]
+    return canonical
+
+
 def _jsonb(value: Any) -> Any:
     try:
         from psycopg.types.json import Jsonb
@@ -791,23 +806,25 @@ class CanonicalPublisher:
                     expected_hash, _jsonb(normalized["counts"]),
                 ),
             )
-            envelope_hash = conn.execute(
+            canonical_envelope = _canonical_bundle(envelope, normalized)
+            hashes = conn.execute(
                 """
                 INSERT INTO data_contract.bundle_envelopes (
-                    workspace_id, run_id, snapshot_id, envelope, document_hash,
+                    workspace_id, run_id, snapshot_id,
+                    source_envelope, canonical_envelope, document_hash,
                     manifest_hash, normalization_version, origin,
                     expected_scopes_verified, domain_policy_applicability
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING envelope_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING envelope_hash, canonical_hash
                 """,
                 (
                     self.workspace_id, identity["runId"], identity["snapshotId"],
-                    _jsonb(envelope), document_hash,
+                    _jsonb(envelope), _jsonb(canonical_envelope), document_hash,
                     identity["snapshotManifestHash"], prov["normalizationVersion"],
                     prov["origin"], prov["expectedScopesVerified"],
                     prov["domainPolicyApplicability"],
                 ),
-            ).fetchone()["envelope_hash"]
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE data_contract.runs
@@ -831,7 +848,8 @@ class CanonicalPublisher:
                 "snapshotId": identity["snapshotId"],
                 "bundleHash": row["bundle_hash"],
                 "publishedAt": row["published_at"].isoformat(),
-                "envelopeHash": envelope_hash,
+                "envelopeHash": hashes["envelope_hash"],
+                "canonicalHash": hashes["canonical_hash"],
                 "documentHash": document_hash,
                 "idempotent": False,
                 "counts": normalized["counts"],
@@ -844,7 +862,8 @@ class CanonicalPublisher:
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
-                SELECT be.envelope, be.envelope_hash, be.manifest_hash,
+                SELECT be.canonical_envelope, be.envelope_hash, be.canonical_hash,
+                       be.document_hash, be.manifest_hash,
                        be.normalization_version, be.origin,
                        be.expected_scopes_verified, be.domain_policy_applicability,
                        ab.bundle_hash, ab.published_at
@@ -868,7 +887,7 @@ class CanonicalPublisher:
                 (self.workspace_id, snapshot_uuid),
             ).fetchall()
         return {
-            "bundle": row["envelope"],
+            "bundle": row["canonical_envelope"],
             "manifest": {
                 "complete": True,
                 "workspaceId": self.workspace_id,
@@ -893,6 +912,37 @@ class CanonicalPublisher:
                 "domainPolicyApplicability": row["domain_policy_applicability"],
             },
             "envelopeHash": row["envelope_hash"],
+            "canonicalHash": row["canonical_hash"],
+            "documentHash": row["document_hash"],
+            "publishedAt": row["published_at"].isoformat(),
+        }
+
+    def get_source_envelope(self, run_id: str, snapshot_id: str) -> Optional[Dict[str, Any]]:
+        """Raw immutable B envelope plus its hashes, separate from canonical coverage."""
+        run_uuid = _uuid(str(run_id), "runId")
+        snapshot_uuid = _uuid(str(snapshot_id), "snapshotId")
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                SELECT be.source_envelope, be.envelope_hash, be.canonical_hash,
+                       be.document_hash, be.manifest_hash, ab.bundle_hash, ab.published_at
+                  FROM data_contract.analysis_bundles ab
+                  JOIN data_contract.bundle_envelopes be
+                    USING (workspace_id, run_id, snapshot_id)
+                 WHERE ab.workspace_id = %s AND ab.run_id = %s AND ab.snapshot_id = %s
+                   AND ab.published_at IS NOT NULL
+                """,
+                (self.workspace_id, run_uuid, snapshot_uuid),
+            ).fetchone()
+            if row is None:
+                return None
+        return {
+            "bundle": row["source_envelope"],
+            "manifestHash": row["manifest_hash"],
+            "documentHash": row["document_hash"],
+            "envelopeHash": row["envelope_hash"],
+            "canonicalHash": row["canonical_hash"],
+            "bundleHash": row["bundle_hash"],
             "publishedAt": row["published_at"].isoformat(),
         }
 
@@ -902,7 +952,7 @@ class CanonicalPublisher:
             rows = conn.execute(
                 """
                 SELECT ab.run_id, ab.snapshot_id, ab.bundle_hash, ab.published_at,
-                       be.envelope_hash, be.envelope->'identity'->>'workflowRevisionId' AS workflow_revision_id
+                       be.envelope_hash, be.canonical_hash, be.canonical_envelope->'identity'->>'workflowRevisionId' AS workflow_revision_id
                   FROM data_contract.analysis_bundles ab
                   JOIN data_contract.bundle_envelopes be
                     USING (workspace_id, run_id, snapshot_id)
@@ -919,6 +969,7 @@ class CanonicalPublisher:
                 "bundleHash": row["bundle_hash"],
                 "publishedAt": row["published_at"].isoformat(),
                 "envelopeHash": row["envelope_hash"],
+                "canonicalHash": row["canonical_hash"],
                 "workflowRevisionId": row["workflow_revision_id"],
             }
             for row in rows
@@ -998,7 +1049,7 @@ class CanonicalPublisher:
     def _select_existing(self, conn, identity: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         return conn.execute(
             """
-            SELECT ab.bundle_hash, ab.published_at, be.document_hash, be.envelope_hash
+            SELECT ab.bundle_hash, ab.published_at, be.document_hash, be.envelope_hash, be.canonical_hash
               FROM data_contract.analysis_bundles ab
               LEFT JOIN data_contract.bundle_envelopes be
                 USING (workspace_id, run_id, snapshot_id)
@@ -1369,6 +1420,7 @@ class CanonicalPublisher:
             "bundleHash": existing["bundle_hash"],
             "publishedAt": existing["published_at"].isoformat(),
             "envelopeHash": existing["envelope_hash"],
+            "canonicalHash": existing["canonical_hash"],
             "documentHash": existing["document_hash"],
             "idempotent": idempotent,
             "counts": counts,
