@@ -4,15 +4,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api.router import api_router, scheduler
+from backend.app.api.router import api_router, scheduler, db_repo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start background scheduler
     scheduler.start()
     yield
-    # Stop background scheduler
+    # Stop background scheduler and release DB connections
     scheduler.stop()
+    db_repo.close()
 
 app = FastAPI(
     title="Cyber Garden 2026 — AI Security Workflow API",

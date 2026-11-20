@@ -15,6 +15,19 @@ AI Security Workflow для Cyber Garden 2026: собственные прове
 - [Модуль сравнения до/после](docs/data-contracts/COMPARISON-ENGINE.md)
 - [Что реально проверено](docs/data-contracts/verification.md)
 
+## Запуск backend с PostgreSQL
+
+Нужен PostgreSQL 16+ (pgvector не обязателен) и Python 3.11+.
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r backend/requirements.txt
+cp .env.example .env    # впиши свой DATABASE_URL
+uvicorn backend.app.main:app --env-file .env --port 8000
+```
+
+`DATABASE_URL` — единственная обязательная настройка. При первом старте backend сам применяет `db/migrations/001_core.up.sql` и `002_integrity_publish.up.sql` (schema `data_contract`) и создаёт таблицы API в schema `runtime`; повторный запуск миграции не повторяет — учёт в `public.schema_migrations`. Ручной прогон: `python -m backend.app.storage.migrate`. Без `DATABASE_URL`, без драйвера `psycopg` или при недоступной БД backend падает с понятным сообщением, а не с трейсбеком драйвера. Пароли и токены в репозиторий не кладём — только `.env` локально.
+
 ## Ближайшая интеграция
 
 A создаёт snapshot/run и masked-source API и подключает готовый компонент карты; B отдаёт настоящие findings/code facts/coverage; C сохраняет bundle и сравнивает совместимые результаты; D объясняет существующие находки и возвращает проверенные ссылки. Общие schemas/миграции ведёт C, app/router/manifests — A.
