@@ -177,6 +177,16 @@ class AiProvenance(BaseModel):
     fallback_reason: Optional[str] = None
 
 
+class AiBatchProvenance(BaseModel):
+    """One bounded provider request and its validation outcome."""
+    batchIndex: int
+    findingIds: List[str] = Field(default_factory=list)
+    status: str = "succeeded"  # "succeeded" | "fallback"
+    itemCount: int = 0
+    error: Optional[str] = None
+    provenance: Optional[AiProvenance] = None
+
+
 class SimilarFix(BaseModel):
     """One vetted remediation example returned by exact pgvector retrieval."""
     findingId: Optional[str] = None
@@ -213,6 +223,7 @@ class ExplainResult(BaseModel):
     validation_errors: List[str] = Field(default_factory=list)
     raw_secrets_checked: bool = True
     provenance: Optional[AiProvenance] = None
+    batch_provenance: List[AiBatchProvenance] = Field(default_factory=list)
     retrieval: Optional[RetrievalInfo] = None
     similar_fixes: List[SimilarFix] = Field(default_factory=list)
 

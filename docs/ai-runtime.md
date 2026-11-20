@@ -16,7 +16,8 @@ provenance модели. Любая ошибка провайдера, ключ�
 | `AI_MODEL` / `LLM_MODEL` | override модели; default `deepseek-v4.1-flash-1017` |
 | `AI_BASE_URL` | override base URL; default `https://api.reformboss.com/v1` |
 | `AI_TIMEOUT_SECONDS` | таймаут запроса, default 30 |
-| `AI_MAX_TOKENS` | default 2048 (reasoning-моделям нужно ≥2048) |
+| `AI_MAX_TOKENS` | верхний предел на батч, default 4096 |
+| `AI_BATCH_SIZE` | findings на запрос, default 4 (допустимо 1..8) |
 | `AI_TEMPERATURE` | default 0 |
 | `AI_JSON_MODE` | `1` только если шлюз реально поддерживает `response_format=json_object` |
 
@@ -38,6 +39,20 @@ provenance модели. Любая ошибка провайдера, ключ�
    latency, usage, `finish_reason`, SHA-256 контента и причину fallback.
 5. Запрос собирается из `redactedEvidence` и дополнительно маскируется
    (`sk-...`, Bearer, private keys, `password=...`). Ответ тоже маскируется.
+
+## Bounded batching
+
+Полный sample объясняется батчами по `AI_BATCH_SIZE` findings (default 4).
+Бюджет ответа на батч: `max(2048, 1024 + 640 * findings)` токенов, но не выше
+`AI_MAX_TOKENS`; безлимита нет. `finish_reason=length` считается ошибкой
+батча, truncated JSON не парсится и не принимается.
+
+Каждый батч валидируется отдельно. Если батч упал, для его findings
+используется детерминированный fallback, а общий статус становится
+`fallback`; ошибки и provenance сохраняются в `batch_provenance` и
+`validation_errors` без скрытия. `succeeded` возможен только когда все батчи
+прошли валидацию и все findings получили items. Если summary отклонён из-за
+чужого CVE, в отчёт идёт безопасная сводка без этого CVE.
 
 ## Optional exact retrieval
 

@@ -72,6 +72,18 @@ def mask_sensitive_text(text: str) -> str:
 class AiProviderError(RuntimeError):
     """Raised when the remote provider is unreachable or returned bad data."""
 
+    def __init__(
+        self,
+        message: str,
+        request_id: Optional[str] = None,
+        latency_ms: float = 0.0,
+        finish_reason: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.request_id = request_id
+        self.latency_ms = latency_ms
+        self.finish_reason = finish_reason
+
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -147,7 +159,7 @@ def resolve_provider_config() -> Optional[ProviderConfig]:
         api_key=key,
         model=model,
         timeout_seconds=_env_float("AI_TIMEOUT_SECONDS", 30.0, 5.0, 120.0),
-        max_tokens=_env_int("AI_MAX_TOKENS", 2048, 256, 8192),
+        max_tokens=_env_int("AI_MAX_TOKENS", 4096, 256, 8192),
         temperature=_env_float("AI_TEMPERATURE", 0.0, 0.0, 1.0),
     )
 
@@ -185,6 +197,7 @@ def complete_json(
     config: ProviderConfig,
     system_prompt: str,
     user_payload: Dict[str, Any],
+    max_tokens: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], AiProvenance]:
     """Call /chat/completions and return parsed JSON plus provenance.
 
@@ -193,7 +206,7 @@ def complete_json(
     request_body = {
         "model": config.model,
         "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
+        "max_tokens": max_tokens if max_tokens is not None else config.max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {
@@ -232,29 +245,65 @@ def complete_json(
             detail = exc.read().decode("utf-8", errors="replace")
         except Exception:
             pass
+        latency_ms = round((time.monotonic() - started) * 1000.0, 1)
+        error_request_id = (
+            exc.headers.get("x-request-id") if exc.headers else None
+        )
         raise AiProviderError(
-            f"provider HTTP {exc.code}: {_sanitize_error(detail)}"
+            f"provider HTTP {exc.code}: {_sanitize_error(detail)}",
+            request_id=error_request_id,
+            latency_ms=latency_ms,
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise AiProviderError(f"provider unreachable: {_sanitize_error(str(exc))}") from exc
+        latency_ms = round((time.monotonic() - started) * 1000.0, 1)
+        raise AiProviderError(
+            f"provider unreachable: {_sanitize_error(str(exc))}",
+            latency_ms=latency_ms,
+        ) from exc
 
     latency_ms = round((time.monotonic() - started) * 1000.0, 1)
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise AiProviderError("provider response is not JSON") from exc
+        raise AiProviderError(
+            "provider response is not JSON",
+            request_id=request_id,
+            latency_ms=latency_ms,
+        ) from exc
 
     choices = payload.get("choices") or []
     if not choices:
-        raise AiProviderError("provider response has no choices")
+        raise AiProviderError(
+            "provider response has no choices",
+            request_id=request_id,
+            latency_ms=latency_ms,
+        )
     choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        raise AiProviderError(
+            f"provider output truncated (finish_reason=length, request_id={request_id})",
+            request_id=request_id,
+            latency_ms=latency_ms,
+            finish_reason=finish_reason,
+        )
     message = choice.get("message") or {}
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
-        finish = choice.get("finish_reason")
-        raise AiProviderError(f"provider returned empty content (finish_reason={finish})")
+        raise AiProviderError(
+            f"provider returned empty content (finish_reason={finish_reason})",
+            request_id=request_id,
+            latency_ms=latency_ms,
+            finish_reason=finish_reason,
+        )
 
-    data = parse_json_content(content)
+    try:
+        data = parse_json_content(content)
+    except AiProviderError as exc:
+        exc.request_id = request_id
+        exc.latency_ms = latency_ms
+        exc.finish_reason = finish_reason
+        raise
     usage = payload.get("usage") or {}
     provenance = AiProvenance(
         provider=config.provider,
@@ -265,7 +314,7 @@ def complete_json(
         prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=usage.get("completion_tokens"),
         total_tokens=usage.get("total_tokens"),
-        finish_reason=choice.get("finish_reason"),
+        finish_reason=finish_reason,
         response_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
     return data, provenance
