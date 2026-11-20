@@ -2,7 +2,7 @@
 
 AI Security Workflow для Cyber Garden 2026: собственные проверки Kotlin/Spring Boot, визуальный workflow и объяснения с доказательствами.
 
-**Сейчас в ветке:** схема PostgreSQL, DTO, миграции, exact retrieval pgvector и ручной первый путь карты. Приложение, API, анализаторы и UI ещё не собраны; схема `0.1` подготовлена для согласования A/B/D.
+**Сейчас в ветке:** схема PostgreSQL, DTO, миграции, exact retrieval pgvector, подключаемый React Flow SecurityMap и модуль сравнения immutable bundles. Карта проверена на ручном pickup-preview; настоящий scanner/API и общий интерфейс ещё требуют интеграции A/B. Схема `0.1` остаётся предложением для согласования A/B/D.
 
 ## Начать здесь
 
@@ -11,11 +11,13 @@ AI Security Workflow для Cyber Garden 2026: собственные прове
 - [Общие DTO и открытые вопросы](docs/data-contracts/README.md)
 - [Миграции и сохранение результатов](db/README.md)
 - [Первый путь карты: pickup export](docs/security-map/INTEGRATION.md)
+- [Подключение и запуск компонента карты](docs/security-map/COMPONENT.md)
+- [Модуль сравнения до/после](docs/data-contracts/COMPARISON-ENGINE.md)
 - [Что реально проверено](docs/data-contracts/verification.md)
 
 ## Ближайшая интеграция
 
-A создаёт snapshot/run и masked-source API; B отдаёт настоящие findings/code facts/coverage; C сохраняет bundle и строит карту; D объясняет существующие находки и возвращает проверенные ссылки. Общие schemas/миграции ведёт C, app/router/manifests — A.
+A создаёт snapshot/run и masked-source API и подключает готовый компонент карты; B отдаёт настоящие findings/code facts/coverage; C сохраняет bundle и сравнивает совместимые результаты; D объясняет существующие находки и возвращает проверенные ссылки. Общие schemas/миграции ведёт C, app/router/manifests — A.
 
 Рабочие ветки собираем в `dev`, готовый кандидат после сквозной приёмки — в `main`. Публикация для жюри и свой домен — позже. Эта ветка `task/data-foundation` не выполняет merge или deploy.
 

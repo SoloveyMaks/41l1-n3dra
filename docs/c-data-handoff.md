@@ -1,6 +1,6 @@
 # Данные и карта безопасности — пакет C
 
-Статус: **proposal v0.1 для согласования A/B/D**. PostgreSQL + pgvector выбраны пользователем; подтверждений остальных участников этот документ не подменяет. Пакет включает схему, DTO и ручной разбор первого пути. API, анализаторы и React-компонент ещё не реализованы.
+Статус: **proposal v0.1 для согласования A/B/D**. PostgreSQL + pgvector выбраны пользователем; подтверждений остальных участников этот документ не подменяет. Пакет включает схему, DTO, React Flow SecurityMap с ручным pickup-preview и модуль сравнения immutable bundles. API, анализаторы и подключение к основному интерфейсу ещё требуют A/B.
 
 ## Что открыть
 
@@ -13,6 +13,8 @@
 | [Правила сравнения](data-contracts/comparisons.md) | Сопоставимость проверок, удалённые файлы и неоднозначность |
 | [Первый путь](security-map/INTEGRATION.md) / [пример](security-map/pickup-path.illustration.json) | Pickup export, основания каждой стрелки, ticket/catalog как следующие истории |
 | [Проекция карты в DTO](security-map/MAPPING.md) | Разница ручной иллюстрации и production bundle |
+| [Компонент карты](security-map/COMPONENT.md) | Props, peer dependencies, запуск preview и браузерные проверки |
+| [Comparison engine](data-contracts/COMPARISON-ENGINE.md) | Typed API, публикация через A, причины консервативного сравнения |
 | [Проверка БД и DTO](data-contracts/verification.md) / [проверка источников карты](security-map/VERIFICATION.md) | Что реально запускали и что этим не доказано |
 
 ## Что согласовать

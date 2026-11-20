@@ -1,6 +1,6 @@
 # Первый путь карты — предложение к согласованию
 
-Пакет содержит **ручную иллюстрацию контракта**, не результат анализатора и не эксплуатацию. Приложение, React, backend и scanner здесь не создаются. Область C — хранение фактов анализатора B, карта доступа/данных, сравнение и retrieval; A подключает API/основной интерфейс, D — AI/embedding adapter. Решения проекта собраны в [PROJECT-DECISIONS.md](../../PROJECT-DECISIONS.md). Все поля ниже требуют сверки с владельцами A/B/D и общими DTO/SQL.
+Пакет содержит **ручную иллюстрацию контракта**, не результат анализатора и не эксплуатацию. Этот документ описывает разбор исходника. Подключаемый React Flow-компонент и его живые проверки теперь описаны в [COMPONENT.md](COMPONENT.md); backend и scanner в этом участке не создаются. Область C — хранение фактов анализатора B, карта доступа/данных, сравнение и retrieval; A подключает API/основной интерфейс, D — AI/embedding adapter. Решения проекта собраны в [PROJECT-DECISIONS.md](../../PROJECT-DECISIONS.md). Все поля ниже требуют сверки с владельцами A/B/D и общими DTO/SQL.
 
 ## Что лежит рядом
 
@@ -70,9 +70,9 @@
 
 Наши 21 range вручную просмотрены: чувствительных literal значений в них нет; `redactedSnippet` содержит только этот range, `contextIncluded=false`. Это локальная проверка указанных ranges, не готовый секретный redactor для произвольного проекта. Bytes/колонки относятся к оригиналу: masked текст другой длины не меняет source location; для подсветки A возвращает safe coordinate mapping либо маски той же длины. Клиент не вычисляет source bytes из отображённой строки.
 
-## Будущий React Flow SecurityMap — без React сейчас
+## React Flow SecurityMap — стык с A
 
-Предлагаемые props: `identity`, `data: SecurityMapDto | null`, `layout: SecurityMapLayoutDto`, `loadState: loading|ready|empty|partial|error`, `selectedFindingId?`, `selectedNodeId?`, `selectedEdgeId?`, `error?: SafeError`. Отдельно `sourceState` с pending/error/unavailable для выбранного evidence, чтобы ошибка source не уничтожала карту.
+Исходное предложение props ниже сохранено как контекст; действующие типы, callbacks и команды запуска — в [COMPONENT.md](COMPONENT.md). Props: `identity`, `data: SecurityMapDto | null`, `layout: SecurityMapLayoutDto`, `loadState: loading|ready|empty|partial|error`, `selectedFindingId?`, `selectedNodeId?`, `selectedEdgeId?`, `error?: SafeError`. Отдельно `sourceState` с pending/error/unavailable для выбранного evidence, чтобы ошибка source не уничтожала карту.
 
 Callbacks: `onSelectFinding(findingId)`, `onSelectNode(nodeId)`, `onSelectEdge(edgeId)`, `onOpenEvidence({workspaceId, runId, snapshotId, evidenceId})`, `onLayoutChange(layout)`, `onRetry()`, `onRetrySource(evidenceId)`. Они выбирают/открывают refs, не создают факты и не запускают scanner. A владеет fetching/session/router; C — отображением карты и панели доказательств. На смене identity A отменяет запросы/сбрасывает selection и source cache; запоздалый ответ другого run не рисуется.
 
