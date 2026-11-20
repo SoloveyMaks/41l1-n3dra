@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+
+# Base images are pinned by digest for reproducible builds.
+ARG NODE_IMAGE=docker.io/library/node:22-bookworm-slim@sha256:47725aca53d3295ec2d3be8f62726599b3033cc262edc2c7e429909b3ac599fc
+ARG PYTHON_IMAGE=docker.io/library/python:3.12-slim@sha256:05a994d2344eb364cc186910f4fc8786a38215f39f00d0acc25bff33a08f4177
+
+FROM ${NODE_IMAGE} AS frontend-build
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN cd frontend && npm ci --no-audit --no-fund
+# The production SecurityMap and its canonical types live in sibling packages.
+COPY frontend ./frontend
+COPY ui ./ui
+COPY docs ./docs
+RUN cd frontend && npm run build
+
+FROM ${PYTHON_IMAGE} AS python-wheels
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+COPY deploy/requirements.txt /tmp/requirements.txt
+RUN python -m pip wheel --wheel-dir /wheels -r /tmp/requirements.txt
+
+FROM ${PYTHON_IMAGE} AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN groupadd --gid 10001 nedra \
+    && useradd --uid 10001 --gid nedra --home-dir /app --no-create-home --shell /usr/sbin/nologin nedra
+
+WORKDIR /app
+COPY deploy/requirements.txt /tmp/requirements.txt
+COPY --from=python-wheels /wheels /wheels
+RUN python -m pip install --no-index --find-links=/wheels -r /tmp/requirements.txt \
+    && rm -rf /wheels /tmp/requirements.txt
+COPY backend ./backend
+COPY --from=frontend-build /src/frontend/dist ./frontend/dist
+
+RUN install -d -o nedra -g nedra /app/data
+USER nedra
+EXPOSE 18080
+
+HEALTHCHECK --interval=30s --timeout=4s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/api/runs', timeout=3)"]
+
+# Bind all interfaces inside the container; the host publishes only 127.0.0.1:18080.
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "18080", "--no-access-log"]
