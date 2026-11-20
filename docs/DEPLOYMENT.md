@@ -12,7 +12,7 @@
 | React + Vite build | внутри образа `localhost/nedra-app:local` | статика из FastAPI |
 | FastAPI | контейнер `nedra-app` | только `127.0.0.1:18080` на хосте |
 | PostgreSQL 16 + pgvector | контейнер `nedra-db` | только приватная сеть `nedra`, host-портов нет |
-| Данные | volumes `nedra-db-data`, `nedra-app-data` | переживают перезапуск контейнеров |
+| Данные | volumes `nedra-db-data`, `nedra-app-data` | переживают перезапуск и смену контейнера |
 
 Браузер никогда не подключается к БД напрямую: у `nedra-db` нет публикации
 портов. Снаружи (после публикации) будет доступен только HTTPS-туннель на
@@ -22,154 +22,189 @@ backend.
 
 `deploy/Dockerfile` — multi-stage:
 
-1. `frontend-build` на закреплённом Node image: `npm ci` по
+1. `frontend-build`: закреплённый Node image, `npm ci` по
    `frontend/package-lock.json`, копирование sibling-пакетов `ui/security-map` и
    `docs` (карте нужны production-исходники и контрактные типы), `npm run build`.
-2. `python-wheels` на закреплённом Python 3.12 image: сборка wheel-кэша по
+2. `python-wheels`: закреплённый Python 3.12 image, wheel-кэш по
    `deploy/requirements.txt`.
-3. `runtime`: установка только из локальных wheel, копирование `backend` и
-   `frontend/dist`, non-root пользователь `nedra` (uid 10001), read-only rootfs
-   при запуске, writable только `/app/data` и tmpfs `/tmp`.
+3. `runtime`: установка только из локальных wheel, копирование `backend`, `db`
+   (миграции ledger), `docs` (canonical `contracts.schema.json`), healthcheck,
+   `frontend/dist`; non-root `nedra` (uid 10001), read-only rootfs, writable
+   `/app/data` и tmpfs `/tmp`.
+
+`CG_DATA_DIR=/app/data` задан и в образе, и в `runtime.env`. Intake и codefacts
+используют этот корень (`data_root()`), поэтому артефакты, распаковка, snapshot
+manifest и SQLite fallback лежат на volume `nedra-app-data`, а не в слое
+контейнера.
 
 Закреплены digest'ы базовых образов и все Python-пакеты. Обновление зависимостей —
 осознанная правка `deploy/requirements.txt` и digest'ов, а не `latest`.
 
-`deploy/requirements.txt` — deployment lock, собранный по смыслу
-`backend/requirements.txt` из `task/postgres-runtime` (FastAPI, uvicorn,
-pydantic, httpx, multipart, croniter, tree-sitter, psycopg). Когда backend
-requirements вольются в ветку, lock нужно сверить; backend-код этим пакетом не
-меняется.
+`deploy/requirements.txt` — deployment lock по смыслу
+`backend/requirements.txt` из `task/postgres-runtime`. Когда backend requirements
+меняются, lock нужно сверить.
 
-## Секреты
+## Секреты и окружение
 
-Источник — `~/.omp/agent/.env`, оттуда читается **только**
-`REFORMBOSS_API_KEY`. WikiVibe GPT key не читается и не копируется.
+Источник — `~/.omp/agent/.env`. Читается **только** `REFORMBOSS_API_KEY`;
+WikiVibe GPT key не читается и не копируется. Парсер
+`scripts/nedra_env.py` поддерживает `export KEY=value`, одинарные/двойные
+кавычки и комментарии, не запускает shell и не печатает значения. Путь источника
+можно переопределить через `NEDRA_SECRET_SOURCE`; парсер всё равно читает только
+запрошенный ключ.
 
-`scripts/nedra-bootstrap.sh --write` создаёт `~/.config/nedra/runtime.env`:
+`scripts/nedra-bootstrap.sh --write` создаёт/дополняет
+`~/.config/nedra/runtime.env`:
 
 - каталог `700`, файл `600`;
+- существующие custom `CG_*`/`VECTOR_*` строки сохраняются;
 - `REFORMBOSS_API_KEY`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`,
-  `DATABASE_URL`;
-- пароль БД генерируется локально и сохраняется при повторном запуске;
-- значения не печатаются, не попадают в git, argv или логи;
-- backend получает файл через `--env-file`, пароль БД — через `--env NAME`
-  (значение не в argv).
+  `DATABASE_URL` — обязательные;
+- `CG_SESSION_SECRET`, `CG_ANCHOR_HMAC_KEY`, `CG_ACCESS_CODE` генерируются
+  только если отсутствуют и дальше сохраняются;
+- `CG_DATA_DIR=/app/data`, `CG_PUBLIC_DEMO=1`,
+  `CG_ALLOWED_ORIGINS=https://nedra.soloveyka.bond`,
+  `AI_PROVIDER=reformboss`, `AI_MODEL=deepseek-v4.1-flash-1017`,
+  `VECTOR_RETRIEVAL_ENABLED=0`;
+- значения не печатаются, access code не выводится ни в `--check`, ни в
+  `--write`; model/key передаются только через env-file, не argv.
 
-Секреты не коммитятся. Проверить можно только имена ключей:
+Секреты не коммитятся. Посмотреть можно только имена ключей:
 
 ```bash
 sed -n 's/^\([A-Z_]*\)=.*/\1/p' ~/.config/nedra/runtime.env
 ```
 
-Ротация ключа: `scripts/nedra-bootstrap.sh --write --refresh-key`, затем
-`scripts/nedra-down.sh && scripts/nedra-up.sh`. `podman restart` не перечитывает
-`--env-file`, поэтому backend нужно пересоздать.
+Ротация access code: удалить строку `CG_ACCESS_CODE` из файла и запустить
+`--write` (остальные секреты сохранятся), затем пересоздать backend.
+Ротация ключа: `--write`, затем `nedra-down.sh && nedra-up.sh`;
+`podman restart` не перечитывает `--env-file`.
 
 ## Команды
 
 ```bash
-# 1. Проверка без записи секретов и без запуска контейнеров
+# 1. Проверка без записи секретов и запуска
 scripts/nedra-bootstrap.sh --check
 
-# 2. Запись runtime.env (один раз; повторный запуск сохраняет пароль БД)
+# 2. Создать/дополнить runtime.env (сохраняет custom CG_*/VECTOR_*)
 scripts/nedra-bootstrap.sh --write
 
-# 3. Сборка образа
+# 3. Собрать образ
 scripts/nedra-build.sh
 
-# 4. Запуск БД и backend (идемпотентно)
+# 4. Запустить БД и backend (идемпотентно)
 scripts/nedra-up.sh
 
-# 5. Проверка
+# 5. Статус/health
 scripts/nedra-status.sh
 
-# 6. Остановка без удаления данных
-scripts/nedra-down.sh
+# 6. Остановить без удаления volumes
+scripts/nedra-stop.sh      # только stop
+scripts/nedra-down.sh      # stop + rm только своих контейнеров
 ```
 
-`nedra-up.sh --build` пересоберёт образ перед запуском. Скрипты трогают только
-контейнеры/сеть/volumes с префиксом `nedra-`: чужие контейнеры, `supabase_*`,
-туннель `brigada` и `~/.cloudflared/config.yml` не изменяются.
+`nedra-up.sh` понимает `--db-only`, `--app-only`, `--build` и
+`--recreate-app`. Если `runtime.env`/образ изменились, а backend запущен, обычный
+`up` откажется его трогать; `--recreate-app` сначала штатно остановит, затем
+удалит и пересоздаст **только** контейнер с label `io.nedra.owner=nedra`.
+Volumes и данные не удаляются. `nedra-stop.sh` и `nedra-down.sh` тоже проверяют
+owner label и не используют `podman rm -f`; чужие контейнеры не трогаются.
 
 ## Health и статус
 
-- `nedra-status.sh` показывает контейнеры, HTTP `/api/runs`, Docker healthcheck
-  backend, `pg_isready`, версию pgvector и отсутствие host-портов у БД.
-- В образе есть `HEALTHCHECK` на `http://127.0.0.1:18080/api/runs`; образ
-  собирается в формате `docker`, иначе Podman игнорирует healthcheck.
+- `/api/health` — предпочтительный публичный health без session-cookie; backend
+  добавляет его в active задаче. До merge образа healthcheck использует
+  временный fallback на `/api/runs` **только при 404**, чтобы не маскировать
+  auth-ошибки после включения публичного режима.
+- `scripts/nedra-status.sh` показывает контейнеры, `/api/health`, fallback,
+  Docker healthcheck, `pg_isready`, версию pgvector, `CG_DATA_DIR`,
+  `CG_PUBLIC_DEMO`, `VECTOR_RETRIEVAL_ENABLED`, `AI_MODEL` и отсутствие
+  host-портов у БД.
+- `HEALTHCHECK` встроен в образ (`deploy/healthcheck.py`); образ собирается в
+  формате `docker`, иначе Podman игнорирует healthcheck.
 - Логи: `podman logs -f nedra-app`, `podman logs -f nedra-db`.
 
 ## PostgreSQL и pgvector
 
 БД создаётся из `docker.io/pgvector/pgvector:pg16` (digest закреплён).
 `deploy/db/init/001-extensions.sql` включает `vector` при первой инициализации
-volume. Порт 5432 не публикуется: backend ходит по адресу `nedra-db:5432` внутри
-сети `nedra`.
+volume. Порт 5432 не публикуется: backend ходит по `nedra-db:5432` внутри сети
+`nedra`.
 
-Миграции контрактной схемы и runtime-слоя применяет backend при старте после
-merge `task/postgres-runtime` (`python -m backend.app.storage.migrate` также
-доступен). В текущей ветке `app-map-integration` backend ещё на SQLite и, кроме
-того, не содержит `backend/app/artifacts/intake.py`; `backend/app/api/router.py`
-импортирует этот модуль, поэтому контейнер падает с
-`ModuleNotFoundError: No module named 'backend.app.artifacts'`. Это дефект
-backend-ветки, а не deploy-скриптов: образ собирается, Python-зависимости и
-frontend проходят проверку, БД здорова, но приложение не стартует до merge
-backend-изменений из `dev`/`task/postgres-runtime`. `DATABASE_URL` уже
-передаётся, поэтому после merge отдельный deploy-конфиг не потребуется.
+`backend` при старте применяет `db/migrations/*.up.sql` через ledger
+`public.schema_migrations` (для этого `db/` теперь есть в образе). Проверено:
+001, 002 и 004 применились, `vector 0.8.7` доступен.
 
-## Что проверено в этой ветке
+Optional `db/optional/003_exact_vector.up.sql` **не** входит в ledger: это
+backend/storage scope. Запрос автору storage отправлен; deploy не выполняет
+ручной повторный SQL и не создаёт `example_embeddings` сам. После добавления 003
+в ledger она применится при обычном старте; `CREATE EXTENSION vector` уже
+идемпотентен.
 
-- `scripts/nedra-bootstrap.sh --check` — dry-run без записи секретов и запуска:
-  ключ найден, порт 18080 свободен, образы/сеть/volumes проверены, cloudflared и
-  cert.pem доступны.
-- `scripts/nedra-bootstrap.sh --write` — создан
-  `~/.config/nedra/runtime.env` (каталог 700, файл 600); повторный запуск
-  сохранил пароль БД; WikiVibe key не читался.
-- `scripts/nedra-build.sh` — образ `localhost/nedra-app:local` собран
-  (`4ebc429296cd...`), три стадии; внутри: `fastapi 0.165.0`,
-  `pydantic 2.14.4`, `psycopg`, `tree-sitter`, `frontend/dist`, uid 10001,
-  healthcheck в формате docker.
-- `nedra-db` из закреплённого pgvector-образа: healthy, `pgvector 0.8.7`,
-  нулевые host-порты, volume переживает restart (маркер и extension на месте).
-- `scripts/nedra-tunnel.sh status` — read-only: туннеля `nedra` и DNS
-  `nedra.soloveyka.bond` нет, `brigada` не тронут, публикация не выполнялась.
-- `scripts/nedra-up.sh` доходит до запуска containers и останавливается на
-  health backend из-за отсутствующего `backend.app.artifacts` (см. выше);
-  контейнер БД при этом исправен.
+## Systemd user units (rootless)
 
-## Туннель Cloudflare (не опубликован)
-
-Домен `soloveyka.bond` подтверждён, cert лежит в `~/.cloudflared/cert.pem`.
-Существующий туннель `brigada` (`e5999ace-...`) не трогается; его конфиг
-`~/.cloudflared/config.yml` не изменяется.
-
-Для nedra готов отдельный конфиг-шаблон
-`deploy/cloudflared/nedra.yml.template` и скрипт `scripts/nedra-tunnel.sh`.
-Публикация **не выполнялась**:
+`scripts/nedra-systemd-install.sh` рендерит
+`~/.config/systemd/user/nedra-{db,app,tunnel}.service` из `deploy/systemd/*.in`,
+делает `daemon-reload`. Юниты вызывают те же скрипты; owner labels и volumes
+соблюдаются.
 
 ```bash
-# read-only осмотр
-scripts/nedra-tunnel.sh status
+scripts/nedra-systemd-install.sh            # установить, не включать
+scripts/nedra-systemd-install.sh --enable   # включить db/app на login/boot
+scripts/nedra-systemd-install.sh --enable --start
+```
 
-# далее — только когда координатор разрешит публикацию:
-scripts/nedra-tunnel.sh create --yes     # создаёт tunnel nedra в Cloudflare
-scripts/nedra-tunnel.sh config           # пишет ~/.config/nedra/cloudflared-nedra.yml (600)
-scripts/nedra-tunnel.sh route --yes      # публикует DNS nedra.soloveyka.bond
-scripts/nedra-tunnel.sh run --yes        # запускает connector
+`nedra-tunnel.service` **не включается и не запускается** установщиком. Для
+старта без интерактивного логина нужен `loginctl enable-linger $USER`; это
+глобальная настройка пользователя, поэтому она не включается автоматически.
+`podman-restart.service` сам по себе не поднимает rootless-контейнеры без
+user-manager/linger.
+
+## Cloudflare (не опубликован)
+
+Домен `soloveyka.bond` подтверждён, cert лежит в `~/.cloudflared/cert.pem`.
+Существующий туннель `brigada` (`e5999ace-...`) и его
+`~/.cloudflared/config.yml` не изменяются.
+
+```bash
+scripts/nedra-tunnel.sh status           # read-only
+scripts/nedra-tunnel.sh create --yes     # создать отдельный tunnel nedra
+scripts/nedra-tunnel.sh config           # ~/.config/nedra/cloudflared-nedra.yml (600)
+scripts/nedra-tunnel.sh route --yes      # публикация DNS — только после auth review
+scripts/nedra-tunnel.sh run --yes        # запуск connector
 ```
 
 Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное — 404.
-Перед `route`/`run` должен быть готов backend auth и live check; иначе наружу
-уйдёт неаутентифицированный API.
+Публикация не выполнялась; перед `route`/`run` нужен готовый public auth
+(`CG_PUBLIC_DEMO`, access code) и live check.
 
-## Ограничения и границы
+## Проверено реальной сборкой
 
-- Локальный хост должен быть включён; после перезагрузки контейнеры с
-  `--restart=unless-stopped` поднимутся сами, туннель нужно запускать заново
-  (systemd-юнит не добавлялся, чтобы не менять системные сервисы).
-- Сборка требует сеть для первого `podman build` (digest pull) и `npm ci`;
-  дальше слои кэшируются.
-- Backend в этой ветке не использует PostgreSQL; это не ошибка deploy-скриптов,
-  а ожидание merge `task/postgres-runtime`.
-- Секреты и БД не входят в git; volume'ы удаляются только вручную и осознанно
-  (`podman volume rm`), скрипты этого не делают.
+Образ собран из **staged-копии** `integration-dev` (чужой worktree не изменялся)
+с overlay текущих `deploy/`, `.dockerignore` и `scripts/`:
+
+- `localhost/nedra-app:local` = `cea099bf235c...`, 17 шагов, слои `db/`, `docs/`,
+  healthcheck; Python-зависимости и `frontend/dist` внутри.
+- Backend стартовал, применил ledger 001/002/004; `vector 0.8.7`.
+- `/` отдаёт Vite build; `/api/session` выдаёт cookie в локальном режиме;
+  чужой `Origin` — 403; unsafe-метод без сессии — 401.
+- `POST /api/artifacts/sample` создал артефакт, файлы появились в `/app/data`
+  (volume `nedra-app-data`) и пережили пересоздание контейнера.
+- `/api/health` в этой сборке ещё 404 — backend active готовит endpoint;
+  healthcheck отработал через fallback `/api/runs` и контейнер стал `healthy`.
+- Проверены safe-replace: запущенный контейнер при смене env не трогается без
+  `--recreate-app`; остановленный пересоздаётся; контейнер без owner label
+  отвергается `up`/`down`.
+- Systemd user units установлены и `systemd-analyze verify` прошёл; db/app
+  включены, tunnel disabled. Linger не включался.
+- DNS/туннель не публиковались.
+
+## Ограничения
+
+- Локальный хост должен быть включён; после reboot db/app поднимутся через
+  systemd user manager (при linger) или после логина.
+- Сборка требует сеть для первого `podman build` (digest pull) и `npm ci`.
+- `CG_PUBLIC_DEMO=1` требует access code; без него backend не стартует. Код
+  хранится только в `runtime.env` и никогда не печатается.
+- Optional 003 и `/api/health` ждут merge backend; deploy-код к этому готов.
+- Volumes удаляются только вручную и осознанно; скрипты этого не делают.

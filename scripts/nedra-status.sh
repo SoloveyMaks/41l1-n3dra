@@ -11,13 +11,25 @@ say "контейнеры nedra:"
 podman ps -a --filter 'name=^nedra-' --format '  {{.Names}}  {{.Image}}  {{.Status}}  {{.Ports}}' || true
 
 if container_running "$NEDRA_APP_CONTAINER"; then
-  code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/runs" 2>/dev/null || true)
+  code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/health" 2>/dev/null || true)
   if [ "$code" = "200" ]; then
-    say "backend /api/runs: HTTP 200"
+    say "backend /api/health: HTTP 200"
+  elif [ "$code" = "404" ]; then
+    legacy=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/runs" 2>/dev/null || true)
+    if [ "$legacy" = "200" ]; then
+      warn "backend /api/health: 404; временный fallback /api/runs: HTTP 200"
+    else
+      warn "backend /api/health: 404; fallback /api/runs: HTTP ${legacy:-нет ответа}"
+      fail=1
+    fi
   else
-    warn "backend /api/runs: HTTP ${code:-нет ответа}"
+    warn "backend /api/health: HTTP ${code:-нет ответа}"
     fail=1
   fi
+  for env_name in CG_DATA_DIR CG_PUBLIC_DEMO VECTOR_RETRIEVAL_ENABLED AI_MODEL; do
+    value=$(podman inspect -f "{{range .Config.Env}}{{println .}}{{end}}" "$NEDRA_APP_CONTAINER" 2>/dev/null | sed -n "s/^${env_name}=//p" | tail -n 1)
+    if [ -n "$value" ]; then say "$env_name=$value"; fi
+  done
   health=$(podman inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NEDRA_APP_CONTAINER" 2>/dev/null || printf missing)
   say "backend healthcheck: $health"
 else
@@ -36,12 +48,22 @@ if container_running "$NEDRA_DB_CONTAINER"; then
   fi
   vector=$(podman exec "$NEDRA_DB_CONTAINER" psql -U "$NEDRA_DB_USER" -d "$NEDRA_DB_NAME" -tAc "select extversion from pg_extension where extname='vector'" 2>/dev/null | tr -d '[:space:]' || true)
   if [ -n "$vector" ]; then say "pgvector: $vector"; else warn "pgvector extension не найдена"; fail=1; fi
+  optional=$(podman exec "$NEDRA_DB_CONTAINER" psql -U "$NEDRA_DB_USER" -d "$NEDRA_DB_NAME" -tAc "select to_regclass('data_contract.example_embeddings')" 2>/dev/null | tr -d '[:space:]' || true)
+  if [ -n "$optional" ]; then
+    say "optional 003: example_embeddings есть"
+  else
+    say "optional 003: ещё не в ledger (backend storage pending)"
+  fi
 else
   warn "БД $NEDRA_DB_CONTAINER не запущена"
   fail=1
 fi
 
 host_ports=$(podman port "$NEDRA_DB_CONTAINER" 2>/dev/null || true)
+if container_exists "$NEDRA_APP_CONTAINER" && ! owns_container "$NEDRA_APP_CONTAINER"; then
+  warn "backend без owner label; скрипты не будут его трогать"
+  fail=1
+fi
 if [ -n "$host_ports" ]; then
   warn "БД опубликована наружу: $host_ports"
   fail=1

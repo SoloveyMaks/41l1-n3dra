@@ -7,9 +7,12 @@ set -euo pipefail
 require_cmd podman
 for name in "$NEDRA_APP_CONTAINER" "$NEDRA_DB_CONTAINER"; do
   if container_exists "$name"; then
-    podman stop "$name" >/dev/null 2>&1 || true
+    require_owned_container "$name"
+    if container_running "$name"; then
+      podman stop "$name" >/dev/null
+    fi
     podman rm "$name" >/dev/null
-    say "удалён контейнер $name"
+    say "удалён только собственный контейнер $name"
   else
     say "контейнер $name отсутствует"
   fi
