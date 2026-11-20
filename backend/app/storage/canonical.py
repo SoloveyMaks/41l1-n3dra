@@ -311,17 +311,26 @@ def _validate_coverage(
         if category is not None:
             _require(row["category"] == category, f"{scope_field}: category differs from scanner")
         scopes.append(row)
+    gaps = []
     if status == "complete":
-        _require(
-            all(scope["status"] == "checked" for scope in scopes),
-            f"{field}: complete coverage has non-checked scopes",
-        )
-        _require(not skipped, f"{field}: complete coverage has skipped scopes")
-        _require(not parser_errors, f"{field}: complete coverage has parser errors")
-        _require(not unresolved, f"{field}: complete coverage has unresolved symbols")
-        _require(not limits, f"{field}: complete coverage has reached limits")
-        if require_scopes and files_total > 0:
-            _require(scopes, f"{field}: complete coverage on non-empty input has no scopes")
+        if not all(scope["status"] == "checked" for scope in scopes):
+            gaps.append("non-checked scopes")
+        if skipped:
+            gaps.append("skipped scopes")
+        if parser_errors:
+            gaps.append("parser errors")
+        if unresolved:
+            gaps.append("unresolved symbols")
+        if limits:
+            gaps.append("limits reached")
+        if require_scopes and files_total > 0 and not scopes:
+            gaps.append("no scopes on non-empty input")
+    if gaps:
+        # Не отказываем всему анализу: сохраняем честный partial с причиной,
+        # вместо ложного complete.
+        status = "partial"
+        note = "coverage downgraded to partial: " + ", ".join(gaps)
+        limits = list(dict.fromkeys([*limits, note]))
     return {
         "status": status,
         "filesTotal": files_total,
@@ -416,8 +425,9 @@ def validate_bundle(
         coverage = _validate_coverage(
             scan.get("coverage"), f"{name}.coverage", set(evidence), diagnostics, category, True
         )
-        if status == "complete":
-            _require(coverage["status"] == "complete", f"{name}: complete scanner has incomplete coverage")
+        if status == "complete" and coverage["status"] != "complete":
+            # Coverage уже понижен до честного partial.
+            status = "partial"
         for row in coverage["scopes"]:
             coverage_rows.append(dict(row))
         scan_outcomes.append({
@@ -669,6 +679,21 @@ def validate_bundle(
     }
 
 
+def _downgrade_unverified(data: Dict[str, Any], reason: str) -> None:
+    """Complete coverage without verified expected scopes becomes honest partial."""
+    for outcome in data["scan_outcomes"]:
+        coverage = outcome["coverage"]
+        if coverage["status"] == "complete":
+            coverage["status"] = "partial"
+            coverage["limitsReached"] = list(dict.fromkeys([*coverage["limitsReached"], reason]))
+        if outcome["status"] == "complete":
+            outcome["status"] = "partial"
+    graph = data["graph_coverage"]
+    if graph["status"] == "complete":
+        graph["status"] = "partial"
+        graph["limitsReached"] = list(dict.fromkeys([*graph["limitsReached"], reason]))
+
+
 def _jsonb(value: Any) -> Any:
     try:
         from psycopg.types.json import Jsonb
@@ -713,6 +738,11 @@ class CanonicalPublisher:
             raise CanonicalPublishError("document_hash: does not match trusted manifest + envelope")
 
         prov = self._validate_provenance(provenance)
+        if not prov["expectedScopesVerified"]:
+            _downgrade_unverified(
+                normalized,
+                "expected scopes were not verified (expectedScopesVerified=false)",
+            )
         artifact_row = self._validate_artifact(artifact, identity)
         workflow_row = self._validate_workflow(workflow, identity)
         run_row = self._validate_run(run, identity)

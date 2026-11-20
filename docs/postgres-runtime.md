@@ -81,9 +81,10 @@ result = publisher.publish(
 - evidence path/sourceHash/byteLength внутри доверенного manifest, диапазон
   bytes не выходит за файл; raw source не принимается и не хранится;
 - coverage: `complete` только когда все scopes `checked` и нет
-  skipped/parserErrors/unresolvedSymbols/limitsReached; пустой `complete` на
-  непустом input отклоняется; scanner `complete` невозможен без `complete`
-  coverage;
+  skipped/parserErrors/unresolvedSymbols/limitsReached; иначе покрытие честно
+  понижается до `partial` с причиной в `limitsReached` (анализ не отклоняется);
+  пустой `complete` на непустом input тоже даёт `partial`; scanner `complete`
+  понижается вместе с покрытием;
 - `fp/v1` пересчитывается, SECRET требует `secretHmac`, остальные его не несут;
 - graph endpoints и evidence, policy approval, policyId/version/hash из
   signature;
@@ -112,10 +113,12 @@ publisher.get_published_envelope(run_id, snapshot_id)
 publisher.list_published_runs(limit=50)
 ```
 
-`expectedScopesVerified=false` сохраняется как есть: bridge не повышает partial до
-complete и не подменяет aggregate на checked; comparison получает этот флаг в
-provenance. `artifact.expiresAt` обязателен (C schema: NOT NULL, expires_at >
-created_at), `workflow.draftVersion` — целое > 0.
+`expectedScopesVerified=false`: все `complete` coverage/outcomes понижаются до
+`partial` с причиной, bridge не подменяет aggregate на checked; comparison
+получает флаг в provenance и возвращает inconclusive.
+
+`artifact.expiresAt` обязателен (C schema: NOT NULL, expires_at > created_at),
+`workflow.draftVersion` — целое > 0.
 
 Stable UUID mapping: `canonical_uuid(kind, local_id, workspace_id)` =
 `uuid5(NAMESPACE_URL, f"cg-{kind}:{workspace}:{local_id}")`; identity из envelope
