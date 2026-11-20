@@ -118,17 +118,25 @@ fingerprint → `changed`. В частности, смена normalizedContextHa
 не превращается в `resolved + introduced`. Ни line, ни расстояние по строкам,
 ни AI/similarity не являются identity.
 
-Перед односторонними `resolved/introduced` модуль также ищет возможное переименование
-символа: одинаковые `(category,ruleId,path,role,normalizedContextHash)`, но разный
-`symbolKey` в противоположном run. Такие ещё не сопоставленные findings получают
-отдельные `inconclusive`, `matchingBasis=ambiguous` и причину «возможно переименование
-символа». Даже один кандидат не доказывает соответствие: engine не создаёт пару,
-не выбирает первый и не выдаёт `changed`. Несколько кандидатов остаются неоднозначными.
-Поиск учитывает все findings противоположной стороны, включая уже сопоставленные:
-сохранившийся точный match не даёт назвать другой такой же паттерн новым/исчезнувшим.
-Это запрет чрезмерно уверенного статуса, а не эвристика, доказывающая rename; перенос
-с одновременной сменой нормализованного контекста этот ограничитель не распознаёт.
-Подтверждение таких соответствий требует отдельной карты B, которой в API пока нет.
+После exact fingerprint/coarse anchor matching и до односторонних `resolved/introduced`
+модуль группирует оставшиеся unmatched findings по `(category,ruleId,path,role)`
+**независимо от symbolKey и normalizedContextHash**. Если такая группа есть с обеих
+сторон, каждый её элемент получает отдельный `inconclusive`, `matchingBasis=ambiguous`
+и причину «Возможное изменение или перенос между символами … identity mapping B
+отсутствует». Это закрывает и rename одновременно со сменой контекста. Даже один
+кандидат не доказывает соответствие: engine не создаёт пару, не выбирает первый и
+не выдаёт `changed/persistent` по этой грубой группе. Несколько кандидатов остаются
+неоднозначными. Чистое исчезновение без unmatched current той же группы и чистое
+появление без unmatched baseline по-прежнему могут получить resolved/introduced.
+
+Отдельно сохраняется veto для одинаковых `(category,ruleId,path,role,normalizedContextHash)`
+с разным `symbolKey` среди **всех** findings противоположной стороны, включая уже
+сопоставленные. Сохранившийся точный match не даёт назвать другой такой же паттерн
+новым/исчезнувшим. Оба veto только запрещают чрезмерно уверенный статус, а не доказывают
+rename. Независимое исправление старой находки и новая находка в том же file/rule/role
+также могут остаться inconclusive: текущие DTO не отличают это от переноса без явной
+identity mapping B. Подтверждение соответствий требует отдельной карты B, которой в API
+пока нет; правила новых путей и deletedFiles остаются отдельными.
 
 Все обычные статусы требуют complete scanner outcome соответствующей category,
 complete scanner coverage и checked category/path/rule в обеих сторонах, а также
@@ -146,8 +154,8 @@ coverage самого finding блокируют доказанный стату
 |---|---|
 | `persistent` | Один fingerprint и anchor, совместимый полный анализ; «сдвиг строк не меняет находку» |
 | `changed` | Один coarse anchor, другой контекст/основание; «это изменение, а не доказанное исправление» |
-| `resolved` | Файл в обоих manifests; оба file/rule checked, complete outcomes/graph, нет current fingerprint **и coarse anchor**, нет кандидата symbol rename |
-| `introduced` | Нет baseline fingerprint/anchor и кандидата symbol rename; оба scopes checked или новый manifest path + complete baseline category; `new_scope` в reason |
+| `resolved` | Файл в обоих manifests; оба file/rule checked, complete outcomes/graph, нет current fingerprint **и coarse anchor**, нет встречной unmatched группы или кандидата symbol rename |
+| `introduced` | Нет baseline fingerprint/anchor, встречной unmatched группы или кандидата symbol rename; оба scopes checked или новый manifest path + complete baseline category; `new_scope` в reason |
 | `inconclusive` | Например «После: нет checked для src/Query.kt / sql-interpolation», «покрытие графа неполное», повторяющийся anchor, несовместимые signatures |
 | `file_deleted` | Только baseline finding и отсутствие path в полном current manifest; «переименование не исключено» |
 
@@ -225,7 +233,7 @@ SQL publication с ложным resolved: SQL guards не заменяют ко�
 
 Оба blocker воспроизведены локально на сохранённых reviewer DTO до правки: только
 смена symbolKey дала `resolved + introduced`, а исчезновение finding при partial
-ребре и complete summary дало `resolved`. После правки прошли 17 целевых одноразовых
+ребре и complete summary дало `resolved`. После предыдущей правки прошли 17 целевых одноразовых
 contract probes: symbol rename → два раздельных inconclusive; по несколько rename
 кандидатов с любой стороны → все inconclusive; точный existing match сохранил persistent,
 а новый кандидат остался inconclusive; partial и unknown рёбра блокируют disappearance,
@@ -234,6 +242,19 @@ persistent, changed и introduction, в том числе когда gap тол�
 finding refs. Контроли без gap и с resolved edge сохранили resolved. Это **contract
 scenario, not scanner output**, не настоящий scanner proof. 36 прежних probes,
 Node syntax, strict TypeScript consumer/declaration и diff check повторно прошли.
+
+Затем независимо воспроизведён остаточный rename **со сменой contextHash**: до нового
+veto он давал resolved + introduced. После расширения veto прошли ещё 14 целевых
+одноразовых probes: один rename+context → два раздельных inconclusive/ambiguous;
+несколько baseline/current и many-to-many кандидатов → все inconclusive, без пар;
+точный persistent вместе с unmatched rename+context сохранился отдельно; already-used
+exact candidate по-прежнему блокирует и спорное появление, и исчезновение.
+Чистые checked removal, introduction в прежнем файле и новый manifest path сохранили
+resolved/introduced; file rename и manifest deletion сохранили прежние file_deleted
+правила. Контролы same-symbol context change и различающиеся роли не смешались с
+грубым veto. Проверены причины, повторяемость, неизменность входов и единственность refs.
+Это **contract scenario, not scanner output**. Рецепт manifest hash не менялся,
+PostgreSQL повторно не запускался; Node syntax, strict typed API и diff check прошли.
 
 Ограничения первого показа: настоящее исправление SQL на результатах scanner и
 публикация comparison после текущей правки не измерены; доверенный adapter A должен

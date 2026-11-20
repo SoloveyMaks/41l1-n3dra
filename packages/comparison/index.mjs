@@ -140,6 +140,10 @@ function symbolRenameKey(finding) {
   return stable([finding.category, finding.ruleId, a.normalizedPath, a.role, a.normalizedContextHash]);
 }
 
+function unmatchedScopeKey(finding) {
+  return stable([finding.category, finding.ruleId, finding.anchor.normalizedPath, finding.anchor.role]);
+}
+
 function fingerprintKey(finding) {
   return finding.fingerprint;
 }
@@ -282,6 +286,16 @@ function compareFindings(comparisonId, before, after, comparable, beforeManifest
       for (const b of remainingB) add('inconclusive', 'ambiguous', 'Повторяющийся anchor; выбрать кандидата достоверно нельзя', b, undefined);
       for (const c of remainingC) add('inconclusive', 'ambiguous', 'Повторяющийся anchor; выбрать кандидата достоверно нельзя', undefined, c);
     }
+  }
+
+  const unmatchedBefore = group(baseline.filter(x => !usedBefore.has(x.finding.id)), unmatchedScopeKey);
+  const unmatchedAfter = group(current.filter(x => !usedAfter.has(x.finding.id)), unmatchedScopeKey);
+  for (const [scope, bs] of unmatchedBefore) {
+    const cs = unmatchedAfter.get(scope);
+    if (!cs) continue;
+    const reason = 'Возможное изменение или перенос между символами в том же file/rule/role; identity mapping B отсутствует, исчезновение и появление не доказаны';
+    for (const b of bs) add('inconclusive', 'ambiguous', reason, b);
+    for (const c of cs) add('inconclusive', 'ambiguous', reason, undefined, c);
   }
 
   for (const b of baseline.filter(x => !usedBefore.has(x.finding.id))) {
