@@ -162,13 +162,59 @@ class AiItem(BaseModel):
     suggestedFixedVersion: Optional[str] = None
 
 
+class AiProvenance(BaseModel):
+    """Where an explanation actually came from. Never contains credentials."""
+    provider: str = "none"
+    model: str = ""
+    endpoint: str = ""
+    request_id: Optional[str] = None
+    latency_ms: float = 0.0
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    finish_reason: Optional[str] = None
+    response_sha256: Optional[str] = None
+    fallback_reason: Optional[str] = None
+
+
+class SimilarFix(BaseModel):
+    """One vetted remediation example returned by exact pgvector retrieval."""
+    findingId: Optional[str] = None
+    exampleId: str
+    sourceRef: str
+    verificationBasis: str
+    limitations: List[str] = Field(default_factory=list)
+    redactedFix: str
+    distance: float
+    metric: str
+    embeddingSpecId: str
+
+
+class RetrievalInfo(BaseModel):
+    """Typed result of the optional exact-retrieval step.
+
+    status: disabled | unavailable | ready | ok | partial
+    A failed or unavailable retrieval must never fail the main analysis.
+    """
+    status: str = "disabled"
+    reason: str = ""
+    embeddingModel: str = ""
+    embeddingVersion: str = ""
+    dimension: Optional[int] = None
+    metric: str = ""
+    embeddingSpecId: Optional[str] = None
+
+
 class ExplainResult(BaseModel):
     status: str = "succeeded"  # "succeeded" | "failed" | "fallback"
-    model: str = "gemini-3.8-flash"
+    model: str = "deterministic-expert-v1"
     summary: str = ""
     items: List[AiItem] = Field(default_factory=list)
     validation_errors: List[str] = Field(default_factory=list)
     raw_secrets_checked: bool = True
+    provenance: Optional[AiProvenance] = None
+    retrieval: Optional[RetrievalInfo] = None
+    similar_fixes: List[SimilarFix] = Field(default_factory=list)
 
 
 class SecurityPassport(BaseModel):

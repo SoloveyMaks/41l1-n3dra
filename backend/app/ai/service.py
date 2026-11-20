@@ -1,16 +1,40 @@
-import json
-import os
-import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from backend.app.ai.provider import (
+    AiProviderError,
+    complete_json,
+    mask_sensitive_text,
+    resolve_provider_config,
+)
 from backend.app.ai.validator import AiResponseValidator
-from backend.app.contracts.schemas import AiItem, ExplainResult, Finding
+from backend.app.ai.vector_runtime import VectorRuntime
+from backend.app.contracts.schemas import (
+    AiItem,
+    AiProvenance,
+    ExplainResult,
+    Finding,
+    RetrievalInfo,
+)
+
+SYSTEM_PROMPT = """Ты аналитик безопасности Kotlin/Spring Boot. Объясняй только
+переданные находки. Не выдумывай findingId, CVE, версии, файлы или строки.
+Ответ — один JSON-объект без markdown:
+{"summary":"строка","items":[{"findingId":"id из входа","explanation":"строка","remediation":"строка","suggestedFixedVersion":null или строка}]}
+Правила:
+- explanation и remediation непустые, по-русски, без пересказа сырых секретов.
+- suggestedFixedVersion заполняй только значением из allowedFixedVersions; иначе null.
+- Не добавляй items для findingId, которых нет во входе.
+- Если данных мало, скажи это в explanation, но не придумывай факты."""
 
 
 class AiService:
     def __init__(self):
         self.validator = AiResponseValidator()
-        self.model_name = os.getenv("LLM_MODEL", "gemini-3.8-flash")
+        self.provider_config = resolve_provider_config()
+        self.model_name = (
+            self.provider_config.model if self.provider_config else "deterministic-expert-v1"
+        )
+        self.vector_runtime = VectorRuntime()
 
     def explain_findings(self, findings: List[Finding], force_fallback: bool = False) -> ExplainResult:
         """
@@ -27,42 +51,96 @@ class AiService:
                 summary="В проекте не обнаружено критических дефектов безопасности.",
                 items=[],
                 validation_errors=[],
-                raw_secrets_checked=True
+                raw_secrets_checked=True,
+                retrieval=self.vector_runtime.status(),
             )
 
         if force_fallback:
-            return self._generate_expert_fallback(
+            result = self._generate_expert_fallback(
                 findings,
-                summary_prefix="[FALLBACK РЕЖИМ]: Ответ сгенерирован встроенной базой правил (AI отключен):"
+                summary_prefix="[FALLBACK РЕЖИМ]: Ответ сгенерирован встроенной базой правил (AI отключен):",
+                provenance=self._fallback_provenance("force_fallback"),
             )
+            return self._attach_retrieval(result, findings, execute=False)
+
+        if not self.provider_config:
+            result = self._generate_expert_fallback(
+                findings,
+                summary_prefix="[AI НЕ НАСТРОЕН]: Нет REFORMBOSS_API_KEY или WIKIVIBE_GPT_KEY. Применен детерминированный fallback:",
+                provenance=self._fallback_provenance("provider_not_configured"),
+            )
+            return self._attach_retrieval(result, findings, execute=True)
 
         try:
-            # Generate structured response from expert knowledge / LLM
-            generated_data = self._generate_ai_json(findings)
-            is_valid, validation_errors, validated_items = self.validator.validate(generated_data, findings)
-
-            if is_valid or len(validated_items) > 0:
-                summary_text = generated_data.get("summary", "Анализ находок безопасности выполнен.")
-                return ExplainResult(
-                    status="succeeded" if is_valid else "fallback",
-                    model=self.model_name,
-                    summary=summary_text,
-                    items=validated_items,
-                    validation_errors=validation_errors,
-                    raw_secrets_checked=True
-                )
-            else:
-                # Validation completely failed, fall back
-                return self._generate_expert_fallback(
-                    findings,
-                    summary_prefix="[ВАЛИДАТОР ОТКЛОНИЛ AI-ОТВЕТ]: Применен безопасный детерминированный fallback. Ошибки: " + "; ".join(validation_errors)
-                )
-
-        except Exception as e:
-            return self._generate_expert_fallback(
+            generated_data, provenance = self._generate_ai_json(findings)
+        except AiProviderError as exc:
+            reason = mask_sensitive_text(str(exc))
+            result = self._generate_expert_fallback(
                 findings,
-                summary_prefix=f"[ОШИБКА AI-ПРОВАЙДЕРА]: {str(e)}. Использован резервный генератор:"
+                summary_prefix=f"[ОШИБКА AI-ПРОВАЙДЕРА]: {reason}. Использован резервный генератор:",
+                provenance=self._fallback_provenance(reason),
             )
+            return self._attach_retrieval(result, findings, execute=True)
+        except Exception as exc:
+            reason = mask_sensitive_text(str(exc))
+            result = self._generate_expert_fallback(
+                findings,
+                summary_prefix=f"[ОШИБКА AI]: {reason}. Использован резервный генератор:",
+                provenance=self._fallback_provenance(reason),
+            )
+            return self._attach_retrieval(result, findings, execute=True)
+
+        structural_errors = self.validator.validate_json_shape(generated_data)
+        if structural_errors:
+            reason = "JSON: " + "; ".join(structural_errors)
+            result = self._generate_expert_fallback(
+                findings,
+                summary_prefix=f"[ВАЛИДАТОР JSON ОТКЛОНИЛ AI-ОТВЕТ]: {reason}. Применен fallback:",
+                provenance=provenance.model_copy(update={"fallback_reason": reason}),
+            )
+            return self._attach_retrieval(result, findings, execute=True)
+
+        is_valid, validation_errors, validated_items = self.validator.validate(generated_data, findings)
+        summary_text = mask_sensitive_text(
+            str(generated_data.get("summary") or "Анализ находок безопасности выполнен.")
+        )
+        for item in validated_items:
+            item.explanation = mask_sensitive_text(item.explanation)
+            item.remediation = mask_sensitive_text(item.remediation)
+
+        if is_valid:
+            result = ExplainResult(
+                status="succeeded",
+                model=provenance.model or self.model_name,
+                summary=summary_text,
+                items=validated_items,
+                validation_errors=[],
+                raw_secrets_checked=True,
+                provenance=provenance,
+            )
+            return self._attach_retrieval(result, findings, execute=True)
+
+        if validated_items:
+            result = ExplainResult(
+                status="fallback",
+                model=provenance.model or self.model_name,
+                summary=summary_text,
+                items=validated_items,
+                validation_errors=validation_errors,
+                raw_secrets_checked=True,
+                provenance=provenance.model_copy(
+                    update={"fallback_reason": "validator rejected part of the response"}
+                ),
+            )
+            return self._attach_retrieval(result, findings, execute=True)
+
+        reason = "; ".join(validation_errors)
+        result = self._generate_expert_fallback(
+            findings,
+            summary_prefix=f"[ВАЛИДАТОР ОТКЛОНИЛ AI-ОТВЕТ]: Применен безопасный детерминированный fallback. Ошибки: {reason}",
+            provenance=provenance.model_copy(update={"fallback_reason": "validator rejected all items"}),
+        )
+        return self._attach_retrieval(result, findings, execute=True)
 
     def generate_synthetic_test(self, findings: List[Finding]) -> Dict[str, Any]:
         """
@@ -95,33 +173,41 @@ class AiService:
             "accepted_items_count": len(valid_items)
         }
 
-    def _generate_ai_json(self, findings: List[Finding]) -> Dict[str, Any]:
-        """
-        Builds the structured explanation and remediation for each finding.
-        """
-        items = []
+    def _generate_ai_json(self, findings: List[Finding]) -> Tuple[Dict[str, Any], AiProvenance]:
+        """Call the configured OpenAI-compatible provider with masked context."""
+        if not self.provider_config:
+            raise AiProviderError("provider is not configured")
+        payload = self._build_masked_payload(findings)
+        return complete_json(self.provider_config, SYSTEM_PROMPT, payload)
+
+    def _build_masked_payload(self, findings: List[Finding]) -> Dict[str, Any]:
+        masked_findings = []
         for f in findings:
-            exp, rem, fixed_ver = self._get_finding_advice(f)
-            items.append({
+            masked_findings.append({
                 "findingId": f.id,
-                "explanation": exp,
-                "remediation": rem,
-                "suggestedFixedVersion": fixed_ver
+                "analyzer": f.analyzer,
+                "ruleId": f.ruleId,
+                "ruleVersion": f.ruleVersion,
+                "severity": f.severity.value,
+                "confidence": f.confidence.value,
+                "file": f.primaryLocation.path,
+                "line": f.primaryLocation.startLine,
+                "advisoryIds": list(f.advisoryIds),
+                "redactedEvidence": mask_sensitive_text(f.redactedEvidence or "")[:800],
             })
-
-        crit_count = sum(1 for f in findings if f.severity.value in ("critical", "high"))
-        summary = (
-            f"В ходе статического и композиционного анализа обнаружено {len(findings)} потенциальных дефектов "
-            f"({crit_count} высокого и критического уровня). Рекомендуется немедленная ротация секретов "
-            f"и параметризация SQL-запросов."
-        )
-
         return {
-            "summary": summary,
-            "items": items
+            "task": "explain_only_these_findings",
+            "outputLanguage": "ru",
+            "allowedFixedVersions": sorted(self.validator.valid_fixed_versions),
+            "findings": masked_findings,
         }
 
-    def _generate_expert_fallback(self, findings: List[Finding], summary_prefix: str) -> ExplainResult:
+    def _generate_expert_fallback(
+        self,
+        findings: List[Finding],
+        summary_prefix: str,
+        provenance: Optional[AiProvenance] = None,
+    ) -> ExplainResult:
         items = []
         for f in findings:
             exp, rem, fixed_ver = self._get_finding_advice(f)
@@ -138,8 +224,52 @@ class AiService:
             summary=f"{summary_prefix} Найдено {len(findings)} проблем безопасности.",
             items=items,
             validation_errors=[],
-            raw_secrets_checked=True
+            raw_secrets_checked=True,
+            provenance=provenance
         )
+
+    def _fallback_provenance(self, reason: str) -> AiProvenance:
+        cfg = self.provider_config
+        if not cfg:
+            return AiProvenance(
+                provider="none",
+                model="deterministic-expert-v1",
+                fallback_reason=mask_sensitive_text(reason)[:300],
+            )
+        return AiProvenance(
+            provider=cfg.provider,
+            model=cfg.model,
+            endpoint=cfg.endpoint,
+            fallback_reason=mask_sensitive_text(reason)[:300],
+        )
+
+    def _attach_retrieval(
+        self,
+        result: ExplainResult,
+        findings: List[Finding],
+        execute: bool,
+    ) -> ExplainResult:
+        """Attach optional retrieval without ever failing the main analysis."""
+        if not self.vector_runtime.enabled:
+            result.retrieval = self.vector_runtime.status()
+            return result
+        if not execute:
+            info = self.vector_runtime.status()
+            if info.status != "disabled":
+                info.reason = "retrieval not executed in fallback mode"
+            result.retrieval = info
+            return result
+        try:
+            info, fixes = self.vector_runtime.retrieve_for_findings(findings)
+        except Exception as exc:  # extra guard; runtime is fail-open already
+            info = RetrievalInfo(
+                status="unavailable",
+                reason=f"retrieval error: {mask_sensitive_text(str(exc))[:300]}",
+            )
+            fixes = []
+        result.retrieval = info
+        result.similar_fixes = fixes
+        return result
 
     def _get_finding_advice(self, f: Finding) -> tuple[str, str, Optional[str]]:
         if f.ruleId == "KOTLIN-SQL-INJECTION":

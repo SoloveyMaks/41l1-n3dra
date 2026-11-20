@@ -7,6 +7,7 @@ AI Security Workflow для Cyber Garden 2026: собственные прове
 ## Начать здесь
 
 - [Решения проекта и порядок сборки](PROJECT-DECISIONS.md)
+- [AI и optional vector runtime](docs/ai-runtime.md)
 - [Пакет C: данные и карта](docs/c-data-handoff.md)
 - [Общие DTO и открытые вопросы](docs/data-contracts/README.md)
 - [Миграции и сохранение результатов](db/README.md)
