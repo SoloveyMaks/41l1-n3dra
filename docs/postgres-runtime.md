@@ -18,12 +18,26 @@ API пока не принимает workspace в запросах: процес
 
 1. Применяет миграции C через ledger `public.schema_migrations` (filename + sha256,
    advisory lock); повторный запуск их не повторяет, изменённый файл — ошибка.
-2. Заводит identity-строку workspace в `data_contract.workspaces`
+2. Если `DB_ENABLE_VECTOR=1` и на сервере есть pgvector, применяет
+   `db/optional/003_exact_vector.up.sql` через тот же ledger и проверяет
+   `pg_available_extensions`. Без флага optional не применяется; повторный старт
+   SQL не повторяет. Registry остаётся `pending`, fake vectors не создаются.
+3. Заводит identity-строку workspace в `data_contract.workspaces`
    (`runtime:<uuid>`), если её нет. Других записей в C-схему runtime не делает.
-3. Проверяет `runtime.schema_meta` и приводит runtime schema к версии 3:
+4. Проверяет `runtime.schema_meta` и приводит runtime schema к версии 3:
    старая схема без workspace-колонок обновляется с сохранением строк,
    версия 2 дополняется immutability-триггерами.
-4. Создаёт свежую schema `runtime` версии 3, если база пустая.
+5. Создаёт свежую schema `runtime` версии 3, если база пустая.
+
+## Optional pgvector
+
+`DB_ENABLE_VECTOR=1` — единственный способ включить `db/optional/003_exact_vector.up.sql`.
+Без флага файл не применяется и в ledger не попадает. Если флаг включён, а
+`pg_available_extensions` не содержит `vector`, старт падает с понятной ошибкой.
+Повторный старт с флагом видит запись в ledger и SQL не повторяет. Схема создаёт
+`example_embeddings` и `exact_similar_fixes`, но не выбирает provider/model/
+dimension: `embedding_specs` остаётся пустым/pending, fake vectors запрещены.
+API embeddings не появляется.
 
 ## Границы runtime-слоя
 
@@ -125,14 +139,50 @@ Stable UUID mapping: `canonical_uuid(kind, local_id, workspace_id)` =
 не переписывается. Runtime text id не превращается в UUID молча: новый run id
 должен быть UUID, legacy — только явный mapping.
 
+Concurrency: publish берёт транзакционный advisory lock на identity
+`workspace/run/snapshot` (и отдельные lock-и на artifact/snapshot/workflow/policy).
+Два параллельных publish одного identity дают один `idempotent=false` и один
+`idempotent=true` с тем же `bundleHash`, без дублей строк. Один `snapshotId` с
+другим artifact archive (даже при том же manifest) и один `artifactId` с другими
+bytes отклоняются как immutable identity conflict.
+
+## Comparison storage
+
+`backend/app/storage/comparisons.py` — сохранение результата comparison engine:
+`ComparisonStore.save(dto)` вставляет draft `comparisons` + `comparison_items`,
+затем публикует header; `guard_comparison` проверяет published bundles,
+совместимость signature, fingerprints и coverage. `get(comparison_id)` возвращает
+DTO с `items` и вычисленными `deletedFiles` по двум sealed manifest; повторный
+save того же id идемпотентен, другой payload — conflict. Pseudo-publish нет.
+
+## Remediation examples
+
+`backend/app/storage/remediation.py` — `RemediationStore.save/get/list` для
+`data_contract.remediation_examples`. `vetted` требует published source (и
+published fixed bundle при наличии), `verificationBasis`, `reviewedBy`,
+`reviewedAt` и непустые `limitations`; иначе только `draft`. Content hash
+фиксирует sourceRef/rule/scenario/redacted before-fix. AI-совет не переводится в
+`vetted`. Подготовлены 3 примера: один vetted по live-проверке `SastAnalyzer`
+(before finding `KOTLIN-SQL-INJECTION`, after 0 findings) и два draft, пока фикс не
+перепроверен. Их envelope-ы — synthetic adapter probe (`contract_scenario`), не
+настоящий scanner run; это записано в limitations.
+
 ## Локальная проверка
 
 ```bash
 # временная БД (пример; креды — локальные, в репозиторий не попадают)
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/runtime_check
-python -m backend.app.storage.migrate     # применить миграции C + 004
+python -m backend.app.storage.migrate     # применить миграции C + 004 (+003 при DB_ENABLE_VECTOR=1)
 python -c "from backend.app.storage.database import DatabaseRepository as R; R()"
 ```
+
+Проверочные canonical bundles в этой ветке — **synthetic handcrafted envelopes с
+`origin=contract_scenario`**, а не настоящий scanner run: два настоящих scanner
+run появятся только после adapter от backend author. Comparison по ним честно
+несёт reason «contract scenario, not scanner output». Отдельно live `SastAnalyzer`
+прогонялся на before/after Kotlin fixtures: before даёт `KOTLIN-SQL-INJECTION`,
+after — 0 findings; это основание только для одного vetted remediation example
+(автоматическая проверка, не human review — записано в limitations).
 
 Прогон без временной БД: `backend/test_e2e.py` проверяет полный путь
 artifact → run → findings → report. Проверка изоляции: заведите строку в другом

@@ -679,6 +679,15 @@ def validate_bundle(
     }
 
 
+def _lock(conn, *parts: Any) -> None:
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_key("canonical", *parts),))
+
+
+def _advisory_key(*parts: Any) -> int:
+    raw = "|".join(str(part) for part in parts).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big", signed=True)
+
+
 def _downgrade_unverified(data: Dict[str, Any], reason: str) -> None:
     """Complete coverage without verified expected scopes becomes honest partial."""
     for outcome in data["scan_outcomes"]:
@@ -748,6 +757,8 @@ class CanonicalPublisher:
         run_row = self._validate_run(run, identity)
 
         with get_pool().connection() as conn:
+            # Serialize concurrent publish attempts for the same immutable identity.
+            _lock(conn, "run", self.workspace_id, identity["runId"], identity["snapshotId"])
             existing = self._select_existing(conn, identity)
             if existing is not None:
                 if existing["document_hash"] != document_hash:
@@ -1005,6 +1016,7 @@ class CanonicalPublisher:
         )
 
     def _ensure_artifact(self, conn, artifact: Mapping[str, Any], identity: Mapping[str, Any]) -> None:
+        _lock(conn, "artifact", self.workspace_id, artifact["artifactId"])
         created_at = _as_text(artifact["createdAt"], "artifact.createdAt") if artifact["createdAt"] else None
         expires_at = _as_text(artifact["expiresAt"], "artifact.expiresAt")
         conn.execute(
@@ -1035,6 +1047,7 @@ class CanonicalPublisher:
     def _ensure_snapshot(self, conn, files: Sequence[Mapping[str, Any]],
                          identity: Mapping[str, Any], artifact_id: str) -> None:
         snapshot_id = identity["snapshotId"]
+        _lock(conn, "snapshot", self.workspace_id, snapshot_id)
         row = conn.execute(
             "SELECT artifact_id, artifact_hash, manifest_hash, sealed_at "
             "FROM data_contract.snapshots WHERE workspace_id = %s AND snapshot_id = %s",
@@ -1046,12 +1059,22 @@ class CanonicalPublisher:
                 INSERT INTO data_contract.snapshots (
                     workspace_id, snapshot_id, artifact_id, artifact_hash
                 ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (workspace_id, snapshot_id) DO NOTHING
                 """,
                 (self.workspace_id, snapshot_id, artifact_id, identity["artifactHash"]),
             )
-            sealed = False
+            row = conn.execute(
+                "SELECT artifact_id, artifact_hash, manifest_hash, sealed_at "
+                "FROM data_contract.snapshots WHERE workspace_id = %s AND snapshot_id = %s",
+                (self.workspace_id, snapshot_id),
+            ).fetchone()
+            if row is None:  # pragma: no cover
+                raise CanonicalPublishError("snapshot: insert was not persisted")
+            if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
+                raise CanonicalConflictError("snapshot: exists with a different artifact identity")
+            sealed = row["sealed_at"] is not None
         else:
-            if row["artifact_id"] != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
+            if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
                 raise CanonicalConflictError("snapshot: exists with a different artifact identity")
             sealed = row["sealed_at"] is not None
         if not sealed:
@@ -1098,6 +1121,7 @@ class CanonicalPublisher:
             )
 
     def _ensure_workflow(self, conn, workflow: Mapping[str, Any], identity: Mapping[str, Any]) -> None:
+        _lock(conn, "workflow", self.workspace_id, workflow["workflowId"])
         conn.execute(
             """
             INSERT INTO data_contract.workflows (
@@ -1134,6 +1158,7 @@ class CanonicalPublisher:
 
     def _insert_policies(self, conn, policies: Sequence[Mapping[str, Any]]) -> None:
         for policy in policies:
+            _lock(conn, "policy", self.workspace_id, policy["id"])
             conn.execute(
                 """
                 INSERT INTO data_contract.domain_policy_revisions (
