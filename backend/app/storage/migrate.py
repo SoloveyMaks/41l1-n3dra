@@ -22,6 +22,7 @@ LOCK_NAME = "41l1-n3dra:data_contract_migrations"
 MARKERS: Dict[str, str] = {
     "001_core.up.sql": "to_regclass('data_contract.workspaces') IS NOT NULL",
     "002_integrity_publish.up.sql": "to_regclass('data_contract.published_bundles') IS NOT NULL",
+    "004_bundle_envelopes.up.sql": "to_regclass('data_contract.bundle_envelopes') IS NOT NULL",
 }
 
 

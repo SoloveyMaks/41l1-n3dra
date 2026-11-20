@@ -46,21 +46,88 @@ API пока не принимает workspace в запросах: процес
 
 ## Чего здесь нет
 
-Runtime — compatibility layer, а не canonical `data_contract`. C published facts
-к API не подключены: `analysis_bundles`, `publish_bundle`, `scan_outcomes`,
-`coverage`, `graph_coverage`, `published_*` runtime не пишет и не читает.
-Никакой подделки publish/coverage/verdict нет: отчёт строится по своим
-findings, а не по опубликованному bundle C, и не считается подтверждением
-C-фактов. `ai_explanations`, `comparisons`, `remediation_examples` не
-затрагиваются. `croniter` заявлен в зависимостях для расписаний A; текущий
-scheduler пока разбирает `interval:`/cron вручную и этот слой не меняет.
+`DatabaseRepository` — compatibility layer, а не canonical `data_contract`.
+Runtime сам C facts не пишет: отчёт строится по своим findings и не считается
+подтверждением published/coverage C. Канонические факты появляются только через
+явный `CanonicalPublisher` (ниже). `ai_explanations`, `comparisons`,
+`remediation_examples` не затрагиваются. `croniter` заявлен в зависимостях для
+расписаний A; текущий scheduler пока разбирает `interval:`/cron вручную и этот
+слой не меняет.
+
+## Canonical bridge
+
+`backend/app/storage/canonical.py` — единственный путь от `AnalysisBundle 0.1`
+B к published C facts. API/executor пока его не вызывают: это storage-контракт
+для интеграции A/B.
+
+```python
+from backend.app.storage.canonical import CanonicalPublisher, compute_document_hash
+
+publisher = CanonicalPublisher(workspace_id)
+result = publisher.publish(
+    envelope,                       # AnalysisBundle 0.1 как отдал B
+    manifest_files=files,           # [{path, sourceHash, byteLength, mediaType}]
+    document_hash=compute_document_hash(files, envelope),
+    provenance={...},               # origin, normalizationVersion, ...
+    artifact={...}, workflow={...}, run={...},
+)
+```
+
+Что проверяется до SQL и чем:
+
+- ровно три distinct scanner outcomes SECRET/SCA/SAST; identity и
+  `AnalysisSignature` совпадают во всех envelopes;
+- scope `workspaceId/runId/snapshotId` у каждого объекта; уникальные id;
+- evidence path/sourceHash/byteLength внутри доверенного manifest, диапазон
+  bytes не выходит за файл; raw source не принимается и не хранится;
+- coverage: `complete` только когда все scopes `checked` и нет
+  skipped/parserErrors/unresolvedSymbols/limitsReached; пустой `complete` на
+  непустом input отклоняется; scanner `complete` невозможен без `complete`
+  coverage;
+- `fp/v1` пересчитывается, SECRET требует `secretHmac`, остальные его не несут;
+- graph endpoints и evidence, policy approval, policyId/version/hash из
+  signature;
+- `snapshotManifestHash` равен `data_contract.snapshot_manifest_hash`;
+  `document_hash` — sha256 канонического JSON `{schemaVersion, manifest,
+  envelope}` (транспортная целостность; HMAC-подписи в контракте C нет).
+
+Публикация одной транзакцией: artifact (только opaque `storage_ref`, без исходников)
+→ open+seal snapshot → run в `queued/pending` → draft `analysis_bundles` → все
+`scan_outcomes/coverage/graph_coverage/evidence/findings/code_nodes/code_edges/
+*_evidence/finding_nodes/diagnostics/domain_policy_revisions` → expected counts из проверенного входа (до INSERT) → `bundle_document_hash` → `publish_bundle(...)` → immutable
+raw envelope в `data_contract.bundle_envelopes` (ledger migration `004`) → run
+status. `published_at`/`bundle_hash` выставляет только SQL.
+
+Идемпотентность: тот же identity + `document_hash` возвращает существующий
+`bundleHash` (`idempotent=true`); другой payload для уже published identity —
+`CanonicalConflictError`, перезаписи нет.
+
+Чтение для comparison package:
+
+```python
+publisher.get_published_envelope(run_id, snapshot_id)
+# {bundle, manifest: {complete, workspaceId, snapshotId, hash, files},
+#  provenance: {published, bundleHash, normalizationVersion, origin,
+#               expectedScopesVerified, domainPolicyApplicability}}
+publisher.list_published_runs(limit=50)
+```
+
+`expectedScopesVerified=false` сохраняется как есть: bridge не повышает partial до
+complete и не подменяет aggregate на checked; comparison получает этот флаг в
+provenance. `artifact.expiresAt` обязателен (C schema: NOT NULL, expires_at >
+created_at), `workflow.draftVersion` — целое > 0.
+
+Stable UUID mapping: `canonical_uuid(kind, local_id, workspace_id)` =
+`uuid5(NAMESPACE_URL, f"cg-{kind}:{workspace}:{local_id}")`; identity из envelope
+не переписывается. Runtime text id не превращается в UUID молча: новый run id
+должен быть UUID, legacy — только явный mapping.
 
 ## Локальная проверка
 
 ```bash
 # временная БД (пример; креды — локальные, в репозиторий не попадают)
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/runtime_check
-python -m backend.app.storage.migrate     # применить миграции C
+python -m backend.app.storage.migrate     # применить миграции C + 004
 python -c "from backend.app.storage.database import DatabaseRepository as R; R()"
 ```
 
