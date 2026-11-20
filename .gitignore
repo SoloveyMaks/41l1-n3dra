@@ -24,6 +24,7 @@ secrets/
 tools_local/
 research/
 artifacts/
+!backend/app/artifacts/
 
 # OS files
 .DS_Store

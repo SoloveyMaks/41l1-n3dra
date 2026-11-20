@@ -1,8 +1,9 @@
 import asyncio
-import io
 import json
 import logging
+import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,11 +11,20 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, Response, Up
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from backend.app.ai.service import AiService
-from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
-from backend.app.contracts.node_registry import get_node_definitions
-from backend.app.contracts.schemas import (
-    WorkflowDraft, WorkflowValidationResult
+from backend.app.api.session import (
+    SESSION_TTL_SECONDS,
+    issue_session,
+    request_workspace,
+    session_from_request,
+    set_session_cookie,
 )
+from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
+from backend.app.artifacts.sample_source import build_zip_from_directory
+from backend.app.codefacts.identity import run_uuid
+from backend.app.codefacts.map_builder import ensure_artifact_meta
+from backend.app.codefacts.store import CodeFactsStore
+from backend.app.contracts.node_registry import get_node_definitions
+from backend.app.contracts.schemas import Finding, WorkflowDraft
 from backend.app.demo.default_workflow import get_default_workflow_draft
 from backend.app.demo.sample_project import create_sample_project_zip
 from backend.app.engine.executor import WorkflowExecutor
@@ -35,9 +45,97 @@ scheduler = WorkflowScheduler(db_repo, executor)
 validator = WorkflowValidator()
 ai_service = AiService()
 intake = SafeArtifactIntake()
+codefacts_store = CodeFactsStore()
 
-# Store last received test webhooks in memory for UI verification
+# Store last received test webhooks in memory for UI verification (bounded, no secrets)
 received_webhooks: List[Dict[str, Any]] = []
+MAX_WEBHOOK_LOG = 200
+MAX_WEBHOOK_BYTES = 64 * 1024
+
+_STORAGE_MANIFEST_KEYS = (
+    "id", "filename", "hash_sha256", "size_bytes", "uncompressed_size_bytes",
+    "file_count", "kotlin_file_count", "gradle_file_count", "extracted_path",
+    "created_at",
+)
+
+
+def _storage_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Ровно тот контракт, который ждёт DatabaseRepository; sidecar живёт отдельно."""
+    return {key: manifest[key] for key in _STORAGE_MANIFEST_KEYS if key in manifest}
+
+
+_PRIVATE_KEYS = {
+    "extracted_path", "extractedPath", "extractedpath",
+    "secretToken", "secret_token", "webhookSecret", "webhook_secret",
+}
+
+
+def _strip_private_paths(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _strip_private_paths(item) for key, item in value.items() if key not in _PRIVATE_KEYS}
+    if isinstance(value, list):
+        return [_strip_private_paths(item) for item in value]
+    return value
+
+
+def _public_artifact(row: Dict[str, Any]) -> Dict[str, Any]:
+    artifact_id = str(row.get("id", ""))
+    workspace = str(row.get("workspace_id") or request_workspace_default())
+    meta = None
+    try:
+        meta = codefacts_store.load_artifact_meta(workspace, artifact_id)
+    except ValueError:
+        meta = None
+    public = {
+        "id": artifact_id,
+        "filename": row.get("filename", ""),
+        "hash_sha256": row.get("hash_sha256", ""),
+        "size_bytes": row.get("size_bytes", 0),
+        "uncompressed_size_bytes": row.get("uncompressed_size_bytes", 0),
+        "file_count": row.get("file_count", 0),
+        "kotlin_file_count": row.get("kotlin_file_count", row.get("kotlin_count", 0)),
+        "gradle_file_count": row.get("gradle_file_count", row.get("gradle_count", 0)),
+        "created_at": row.get("created_at", ""),
+    }
+    if meta:
+        public["workspace_id"] = meta.get("workspaceId")
+        public["snapshot_id"] = meta.get("snapshotId")
+        public["snapshot_manifest_hash"] = meta.get("snapshotManifestHash")
+        if meta.get("sourceRef"):
+            public["source_ref"] = meta.get("sourceRef")
+    return _strip_private_paths(public)
+
+
+def request_workspace_default() -> str:
+    from backend.app.codefacts.identity import workspace_id
+
+    return workspace_id()
+
+
+# --- Session (same-origin demo) ---
+@api_router.get("/session")
+def get_session(request: Request, response: Response):
+    session = session_from_request(request)
+    if not session:
+        token = issue_session(request_workspace(request))
+        set_session_cookie(response, token, request)
+        return {
+            "authenticated": True,
+            "workspaceId": request_workspace(request),
+            "expiresInSec": SESSION_TTL_SECONDS,
+        }
+    return {
+        "authenticated": True,
+        "workspaceId": session["workspaceId"],
+        "expiresInSec": SESSION_TTL_SECONDS,
+    }
+
+
+@api_router.post("/session")
+def create_session(request: Request, response: Response):
+    token = issue_session(request_workspace(request))
+    set_session_cookie(response, token, request)
+    return {"authenticated": True, "workspaceId": request_workspace(request), "expiresInSec": SESSION_TTL_SECONDS}
 
 
 # --- Node Registry ---
@@ -49,30 +147,76 @@ def get_node_types():
 # --- Artifacts ---
 @api_router.post("/artifacts")
 async def upload_artifact(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".zip"):
+    filename = file.filename or "project.zip"
+    if not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Разрешены только файлы с расширением .zip")
-    content = await file.read()
     try:
-        manifest = intake.process_zip_bytes(file.filename, content)
-        db_repo.save_artifact(manifest)
-        return manifest
-    except SafeIntakeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки архива: {str(e)}")
+        manifest = await intake.ingest_upload(file, filename)
+        db_repo.save_artifact(_storage_manifest(manifest))
+        return _public_artifact(manifest)
+    except SafeIntakeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Artifact intake failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Ошибка обработки архива") from exc
+
+
+def _load_sample_artifact_internal() -> Dict[str, Any]:
+    zip_bytes = create_sample_project_zip()
+    manifest = intake.process_zip_bytes("sample_bank_app.zip", zip_bytes)
+    db_repo.save_artifact(_storage_manifest(manifest))
+    return manifest
 
 
 @api_router.post("/artifacts/sample")
 def load_sample_artifact():
-    zip_bytes = create_sample_project_zip()
-    manifest = intake.process_zip_bytes("sample_bank_app.zip", zip_bytes)
-    db_repo.save_artifact(manifest)
-    return manifest
+    return _public_artifact(_load_sample_artifact_internal())
+
+
+@api_router.post("/artifacts/sample/training")
+def load_training_artifact():
+    source = os.getenv("CG_TRAINING_PROJECT", "").strip()
+    if not source:
+        raise HTTPException(
+            status_code=400,
+            detail="CG_TRAINING_PROJECT не задан: укажите путь к локальному training-project на сервере",
+        )
+    try:
+        zip_bytes = build_zip_from_directory(Path(source))
+        manifest = intake.ingest_zip_bytes("training-project.zip", zip_bytes)
+        db_repo.save_artifact(_storage_manifest(manifest))
+        # Публикуем только источник/хэши, без локального пути.
+        source_ref = os.getenv("CG_TRAINING_SOURCE_REF", "local:training-project").strip()
+        codefacts_store.save_artifact_meta(
+            manifest["workspace_id"],
+            manifest["id"],
+            {
+                "artifactId": manifest["id"],
+                "workspaceId": manifest["workspace_id"],
+                "snapshotId": manifest["snapshot_id"],
+                "snapshotManifestHash": manifest["snapshot_manifest_hash"],
+                "artifactHash": manifest["hash_sha256"],
+                "sizeBytes": manifest["size_bytes"],
+                "uncompressedSizeBytes": manifest["uncompressed_size_bytes"],
+                "fileCount": manifest["file_count"],
+                "kotlinFileCount": manifest["kotlin_file_count"],
+                "gradleFileCount": manifest["gradle_file_count"],
+                "filename": manifest["filename"],
+                "createdAt": manifest["created_at"],
+                "sourceRef": source_ref,
+            },
+        )
+        return _public_artifact(manifest)
+    except SafeIntakeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Training sample intake failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Ошибка обработки training sample") from exc
 
 
 @api_router.get("/artifacts")
 def list_artifacts():
-    return db_repo.list_artifacts()
+    return [_public_artifact(row) for row in db_repo.list_artifacts()]
 
 
 @api_router.get("/artifacts/{artifact_id}")
@@ -80,7 +224,7 @@ def get_artifact(artifact_id: str):
     art = db_repo.get_artifact(artifact_id)
     if not art:
         raise HTTPException(status_code=404, detail="Артефакт не найден")
-    return art
+    return _public_artifact(art)
 
 
 # --- Workflows ---
@@ -88,12 +232,11 @@ def get_artifact(artifact_id: str):
 def list_workflows():
     wfs = db_repo.list_workflows()
     if not wfs:
-        # Create default initial workflow
         def_draft = get_default_workflow_draft()
         def_id = "wf_secure_pr_gate"
         db_repo.save_workflow(def_id, def_draft.name, def_draft.description, def_draft.model_dump())
         wfs = db_repo.list_workflows()
-    return wfs
+    return _strip_private_paths(wfs)
 
 
 @api_router.post("/workflows")
@@ -108,7 +251,7 @@ def get_workflow(workflow_id: str):
     wf = db_repo.get_workflow(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Сценарий не найден")
-    return wf
+    return _strip_private_paths(wf)
 
 
 @api_router.put("/workflows/{workflow_id}/draft")
@@ -128,37 +271,32 @@ def validate_workflow(workflow_id: str, draft: Optional[WorkflowDraft] = None):
 
 
 # --- Runs ---
-class RunTriggerRequest:
-    pass
-
-
 @api_router.post("/workflows/{workflow_id}/runs", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_run(workflow_id: str, payload: Dict[str, Any] = None):
+async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None):
     payload = payload or {}
     wf = db_repo.get_workflow(workflow_id)
     if not wf or "draft" not in wf:
         raise HTTPException(status_code=404, detail="Сценарий не найден")
 
     draft = WorkflowDraft(**wf["draft"])
-    rev_id = wf.get("latest_revision_id", "rev_1")
+    rev_id = wf.get("latest_revision_id") or "rev_unknown"
 
-    # If artifact is provided or exists in draft
     artifact_id = payload.get("artifactId")
     if not artifact_id:
-        for n in draft.nodes:
-            if n.kind.value == "project_input" and n.config.get("artifactId"):
-                artifact_id = n.config.get("artifactId")
+        for node in draft.nodes:
+            if node.kind.value == "project_input" and node.config.get("artifactId"):
+                artifact_id = node.config.get("artifactId")
                 break
 
     if not artifact_id:
-        # Fallback to latest uploaded artifact if none specified
         arts = db_repo.list_artifacts()
         if arts:
             artifact_id = arts[0]["id"]
         else:
-            # Automatically create sample project
-            sample_m = load_sample_artifact()
-            artifact_id = sample_m["id"]
+            artifact_id = _load_sample_artifact_internal()["id"]
+
+    if not db_repo.get_artifact(artifact_id):
+        raise HTTPException(status_code=404, detail="Артефакт не найден")
 
     run_id = f"run_{uuid.uuid4().hex[:8]}"
     db_repo.create_run(
@@ -166,16 +304,17 @@ async def trigger_run(workflow_id: str, payload: Dict[str, Any] = None):
         workflow_id=workflow_id,
         revision_id=rev_id,
         artifact_id=artifact_id,
-        trigger_type=payload.get("triggerType", "manual")
+        trigger_type=payload.get("triggerType", "manual"),
     )
 
-    # Launch asynchronous executor
     asyncio.create_task(
         executor.execute_run(
             run_id=run_id,
             draft=draft,
             artifact_id=artifact_id,
-            trigger_type=payload.get("triggerType", "manual")
+            trigger_type=payload.get("triggerType", "manual"),
+            workflow_id=workflow_id,
+            revision_id=rev_id,
         )
     )
 
@@ -184,7 +323,7 @@ async def trigger_run(workflow_id: str, payload: Dict[str, Any] = None):
         "workflowId": workflow_id,
         "revisionId": rev_id,
         "artifactId": artifact_id,
-        "status": "queued"
+        "status": "queued",
     }
 
 
@@ -198,17 +337,92 @@ def get_run(run_id: str):
     run = db_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    return run
+    return _strip_private_paths(run)
 
 
 @api_router.get("/runs/{run_id}/nodes")
 def get_run_nodes(run_id: str):
-    return db_repo.get_node_runs(run_id)
+    return _strip_private_paths(db_repo.get_node_runs(run_id))
 
 
 @api_router.get("/runs/{run_id}/findings")
 def get_run_findings(run_id: str):
-    return db_repo.get_findings(run_id)
+    return _strip_private_paths(db_repo.get_findings(run_id))
+
+
+def _load_run_artifact(run_id: str, workspace: str) -> Optional[Dict[str, Any]]:
+    run = db_repo.get_run(run_id)
+    if not run:
+        return None
+    artifact_id = run.get("artifact_id")
+    if artifact_id:
+        artifact = db_repo.get_artifact(artifact_id)
+        if artifact:
+            try:
+                ensure_artifact_meta(codefacts_store, workspace, artifact)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Artifact meta ensure failed for %s: %s", run_id, exc)
+    return codefacts_store.load_run(workspace, run_uuid(run_id))
+
+
+@api_router.get("/runs/{run_id}/security-map")
+def get_security_map(run_id: str, request: Request):
+    workspace = request_workspace(request)
+    run = db_repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    payload = _load_run_artifact(run_id, workspace)
+    if not payload:
+        raise HTTPException(
+            status_code=409,
+            detail="Карта ещё не построена: запуск не завершил статический анализ или артефакт недоступен",
+        )
+    identity = payload["identity"]
+    return {
+        "identity": {
+            "workspaceId": identity["workspaceId"],
+            "snapshotId": identity["snapshotId"],
+            "runId": identity["runId"],
+        },
+        "map": payload["map"],
+        "findings": payload["findings"],
+    }
+
+
+@api_router.get("/runs/{run_id}/evidence/{evidence_id}")
+def get_evidence(run_id: str, evidence_id: str, request: Request):
+    workspace = request_workspace(request)
+    run = db_repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    payload = _load_run_artifact(run_id, workspace)
+    if not payload:
+        raise HTTPException(status_code=409, detail="Карта ещё не построена")
+    identity = payload["identity"]
+    evidence = next((item for item in payload["map"]["evidence"] if item["id"] == evidence_id), None)
+    request_scope = {
+        "workspaceId": identity["workspaceId"],
+        "runId": identity["runId"],
+        "snapshotId": identity["snapshotId"],
+        "evidenceId": evidence_id,
+    }
+    if not evidence:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "status": "unavailable",
+                "request": request_scope,
+                "code": "EVIDENCE_NOT_FOUND",
+            },
+        )
+    return {
+        "status": "ready",
+        "request": request_scope,
+        "sourceHash": evidence["sourceHash"],
+        "location": evidence["location"],
+        "maskedFragment": evidence["redactedSnippet"],
+        "redactionVersion": payload.get("redactionVersion", "cg-redaction/1"),
+    }
 
 
 @api_router.get("/runs/{run_id}/report")
@@ -216,7 +430,7 @@ def get_run_report(run_id: str):
     rep = db_repo.get_report(run_id)
     if not rep:
         raise HTTPException(status_code=404, detail="Отчет для данного запуска еще не сформирован")
-    return rep
+    return _strip_private_paths(rep)
 
 
 @api_router.get("/runs/{run_id}/report/official.json")
@@ -227,7 +441,7 @@ def download_official_json(run_id: str):
     return Response(
         content=rep["official_json"],
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename=security-report-{run_id}.json"}
+        headers={"Content-Disposition": f"attachment; filename=security-report-{run_id}.json"},
     )
 
 
@@ -238,7 +452,7 @@ def download_readable_markdown(run_id: str):
         raise HTTPException(status_code=404, detail="Отчет не найден")
     return PlainTextResponse(
         content=rep["readable_markdown"],
-        headers={"Content-Disposition": f"attachment; filename=security-report-{run_id}.md"}
+        headers={"Content-Disposition": f"attachment; filename=security-report-{run_id}.md"},
     )
 
 
@@ -250,8 +464,8 @@ async def stream_run_events(run_id: str, after: int = Query(default=0)):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -269,6 +483,8 @@ def create_schedule(payload: Dict[str, Any]):
     cron_interval = payload.get("cronOrInterval", "interval:60")
     if not wf_id or not art_id:
         raise HTTPException(status_code=400, detail="workflowId и artifactId обязательны")
+    if not db_repo.get_artifact(art_id):
+        raise HTTPException(status_code=404, detail="Артефакт не найден")
     db_repo.save_schedule(sched_id, wf_id, art_id, cron_interval, enabled=True)
     return {"id": sched_id, "status": "created"}
 
@@ -276,15 +492,27 @@ def create_schedule(payload: Dict[str, Any]):
 # --- Webhook Test Receiver ---
 @api_router.post("/webhook-test")
 async def webhook_test_receiver(request: Request):
-    body = await request.json()
-    headers = dict(request.headers)
+    raw = await request.body()
+    if len(raw) > MAX_WEBHOOK_BYTES:
+        raise HTTPException(status_code=413, detail="Слишком большой webhook payload")
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Webhook payload должен быть JSON") from exc
+    allowed_headers = {
+        key: request.headers.get(key)
+        for key in ("content-type", "user-agent", "x-run-id", "x-signature-sha256")
+        if request.headers.get(key)
+    }
     entry = {
         "received_at": datetime.now(timezone.utc).isoformat(),
-        "headers": headers,
-        "payload": body
+        "headers": allowed_headers,
+        "payload": body,
     }
     received_webhooks.append(entry)
-    logger.info(f"Webhook received! RunID: {body.get('runId')} Verdict: {body.get('verdict')}")
+    if len(received_webhooks) > MAX_WEBHOOK_LOG:
+        del received_webhooks[: len(received_webhooks) - MAX_WEBHOOK_LOG]
+    logger.info("Webhook received! RunID: %s", body.get("runId") if isinstance(body, dict) else None)
     return {"status": "ok", "message": "Вебхук успешно принят сервером"}
 
 
@@ -297,9 +525,7 @@ def get_webhook_logs():
 @api_router.post("/ai/synthetic-test")
 def run_ai_synthetic_test(payload: Dict[str, Any]):
     run_id = payload.get("runId")
-    findings = []
+    findings: List[Finding] = []
     if run_id:
-        f_dicts = db_repo.get_findings(run_id)
-        from backend.app.contracts.schemas import Finding
-        findings = [Finding(**f) for f in f_dicts]
+        findings = [Finding(**item) for item in db_repo.get_findings(run_id)]
     return ai_service.generate_synthetic_test(findings)
