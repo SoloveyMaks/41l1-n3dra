@@ -1,0 +1,1738 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.invalid/security-data/0.1",
+  "title": "Proposal v0.1 — requires A/B/D review",
+  "$ref": "#/$defs/SecurityMapDto",
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "SourcePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?![A-Za-z]:)(?!.*[\\u0000-\\u001f\\u007f])(?!.*\\/$).+$"
+    },
+    "Category": {
+      "type": "string",
+      "enum": [
+        "SECRET",
+        "SCA",
+        "SAST"
+      ]
+    },
+    "RunScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId"
+      ]
+    },
+    "RunIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "artifactHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "snapshotManifestHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "workflowRevisionId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "artifactHash",
+        "snapshotManifestHash",
+        "workflowRevisionId"
+      ]
+    },
+    "AnalysisSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parserVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rulesVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "advisoryVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hmacKeyVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parserHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "rulesHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "advisoryHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "scanConfigHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "domainPolicyRevisionId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "domainPolicyVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "domainPolicyHash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "parserVersion",
+        "rulesVersion",
+        "advisoryVersion",
+        "configVersion",
+        "hmacKeyVersion",
+        "parserHash",
+        "rulesHash",
+        "advisoryHash",
+        "scanConfigHash",
+        "domainPolicyRevisionId",
+        "domainPolicyVersion",
+        "domainPolicyHash"
+      ]
+    },
+    "Location": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/SourcePath"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "endColumn": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "byteStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "byteEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "column",
+        "endLine",
+        "endColumn",
+        "byteStart",
+        "byteEnd"
+      ]
+    },
+    "SemanticAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "normalizedPath": {
+          "$ref": "#/$defs/SourcePath"
+        },
+        "symbolKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalizedContextHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "secretHmac": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "normalizedPath",
+        "symbolKey",
+        "normalizedContextHash",
+        "role",
+        "secretHmac"
+      ]
+    },
+    "Finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "fingerprintVersion": {
+          "const": "fp/v1"
+        },
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "ruleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ruleVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ruleFamily": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "severityBasis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "confidenceBasis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "potential",
+            "inconclusive"
+          ]
+        },
+        "primaryLocation": {
+          "$ref": "#/$defs/Location"
+        },
+        "primaryEvidenceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "relatedEvidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "traceEvidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "graphNodeIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "anchor": {
+          "$ref": "#/$defs/SemanticAnchor"
+        },
+        "advisoryIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "coverageWarnings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "id",
+        "fingerprint",
+        "fingerprintVersion",
+        "category",
+        "ruleId",
+        "ruleVersion",
+        "ruleFamily",
+        "severity",
+        "severityBasis",
+        "confidence",
+        "confidenceBasis",
+        "status",
+        "primaryLocation",
+        "primaryEvidenceId",
+        "relatedEvidenceIds",
+        "traceEvidenceIds",
+        "graphNodeIds",
+        "anchor",
+        "advisoryIds",
+        "coverageWarnings"
+      ]
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "location": {
+          "$ref": "#/$defs/Location"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "source",
+            "ast",
+            "dsl",
+            "sql",
+            "manifest"
+          ]
+        },
+        "redactedSnippet": {
+          "type": "string"
+        },
+        "sourceHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "producerVersion": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "id",
+        "location",
+        "kind",
+        "redactedSnippet",
+        "sourceHash",
+        "producerVersion"
+      ]
+    },
+    "CodeNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "actor",
+            "route",
+            "security_chain",
+            "matcher",
+            "guard",
+            "function",
+            "source",
+            "sink",
+            "data",
+            "config"
+          ]
+        },
+        "symbolKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "producerVersion": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "id",
+        "kind",
+        "symbolKey",
+        "label",
+        "evidenceRefs",
+        "producerVersion"
+      ]
+    },
+    "CodeEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "fromId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "toId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "routes_to",
+            "matches",
+            "permits",
+            "requires",
+            "calls",
+            "flows_to",
+            "guards",
+            "reads",
+            "writes"
+          ]
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "partial",
+            "unknown"
+          ]
+        },
+        "resolutionReason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producerVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "source",
+            "policy_assumption"
+          ]
+        },
+        "policyRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "id",
+        "fromId",
+        "toId",
+        "kind",
+        "evidenceRefs",
+        "resolution",
+        "resolutionReason",
+        "producerVersion",
+        "basis",
+        "policyRef"
+      ]
+    },
+    "CoverageScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/SourcePath"
+        },
+        "ruleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "checked",
+            "partial",
+            "skipped",
+            "error",
+            "unsupported"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "path",
+        "ruleId",
+        "category",
+        "status",
+        "reason"
+      ]
+    },
+    "Coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "filesTotal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "filesVisited": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "rulesApplied": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CoverageScope"
+          }
+        },
+        "skippedScopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "parserErrors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "unresolvedSymbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "limitsReached": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "status",
+        "filesTotal",
+        "filesVisited",
+        "rulesApplied",
+        "scopes",
+        "skippedScopes",
+        "parserErrors",
+        "unresolvedSymbols",
+        "limitsReached"
+      ]
+    },
+    "Diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "id",
+        "category",
+        "code",
+        "message",
+        "evidenceId"
+      ]
+    },
+    "DomainPolicyInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "sourceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approvalStatus": {
+          "type": "string",
+          "enum": [
+            "assumption",
+            "approved"
+          ]
+        },
+        "approvedBy": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approvedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/DomainPolicyResource"
+          }
+        }
+      },
+      "required": [
+        "workspaceId",
+        "id",
+        "version",
+        "hash",
+        "sourceRef",
+        "approvalStatus",
+        "approvedBy",
+        "approvedAt",
+        "resources"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "approvalStatus": {
+                "const": "assumption"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "approvedBy": {
+                "type": "null"
+              },
+              "approvedAt": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "approvedBy": {
+                "type": "string",
+                "minLength": 1
+              },
+              "approvedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ScanResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "0.1"
+        },
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "signature": {
+          "$ref": "#/$defs/AnalysisSignature"
+        },
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "failed",
+            "timeout",
+            "unsupported"
+          ]
+        },
+        "producerVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Finding"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "identity",
+        "signature",
+        "category",
+        "status",
+        "producerVersion",
+        "durationMs",
+        "findings",
+        "evidence",
+        "diagnostics",
+        "coverage"
+      ]
+    },
+    "CodeFactsBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "0.1"
+        },
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "signature": {
+          "$ref": "#/$defs/AnalysisSignature"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodeNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodeEdge"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "policyInputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DomainPolicyInput"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "identity",
+        "signature",
+        "nodes",
+        "edges",
+        "evidence",
+        "coverage",
+        "policyInputs",
+        "diagnostics"
+      ]
+    },
+    "FindingNodeLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "findingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "nodeId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "required": [
+        "findingId",
+        "nodeId"
+      ]
+    },
+    "SecurityMapDto": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "0.1"
+        },
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "signature": {
+          "$ref": "#/$defs/AnalysisSignature"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodeNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodeEdge"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "policyInputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DomainPolicyInput"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          }
+        },
+        "bundleHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "findingRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Uuid"
+          }
+        },
+        "findingNodeLinks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FindingNodeLink"
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "identity",
+        "signature",
+        "nodes",
+        "edges",
+        "evidence",
+        "coverage",
+        "policyInputs",
+        "diagnostics",
+        "bundleHash",
+        "findingRefs",
+        "findingNodeLinks"
+      ]
+    },
+    "AnalysisBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": "0.1"
+        },
+        "identity": {
+          "$ref": "#/$defs/RunIdentity"
+        },
+        "signature": {
+          "$ref": "#/$defs/AnalysisSignature"
+        },
+        "scanResults": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScanResult"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "codeFacts": {
+          "$ref": "#/$defs/CodeFactsBundle"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "identity",
+        "signature",
+        "scanResults",
+        "codeFacts"
+      ]
+    },
+    "ComparisonItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "baselineFindingId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currentFindingId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "persistent",
+            "introduced",
+            "changed",
+            "resolved",
+            "inconclusive",
+            "file_deleted"
+          ]
+        },
+        "matchingBasis": {
+          "type": "string",
+          "enum": [
+            "unique_anchor",
+            "ambiguous",
+            "none"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "baselineFindingId",
+        "currentFindingId",
+        "status",
+        "matchingBasis",
+        "reason"
+      ]
+    },
+    "DeletedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/SourcePath"
+        },
+        "baselineSourceHash": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "path",
+        "baselineSourceHash",
+        "reason"
+      ]
+    },
+    "ComparisonDto": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "baselineRunId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "baselineSnapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "currentRunId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "currentSnapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "comparable": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ComparisonItem"
+          }
+        },
+        "deletedFiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeletedFile"
+          }
+        }
+      },
+      "required": [
+        "workspaceId",
+        "id",
+        "baselineRunId",
+        "baselineSnapshotId",
+        "currentRunId",
+        "currentSnapshotId",
+        "comparable",
+        "reasons",
+        "items",
+        "deletedFiles"
+      ]
+    },
+    "EmbeddingSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "active",
+            "retired"
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dimension": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "cosine",
+                "l2",
+                "inner_product"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queryPreparationVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "documentPreparationVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "redactionVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "workspaceId",
+        "id",
+        "status",
+        "provider",
+        "model",
+        "modelVersion",
+        "dimension",
+        "metric",
+        "queryPreparationVersion",
+        "documentPreparationVersion",
+        "redactionVersion"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "active",
+                  "retired"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "model": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "modelVersion": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "dimension": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "metric": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "queryPreparationVersion": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "documentPreparationVersion": {
+                "not": {
+                  "type": "null"
+                }
+              },
+              "redactionVersion": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provider": {
+                "type": "null"
+              },
+              "model": {
+                "type": "null"
+              },
+              "modelVersion": {
+                "type": "null"
+              },
+              "dimension": {
+                "type": "null"
+              },
+              "metric": {
+                "type": "null"
+              },
+              "queryPreparationVersion": {
+                "type": "null"
+              },
+              "documentPreparationVersion": {
+                "type": "null"
+              },
+              "redactionVersion": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SimilarFix": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exampleId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "sourceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verificationBasis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "embeddingSpec": {
+          "$ref": "#/$defs/EmbeddingSpec"
+        },
+        "distance": {
+          "type": "number"
+        },
+        "metric": {
+          "type": "string",
+          "enum": [
+            "cosine",
+            "l2",
+            "inner_product"
+          ]
+        },
+        "redactedFix": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "exampleId",
+        "sourceRef",
+        "verificationBasis",
+        "limitations",
+        "embeddingSpec",
+        "distance",
+        "metric",
+        "redactedFix"
+      ]
+    },
+    "SimilarFixesResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SimilarFix"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "items"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "items": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AiExplanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "findingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validatorVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validationStatus": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "rejected",
+            "unavailable"
+          ]
+        },
+        "redactedExplanation": {
+          "type": "string"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "workspaceId",
+        "runId",
+        "snapshotId",
+        "id",
+        "findingId",
+        "provider",
+        "model",
+        "modelVersion",
+        "promptVersion",
+        "validatorVersion",
+        "validationStatus",
+        "redactedExplanation",
+        "limitations"
+      ]
+    },
+    "RoleAccessPolicyResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "role_access"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowedRoles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "kind",
+        "resource",
+        "allowedRoles"
+      ]
+    },
+    "OwnershipPolicyResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "ownership"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownerField": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trustedIdentity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "roleExceptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "resource",
+        "ownerField",
+        "trustedIdentity",
+        "roleExceptions"
+      ]
+    },
+    "DomainPolicyResource": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RoleAccessPolicyResource"
+        },
+        {
+          "$ref": "#/$defs/OwnershipPolicyResource"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "security-map.layout/1",
+  "mapIdentity": {
+    "workspaceId": "illustration-workspace",
+    "runId": "illustration-manual-review-001",
+    "snapshotId": "illustration-training-fe1fcbe"
+  },
+  "viewId": "pickup-manual-review",
+  "nodePositions": {
+    "n-anonymous": {
+      "x": 0,
+      "y": 0
+    },
+    "n-route": {
+      "x": 270,
+      "y": 0
+    },
+    "n-permit": {
+      "x": 540,
+      "y": 0
+    },
+    "n-handler": {
+      "x": 810,
+      "y": 0
+    },
+    "n-sql": {
+      "x": 1080,
+      "y": 0
+    },
+    "n-data": {
+      "x": 1350,
+      "y": 0
+    },
+    "n-finding": {
+      "x": 1620,
+      "y": 0
+    }
+  },
+  "expandedUnknownIds": [
+    "gap-additional-guards"
+  ],
+  "selection": null,
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 0.7
+  },
+  "note": "Presentation state only; changes do not alter evidence, facts, findings, workflow or run identity."
+}

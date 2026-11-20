@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+__pycache__/
+.env
+.env.*
+!.env.example
+secrets/
+tools_local/
+research/
+artifacts/
+*.zip
+*.log
+.DS_Store

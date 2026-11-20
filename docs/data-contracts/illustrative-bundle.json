@@ -1,0 +1,335 @@
+{
+  "schemaVersion": "0.1",
+  "identity": {
+    "workspaceId": "00000000-0000-0000-0000-000000000001",
+    "runId": "00000000-0000-0000-0000-000000000014",
+    "snapshotId": "00000000-0000-0000-0000-000000000013",
+    "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "snapshotManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "workflowRevisionId": "00000000-0000-0000-0000-000000000011"
+  },
+  "signature": {
+    "parserVersion": "illustration/v0",
+    "parserHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "rulesVersion": "illustration/v0",
+    "rulesHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "advisoryVersion": "illustration/v0",
+    "advisoryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "configVersion": "illustration/v0",
+    "scanConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "hmacKeyVersion": "illustration/v0",
+    "domainPolicyRevisionId": null,
+    "domainPolicyVersion": null,
+    "domainPolicyHash": null
+  },
+  "scanResults": [
+    {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "00000000-0000-0000-0000-000000000001",
+        "runId": "00000000-0000-0000-0000-000000000014",
+        "snapshotId": "00000000-0000-0000-0000-000000000013",
+        "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshotManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "workflowRevisionId": "00000000-0000-0000-0000-000000000011"
+      },
+      "signature": {
+        "parserVersion": "illustration/v0",
+        "parserHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "rulesVersion": "illustration/v0",
+        "rulesHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "advisoryVersion": "illustration/v0",
+        "advisoryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "configVersion": "illustration/v0",
+        "scanConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "hmacKeyVersion": "illustration/v0",
+        "domainPolicyRevisionId": null,
+        "domainPolicyVersion": null,
+        "domainPolicyHash": null
+      },
+      "category": "SECRET",
+      "status": "complete",
+      "producerVersion": "illustration/v0",
+      "durationMs": 0,
+      "findings": [],
+      "evidence": [],
+      "diagnostics": [],
+      "coverage": {
+        "status": "complete",
+        "filesTotal": 1,
+        "filesVisited": 1,
+        "rulesApplied": [
+          "illustration"
+        ],
+        "scopes": [
+          {
+            "path": "src/Illustration.kt",
+            "ruleId": "illustration",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Manually authored DTO illustration; no scanner executed"
+          }
+        ],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [],
+        "limitsReached": []
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "00000000-0000-0000-0000-000000000001",
+        "runId": "00000000-0000-0000-0000-000000000014",
+        "snapshotId": "00000000-0000-0000-0000-000000000013",
+        "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshotManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "workflowRevisionId": "00000000-0000-0000-0000-000000000011"
+      },
+      "signature": {
+        "parserVersion": "illustration/v0",
+        "parserHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "rulesVersion": "illustration/v0",
+        "rulesHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "advisoryVersion": "illustration/v0",
+        "advisoryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "configVersion": "illustration/v0",
+        "scanConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "hmacKeyVersion": "illustration/v0",
+        "domainPolicyRevisionId": null,
+        "domainPolicyVersion": null,
+        "domainPolicyHash": null
+      },
+      "category": "SCA",
+      "status": "complete",
+      "producerVersion": "illustration/v0",
+      "durationMs": 0,
+      "findings": [],
+      "evidence": [],
+      "diagnostics": [],
+      "coverage": {
+        "status": "complete",
+        "filesTotal": 1,
+        "filesVisited": 1,
+        "rulesApplied": [
+          "illustration"
+        ],
+        "scopes": [
+          {
+            "path": "src/Illustration.kt",
+            "ruleId": "illustration",
+            "category": "SCA",
+            "status": "checked",
+            "reason": "Manually authored DTO illustration; no scanner executed"
+          }
+        ],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [],
+        "limitsReached": []
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "00000000-0000-0000-0000-000000000001",
+        "runId": "00000000-0000-0000-0000-000000000014",
+        "snapshotId": "00000000-0000-0000-0000-000000000013",
+        "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "snapshotManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "workflowRevisionId": "00000000-0000-0000-0000-000000000011"
+      },
+      "signature": {
+        "parserVersion": "illustration/v0",
+        "parserHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "rulesVersion": "illustration/v0",
+        "rulesHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "advisoryVersion": "illustration/v0",
+        "advisoryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "configVersion": "illustration/v0",
+        "scanConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "hmacKeyVersion": "illustration/v0",
+        "domainPolicyRevisionId": null,
+        "domainPolicyVersion": null,
+        "domainPolicyHash": null
+      },
+      "category": "SAST",
+      "status": "complete",
+      "producerVersion": "illustration/v0",
+      "durationMs": 0,
+      "findings": [
+        {
+          "workspaceId": "00000000-0000-0000-0000-000000000001",
+          "runId": "00000000-0000-0000-0000-000000000014",
+          "snapshotId": "00000000-0000-0000-0000-000000000013",
+          "id": "00000000-0000-0000-0000-000000000016",
+          "fingerprint": "12d00270448e89c11945f4290c0da23cac5d88fc1ed1455121cb072eac8b67e4",
+          "fingerprintVersion": "fp/v1",
+          "category": "SAST",
+          "ruleId": "illustration",
+          "ruleVersion": "illustration/v0",
+          "ruleFamily": "illustration",
+          "severity": "info",
+          "severityBasis": "Manually authored shape illustration",
+          "confidence": "low",
+          "confidenceBasis": "No scanner executed",
+          "status": "inconclusive",
+          "primaryLocation": {
+            "path": "src/Illustration.kt",
+            "line": 2,
+            "column": 1,
+            "endLine": 2,
+            "endColumn": 2,
+            "byteStart": 4,
+            "byteEnd": 6
+          },
+          "primaryEvidenceId": "00000000-0000-0000-0000-000000000015",
+          "relatedEvidenceIds": [],
+          "traceEvidenceIds": [],
+          "graphNodeIds": [
+            "00000000-0000-0000-0000-000000000017"
+          ],
+          "anchor": {
+            "normalizedPath": "src/Illustration.kt",
+            "symbolKey": "illustration",
+            "normalizedContextHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "role": "illustration",
+            "secretHmac": null
+          },
+          "advisoryIds": [],
+          "coverageWarnings": [
+            "Illustrative DTO, not a scanner finding"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "workspaceId": "00000000-0000-0000-0000-000000000001",
+          "runId": "00000000-0000-0000-0000-000000000014",
+          "snapshotId": "00000000-0000-0000-0000-000000000013",
+          "id": "00000000-0000-0000-0000-000000000015",
+          "location": {
+            "path": "src/Illustration.kt",
+            "line": 2,
+            "column": 1,
+            "endLine": 2,
+            "endColumn": 2,
+            "byteStart": 4,
+            "byteEnd": 6
+          },
+          "kind": "source",
+          "redactedSnippet": "б",
+          "sourceHash": "6d2a18bd884dca953fece235f7465a27df384ea8e7a3cf3c8445339e9419f048",
+          "producerVersion": "illustration/v0"
+        }
+      ],
+      "diagnostics": [],
+      "coverage": {
+        "status": "complete",
+        "filesTotal": 1,
+        "filesVisited": 1,
+        "rulesApplied": [
+          "illustration"
+        ],
+        "scopes": [
+          {
+            "path": "src/Illustration.kt",
+            "ruleId": "illustration",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Manually authored DTO illustration; no scanner executed"
+          }
+        ],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [],
+        "limitsReached": []
+      }
+    }
+  ],
+  "codeFacts": {
+    "schemaVersion": "0.1",
+    "identity": {
+      "workspaceId": "00000000-0000-0000-0000-000000000001",
+      "runId": "00000000-0000-0000-0000-000000000014",
+      "snapshotId": "00000000-0000-0000-0000-000000000013",
+      "artifactHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "snapshotManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "workflowRevisionId": "00000000-0000-0000-0000-000000000011"
+    },
+    "signature": {
+      "parserVersion": "illustration/v0",
+      "parserHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "rulesVersion": "illustration/v0",
+      "rulesHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "advisoryVersion": "illustration/v0",
+      "advisoryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "configVersion": "illustration/v0",
+      "scanConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "hmacKeyVersion": "illustration/v0",
+      "domainPolicyRevisionId": null,
+      "domainPolicyVersion": null,
+      "domainPolicyHash": null
+    },
+    "nodes": [
+      {
+        "workspaceId": "00000000-0000-0000-0000-000000000001",
+        "runId": "00000000-0000-0000-0000-000000000014",
+        "snapshotId": "00000000-0000-0000-0000-000000000013",
+        "id": "00000000-0000-0000-0000-000000000017",
+        "kind": "function",
+        "symbolKey": "illustration",
+        "label": "Illustration only",
+        "evidenceRefs": [
+          "00000000-0000-0000-0000-000000000015"
+        ],
+        "producerVersion": "illustration/v0"
+      }
+    ],
+    "edges": [],
+    "evidence": [
+      {
+        "workspaceId": "00000000-0000-0000-0000-000000000001",
+        "runId": "00000000-0000-0000-0000-000000000014",
+        "snapshotId": "00000000-0000-0000-0000-000000000013",
+        "id": "00000000-0000-0000-0000-000000000015",
+        "location": {
+          "path": "src/Illustration.kt",
+          "line": 2,
+          "column": 1,
+          "endLine": 2,
+          "endColumn": 2,
+          "byteStart": 4,
+          "byteEnd": 6
+        },
+        "kind": "source",
+        "redactedSnippet": "б",
+        "sourceHash": "6d2a18bd884dca953fece235f7465a27df384ea8e7a3cf3c8445339e9419f048",
+        "producerVersion": "illustration/v0"
+      }
+    ],
+    "coverage": {
+      "status": "complete",
+      "filesTotal": 1,
+      "filesVisited": 1,
+      "rulesApplied": [
+        "illustration"
+      ],
+      "scopes": [
+        {
+          "path": "src/Illustration.kt",
+          "ruleId": "illustration",
+          "category": "SAST",
+          "status": "checked",
+          "reason": "Manually authored DTO illustration; no scanner executed"
+        }
+      ],
+      "skippedScopes": [],
+      "parserErrors": [],
+      "unresolvedSymbols": [],
+      "limitsReached": []
+    },
+    "policyInputs": [],
+    "diagnostics": []
+  }
+}

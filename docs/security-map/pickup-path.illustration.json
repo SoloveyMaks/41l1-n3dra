@@ -1,0 +1,1305 @@
+{
+  "schemaVersion": "security-map.contract-illustration/1",
+  "provenance": {
+    "kind": "manual_source_review",
+    "usage": "contract illustration",
+    "analyzerOutput": false,
+    "applicationExecuted": false,
+    "exploitPerformed": false,
+    "sourceRepository": "https://github.com/TBagirov/training",
+    "sourceCommit": "fe1fcbe212669783480666b9b60147c8a8c6eef4",
+    "sourceRoot": "training-project",
+    "organizerSnapshotDirectory": "fe1fcbe212669783480666b9b60147c8a8c6eef4",
+    "sourceManifestHash": "2f1266343a8e22406a2b9915f1fad1dc101ef0db0fbe99cf32afac0ab3907bba",
+    "sourceManifestHashAlgorithm": "sha256(canonical JSON of sourceManifest; UTF-8, sorted keys, compact separators, no final newline)",
+    "sourceManifest": [
+      {
+        "path": ".gitignore",
+        "sizeBytes": 28,
+        "sha256": "406baf16089f17207a079656dc29bca7139269d3711fe64e123da81be8aeb332"
+      },
+      {
+        "path": "README.md",
+        "sizeBytes": 1678,
+        "sha256": "8602d15f2d2633fd3e126d983655cbd11f9556ee2389f0769e6c9c17f8637e99"
+      },
+      {
+        "path": "build.gradle.kts",
+        "sizeBytes": 1890,
+        "sha256": "4bd6299c8543ad02a83e3233c9fc9062f6ba3159b84a79237f680ad3f495a723"
+      },
+      {
+        "path": "gradle/wrapper/gradle-wrapper.jar",
+        "sizeBytes": 43764,
+        "sha256": "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172"
+      },
+      {
+        "path": "gradle/wrapper/gradle-wrapper.properties",
+        "sizeBytes": 340,
+        "sha256": "dfca8a2f2c16bad3529398689eaf73ecdf8e20baf979ce0dab3fc24295b229de"
+      },
+      {
+        "path": "gradle.lockfile",
+        "sizeBytes": 4175,
+        "sha256": "bc7f240ab3ece0bbc64a482c0f1a4e9154326fec822fdb979e0cf9b4bbd12040"
+      },
+      {
+        "path": "gradle.properties",
+        "sizeBytes": 35,
+        "sha256": "65948c24783f8c1cc120c2f5e2af64b1bce33c3cd8bd50531c0204586266e4bf"
+      },
+      {
+        "path": "gradlew",
+        "sizeBytes": 8755,
+        "sha256": "fb49f8cb2e5b1d83fba3dcc2c0dd0934c5655cbaf8bd1510ada7cc02692095ca"
+      },
+      {
+        "path": "gradlew.bat",
+        "sizeBytes": 2865,
+        "sha256": "49792578a7942e08b708df3d3902ddbfc49d2203775c0161ef0c24b23fe4aeae"
+      },
+      {
+        "path": "settings.gradle.kts",
+        "sizeBytes": 33,
+        "sha256": "650cbf6638f7367746691ca3105b375bcb96c4b6127cdac23b2bb2d5829e3730"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/RepairDeskApplication.kt",
+        "sizeBytes": 275,
+        "sha256": "03dd62ba16a125e62ffc38e44b2e566b16cfa2cc17c5a6bce4f39ce26c973a55"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/catalog/ServiceCatalogController.kt",
+        "sizeBytes": 336,
+        "sha256": "7b0853896debacfc84f5b5170a437c8fc5c6538f9f10dfe4db1a79de6f095f89"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairAccounts.kt",
+        "sizeBytes": 1154,
+        "sha256": "8c23da2a7212915b8578de0a1d730cf15a99f3a263ceeb91514a633f87aad0e3"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairCors.kt",
+        "sizeBytes": 728,
+        "sha256": "ea5113057abb512db8271fcbb3873cb5caacc3cb21e188e4f047495373e62e78"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "sizeBytes": 989,
+        "sha256": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/DepotStatusClient.kt",
+        "sizeBytes": 435,
+        "sha256": "ee6c337e1ce1edee82b132cb9e296d289a60d372093f697ebe0675f9d89e39f7"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/LegacyIntake.kt",
+        "sizeBytes": 1401,
+        "sha256": "f2a6fff79ecc355f80f7ba618ad32a4d04e8eeab87927912f2f475d233854d3b"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/ManualsHttpsClient.kt",
+        "sizeBytes": 284,
+        "sha256": "5669023a8e4dc825b2e0c5ccf95602ec5578d22cd13e886ba2aac06056de4901"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/PartsImportSettings.kt",
+        "sizeBytes": 255,
+        "sha256": "571258b299f267091cdcb81321c5e932dc9395ae6470c3720f1a9f93a9d7b1ee"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/QuoteRequest.kt",
+        "sizeBytes": 364,
+        "sha256": "d7c0570ea77709573b2a6d60bc2076e8dae9f56298e4e6fe1f9dcb8ea5382526"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/SupplierHttpsClient.kt",
+        "sizeBytes": 513,
+        "sha256": "09a8b463a8d8e9e93410fda7b8811b2c66643041a3b4f112427f3ae7e7ca6ce2"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/integration/WarrantyHeaders.kt",
+        "sizeBytes": 327,
+        "sha256": "f1964181d3535fe2afae985c6ec1d4e41573f9f12b64e994c63aeb25ce46fda6"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/pickup/PickupExportController.kt",
+        "sizeBytes": 569,
+        "sha256": "bc92da03644731b3f534934abfb34ff68728c3e40f3a5306a36a8d4deedde94e"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairLookupController.kt",
+        "sizeBytes": 881,
+        "sha256": "060813e7edf66e7dc07ba6326fc8f5e082ae83804deb5fd9967b1824bc2b9ed1"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketController.kt",
+        "sizeBytes": 841,
+        "sha256": "b0503273f3d90ff65da9ae8d3c739d1f36f4a307473480a6a26593b42d5be651"
+      },
+      {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketReader.kt",
+        "sizeBytes": 786,
+        "sha256": "efbbc45636d06f6bf3e1a1ba0b6b1cbdb71ccabd3080326f1d7f2881597e452d"
+      },
+      {
+        "path": "src/main/resources/application.yml",
+        "sizeBytes": 273,
+        "sha256": "cdf4cdd961794b1305906989c4e9508dead976e6173d0c9da302c8a19ea7fcfd"
+      },
+      {
+        "path": "src/main/resources/data.sql",
+        "sizeBytes": 295,
+        "sha256": "116ec699c8a709f2d7a32dd6e56dc10d43f089cf6266b33737c96137e00b0775"
+      },
+      {
+        "path": "src/main/resources/schema.sql",
+        "sizeBytes": 361,
+        "sha256": "a593c5df42cca6e1a9d0ac99c8c34bb430fa9925e6717135d24ab97b344b06a1"
+      }
+    ],
+    "identityLimitations": "Illustration IDs are not persisted runs; original uploaded archive hash and workflow revision are unavailable. Never substitute manifest hash for artifactHash."
+  },
+  "identity": {
+    "workspaceId": "illustration-workspace",
+    "artifactId": null,
+    "snapshotId": "illustration-training-fe1fcbe",
+    "runId": "illustration-manual-review-001",
+    "workflowRevisionId": null,
+    "artifactHash": null
+  },
+  "signature": {
+    "parserVersion": null,
+    "rulesVersion": null,
+    "advisoryVersion": null,
+    "scanConfigHash": null,
+    "domainPolicyHash": "df73de084f28cc4df2b325f5b9ee66d0be4b7364491f7de2f4cbcd19f8c57144",
+    "hmacKeyVersion": null,
+    "status": "not_a_scanner_run",
+    "manualReviewVersion": "manual-source-review/1"
+  },
+  "nodes": [
+    {
+      "id": "n-anonymous",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "principal_class",
+      "symbolKey": "principal:anonymous",
+      "label": "Анонимный запрос",
+      "evidenceRefs": [
+        "ev-pickup-permit"
+      ]
+    },
+    {
+      "id": "n-route",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "http_route",
+      "symbolKey": "route:GET:/api/pickup/export",
+      "label": "GET /api/pickup/export",
+      "evidenceRefs": [
+        "ev-pickup-route"
+      ]
+    },
+    {
+      "id": "n-permit",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "authorization_rule",
+      "symbolKey": "RepairSecurity.securityFilterChain:GET:/api/pickup/export",
+      "label": "Первое применимое permitAll",
+      "evidenceRefs": [
+        "ev-pickup-permit",
+        "ev-pickup-order"
+      ]
+    },
+    {
+      "id": "n-handler",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "function",
+      "symbolKey": "lab.repairdesk.pickup.PickupExportController.export()",
+      "label": "PickupExportController.export",
+      "evidenceRefs": [
+        "ev-pickup-route",
+        "ev-pickup-query"
+      ]
+    },
+    {
+      "id": "n-sql",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "sql_query",
+      "symbolKey": "PickupExportController.export:jdbc.queryForList:pickup-export",
+      "label": "SELECT ticket_code, customer_id, counter_note",
+      "evidenceRefs": [
+        "ev-pickup-query"
+      ]
+    },
+    {
+      "id": "n-data",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "data_projection",
+      "symbolKey": "pickup_slot.join(repair_ticket):ticket_code,customer_id,counter_note",
+      "label": "Данные заявки и примечание выдачи",
+      "evidenceRefs": [
+        "ev-pickup-data",
+        "ev-ticket-schema",
+        "ev-pickup-schema"
+      ]
+    },
+    {
+      "id": "n-finding",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "kind": "finding_reference",
+      "symbolKey": "finding:illustration-pickup-access",
+      "label": "Потенциально публичная служебная выгрузка",
+      "evidenceRefs": [
+        "ev-pickup-permit",
+        "ev-pickup-data",
+        "ev-domain-context"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-anonymous-route",
+      "runId": "illustration-manual-review-001",
+      "fromId": "n-anonymous",
+      "toId": "n-route",
+      "kind": "access_candidate",
+      "evidenceRefs": [
+        "ev-pickup-permit",
+        "ev-pickup-route"
+      ],
+      "resolution": "resolved",
+      "resolutionReason": "Static access candidate supported by permitAll and exact GET mapping; not an observed HTTP request.",
+      "producerVersion": "manual-source-review/1"
+    },
+    {
+      "id": "e-route-permit",
+      "runId": "illustration-manual-review-001",
+      "fromId": "n-route",
+      "toId": "n-permit",
+      "kind": "first_matching_authorization",
+      "evidenceRefs": [
+        "ev-pickup-order",
+        "ev-pickup-route"
+      ],
+      "resolution": "resolved",
+      "resolutionReason": "Manual Spring authorizeHttpRequests ordered-first-match interpretation; later broad MECHANIC rule does not override the earlier exact GET rule.",
+      "producerVersion": "manual-source-review/1"
+    },
+    {
+      "id": "e-permit-handler",
+      "runId": "illustration-manual-review-001",
+      "fromId": "n-permit",
+      "toId": "n-handler",
+      "kind": "authorizes_route_handler",
+      "evidenceRefs": [
+        "ev-pickup-permit",
+        "ev-pickup-route",
+        "ev-security-scope"
+      ],
+      "resolution": "resolved",
+      "resolutionReason": "Exact route equality and manual framework interpretation; no runtime filter-chain proof.",
+      "producerVersion": "manual-source-review/1"
+    },
+    {
+      "id": "e-handler-sql",
+      "runId": "illustration-manual-review-001",
+      "fromId": "n-handler",
+      "toId": "n-sql",
+      "kind": "direct_sql_call",
+      "evidenceRefs": [
+        "ev-pickup-query"
+      ],
+      "resolution": "resolved",
+      "resolutionReason": "Function expression directly returns jdbc.queryForList; no speculative intermediate service.",
+      "producerVersion": "manual-source-review/1"
+    },
+    {
+      "id": "e-sql-data",
+      "runId": "illustration-manual-review-001",
+      "fromId": "n-sql",
+      "toId": "n-data",
+      "kind": "reads_projection",
+      "evidenceRefs": [
+        "ev-pickup-data",
+        "ev-ticket-schema",
+        "ev-pickup-schema"
+      ],
+      "resolution": "resolved",
+      "resolutionReason": "SQL projection and schema foreign key support this data relationship; no data values copied.",
+      "producerVersion": "manual-source-review/1"
+    },
+    {
+      "id": "e-data-finding",
+      "runId": "illustration-manual-review-001",
+      "fromId": "n-data",
+      "toId": "n-finding",
+      "kind": "supports_finding",
+      "evidenceRefs": [
+        "ev-pickup-permit",
+        "ev-pickup-data",
+        "ev-domain-context",
+        "ev-pickup-role"
+      ],
+      "resolution": "resolved",
+      "resolutionReason": "Interpretation combines public path, data projection, and unapproved staff-only policy assumption; this is not a code call.",
+      "producerVersion": "manual-source-review/1",
+      "policyRef": "policy-pickup-proposal"
+    }
+  ],
+  "findingRefs": [
+    "illustration-pickup-access"
+  ],
+  "findings": [
+    {
+      "id": "illustration-pickup-access",
+      "runId": "illustration-manual-review-001",
+      "fingerprint": "44b823c572a9bb4e20c7d295d2d4bc4e1fa35b24dfb9b2bc00698763f7e4aa73",
+      "anchor": {
+        "ruleFamily": "route-authorization",
+        "symbolKey": "lab.repairdesk.pickup.PickupExportController.export()",
+        "sinkRole": "pickup-export",
+        "contextNormalizationVersion": "manual-semantic-context/1",
+        "normalizedContext": "GET /api/pickup/export -> permitAll before /api/pickup/**:MECHANIC -> export -> queryForList(ticket_code,customer_id,counter_note)",
+        "fingerprintVersion": "illustration-sha256/1"
+      },
+      "category": "SAST",
+      "ruleId": "illustration.route-authorization.pickup",
+      "ruleVersion": "proposal/1",
+      "status": "potential",
+      "severity": "HIGH",
+      "severityBasis": "Illustrative impact if staff-only export policy is approved; B must confirm severity and rule before scanner integration.",
+      "confidence": "medium",
+      "confidenceBasis": "Exact source route/SQL confirmed manually; intended prohibition and runtime completeness unverified.",
+      "primaryLocation": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 18,
+        "column": 1,
+        "endLine": 18,
+        "endColumn": 73,
+        "byteStart": 704,
+        "byteEnd": 776
+      },
+      "evidenceRefs": [
+        "ev-pickup-permit",
+        "ev-pickup-order",
+        "ev-pickup-route",
+        "ev-pickup-data",
+        "ev-ticket-schema",
+        "ev-pickup-schema",
+        "ev-domain-context",
+        "ev-pickup-role"
+      ],
+      "trace": [
+        "e-anonymous-route",
+        "e-route-permit",
+        "e-permit-handler",
+        "e-handler-sql",
+        "e-sql-data",
+        "e-data-finding"
+      ],
+      "policyRef": "policy-pickup-proposal",
+      "coverageWarnings": [
+        "Manual source review, not analyzer output.",
+        "No approved domain policy forbidding anonymous export.",
+        "No runtime or exploit verification.",
+        "No whole-program resolution of other guards or filter chains."
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev-security-scope",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 13,
+        "column": 1,
+        "endLine": 23,
+        "endColumn": 17,
+        "byteStart": 445,
+        "byteEnd": 986
+      },
+      "kind": "security_dsl",
+      "redactedSnippet": "    fun securityFilterChain(http: HttpSecurity): SecurityFilterChain = http\n        .cors(withDefaults())\n        .formLogin(withDefaults())\n        .authorizeHttpRequests { rules ->\n            rules.requestMatchers(GET, \"/api/catalog/services\").permitAll()\n            rules.requestMatchers(GET, \"/api/pickup/export\").permitAll()\n            rules.requestMatchers(\"/api/pickup/**\").hasRole(\"MECHANIC\")\n            rules.requestMatchers(\"/api/customer/**\").authenticated()\n            rules.anyRequest().denyAll()\n        }\n        .build()",
+      "sourceHash": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676",
+      "producerVersion": "manual-source-review/1",
+      "claim": "One visible filter chain declaration; not proof of runtime configuration completeness.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-security-scope"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-permit",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 18,
+        "column": 1,
+        "endLine": 18,
+        "endColumn": 73,
+        "byteStart": 704,
+        "byteEnd": 776
+      },
+      "kind": "security_dsl",
+      "redactedSnippet": "            rules.requestMatchers(GET, \"/api/pickup/export\").permitAll()",
+      "sourceHash": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Exact GET pickup matcher permits all.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-permit"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-order",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 17,
+        "column": 1,
+        "endLine": 21,
+        "endColumn": 41,
+        "byteStart": 628,
+        "byteEnd": 959
+      },
+      "kind": "security_dsl",
+      "redactedSnippet": "            rules.requestMatchers(GET, \"/api/catalog/services\").permitAll()\n            rules.requestMatchers(GET, \"/api/pickup/export\").permitAll()\n            rules.requestMatchers(\"/api/pickup/**\").hasRole(\"MECHANIC\")\n            rules.requestMatchers(\"/api/customer/**\").authenticated()\n            rules.anyRequest().denyAll()",
+      "sourceHash": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Exact pickup permit precedes broad MECHANIC restriction; catalog matcher does not match pickup.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-order"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-role",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 19,
+        "column": 1,
+        "endLine": 19,
+        "endColumn": 72,
+        "byteStart": 777,
+        "byteEnd": 848
+      },
+      "kind": "security_dsl",
+      "redactedSnippet": "            rules.requestMatchers(\"/api/pickup/**\").hasRole(\"MECHANIC\")",
+      "sourceHash": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Later broad pickup role restriction; evidence of intent, not approved domain policy.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-role"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-route",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/pickup/PickupExportController.kt",
+        "line": 7,
+        "column": 1,
+        "endLine": 10,
+        "endColumn": 63,
+        "byteStart": 202,
+        "byteEnd": 381
+      },
+      "kind": "route_annotation",
+      "redactedSnippet": "@RestController\nclass PickupExportController(private val jdbc: JdbcTemplate) {\n    @GetMapping(\"/api/pickup/export\")\n    fun export(): List<Map<String, Any?>> = jdbc.queryForList(",
+      "sourceHash": "bc92da03644731b3f534934abfb34ff68728c3e40f3a5306a36a8d4deedde94e",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Rest controller GET mapping and export function.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-route"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-query",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/pickup/PickupExportController.kt",
+        "line": 10,
+        "column": 1,
+        "endLine": 14,
+        "endColumn": 6,
+        "byteStart": 319,
+        "byteEnd": 566
+      },
+      "kind": "sql_call",
+      "redactedSnippet": "    fun export(): List<Map<String, Any?>> = jdbc.queryForList(\n        \"\"\"SELECT r.ticket_code, r.customer_id, p.counter_note\n           FROM pickup_slot p JOIN repair_ticket r ON p.ticket_id = r.ticket_id\n           ORDER BY r.ticket_id\"\"\",\n    )",
+      "sourceHash": "bc92da03644731b3f534934abfb34ff68728c3e40f3a5306a36a8d4deedde94e",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Export returns JDBC queryForList result; query has no WHERE filter.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-query"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-data",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/pickup/PickupExportController.kt",
+        "line": 11,
+        "column": 1,
+        "endLine": 13,
+        "endColumn": 36,
+        "byteStart": 382,
+        "byteEnd": 560
+      },
+      "kind": "sql_projection",
+      "redactedSnippet": "        \"\"\"SELECT r.ticket_code, r.customer_id, p.counter_note\n           FROM pickup_slot p JOIN repair_ticket r ON p.ticket_id = r.ticket_id\n           ORDER BY r.ticket_id\"\"\",",
+      "sourceHash": "bc92da03644731b3f534934abfb34ff68728c3e40f3a5306a36a8d4deedde94e",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Projected columns and pickup_slot to repair_ticket join.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-data"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-schema",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/resources/schema.sql",
+        "line": 1,
+        "column": 1,
+        "endLine": 7,
+        "endColumn": 3,
+        "byteStart": 0,
+        "byteEnd": 220
+      },
+      "kind": "sql_schema",
+      "redactedSnippet": "CREATE TABLE repair_ticket (\n    ticket_id BIGINT PRIMARY KEY,\n    ticket_code VARCHAR(24) UNIQUE NOT NULL,\n    customer_id VARCHAR(48) NOT NULL,\n    frame_tag VARCHAR(40) NOT NULL,\n    work_note VARCHAR(200) NOT NULL\n);",
+      "sourceHash": "a593c5df42cca6e1a9d0ac99c8c34bb430fa9925e6717135d24ab97b344b06a1",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Ticket columns; names alone are not a formal sensitivity classification.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-schema"
+        }
+      }
+    },
+    {
+      "id": "ev-pickup-schema",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/resources/schema.sql",
+        "line": 9,
+        "column": 1,
+        "endLine": 12,
+        "endColumn": 3,
+        "byteStart": 222,
+        "byteEnd": 360
+      },
+      "kind": "sql_schema",
+      "redactedSnippet": "CREATE TABLE pickup_slot (\n    ticket_id BIGINT PRIMARY KEY REFERENCES repair_ticket(ticket_id),\n    counter_note VARCHAR(120) NOT NULL\n);",
+      "sourceHash": "a593c5df42cca6e1a9d0ac99c8c34bb430fa9925e6717135d24ab97b344b06a1",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Pickup ticket foreign key and counter_note column.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-pickup-schema"
+        }
+      }
+    },
+    {
+      "id": "ev-domain-context",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "README.md",
+        "line": 5,
+        "column": 1,
+        "endLine": 5,
+        "endColumn": 218,
+        "byteStart": 432,
+        "byteEnd": 813
+      },
+      "kind": "domain_documentation",
+      "redactedSnippet": "Repair Desk ведёт записи о ремонте велосипедов. Гость видит каталог услуг, клиент просматривает заказ, сотрудники готовят выдачу. Синтетические данные хранятся в H2 in-memory. Внешние интеграции моделируются локально.",
+      "sourceHash": "8602d15f2d2633fd3e126d983655cbd11f9556ee2389f0769e6c9c17f8637e99",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Guest catalog, customer order, staff pickup; descriptive context, not an access-control prohibition.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-domain-context"
+        }
+      }
+    },
+    {
+      "id": "ev-training-scope",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "README.md",
+        "line": 3,
+        "column": 1,
+        "endLine": 3,
+        "endColumn": 244,
+        "byteStart": 15,
+        "byteEnd": 430
+      },
+      "kind": "domain_documentation",
+      "redactedSnippet": "Учебное приложение Cyber Garden 2026 для статической проверки Kotlin и Gradle Kotlin DSL. Приложение намеренно содержит небезопасный код. Записи, идентификаторы и встроенные значения полностью вымышлены. Используйте его только в учебных целях.",
+      "sourceHash": "8602d15f2d2633fd3e126d983655cbd11f9556ee2389f0769e6c9c17f8637e99",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Organizer describes a synthetic educational application; no production data or exploit result.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-training-scope"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-auth",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 20,
+        "column": 1,
+        "endLine": 20,
+        "endColumn": 70,
+        "byteStart": 849,
+        "byteEnd": 918
+      },
+      "kind": "security_dsl",
+      "redactedSnippet": "            rules.requestMatchers(\"/api/customer/**\").authenticated()",
+      "sourceHash": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Customer routes require authentication, not a specific CUSTOMER role.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-auth"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-route",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketController.kt",
+        "line": 10,
+        "column": 1,
+        "endLine": 15,
+        "endColumn": 57,
+        "byteStart": 352,
+        "byteEnd": 647
+      },
+      "kind": "route_and_call",
+      "redactedSnippet": "@RestController\n@RequestMapping(\"/api/customer\")\nclass RepairTicketController(private val reader: RepairTicketReader) {\n    @GetMapping(\"/tickets/{ticketId}\")\n    fun getTicket(@PathVariable ticketId: Long): ResponseEntity<RepairTicket> =\n        ResponseEntity.ofNullable(reader.read(ticketId))",
+      "sourceHash": "b0503273f3d90ff65da9ae8d3c739d1f36f4a307473480a6a26593b42d5be651",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Combined /api/customer + /tickets/{ticketId}; direct reader.read(ticketId).",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-route"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-reader",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketReader.kt",
+        "line": 10,
+        "column": 1,
+        "endLine": 14,
+        "endColumn": 20,
+        "byteStart": 297,
+        "byteEnd": 575
+      },
+      "kind": "sql_call",
+      "redactedSnippet": "    fun read(ticketId: Long): RepairTicket? = jdbc.query(\n        \"SELECT ticket_code, customer_id, work_note FROM repair_ticket WHERE ticket_id = ?\",\n        { row, _ -> RepairTicket(row.getString(1), row.getString(2), row.getString(3)) },\n        ticketId,\n    ).firstOrNull()",
+      "sourceHash": "efbbc45636d06f6bf3e1a1ba0b6b1cbdb71ccabd3080326f1d7f2881597e452d",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Parameterized read by ticket_id only; no customer_id predicate in this query.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-reader"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-model",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketReader.kt",
+        "line": 6,
+        "column": 1,
+        "endLine": 6,
+        "endColumn": 94,
+        "byteStart": 131,
+        "byteEnd": 224
+      },
+      "kind": "data_model",
+      "redactedSnippet": "data class RepairTicket(val ticketCode: String, val customerId: String, val workNote: String)",
+      "sourceHash": "efbbc45636d06f6bf3e1a1ba0b6b1cbdb71ccabd3080326f1d7f2881597e452d",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Returned ticket includes customerId and workNote.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-model"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-summary",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketController.kt",
+        "line": 17,
+        "column": 1,
+        "endLine": 19,
+        "endColumn": 104,
+        "byteStart": 649,
+        "byteEnd": 838
+      },
+      "kind": "identity_usage",
+      "redactedSnippet": "    @GetMapping(\"/summary\")\n    fun summary(principal: Principal): Map<String, Any> =\n        mapOf(\"customerId\" to principal.name, \"openTickets\" to reader.countForCustomer(principal.name))",
+      "sourceHash": "b0503273f3d90ff65da9ae8d3c739d1f36f4a307473480a6a26593b42d5be651",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Separate summary uses Principal; this does not establish trusted identity binding for getTicket.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-summary"
+        }
+      }
+    },
+    {
+      "id": "ev-ticket-count",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketReader.kt",
+        "line": 16,
+        "column": 1,
+        "endLine": 20,
+        "endColumn": 11,
+        "byteStart": 577,
+        "byteEnd": 783
+      },
+      "kind": "sql_call",
+      "redactedSnippet": "    fun countForCustomer(customerId: String): Int = jdbc.queryForObject(\n        \"SELECT COUNT(*) FROM repair_ticket WHERE customer_id = ?\",\n        Int::class.javaObjectType,\n        customerId,\n    ) ?: 0",
+      "sourceHash": "efbbc45636d06f6bf3e1a1ba0b6b1cbdb71ccabd3080326f1d7f2881597e452d",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Separate countForCustomer filters customer_id; not invoked by read(ticketId).",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-ticket-count"
+        }
+      }
+    },
+    {
+      "id": "ev-catalog-permit",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+        "line": 17,
+        "column": 1,
+        "endLine": 17,
+        "endColumn": 76,
+        "byteStart": 628,
+        "byteEnd": 703
+      },
+      "kind": "security_dsl",
+      "redactedSnippet": "            rules.requestMatchers(GET, \"/api/catalog/services\").permitAll()",
+      "sourceHash": "1273bdc21ce590756bc3aa8ea9a8d17fc9fc757acc1606aa58cf6bb9165fe676",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Catalog GET explicitly permits all.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-catalog-permit"
+        }
+      }
+    },
+    {
+      "id": "ev-catalog-handler",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/catalog/ServiceCatalogController.kt",
+        "line": 6,
+        "column": 1,
+        "endLine": 9,
+        "endColumn": 91,
+        "byteStart": 153,
+        "byteEnd": 333
+      },
+      "kind": "route_and_return",
+      "redactedSnippet": "@RestController\nclass ServiceCatalogController {\n    @GetMapping(\"/api/catalog/services\")\n    fun serviceNames() = listOf(\"Brake cable adjustment\", \"Wheel truing\", \"Gear indexing\")",
+      "sourceHash": "7b0853896debacfc84f5b5170a437c8fc5c6538f9f10dfe4db1a79de6f095f89",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Catalog returns a fixed service-name list, with no database call in this method.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-catalog-handler"
+        }
+      }
+    },
+    {
+      "id": "ev-sql-before",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairLookupController.kt",
+        "line": 12,
+        "column": 1,
+        "endLine": 14,
+        "endColumn": 117,
+        "byteStart": 443,
+        "byteEnd": 656
+      },
+      "kind": "sql_call",
+      "redactedSnippet": "    @GetMapping(\"/frame\")\n    fun findByFrameTag(@RequestParam frameTag: String): List<String> =\n        jdbc.queryForList(\"SELECT ticket_code FROM repair_ticket WHERE frame_tag = '$frameTag'\", String::class.java)",
+      "sourceHash": "060813e7edf66e7dc07ba6326fc8f5e082ae83804deb5fd9967b1824bc2b9ed1",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Frame-tag request input interpolated into query text; static source review only.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-sql-before"
+        }
+      }
+    },
+    {
+      "id": "ev-sql-safe-control",
+      "runId": "illustration-manual-review-001",
+      "snapshotId": "illustration-training-fe1fcbe",
+      "location": {
+        "path": "src/main/kotlin/lab/repairdesk/repair/RepairLookupController.kt",
+        "line": 16,
+        "column": 1,
+        "endLine": 18,
+        "endColumn": 121,
+        "byteStart": 658,
+        "byteEnd": 878
+      },
+      "kind": "sql_call",
+      "redactedSnippet": "    @GetMapping(\"/code\")\n    fun findByTicketCode(@RequestParam ticketCode: String): List<String> =\n        jdbc.queryForList(\"SELECT ticket_code FROM repair_ticket WHERE ticket_code = ?\", String::class.java, ticketCode)",
+      "sourceHash": "060813e7edf66e7dc07ba6326fc8f5e082ae83804deb5fd9967b1824bc2b9ed1",
+      "producerVersion": "manual-source-review/1",
+      "claim": "Distinct ticket-code endpoint uses a placeholder with bound argument; not an after snapshot.",
+      "redaction": {
+        "status": "reviewed_no_sensitive_literals_in_range",
+        "contextIncluded": false,
+        "policyVersion": "manual-range-review/1"
+      },
+      "sourceNavigation": {
+        "operation": "A.maskedEvidence",
+        "scope": {
+          "workspaceId": "illustration-workspace",
+          "runId": "illustration-manual-review-001",
+          "snapshotId": "illustration-training-fe1fcbe",
+          "evidenceId": "ev-sql-safe-control"
+        }
+      }
+    }
+  ],
+  "policyInputs": [
+    {
+      "id": "policy-pickup-proposal",
+      "version": "proposal/1",
+      "status": "unapproved_assumption",
+      "approvedBy": null,
+      "resource": "GET /api/pickup/export",
+      "proposedRule": "Export of ticket/customer/pickup-note data is restricted to authorized staff, expected MECHANIC in this sample.",
+      "trustedIdentitySource": null,
+      "roleExceptions": null,
+      "evidenceRefs": [
+        "ev-domain-context",
+        "ev-pickup-role"
+      ],
+      "sensitivityBasis": {
+        "observedFields": [
+          "repair_ticket.ticket_code",
+          "repair_ticket.customer_id",
+          "pickup_slot.counter_note"
+        ],
+        "evidenceRefs": [
+          "ev-pickup-data",
+          "ev-ticket-schema",
+          "ev-pickup-schema"
+        ],
+        "interpretation": "Customer linkage and operational pickup notes are a plausible sensitivity basis; column names and synthetic records do not prove a binding classification.",
+        "formalClassification": "unknown"
+      },
+      "contentHash": "df73de084f28cc4df2b325f5b9ee66d0be4b7364491f7de2f4cbcd19f8c57144",
+      "limitations": [
+        "README describes roles but does not explicitly forbid public export.",
+        "Later hasRole indicates intended restriction but is not itself a signed domain policy.",
+        "Approval must record source, author, version/hash, identity mapping and exceptions."
+      ]
+    }
+  ],
+  "unresolvedRelations": [
+    {
+      "id": "gap-additional-guards",
+      "fromId": "n-handler",
+      "toId": null,
+      "kind": "additional_runtime_authorization",
+      "resolution": "unknown",
+      "resolutionReason": "Reviewed source path does not establish all runtime guards, proxies, method-security interceptors or deployed filter chains; no target/call inferred.",
+      "evidenceRefs": [
+        "ev-security-scope",
+        "ev-pickup-route"
+      ],
+      "presentation": "Show unknown side card at handler; do not draw an invented call edge."
+    }
+  ],
+  "coverage": {
+    "mode": "manual_source_review",
+    "filesVisited": 8,
+    "rulesApplied": [],
+    "skippedScopes": [
+      "No scanner families executed.",
+      "No dynamic resolution, deployed configuration or runtime routes.",
+      "No whole-program negative proof of guards."
+    ],
+    "parserErrors": [],
+    "unresolvedSymbols": [
+      "JdbcTemplate runtime implementation and injected instance not executed/resolved."
+    ],
+    "limitsReached": [],
+    "completeness": "partial",
+    "fileRuleCoverage": []
+  },
+  "diagnostics": [
+    {
+      "code": "ILLUSTRATION_ONLY",
+      "message": "Не результат scanner; domain policy пока предположение, runtime не проверялся."
+    },
+    {
+      "code": "MASKED_SOURCE_UNIMPLEMENTED",
+      "message": "A.maskedEvidence — предлагаемая операция, backend endpoint не создан."
+    }
+  ],
+  "scenarioOutlines": [
+    {
+      "id": "ticket",
+      "principal": "authenticated (customer is a narrative role, not a proven role matcher)",
+      "route": "GET /api/customer/tickets/{ticketId}",
+      "arrows": [
+        {
+          "from": "authenticated",
+          "to": "/api/customer/tickets/{ticketId}",
+          "evidenceRefs": [
+            "ev-ticket-auth",
+            "ev-ticket-route"
+          ]
+        },
+        {
+          "from": "route",
+          "to": "RepairTicketController.getTicket",
+          "evidenceRefs": [
+            "ev-ticket-route"
+          ]
+        },
+        {
+          "from": "getTicket",
+          "to": "RepairTicketReader.read(ticketId)",
+          "evidenceRefs": [
+            "ev-ticket-route",
+            "ev-ticket-reader"
+          ]
+        },
+        {
+          "from": "read(ticketId)",
+          "to": "repair_ticket WHERE ticket_id = ?",
+          "evidenceRefs": [
+            "ev-ticket-reader",
+            "ev-ticket-model",
+            "ev-ticket-schema"
+          ]
+        }
+      ],
+      "findingStatus": "potential",
+      "findingClass": "object-authorization",
+      "missingRelation": {
+        "from": "trusted Principal",
+        "to": "owner predicate for getTicket",
+        "resolution": "unknown",
+        "reason": "No Principal passed in this method/query; separate summary and count are not this path. No global absence proof.",
+        "evidenceRefs": [
+          "ev-ticket-route",
+          "ev-ticket-reader",
+          "ev-ticket-summary",
+          "ev-ticket-count"
+        ]
+      },
+      "requiredPolicy": {
+        "resource": "repair_ticket",
+        "ownerFieldCandidate": "customer_id",
+        "trustedIdentityMapping": null,
+        "roleExceptions": null,
+        "source": null,
+        "version": null,
+        "approval": "required"
+      },
+      "caveats": [
+        "Authentication is not an owner check.",
+        "Bound ticket_id prevents value interpolation at this sink, not unauthorized object access.",
+        "No claim a particular account accessed another customer ticket."
+      ]
+    },
+    {
+      "id": "catalog",
+      "principal": "anonymous",
+      "route": "GET /api/catalog/services",
+      "arrows": [
+        {
+          "from": "anonymous",
+          "to": "catalog route permits all",
+          "evidenceRefs": [
+            "ev-catalog-permit",
+            "ev-domain-context"
+          ]
+        },
+        {
+          "from": "catalog route",
+          "to": "ServiceCatalogController.serviceNames",
+          "evidenceRefs": [
+            "ev-catalog-handler"
+          ]
+        },
+        {
+          "from": "serviceNames",
+          "to": "fixed service name list",
+          "evidenceRefs": [
+            "ev-catalog-handler"
+          ]
+        }
+      ],
+      "findingRefs": [],
+      "supportedCounterexample": "Public access is consistent with README guest catalog and the reviewed fixed-list handler.",
+      "caveats": [
+        "This is a supported local counterexample to public implies vulnerability.",
+        "No Finding on this path is not proof that the whole application is safe.",
+        "No runtime assertion or complete scanner coverage."
+      ]
+    }
+  ],
+  "comparisonSourceRefs": {
+    "beforeInterpolation": [
+      "ev-sql-before"
+    ],
+    "existingParameterizedControl": [
+      "ev-sql-safe-control"
+    ],
+    "afterSourceExists": false,
+    "afterRunExists": false
+  }
+}
