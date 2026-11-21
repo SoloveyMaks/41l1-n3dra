@@ -40,7 +40,7 @@ const GROUPS: Array<{
     label: 'Сценарий',
     items: [
       { id: 'editor', label: 'Конструктор', icon: Wrench },
-      { id: 'schedule', label: 'Расписания', icon: Settings2 },
+      { id: 'schedule', label: 'Автозапуск', icon: Settings2 },
     ],
   },
   {

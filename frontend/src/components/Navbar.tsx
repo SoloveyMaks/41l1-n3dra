@@ -30,7 +30,7 @@ const TAB_ITEMS: Array<{ id: AppTab; label: string; icon: React.ComponentType<{ 
   { id: 'map', label: 'Карта доступа', icon: Network },
   { id: 'report', label: 'Отчёт', icon: FileText },
   { id: 'comparison', label: 'Сравнение', icon: GitCompare },
-  { id: 'schedule', label: 'Расписание', icon: Clock },
+  { id: 'schedule', label: 'Автозапуск', icon: Clock },
 ];
 
 const STATUS_LABEL: Record<RunSummary['execution_status'], string> = {
