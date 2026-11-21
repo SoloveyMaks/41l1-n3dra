@@ -7,6 +7,7 @@ import {
   ReportData,
   RunSummary,
   SessionState,
+  SqlPatternResult,
   WorkflowDraft
 } from '../types';
 
@@ -156,6 +157,10 @@ export const apiClient = {
   async compareRuns(baselineRunId: string, currentRunId: string): Promise<ComparisonDto> {
     return (await request(`/comparisons/${baselineRunId}/${currentRunId}`)).json();
   },
+  async getSqlPattern(baselineRunId: string, currentRunId: string): Promise<SqlPatternResult> {
+    return (await request(`/comparisons/${baselineRunId}/${currentRunId}/sql-pattern`)).json();
+  },
+
 
   getOfficialJsonUrl(runId: string): string {
     return `${API_BASE}/runs/${runId}/report/official.json`;

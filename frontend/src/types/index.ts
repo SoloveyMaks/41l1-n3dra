@@ -143,6 +143,21 @@ export interface DeletedFile {
   reason: string;
 }
 
+export type SqlPatternStatus =
+  | 'persistent' | 'changed' | 'pattern_disappeared'
+  | 'inconclusive' | 'file_deleted';
+
+export interface SqlPatternResult {
+  scope?: string;
+  status?: SqlPatternStatus;
+  reason?: string;
+  ruleId?: string;
+  path?: string;
+  baselineRunId?: string;
+  currentRunId?: string;
+  [key: string]: any;
+}
+
 export interface ComparisonDto {
   workspaceId: string;
   id: string;
