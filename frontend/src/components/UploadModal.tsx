@@ -7,9 +7,10 @@ interface UploadModalProps {
   isOpen: boolean;
   onClose: () => void;
   onArtifactLoaded: (manifest: ArtifactManifest) => void;
+  showTraining?: boolean;
 }
 
-export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onArtifactLoaded }) => {
+export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onArtifactLoaded, showTraining = true }) => {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -119,14 +120,16 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onArt
             <span>Загрузить sample (Kotlin/Spring Boot)</span>
           </button>
 
-          <button
-            onClick={handleLoadTraining}
-            disabled={isUploading}
-            className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
-          >
-            <Sparkles size={16} className="text-slate-400" />
-            <span>Загрузить organizer training-project (если настроен сервером)</span>
-          </button>
+          {showTraining && (
+            <button
+              onClick={handleLoadTraining}
+              disabled={isUploading}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+            >
+              <Sparkles size={16} className="text-slate-400" />
+              <span>Загрузить organizer training-project (если настроен сервером)</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

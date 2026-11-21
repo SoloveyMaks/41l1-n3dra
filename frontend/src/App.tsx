@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Navbar } from './components/Navbar';
 import { WorkflowCanvas } from './components/WorkflowCanvas';
 import { NodePalette } from './components/NodePalette';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -12,9 +11,18 @@ import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
 import { AccessGate } from './components/AccessGate';
 import { ComparisonView } from './components/ComparisonView';
+import { UserDashboard } from './components/UserDashboard';
+import { AdminShell, AdminSection } from './components/AdminShell';
+import {
+  AdminAccessPanel,
+  AdminAiPanel,
+  AdminAnalyzersPanel,
+  AdminOverviewPanel,
+  AdminProjectsPanel,
+} from './components/AdminPanels';
 
 import {
-  AppTab,
+  AdminOverview,
   ArtifactManifest,
   Finding,
   NodeKind,
@@ -22,6 +30,7 @@ import {
   NodeRunStatus,
   ReportData,
   RunSummary,
+  SessionRole,
   SessionState,
   WorkflowDraft,
   WorkflowNode,
@@ -39,7 +48,8 @@ const EMPTY_DRAFT: WorkflowDraft = {
 };
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<AppTab>('editor');
+  const [adminSection, setAdminSection] = useState<AdminSection>('overview');
+  const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
 
   // Access gate (public demo requires an access code; local mode gets a session automatically)
   const [session, setSession] = useState<SessionState | null>(null);
@@ -49,7 +59,7 @@ export const App: React.FC = () => {
 
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState(false);
-  const [isScheduleOpen, setIsScheduleOpen] = useState(false);
+  
   const [isAiTestOpen, setIsAiTestOpen] = useState(false);
 
   // Workflow state
@@ -232,7 +242,10 @@ export const App: React.FC = () => {
       }
 
       if (runList.length > 0) {
-        const latest = runList[0];
+        const latest =
+          runList.find((run) => run.workflow_id === 'wf_secure_pr_gate' && run.trigger_type !== 'schedule') ||
+          runList.find((run) => run.trigger_type !== 'schedule') ||
+          runList[0];
         selectedRunRef.current = latest.id;
         setCurrentRunId(latest.id);
         setCurrentRun(latest);
@@ -284,13 +297,19 @@ export const App: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [currentRunId, isRunning, loadRunDetails]);
 
-  const handleLogin = async (accessCode: string) => {
+  const handleLogin = async (accessCode: string, role: SessionRole) => {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const state = await apiClient.login(accessCode);
+      const state = await apiClient.login(accessCode, role);
+      if (role === 'admin' && state.role !== 'admin') {
+        await apiClient.logout().catch(() => undefined);
+        setAuthError('Этот код не даёт доступ к админ-панели');
+        return;
+      }
       setSession(state);
       await loadInitialData();
+      setAdminSection('overview');
     } catch (e: any) {
       setAuthError(e?.message || 'Не удалось войти');
     } finally {
@@ -429,19 +448,19 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleTriggerRun = async () => {
+  const handleTriggerRun = async (skipDraftSave = false, navigate = true) => {
     if (isRunning) return;
     const hasErrors = validationIssues.some((issue) => issue.level === 'error');
     if (hasErrors) {
-      setActiveTab('editor');
-      showNotice('error', 'Сначала исправьте ошибки валидации графа');
+      if (navigate) setAdminSection('editor');
+      showNotice('error', 'Сценарий проверки пока не готов к запуску');
       return;
     }
     setIsRunning(true);
     setEvents([]);
     setReport(null);
     try {
-      await apiClient.saveWorkflowDraft(workflowId, draft);
+      if (!skipDraftSave) await apiClient.saveWorkflowDraft(workflowId, draft);
       const result = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
       selectedRunRef.current = result.runId;
       setCurrentRunId(result.runId);
@@ -450,15 +469,35 @@ export const App: React.FC = () => {
       setFindings([]);
       setReport(null);
       setSelectedNodeId(null);
-      setActiveTab('live');
+      if (navigate) setAdminSection('live');
       connectSSE(result.runId);
       await loadRunDetails(result.runId);
       await refreshRuns();
     } catch (e: any) {
       setIsRunning(false);
-      showNotice('error', e?.message || 'Ошибка запуска workflow');
+      showNotice('error', e?.message || 'Ошибка запуска проверки');
     }
   };
+
+  const handleLoadSample = async () => {
+    try {
+      const manifest = await apiClient.loadSampleArtifact();
+      setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
+      setCurrentArtifactId(manifest.id);
+      showNotice('ok', `Открыт пример: ${manifest.filename}`);
+    } catch (e: any) {
+      showNotice('error', e?.message || 'Не удалось открыть пример');
+    }
+  };
+
+  useEffect(() => {
+    if (session?.role !== 'admin') return;
+    let cancelled = false;
+    apiClient.getAdminOverview()
+      .then((value) => { if (!cancelled) setAdminOverview(value); })
+      .catch(() => { if (!cancelled) setAdminOverview(null); });
+    return () => { cancelled = true; };
+  }, [session?.role]);
 
   const handleArtifactLoaded = (manifest: ArtifactManifest) => {
     setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
@@ -493,6 +532,22 @@ export const App: React.FC = () => {
 
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
 
+  const isAdmin = session?.role === 'admin';
+  const failureReason = nodeRuns.find((node) => node.error_message)?.error_message;
+
+  const noticeNode = notice && (
+    <div
+      role={notice.kind === 'error' ? 'alert' : 'status'}
+      className={`fixed bottom-3 left-3 z-40 max-w-sm rounded-lg border px-3.5 py-2.5 text-xs shadow-2xl ${
+        notice.kind === 'error'
+          ? 'border-rose-800 bg-rose-950/95 text-rose-200'
+          : 'border-emerald-800 bg-emerald-950/95 text-emerald-200'
+      }`}
+    >
+      {notice.text}
+    </div>
+  );
+
   if (authLoading) {
     return (
       <div className="min-h-screen w-screen bg-slate-950 text-slate-300 flex items-center justify-center text-sm">
@@ -506,64 +561,145 @@ export const App: React.FC = () => {
       <AccessGate
         busy={authBusy}
         error={authError}
+        adminAvailable={session.adminAvailable}
         onSubmit={handleLogin}
       />
     );
   }
 
-  return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        onOpenUpload={() => setIsUploadOpen(true)}
-        onTriggerRun={handleTriggerRun}
-        onOpenAiTest={() => setIsAiTestOpen(true)}
-        isRunning={isRunning}
-        latestVerdict={currentRun?.security_verdict}
-        findingsCount={findings.length}
-        runs={runs}
-        currentRunId={currentRunId}
-        runsLoading={runsLoading}
-        onSelectRun={handleSelectRun}
-        onRefreshRuns={() => void refreshRuns()}
-        onLogout={() => void handleLogout()}
-      />
+  if (!isAdmin) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-slate-950">
+        <UserDashboard
+          artifacts={artifacts}
+          currentArtifactId={currentArtifactId}
+          runs={runs}
+          currentRun={currentRun}
+          currentRunId={currentRunId}
+          findings={findings}
+          report={report}
+          failureReason={failureReason}
+          isRunning={isRunning}
+          runsLoading={runsLoading}
+          onUpload={() => setIsUploadOpen(true)}
+          onLoadSample={handleLoadSample}
+          onSelectArtifact={handleSelectArtifact}
+          onRun={() => void handleTriggerRun(true, false)}
+          onSelectRun={handleSelectRun}
+          onRefreshRuns={() => void refreshRuns()}
+          onLogout={() => void handleLogout()}
+        />
+        <UploadModal
+          isOpen={isUploadOpen}
+          onClose={() => setIsUploadOpen(false)}
+          onArtifactLoaded={handleArtifactLoaded}
+          showTraining={false}
+        />
+        {noticeNode}
+      </div>
+    );
+  }
 
-      <main className="flex-1 flex overflow-hidden relative">
-        {activeTab === 'editor' && (
-          <div className="flex-1 flex flex-col md:flex-row h-full overflow-auto md:overflow-hidden">
-            <NodePalette onAddNode={handleAddNode} />
-            <WorkflowCanvas
-              draft={draft}
-              onDraftChange={handleDraftChange}
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-              nodeStatuses={nodeStatusMap}
-              validationIssues={validationIssues}
-              onSaveDraft={handleSaveDraft}
-              onResetToTemplate={handleResetToTemplate}
-              isSaving={isSavingDraft}
-              workflows={workflows}
-              workflowId={workflowId}
-              onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
-              artifacts={artifacts}
-              currentArtifactId={currentArtifactId}
-              onSelectArtifact={handleSelectArtifact}
-            />
-            {selectedNode && (
-              <InspectorPanel
-                node={selectedNode}
+  const adminContent = (() => {
+    switch (adminSection) {
+      case 'overview':
+        return (
+          <AdminOverviewPanel
+            overview={adminOverview}
+            artifacts={artifacts}
+            runs={runs}
+            findings={findings}
+            currentRun={currentRun}
+            report={report}
+          />
+        );
+      case 'projects':
+        return (
+          <AdminProjectsPanel
+            artifacts={artifacts}
+            currentArtifactId={currentArtifactId}
+            onSelectArtifact={handleSelectArtifact}
+            runs={runs}
+            currentRunId={currentRunId}
+            onSelectRun={handleSelectRun}
+            onSection={setAdminSection}
+            onRefreshRuns={() => void refreshRuns()}
+          />
+        );
+      case 'editor':
+        return (
+          <div className="flex h-full flex-col overflow-hidden">
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/60 p-2">
+              <button
+                onClick={() => setIsUploadOpen(true)}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Загрузить ZIP
+              </button>
+              <button
+                onClick={() => void handleTriggerRun()}
+                disabled={isRunning}
+                className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {isRunning ? 'Выполняется…' : 'Запустить проверку'}
+              </button>
+              <button
+                onClick={() => setIsAiTestOpen(true)}
+                className="rounded-lg border border-fuchsia-800 bg-fuchsia-950/60 px-2.5 py-1.5 text-xs text-fuchsia-300 hover:bg-fuchsia-900"
+              >
+                Тест AI
+              </button>
+              <span className="ml-auto text-[11px] text-slate-500">
+                Сценарий: {workflowId}
+              </span>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+              <NodePalette onAddNode={handleAddNode} />
+              <WorkflowCanvas
+                draft={draft}
+                onDraftChange={handleDraftChange}
+                selectedNodeId={selectedNodeId}
+                onSelectNode={setSelectedNodeId}
+                nodeStatuses={nodeStatusMap}
+                validationIssues={validationIssues}
+                onSaveDraft={handleSaveDraft}
+                onResetToTemplate={handleResetToTemplate}
+                isSaving={isSavingDraft}
+                workflows={workflows}
+                workflowId={workflowId}
+                onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
                 artifacts={artifacts}
-                onUpdateConfig={handleUpdateNodeConfig}
-                onDeleteNode={handleDeleteNode}
-                onClose={() => setSelectedNodeId(null)}
+                currentArtifactId={currentArtifactId}
+                onSelectArtifact={handleSelectArtifact}
               />
-            )}
+              {selectedNode && (
+                <InspectorPanel
+                  node={selectedNode}
+                  artifacts={artifacts}
+                  onUpdateConfig={handleUpdateNodeConfig}
+                  onDeleteNode={handleDeleteNode}
+                  onClose={() => setSelectedNodeId(null)}
+                />
+              )}
+            </div>
           </div>
-        )}
-
-        {activeTab === 'live' && (
+        );
+      case 'schedule':
+        return (
+          <div className="flex h-full items-start justify-center overflow-y-auto bg-slate-950 p-4">
+            <div className="w-full max-w-xl">
+              <ScheduleModal
+                workflowId={workflowId}
+                artifactId={currentArtifactId}
+                isOpen={true}
+                onClose={() => setAdminSection('overview')}
+                embedded
+              />
+            </div>
+          </div>
+        );
+      case 'live':
+        return (
           <LiveRunView
             currentRun={currentRun}
             nodeRuns={nodeRuns}
@@ -571,75 +707,54 @@ export const App: React.FC = () => {
             onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
             onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
           />
-        )}
-
-        {activeTab === 'findings' && <FindingsView findings={findings} />}
-
-        {activeTab === 'map' && (
-          <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
-        )}
-
-        {activeTab === 'report' && (
+        );
+      case 'problems':
+        return <FindingsView findings={findings} />;
+      case 'map':
+        return <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />;
+      case 'report':
+        return (
           <ReportView
             report={report}
             runId={currentRunId}
             runStatus={currentRun?.execution_status}
-            failureReason={nodeRuns.find((node) => node.error_message)?.error_message}
+            failureReason={failureReason}
           />
-        )}
+        );
+      case 'comparison':
+        return <ComparisonView runs={runs} onRefreshRuns={() => void refreshRuns()} />;
+      case 'analyzers':
+        return <AdminAnalyzersPanel report={report} nodeRuns={nodeRuns} />;
+      case 'ai':
+        return <AdminAiPanel report={report} />;
+      case 'access':
+        return <AdminAccessPanel session={session} />;
+      default:
+        return null;
+    }
+  })();
 
-        {activeTab === 'comparison' && (
-          <ComparisonView runs={runs} onRefreshRuns={() => void refreshRuns()} />
-        )}
-
-        {activeTab === 'schedule' && (
-          <div className="flex-1 flex items-center justify-center p-6 bg-slate-950 overflow-auto">
-            <div className="w-full max-w-xl">
-              <ScheduleModal
-                workflowId={workflowId}
-                artifactId={currentArtifactId}
-                isOpen={true}
-                onClose={() => setActiveTab('editor')}
-              />
-            </div>
-          </div>
-        )}
-      </main>
-
+  return (
+    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
+      <AdminShell
+        section={adminSection}
+        onSection={setAdminSection}
+        onLogout={() => void handleLogout()}
+      >
+        {adminContent}
+      </AdminShell>
       <UploadModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
         onArtifactLoaded={handleArtifactLoaded}
+        showTraining
       />
-
-      {activeTab !== 'schedule' && (
-        <ScheduleModal
-          workflowId={workflowId}
-          artifactId={currentArtifactId}
-          isOpen={isScheduleOpen}
-          onClose={() => setIsScheduleOpen(false)}
-        />
-      )}
-
       <AiTrustModal
         runId={currentRunId || undefined}
         isOpen={isAiTestOpen}
         onClose={() => setIsAiTestOpen(false)}
       />
-
-      {notice && (
-        <div
-          role={notice.kind === 'error' ? 'alert' : 'status'}
-          className={`fixed bottom-3 left-3 z-40 max-w-sm rounded-lg border px-3.5 py-2.5 text-xs shadow-2xl ${
-            notice.kind === 'error'
-              ? 'border-rose-800 bg-rose-950/95 text-rose-200'
-              : 'border-emerald-800 bg-emerald-950/95 text-emerald-200'
-          }`}
-        >
-          {notice.text}
-        </div>
-      )}
-
+      {noticeNode}
     </div>
   );
 };

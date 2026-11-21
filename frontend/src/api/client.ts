@@ -1,11 +1,13 @@
 import {
   ArtifactManifest,
+  AdminOverview,
   ComparisonDto,
   Finding,
   NodeDefinition,
   NodeRunRecord,
   ReportData,
   RunSummary,
+  SessionRole,
   SessionState,
   SqlPatternResult,
   WorkflowDraft
@@ -66,9 +68,13 @@ export const apiClient = {
     return (await request('/session')).json();
   },
 
-  async login(accessCode: string): Promise<SessionState> {
+  async login(accessCode: string, role: SessionRole = 'user'): Promise<SessionState> {
     // Код живёт только в состоянии формы; URL/localStorage его не касаются.
-    return (await request('/session', jsonInit('POST', { accessCode }))).json();
+    return (await request('/session', jsonInit('POST', { accessCode, role }))).json();
+  },
+
+  async getAdminOverview(): Promise<AdminOverview> {
+    return (await request('/admin/overview')).json();
   },
 
   async logout(): Promise<void> {

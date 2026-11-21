@@ -25,7 +25,7 @@ interface NavbarProps {
 const TAB_ITEMS: Array<{ id: AppTab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'editor', label: 'Редактор', icon: Layers },
   { id: 'live', label: 'Живое выполнение', icon: Play },
-  { id: 'findings', label: 'Находки и Evidence', icon: Bug },
+  { id: 'findings', label: 'Проблемы', icon: Bug },
   { id: 'map', label: 'Карта безопасности', icon: Network },
   { id: 'report', label: 'Отчёт', icon: FileText },
   { id: 'comparison', label: 'Сравнение', icon: GitCompare },

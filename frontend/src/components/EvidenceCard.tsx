@@ -10,6 +10,13 @@ interface EvidenceCardProps {
   onClose: () => void;
 }
 
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: 'Критично', high: 'Высокий', medium: 'Средний', low: 'Низкий', info: 'Инфо',
+};
+const CONFIDENCE_LABEL: Record<string, string> = {
+  confirmed: 'подтверждено', potential: 'возможно', inconclusive: 'не подтверждено',
+};
+
 export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) => {
   if (!finding) return null;
 
@@ -31,7 +38,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
                   : 'bg-yellow-950 text-yellow-300 border border-yellow-800'
               }`}
             >
-              {finding.severity}
+              {SEVERITY_LABEL[finding.severity] || finding.severity}
             </span>
             <span className="font-mono text-[10px] text-slate-400">
               {finding.analyzer.toUpperCase()}
@@ -54,7 +61,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
         {/* Location */}
         <div>
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-            Локация в проекте
+            Где это
           </div>
           <div className="p-2.5 rounded-lg bg-slate-800/80 border border-slate-700 font-mono text-[11px] text-indigo-300 flex items-center justify-between">
             <span className="truncate">{finding.primaryLocation.path}</span>
@@ -67,7 +74,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
         {/* Severity Basis */}
         <div>
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-            Обоснование риска (Severity Basis)
+            Почему это проблема
           </div>
           <p className="text-slate-300 leading-relaxed bg-slate-800/40 p-2.5 rounded-lg border border-slate-800">
             {finding.severityBasis}
@@ -77,7 +84,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
         {/* Confidence Basis */}
         <div>
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-            Сила доказательства (Confidence: {finding.confidence})
+            Насколько подтверждено: {CONFIDENCE_LABEL[finding.confidence] || finding.confidence}
           </div>
           <p className="text-slate-400 leading-relaxed text-[11px]">
             {finding.confidenceBasis}
@@ -88,7 +95,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
         {finding.redactedEvidence && (
           <div>
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-              Код с доказательством (Evidence)
+              Фрагмент кода
             </div>
             <pre className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-amber-300 overflow-x-auto whitespace-pre-wrap">
               {finding.redactedEvidence}
@@ -100,7 +107,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
         {finding.trace && finding.trace.length > 0 && (
           <div>
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-              <span>Цепочка вызовов (Evidence Graph / Taint Trace)</span>
+              <span>Цепочка вызовов</span>
             </div>
             <div className="space-y-2 border-l-2 border-indigo-500/40 pl-3 ml-1">
               {finding.trace.map((step, idx) => (

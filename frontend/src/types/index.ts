@@ -171,11 +171,45 @@ export interface ComparisonDto {
   deletedFiles: DeletedFile[];
 }
 
+export type SessionRole = 'user' | 'admin';
+
 export interface SessionState {
   authenticated: boolean;
   authRequired: boolean;
   workspaceId: string;
   expiresInSec: number;
+  role?: SessionRole;
+  adminAvailable?: boolean;
+}
+
+export interface AdminOverview {
+  counts?: Record<string, number>;
+  db?: {
+    healthy?: boolean;
+    latencyMs?: number | null;
+    migrations?: { applied?: number; latestAppliedAt?: string | null } | null;
+    error?: string;
+  };
+  ai?: {
+    provider?: string;
+    model?: string;
+    configured?: boolean;
+  };
+  vector?: {
+    enabled?: boolean;
+    available?: boolean;
+    installedVersion?: string | null;
+    status?: string;
+    activeEmbeddingSpecs?: number | null;
+    embeddingModel?: string | null;
+    dimension?: number | null;
+    metric?: string | null;
+  };
+  auth?: {
+    publicDemo?: boolean;
+    adminAvailable?: boolean;
+    adminAccessRequiresSeparateCode?: boolean;
+  };
 }
 
 export interface ArtifactManifest {

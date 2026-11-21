@@ -10,6 +10,20 @@ interface FindingsViewProps {
   findings: Finding[];
 }
 
+const SEVERITY_LABEL: Record<Severity, string> = {
+  critical: 'Критично',
+  high: 'Высокий',
+  medium: 'Средний',
+  low: 'Низкий',
+  info: 'Инфо',
+};
+
+const CONFIDENCE_LABEL: Record<string, string> = {
+  confirmed: 'подтверждено',
+  potential: 'возможно',
+  inconclusive: 'не подтверждено',
+};
+
 export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
@@ -89,26 +103,26 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
               className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
             >
               <option value="all">Любой риск</option>
-              <option value="critical">Critical</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
+              <option value="critical">Критично</option>
+              <option value="high">Высокий</option>
+              <option value="medium">Средний</option>
+              <option value="low">Низкий</option>
             </select>
           </div>
 
           {/* Counts */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
             <span className="text-rose-400 font-semibold font-mono">
-              Critical: {critCount}
+              Критично: {critCount}
             </span>
             <span className="text-orange-400 font-semibold font-mono">
-              High: {highCount}
+              Высокий: {highCount}
             </span>
             <span className="text-yellow-400 font-semibold font-mono">
-              Medium: {medCount}
+              Средний: {medCount}
             </span>
             <span className="text-slate-400 font-mono">
-              Всего: {findings.length}
+              Проблем: {findings.length}
             </span>
           </div>
         </div>
@@ -118,7 +132,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
           {filteredFindings.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-500">
               <CheckCircle2 size={36} className="text-emerald-500 mb-2" />
-              <p className="text-sm font-medium">Находок по заданным фильтрам не обнаружено</p>
+              <p className="text-sm font-medium">Проблем по заданным фильтрам не обнаружено</p>
             </div>
           ) : (
             filteredFindings.map((f) => {
@@ -166,7 +180,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
                               : 'bg-yellow-950 text-yellow-300 border border-yellow-800'
                           }`}
                         >
-                          {f.severity}
+                          {SEVERITY_LABEL[f.severity] || f.severity}
                         </span>
                         <span className="font-semibold text-xs text-slate-100">
                           {f.ruleId}
@@ -187,7 +201,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
                           {f.primaryLocation.path}:{f.primaryLocation.startLine}
                         </span>
                         <span>•</span>
-                        <span>Уверенность: {f.confidence}</span>
+                        <span>Достоверность: {CONFIDENCE_LABEL[f.confidence] || f.confidence}</span>
                       </div>
                     </div>
                   </div>

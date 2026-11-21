@@ -95,7 +95,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
 
   const compare = async () => {
     if (!canCompare) {
-      setError(sameSelection ? 'Baseline и Current должны быть разными запусками' : 'Выберите два завершённых опубликованных запуска');
+      setError(sameSelection ? 'Было и Стало должны быть разными запусками' : 'Выберите два завершённых опубликованных запуска');
       return;
     }
     const seq = ++requestSeq.current;
@@ -170,8 +170,8 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
         </p>
 
         <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
-          {select(baseline, changeBaseline, 'Baseline (до)')}
-          {select(current, changeCurrent, 'Current (после)')}
+          {select(baseline, changeBaseline, 'Было (до)')}
+          {select(current, changeCurrent, 'Стало (после)')}
           <div className="flex flex-wrap items-center gap-2 md:flex-col">
             <button
               onClick={swap}
@@ -198,7 +198,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
         )}
         {sameSelection && (
           <div className="rounded-xl border border-amber-900 bg-amber-950/30 p-3 text-xs text-amber-200">
-            Baseline и Current совпадают — выберите разные запуски.
+            Было и Стало совпадают — выберите разные запуски.
           </div>
         )}
 
