@@ -11,20 +11,14 @@
 
 ## Статус
 
-- Публичный стенд `https://nedra.soloveyka.bond` собран из `9862e19`: старый
-  интерфейс, один общий код, без user/admin-разделения. Это не текущий `dev`.
-- Локальная `dev` (`b6abde4`) содержит user/admin, `GET /api/admin/overview` и
-  принятые исправления: `006`/происхождение снимков, один артефакт на проверку,
-  защита канонического вердикта, фактический `executionStatus` и каноническая
-  полнота отчёта.
-- Три независимых Sol-отчёта имеют AFTER85: logic закрыл artifact A/B и
-  failed-report, visual — основные мобильные блокеры, structure — 4 из 6.
-  Два остатка structure закрыты в `b6abde4`: Markdown-полнота `9bcb5fa`,
-  свежесть/авторизация админки `6a9dd99`.
-- Review стенда 18082 на точном `b6abde4` — READY; structure выполняет узкий
-  независимый FINAL этих двух. Root build PASS.
-- Финальная приёмка, публичный релиз и «все проверки пройдены» не заявляются.
-  Production пока `9862e19`, новый UI ещё не public.
+- Exact candidate — `c7057ee98` в `origin/dev`; app source не менялся после
+  `b6abde4`. FINAL Sol structure `8d8e0ca` принят.
+- Три независимых review приняты: logic, visual, structure FINAL. Все шесть
+  исходных структурных препятствий закрыты в проверенных путях; это не полный
+  аудит и не release-wide approval.
+- Production deploy `c705` выполняет app owner. **Public updated не заявлен**;
+  public smoke pending, до подтверждения публичный стенд — `9862e19`.
+- Root build PASS. `main`, публичная приёмка и полный аудит ещё pending.
 - `main` — после приёмки. Merge/push делает координатор, не worker.
 
 ## Продукт и команда
@@ -127,11 +121,14 @@
   `GET /api/admin/overview` только для admin.
 - `adminAvailable=false`, если admin-код не задан или совпадает с
   пользовательским; admin-вход возвращает 503, user-вход работает.
+- Сводка админки обновляется при входе admin, ручном refresh и terminal
+  run/polling; stale ответы после logout/смены роли отбрасываются. `user`
+  запросов overview не делает.
 - Роль — операторское ограничение поверх одного общего workspace. Аккаунтов,
   списков доступа, приватных кабинетов и multi-tenant-изоляции нет.
   `user` не меняет сценарий, расписания, AI-тест и training.
-- Публичный стенд `9862e19` пока без этого разделения: там старый интерфейс и
-  общий код. Не выдавать локальный `dev` за опубликованный стенд.
+- Public updated не подтверждён: deploy `c705` идёт, до public smoke считаем
+  публичный стенд `9862e19`. Не выдавать локальный `dev` за опубликованный.
 - `dev` собирается локально через `scripts/nedra-*.sh`: PostgreSQL + pgvector и
   backend в rootless Podman; backend только на `127.0.0.1:18080`.
 - Секреты и коды живут только в `~/.config/nedra/runtime.env` (mode 600). Они не
@@ -147,14 +144,12 @@
 
 ## Что ещё не доказано
 
-- AFTER85: logic закрыл artifact A/B и failed-report живой независимой
-  проверкой; visual закрыл основные мобильные блокеры; structure закрыл 4 из 6.
-  Два остатка structure исправлены в `b6abde4` (`9bcb5fa` — полнота Markdown,
-  `6a9dd99` — свежесть/авторизация админки), review стенда 18082 на exact `b6abde4`
-  — READY, но узкий FINAL этих двух ещё не заявлен. Это не финальная приёмка.
-- После AFTER85 остаются неблокирующие визуальные остатки: подписи коротких
-  связей и часть comparison-текста на 390. Конструктор на 390 повторно не
-  проверялся. Полного нового аудита всех сценариев не было.
+- Все три review приняты; FINAL закрыл оба остатка AFTER85 в проверенных путях.
+  Это не полный аудит и не release-wide approval.
+- Неблокирующие визуальные остатки: короткие edge labels и часть
+  comparison-текста на 390; конструктор на 390 повторно не проверялся.
+- Production deploy `c705` идёт; public updated не подтверждён, public smoke
+  нового UI pending.
 - Семантика parser/anchor и полнота runtime graph (`runtime-configuration`,
   `runtime-guards`, `binaries-and-archives`) не доказаны. Такие gaps остаются
   видимыми; graph comparison может быть `inconclusive`.
@@ -162,8 +157,6 @@
   Узкую SQL-проверку нельзя переносить на весь проект.
 - Нет проверенного embedding provider/model/dimension и реального vetted
   example. Это optional часть; основной анализ работает без неё.
-- Публичный стенд отстаёт от `dev`; после пересборки нужен отдельный публичный
-  smoke, а не перенос локальных результатов.
 - Production readiness и полное покрытие не заявляются.
 
 ## Подключение командных анализаторов

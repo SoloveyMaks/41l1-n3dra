@@ -10,12 +10,12 @@ production-обещание.
 | Состояние | Ревизия | Что реально есть | Что показывать |
 | --- | --- | --- | --- |
 | Публичный стенд | `9862e19` | Старый интерфейс: один общий код, редактор, без user/admin | Только старый маршрут из примечания ниже |
-| Локальная `dev` | `b6abde4` | User/admin; AFTER85 закрыл artifact A/B, failed-report и основные мобильные блокеры; structure 4 из 6, два остатка исправлены в `b6abde4` и ждут узкого FINAL | Ограниченная демонстрация на exact `b6abde4`; не финальная приёмка |
-| Следующий релиз | после FINAL и пересборки | Публичного нового UI ещё нет | Не обещать до deploy и публичного smoke |
+| Локальная `dev` | exact candidate | User/admin; FINAL Sol structure принят, все три review приняты, шесть исходных структурных препятствий закрыты в проверенных путях | Ограниченная демонстрация; не полный аудит и не release-wide approval |
+| Публикация | deploy exact candidate идёт | Public updated не заявлен; public smoke pending | До подтверждения публичный стенд — `9862e19` |
 
-Главный walkthrough ниже — **локальная `dev`**. Review стенда 18082 на exact
-`b6abde4` — READY; structure выполняет узкий независимый FINAL Markdown-полноты
-и admin freshness. Публичный `9862e19` старый: новый UI ещё не public.
+Главный walkthrough ниже — **exact candidate** из `origin/dev`; app source не
+менялся после `b6abde4`. Три review приняты; FINAL закрыл оба остатка AFTER85. Это не
+полный аудит и не финальная приёмка.
 
 ## Главное за 30 секунд
 
@@ -32,9 +32,8 @@ production-обещание.
   даёт `comparable=true`; проверенных примеров 0.
 - Векторные представления текста необязательны, retrieval выключен; сейчас `unavailable` (403);
   точный поиск без ANN-индекса. Активных спек 0, ложного active нет.
-- AFTER85: logic закрыл artifact A/B и failed-report, visual — основные
-  мобильные блокеры, structure — 4 из 6. Два остатка structure исправлены в
-  `b6abde4`, но FINAL ещё идёт.
+- FINAL structure принят: оба остатка AFTER85 закрыты. В проверенных путях
+  закрыты все шесть исходных структурных препятствий; полного аудита нет.
 
 ## Короткий путь
 
@@ -236,46 +235,26 @@ admin-маршрутах — 403.
 Только просмотр у `admin`: обзор, проекты/проверки, анализаторы/покрытие,
 AI/память, доступ/состояние.
 
-## AFTER85: что проверено
+## Проверки: FINAL принят
 
-Три независимых Sol-отчёта имеют AFTER85; их baseline и AFTER не переписаны.
-Это не финальная приёмка:
+Три review приняты: [Sol logic](reviews/sol-logic.md),
+[Sol visual](reviews/sol-visual.md), [Sol structure](reviews/sol-structure.md).
+В проверенных путях закрыты все шесть исходных структурных препятствий; это не
+полный аудит и не release-wide approval.
 
-- [Sol logic](reviews/sol-logic.md): artifact A/B и failed-report закрыты новыми
-  живыми runs на `85acb5a`; 403/no-PUT, downloads, SSE, evidence и comparison
-  прошли без нового блокера.
-- [Sol visual](reviews/sol-visual.md): основные мобильные блокеры закрыты —
-  карта/детали, фильтры, результат и active admin; desktop без новой
-  регрессии. Edge labels и часть comparison — частично, не блокируют.
-- [Sol structure](reviews/sol-structure.md): 4 из 6 закрыты. Остались Markdown
-  «100%» и устаревающий admin overview; оба исправлены в `b6abde4`
-  (`9bcb5fa`, `6a9dd99`), review 18082 на exact `b6abde4` — READY.
-
-Что уже закрыто в проверенных путях:
-
-1. новый ZIP/dropdown/sample больше не оставляет старый результат без подписи;
-2. главный экран и первая вкладка отчёта объясняют неполное покрытие, а не
-   обещают 100%;
-3. admin показывает «workspace» и «выбранная проверка» раздельно;
-4. сравнение показывает проект/сценарий/дату и русскую причину одинакового
-   snapshot;
-5. карточка проблемы ведёт к AI-рекомендации выбранного run;
-6. повторная маскировка старых evidence/JSON/Markdown проверена на тестовых
-   поверхностях.
-
-Root build PASS.
+FINAL structure на exact `b6abde4`: clean/sample JSON/Markdown без `100%`,
+`partial` + русские причины, sample FAIL 13; admin manual 165 = backend 165,
+polling 172 → 173 = backend 173; выбранная проверка сохраняется, forced 503
+показывает «—», `user` не делает overview-запросов. Root build PASS. Подробный
+свод — в [release handoff](RELEASE-HANDOFF.md).
 
 ## Pending
 
-- Узкий независимый FINAL Markdown-полноты и admin freshness/auth: code в
-  `b6abde4`, FINAL ещё идёт.
-- Пересборка и deploy публичного стенда; production пока `9862e19`, новый UI
-  ещё не public.
-- Публичный smoke нового UI.
+- Deploy exact candidate идёт; public updated не заявлен, публичный стенд до
+  подтверждения — `9862e19`. Нужен public smoke нового UI.
 - Неблокирующие visual-остатки: короткие edge labels, часть comparison-текста
   на 390; конструктор на 390 повторно не проверялся.
-- Финальная приёмка не заявлена; «релиз готов» и «все проверки пройдены» не
-  говорим.
+- `main` и финальная приёмка не заявлены; «все проверки пройдены» не говорим.
 
 ## Публичный стенд `9862e19`: только старый путь
 
@@ -301,8 +280,7 @@ user/admin и новый простой путь: их там нет. Публи
 - «Ролей нет» — неверно для локального `dev`: `user`/`admin` реализованы.
 - «Публичный стенд уже с user/admin» — он на `9862e19`, там старый UI.
 - «Есть аккаунты, списки доступа, multi-tenant» — нет, общий workspace.
-- «Админка опубликована» — локальный `dev` содержит backend и UI, публичного
-  релиза ещё нет.
+- «Public updated» — не заявлен: deploy exact candidate идёт, public smoke pending.
 - «`pass` значит ноль проблем» — нет: блокирующих нет, проблемы ниже порога
   могут остаться.
 - «100% полноты значит полную проверку» — нет; смотрите каноническое покрытие
@@ -317,24 +295,23 @@ user/admin и новый простой путь: их там нет. Публи
   узкая.
 - «Политика предметной области работает» — нет; она не подключена к канонической
   подписи.
-- «Финальная приёмка» — не заявлена: FINAL двух остатков structure и публичный
-  deploy ещё pending.
+- «Финальная приёмка» — не заявлена: deploy/public smoke и `main` ещё pending.
 - «100% полноты» — только при `complete` и подтверждённых scopes; иначе
   «не установлена/недоступна/неизвестна».
 
 ## Что осталось в очереди
 
-Это не блокеры текущей ограниченной демонстрации на exact `b6abde4`, но
-обещать их закрытыми нельзя.
+Это не блокеры ограниченной демонстрации на exact candidate, но обещать их
+закрытыми нельзя.
 
-1. **FINAL двух остатков structure.** Markdown-полнота `9bcb5fa` и admin
-   freshness/auth `6a9dd99` уже в `b6abde4`; узкий независимый FINAL ещё идёт.
+1. **Deploy exact candidate и public smoke.** Public updated не заявлен; до подтверждения
+   публичный стенд — `9862e19`.
 2. **Неблокирующие visual-остатки.** Короткие edge labels и часть
    comparison-текста на 390; конструктор на 390 повторно не проверялся.
-3. **Публичный deploy.** Production пока `9862e19`; новый UI ещё не public.
-   После пересборки нужен отдельный публичный smoke.
-4. **Проверка redaction после deploy.** AFTER85 закрыл проверенные поверхности,
-   но публичная сборка должна быть проверена заново.
+3. **Проверка redaction после deploy.** FINAL/AFTER85 закрыли проверенные
+   поверхности, но публичная сборка должна быть проверена заново.
+4. **`main` и финальная приёмка.** Не выполнялись; «все проверки пройдены» не
+   говорим.
 5. **Честный vector status.** Не показывать «active» при нуле активных спек.
 
 ## Чеклист перед показом
@@ -346,11 +323,10 @@ user/admin и новый простой путь: их там нет. Публи
 - [ ] существующий сценарий запускается **без** `PUT draft`.
 - [ ] проблемы, карта, сравнение и отчёт открываются.
 - [ ] две завершённые проверки есть для сравнения.
-- [ ] redaction проверен на карточке, evidence, AI, экспорте и инспекторе в
-  AFTER85.
-- [ ] exact `b6abde4`; review 18082 READY; root build PASS.
-- [ ] FINAL Markdown-полноты и admin freshness ещё pending — не выдавать за
-  финальную приёмку.
+- [ ] redaction проверен на карточке, evidence, AI, экспорте и инспекторе.
+- [ ] exact candidate из release handoff; app source unchanged `b6`; FINAL
+  принят; root build PASS.
+- [ ] deploy/public smoke ещё pending — не выдавать за public updated.
 
 Для админки:
 
@@ -366,9 +342,9 @@ user/admin и новый простой путь: их там нет. Публи
 ## Откуда факты
 
 - [Интерфейс: пользователь и администратор](interface-structure.md)
-- [Sol logic: AFTER85](reviews/sol-logic.md)
-- [Sol visual: AFTER85](reviews/sol-visual.md)
-- [Sol structure: AFTER85](reviews/sol-structure.md)
+- [Sol logic](reviews/sol-logic.md) — принят
+- [Sol visual](reviews/sol-visual.md) — принят
+- [Sol structure](reviews/sol-structure.md) — принят FINAL
 - [Report coverage](report-coverage.md)
 - [Admin access and roles](admin-access.md)
 - [Release handoff](RELEASE-HANDOFF.md)
