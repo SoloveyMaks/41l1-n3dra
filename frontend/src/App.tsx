@@ -938,6 +938,7 @@ export const App: React.FC = () => {
           {activeTab === 'findings' && (
             <FindingsView
               findings={findings}
+              runId={currentRunId}
               aiScan={aiScan}
               aiItems={report?.run_id === currentRunId ? report.ai_items : []}
               aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
@@ -1137,6 +1138,7 @@ export const App: React.FC = () => {
         return (
           <FindingsView
             findings={findings}
+            runId={currentRunId}
             aiScan={aiScan}
             aiItems={report?.run_id === currentRunId ? report.ai_items : []}
             aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}

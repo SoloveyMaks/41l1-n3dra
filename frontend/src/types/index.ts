@@ -70,6 +70,63 @@ export interface Finding {
   };
 }
 
+export interface ResponsibilityRole {
+  role: string;
+  basis: string;
+  confidence: 'high' | 'medium' | 'low' | string;
+}
+
+export interface ResponsibilityCodeowners {
+  status: 'available' | 'absent' | 'unavailable' | string;
+  file?: string | null;
+  matchedPattern?: string | null;
+  line?: number | null;
+  owners: string[];
+  basis: string;
+  limitations: string[];
+}
+
+export interface ResponsibilityCommit {
+  sha: string;
+  author?: string | null;
+  date?: string | null;
+  url?: string | null;
+  message?: string | null;
+}
+
+export interface ResponsibilityLineBlame {
+  status: 'unsupported' | 'available' | string;
+  reason: string;
+}
+
+export interface ResponsibilityHistory {
+  status: 'available' | 'unavailable' | 'rate_limited' | 'failed' | 'unsupported' | string;
+  provider?: string | null;
+  reason: string;
+  evidenceKind: string;
+  notBlame: boolean;
+  commit?: ResponsibilityCommit | null;
+  lineBlame: ResponsibilityLineBlame;
+  limitations: string[];
+}
+
+export interface ResponsibilityData {
+  scope: {
+    runId: string;
+    artifactId?: string | null;
+    snapshotId?: string | null;
+    commitSha?: string | null;
+    path: string;
+  };
+  findingId: string;
+  analyzer: string;
+  ruleId: string;
+  suggestedRole: ResponsibilityRole;
+  codeowners: ResponsibilityCodeowners;
+  history: ResponsibilityHistory;
+  limitations: string[];
+}
+
 export type AiScanStatus = 'succeeded' | 'partial' | 'degraded' | 'rejected';
 
 export interface AiObservationGrounding {
