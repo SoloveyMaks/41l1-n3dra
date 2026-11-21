@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
 
-from backend.app.api.session import admin_available, public_demo, require_admin
+from backend.app.api.session import MODE_DEMO, admin_available, public_demo, require_admin
 from backend.app.artifacts.intake import (
     MAX_ARCHIVE_BYTES,
     MAX_COMPRESSION_RATIO,
@@ -105,7 +105,7 @@ def _bounded_db_overview(workspace_id: str) -> Dict[str, Any]:
 
 @admin_router.get("/overview")
 def admin_overview(request: Request) -> Dict[str, Any]:
-    require_admin(request)
+    session = require_admin(request)
 
     # Lazy import avoids a router/admin import cycle at module import time.
     from backend.app.api.router import ai_service, db_repo
@@ -156,9 +156,12 @@ def admin_overview(request: Request) -> Dict[str, Any]:
             "maxPathDepth": MAX_PATH_DEPTH,
         },
         "workspace": {
-            "shared": True,
-            "userAccounts": False,
-            "accessModel": "shared demo workspace; signed role gates operator actions",
+            "shared": session.get("mode") == MODE_DEMO,
+            "userAccounts": True,
+            "accessModel": (
+                "shared demo workspace; signed role gates operator actions"
+                if session.get("mode") == MODE_DEMO else "personal account workspace"
+            ),
         },
         "auth": {
             "publicDemo": public_demo(),
