@@ -591,38 +591,32 @@ class TelegramRepository:
 
     def recover_jobs(self, limit: int = 20,
                      max_recovery_attempts: int = MAX_JOB_RECOVERY_ATTEMPTS) -> List[str]:
-        """Settle orphaned jobs and return bounded claimable job ids.
+        """One bounded pass over all recovery buckets.
 
-        Jobs with an existing run are never re-imported: if the run is terminal
-        the job follows it, otherwise the job becomes terminal ``interrupted``.
+        ``limit`` is the total number of jobs this call may touch (select ...
+        FOR UPDATE SKIP LOCKED LIMIT). Exhausted retries are interrupted,
+        run-backed stale jobs are settled/interrupted, and retryable jobs are
+        returned for the runtime to claim atomically. Jobs with a run are never
+        re-imported.
         """
         safe_limit = max(1, min(int(limit), 100))
+        candidates: List[str] = []
         with get_pool().connection() as conn:
-            # Exhausted import retries become an honest terminal state.
-            conn.execute(
+            rows = conn.execute(
                 """
-                UPDATE telegram.jobs j
-                   SET status = 'interrupted',
-                       error = 'recovery attempts exhausted',
-                       lease_token = NULL,
-                       lease_until = NULL,
-                       updated_at = now()
-                  FROM telegram.bindings b
-                 WHERE j.status = 'importing'
-                   AND j.run_id IS NULL
-                   AND (j.lease_until IS NULL OR j.lease_until < now())
-                   AND j.recovery_attempts >= %s
-                   AND b.chat_id = j.chat_id
-                   AND b.user_id = j.user_id
-                   AND b.workspace_id = j.workspace_id
-                   AND b.binding_epoch = j.binding_epoch
-                """,
-                (int(max_recovery_attempts),),
-            )
-            with_run = conn.execute(
-                """
-                SELECT j.job_id, j.run_id, j.status AS job_status,
-                       r.execution_status AS run_status
+                SELECT j.job_id, j.status AS job_status, j.run_id,
+                       r.execution_status AS run_status,
+                       CASE
+                         WHEN j.status = 'importing' AND j.run_id IS NULL
+                              AND (j.lease_until IS NULL OR j.lease_until < now())
+                              AND j.recovery_attempts >= %s
+                           THEN 'exhausted'
+                         WHEN j.status IN ('importing', 'running')
+                              AND j.run_id IS NOT NULL
+                              AND (j.lease_until IS NULL OR j.lease_until < now())
+                           THEN 'settle'
+                         ELSE 'retry'
+                       END AS action
                   FROM telegram.jobs j
                   JOIN telegram.bindings b
                     ON b.chat_id = j.chat_id
@@ -631,58 +625,57 @@ class TelegramRepository:
                    AND b.binding_epoch = j.binding_epoch
                   LEFT JOIN runtime.runs r
                     ON r.workspace_id = j.workspace_id AND r.id = j.run_id
-                 WHERE j.status IN ('importing', 'running')
-                   AND j.run_id IS NOT NULL
-                   AND (j.lease_until IS NULL OR j.lease_until < now())
-                 ORDER BY j.created_at
+                 WHERE (
+                       j.status = 'queued'
+                       OR (j.status = 'importing' AND j.run_id IS NULL
+                           AND (j.lease_until IS NULL OR j.lease_until < now()))
+                       OR (j.status IN ('importing', 'running')
+                           AND j.run_id IS NOT NULL
+                           AND (j.lease_until IS NULL OR j.lease_until < now()))
+                 )
+                 ORDER BY j.created_at, j.job_id
                  LIMIT %s
-                """,
-                (safe_limit,),
-            ).fetchall()
-            for row in with_run:
-                run_status = row.get("run_status")
-                if run_status == "succeeded":
-                    status, error = "succeeded", None
-                elif run_status in ("failed", "cancelled", "interrupted"):
-                    status, error = "failed", str(run_status)
-                else:
-                    status = "interrupted"
-                    error = "runtime restarted; run preserved"
-                conn.execute(
-                    """
-                    UPDATE telegram.jobs j
-                       SET status = %s,
-                           error = %s,
-                           lease_token = NULL,
-                           lease_until = NULL,
-                           updated_at = now()
-                     WHERE j.job_id = %s
-                       AND j.status IN ('importing', 'running')
-                       AND j.run_id IS NOT NULL
-                       AND (j.lease_until IS NULL OR j.lease_until < now())
-                    """,
-                    (status, error, row["job_id"]),
-                )
-            candidates = conn.execute(
-                """
-                SELECT j.job_id
-                  FROM telegram.jobs j
-                  JOIN telegram.bindings b
-                    ON b.chat_id = j.chat_id
-                   AND b.user_id = j.user_id
-                   AND b.workspace_id = j.workspace_id
-                   AND b.binding_epoch = j.binding_epoch
-                 WHERE j.status = 'queued'
-                    OR (j.status = 'importing'
-                        AND j.run_id IS NULL
-                        AND (j.lease_until IS NULL OR j.lease_until < now())
-                        AND j.recovery_attempts < %s)
-                 ORDER BY j.created_at
-                 LIMIT %s
+                 FOR UPDATE OF j SKIP LOCKED
                 """,
                 (int(max_recovery_attempts), safe_limit),
             ).fetchall()
-        return [str(row["job_id"]) for row in candidates]
+            for row in rows:
+                if row["action"] == "exhausted":
+                    conn.execute(
+                        """
+                        UPDATE telegram.jobs
+                           SET status = 'interrupted',
+                               error = 'recovery attempts exhausted',
+                               lease_token = NULL,
+                               lease_until = NULL,
+                               updated_at = now()
+                         WHERE job_id = %s AND status = 'importing'
+                           AND run_id IS NULL
+                        """,
+                        (row["job_id"],),
+                    )
+                elif row["action"] == "settle":
+                    run_status = row.get("run_status")
+                    if run_status == "succeeded":
+                        status, error = "succeeded", None
+                    elif run_status in ("failed", "cancelled", "interrupted"):
+                        status, error = "failed", str(run_status)
+                    else:
+                        status, error = "interrupted", "runtime restarted; run preserved"
+                    conn.execute(
+                        """
+                        UPDATE telegram.jobs
+                           SET status = %s, error = %s,
+                               lease_token = NULL, lease_until = NULL,
+                               updated_at = now()
+                         WHERE job_id = %s AND status IN ('importing', 'running')
+                           AND run_id IS NOT NULL
+                        """,
+                        (status, error, row["job_id"]),
+                    )
+                else:
+                    candidates.append(str(row["job_id"]))
+        return candidates
 
     def get_job(self, job_id: str) -> Optional[Job]:
         try:
