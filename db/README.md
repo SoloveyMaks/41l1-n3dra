@@ -1,5 +1,9 @@
 # PostgreSQL — proposal v0.1
 
+> Retrieval-хранилище элементов `rag/` файловое и эти таблицы не заменяет:
+> PostgreSQL остаётся источником канонических фактов, `rag/` отвечает только за
+> переиспользование элементов между запусками (см. [rag/README.md](../rag/README.md)).
+
 Миграции рассчитаны на PostgreSQL 16+, отдельную schema `data_contract`, без новых runtime dependencies. Это проверяемое предложение C, не подтверждение A/B/D. Не применять к чужой рабочей БД без разбора.
 
 1. `psql -X -v ON_ERROR_STOP=1 -d <empty-db> -f db/migrations/001_core.up.sql`

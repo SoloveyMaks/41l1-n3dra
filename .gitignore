@@ -28,3 +28,6 @@ research/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local RAG store
+.rag/

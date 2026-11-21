@@ -1,6 +1,6 @@
 # Данные и карта безопасности — пакет C
 
-Статус: **proposal v0.1 для согласования A/B/D**. PostgreSQL + pgvector выбраны пользователем; подтверждений остальных участников этот документ не подменяет. Пакет включает схему, DTO, React Flow SecurityMap с ручным pickup-preview и модуль сравнения immutable bundles. API, анализаторы и подключение к основному интерфейсу ещё требуют A/B.
+Статус: **proposal v0.1 для согласования A/B/D**. PostgreSQL + optional pgvector остаются runtime-хранилищем канонических фактов; файловое `rag/` добавляет переиспользование элементов между запусками и не заменяет эти таблицы. Подтверждений остальных участников этот документ не подменяет. Пакет включает схему, DTO, React Flow SecurityMap с ручным pickup-preview и модуль сравнения immutable bundles. API, анализаторы и подключение к основному интерфейсу ещё требуют A/B.
 
 ## Что открыть
 
@@ -8,6 +8,7 @@
 | --- | --- |
 | [Контракт и вопросы участникам](data-contracts/README.md) | Identity, signature, fingerprint, координаты, границы доверия |
 | [JSON Schema](data-contracts/contracts.schema.json) / [TypeScript](data-contracts/contracts.ts) | Finding, EvidenceRef, CodeNode, CodeEdge, Coverage и общие envelopes |
+| [RAG-хранилище элементов](../rag/README.md) | Переиспользование элементов между запусками без реляционной схемы |
 | [Порядок миграций](../db/README.md) | PostgreSQL, владельцы записи, immutable snapshots и atomic publish |
 | [SQL ↔ DTO](data-contracts/mapping.md) | Сохранение и обратное чтение без потери смысла |
 | [Правила сравнения](data-contracts/comparisons.md) | Сопоставимость проверок, удалённые файлы и неоднозначность |
