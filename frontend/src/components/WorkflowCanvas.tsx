@@ -15,7 +15,7 @@ import '@xyflow/react/dist/style.css';
 
 import { CustomNode } from './CustomNode';
 import { ExecutionEdge, ExecutionEdgeData } from './ExecutionEdge';
-import { WorkflowDraft, WorkflowEdge } from '../types';
+import type { ArtifactManifest, WorkflowDraft, WorkflowEdge } from '../types';
 import type { RunTelemetry } from '../execution/runTelemetry';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
@@ -37,9 +37,16 @@ interface WorkflowCanvasProps {
   onSelectWorkflow: (workflowId: string) => void;
   onCreateWorkflow?: () => void;
   onGenerateWorkflow?: () => void;
-  artifacts: import('../types').ArtifactManifest[];
+  artifacts: ArtifactManifest[];
   currentArtifactId: string;
   onSelectArtifact: (artifactId: string) => void;
+  /**
+   * Run whose facts may open the file graph. Only set when the selected
+   * artifact is the artifact of that run: a draft project must never show
+   * another run's files.
+   */
+  runId?: string | null;
+  onOpenMap?: () => void;
 }
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -61,6 +68,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   artifacts,
   currentArtifactId,
   onSelectArtifact,
+  runId = null,
+  onOpenMap,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
   const edgeTypes = useMemo(() => ({ executionEdge: ExecutionEdge }), []);
@@ -254,7 +263,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           </label>
           {selectedRepository && (
             <div className="pointer-events-auto min-w-0 rounded-lg border border-indigo-900/70 bg-indigo-950/40 px-2 py-1">
-              <RepositorySourceView repository={selectedRepository} showProvider={false} />
+              <RepositorySourceView repository={selectedRepository} showProvider={false} runId={runId} />
             </div>
           )}
           <span className="hidden sm:inline text-slate-600">•</span>
@@ -285,6 +294,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         )}
 
         <div className="pointer-events-auto ml-auto flex items-center gap-2">
+        {onOpenMap && (
+          <button
+            onClick={onOpenMap}
+            className="flex items-center gap-1.5 rounded-xl border border-sky-800 bg-sky-950/90 px-2.5 py-1.5 text-xs font-medium text-sky-200 shadow-lg backdrop-blur-md transition hover:bg-sky-900"
+            title="Открыть карту доступа выбранного запуска"
+          >
+            Карта доступа →
+          </button>
+        )}
         <button
           onClick={onResetToTemplate}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-medium shadow-lg backdrop-blur-md transition cursor-pointer"
@@ -332,6 +350,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
+        deleteKeyCode={null}
         fitView
         className="bg-slate-950"
       >
