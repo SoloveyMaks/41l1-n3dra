@@ -19,6 +19,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   const [cronOrInterval, setCronOrInterval] = useState('interval:60');
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageTone, setMessageTone] = useState<'ok' | 'error'>('ok');
 
   const loadSchedules = async () => {
     try {
@@ -37,19 +38,40 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
   if (!isOpen) return null;
 
+  const isValidScheduleSpec = (value: string): boolean => {
+    const spec = value.trim();
+    if (/^interval:\d+$/.test(spec)) return Number(spec.split(':')[1]) > 0;
+    // Current scheduler implements only interval:N and */N * * * * (minutes).
+    const everyMinutes = spec.match(/^\*\/(\d+) \* \* \* \*$/);
+    return Boolean(everyMinutes && Number(everyMinutes[1]) > 0);
+  };
+
   const handleCreateSchedule = async () => {
     if (!artifactId) {
-      setMessage('Сначала выберите или загрузите учебный проект (артефакт)');
+      setMessageTone('error');
+      setMessage('Сначала выберите или загрузите ZIP: расписанию нужен артефакт');
+      return;
+    }
+    if (!cronOrInterval.trim()) {
+      setMessageTone('error');
+      setMessage('Укажите cron-выражение или interval:секунды');
+      return;
+    }
+    if (!isValidScheduleSpec(cronOrInterval)) {
+      setMessageTone('error');
+      setMessage('Поддерживаются interval:60 и */15 * * * *. Произвольный cron сервер сейчас не соблюдает.');
       return;
     }
     setIsSaving(true);
     setMessage(null);
     try {
-      await apiClient.createSchedule(workflowId, artifactId, cronOrInterval);
-      setMessage('Расписание успешно создано и активировано!');
+      await apiClient.createSchedule(workflowId, artifactId, cronOrInterval.trim());
+      setMessageTone('ok');
+      setMessage('Расписание создано. Это только запуск workflow; внешние уведомления не отправляются.');
       loadSchedules();
     } catch (e: any) {
-      setMessage(`Ошибка: ${e.message}`);
+      setMessageTone('error');
+      setMessage(`Ошибка расписания: ${e.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -69,8 +91,12 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
         </div>
 
         <div className="p-6 space-y-5 text-xs text-slate-300">
+          <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-slate-400 leading-relaxed">
+            Расписание только запускает сохранённый workflow с выбранным артефактом. Отправка уведомлений по умолчанию выключена; внешние адреса не используются.
+          </div>
+
           {message && (
-            <div className="p-3 rounded-xl bg-indigo-950/80 border border-indigo-800 text-indigo-200">
+            <div className={`p-3 rounded-xl border ${messageTone === 'error' ? 'bg-rose-950/80 border-rose-800 text-rose-200' : 'bg-indigo-950/80 border-indigo-800 text-indigo-200'}`}>
               {message}
             </div>
           )}
@@ -99,14 +125,17 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              Примеры: <code className="text-purple-300">interval:30</code> (каждые 30 сек), <code className="text-purple-300">*/15 * * * *</code> (каждые 15 минут)
+              Поддерживаются <code className="text-purple-300">interval:30</code> (каждые 30 сек) и <code className="text-purple-300">*/15 * * * *</code> (каждые 15 минут). Произвольный 5-field cron сервер сейчас исполняет как минутный — UI его не отправляет.
             </p>
           </div>
 
           <div>
-            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-              Активные расписания в системе ({schedules.length})
-            </h4>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                Активные расписания в системе ({schedules.length})
+              </h4>
+              <button onClick={loadSchedules} className="text-[10px] text-slate-400 hover:text-slate-200">Обновить</button>
+            </div>
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {schedules.length === 0 ? (
                 <div className="text-slate-500 p-2 text-center">Расписания пока не созданы</div>

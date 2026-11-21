@@ -32,8 +32,8 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
   return (
     <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-950">
       {/* Top Action Bar */}
-      <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="p-3 sm:p-4 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0">
           <div
             className={`p-2.5 rounded-xl text-white shadow-lg ${
               isFail
@@ -62,7 +62,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
         </div>
 
         {/* Export Buttons */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <a
             href={apiClient.getOfficialJsonUrl(runId)}
             download
@@ -84,7 +84,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
       </div>
 
       {/* Sub Tabs */}
-      <div className="px-4 pt-3 bg-slate-900/60 border-b border-slate-800 flex items-center gap-2">
+      <div className="px-3 sm:px-4 pt-3 bg-slate-900/60 border-b border-slate-800 flex items-center gap-2 overflow-x-auto">
         <button
           onClick={() => setActiveSubTab('passport')}
           className={`px-3 py-1.5 rounded-t-lg text-xs font-medium transition border-b-2 cursor-pointer ${
@@ -129,7 +129,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
                 Метрики покрытия и полноты анализа
               </h3>
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                   <div className="text-[11px] text-slate-400">Проверено файлов</div>
                   <div className="text-xl font-bold font-mono text-slate-100">{p.files_scanned}</div>
@@ -165,7 +165,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
                 Распределение находок по статусам доказанности
               </h3>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-800/60 space-y-1">
                   <div className="text-[11px] text-rose-300">Подтвержденные (Confirmed)</div>
                   <div className="text-2xl font-bold font-mono text-rose-200">{p.confirmed_findings}</div>
@@ -222,7 +222,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
             </div>
 
             {/* Trust Layer Principles Breakdown */}
-            <div className="grid grid-cols-4 gap-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
               <div className="p-3 rounded-xl bg-slate-900 border border-emerald-800/50 space-y-1">
                 <div className="font-bold text-emerald-400 flex items-center gap-1.5">
                   <CheckCircle2 size={14} />

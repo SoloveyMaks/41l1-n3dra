@@ -28,8 +28,17 @@ import {
 } from './types';
 import { apiClient, AuthRequiredError } from './api/client';
 
+type Notice = { kind: 'ok' | 'error'; text: string };
+
+const EMPTY_DRAFT: WorkflowDraft = {
+  schemaVersion: 1,
+  name: 'Загрузка сценария...',
+  description: '',
+  nodes: [],
+  edges: [],
+};
+
 export const App: React.FC = () => {
-  // Navigation
   const [activeTab, setActiveTab] = useState<AppTab>('editor');
 
   // Access gate (public demo requires an access code; local mode gets a session automatically)
@@ -44,14 +53,9 @@ export const App: React.FC = () => {
   const [isAiTestOpen, setIsAiTestOpen] = useState(false);
 
   // Workflow state
+  const [workflows, setWorkflows] = useState<any[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('wf_secure_pr_gate');
-  const [draft, setDraft] = useState<WorkflowDraft>({
-    schemaVersion: 1,
-    name: 'Загрузка сценария...',
-    description: '',
-    nodes: [],
-    edges: [],
-  });
+  const [draft, setDraft] = useState<WorkflowDraft>(EMPTY_DRAFT);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [validationIssues, setValidationIssues] = useState<Array<{ level: string; message: string }>>([]);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -59,9 +63,10 @@ export const App: React.FC = () => {
   // Artifacts state
   const [artifacts, setArtifacts] = useState<ArtifactManifest[]>([]);
   const [currentArtifactId, setCurrentArtifactId] = useState<string>('');
-  const [runs, setRuns] = useState<RunSummary[]>([]);
 
-  // Run execution state
+  // Run history and selected run state
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<RunSummary | null>(null);
   const [nodeRuns, setNodeRuns] = useState<NodeRunRecord[]>([]);
@@ -69,57 +74,185 @@ export const App: React.FC = () => {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [report, setReport] = useState<ReportData | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
-  // EventSource ref
   const eventSourceRef = useRef<EventSource | null>(null);
+  const selectedRunRef = useRef<string | null>(null);
+  const runLoadSeq = useRef(0);
+  const validateSeq = useRef(0);
+  const noticeTimer = useRef<number | null>(null);
 
-  // Load initial data
-  const loadInitialData = async () => {
+  const showNotice = useCallback((kind: Notice['kind'], text: string) => {
+    setNotice({ kind, text });
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 7000);
+  }, []);
+
+  useEffect(() => () => {
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+  }, []);
+
+  const closeSSE = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }, []);
+
+  const refreshRuns = useCallback(async (): Promise<RunSummary[]> => {
+    setRunsLoading(true);
     try {
-      // 1. Load artifacts
-      const arts = await apiClient.listArtifacts();
-      setArtifacts(arts);
-      if (arts.length > 0) {
-        setCurrentArtifactId(arts[0].id);
+      const list = await apiClient.listRuns();
+      setRuns(list);
+      return list;
+    } catch (e: any) {
+      if (e instanceof AuthRequiredError) {
+        setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
+      } else {
+        showNotice('error', e?.message || 'Не удалось загрузить историю запусков');
       }
+      return [];
+    } finally {
+      setRunsLoading(false);
+    }
+  }, [showNotice]);
 
-      // 2. Load workflows
-      const wfs = await apiClient.listWorkflows();
-      if (wfs.length > 0) {
-        const wf = wfs[0];
-        setWorkflowId(wf.id);
-        if (wf.draft) {
-          setDraft(wf.draft);
-          validateDraft(wf.id, wf.draft);
+  const loadRunDetails = useCallback(async (runId: string) => {
+    const seq = ++runLoadSeq.current;
+    try {
+      const [runInfo, nodes, runFindings] = await Promise.all([
+        apiClient.getRun(runId),
+        apiClient.getRunNodes(runId),
+        apiClient.getRunFindings(runId),
+      ]);
+      let runReport: ReportData | null = null;
+      const isTerminal = runInfo.execution_status !== 'running' && runInfo.execution_status !== 'queued';
+      if (isTerminal) {
+        try {
+          runReport = await apiClient.getRunReport(runId);
+        } catch {
+          runReport = null;
         }
       }
+      if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
 
-      // 3. Load latest run if any
-      const runList = await apiClient.listRuns();
-      setRuns(runList);
-      if (runList.length > 0) {
-        const latest = runList[0];
-        setCurrentRunId(latest.id);
-        setCurrentRun(latest);
-        loadRunDetails(latest.id);
+      setCurrentRun(runInfo);
+      setNodeRuns(nodes);
+      setFindings(runFindings);
+      setReport(runReport);
+      setIsRunning(runInfo.execution_status === 'running' || runInfo.execution_status === 'queued');
+      if (runInfo.execution_status !== 'running' && runInfo.execution_status !== 'queued') {
+        void refreshRuns();
       }
+    } catch (e: any) {
+      if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
+      if (e instanceof AuthRequiredError) {
+        setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
+      } else {
+        showNotice('error', e?.message || 'Не удалось загрузить запуск');
+      }
+    }
+  }, [refreshRuns, showNotice]);
+
+  const connectSSE = useCallback((runId: string) => {
+    closeSSE();
+    const source = apiClient.createEventSource(runId, 0);
+    eventSourceRef.current = source;
+
+    const handleEvent = (message: MessageEvent) => {
+      if (selectedRunRef.current !== runId) return;
+      try {
+        const event = JSON.parse(message.data);
+        setEvents((prev) => [...prev, event]);
+        if (event.type === 'run_status') {
+          const status = event.payload?.status;
+          if (status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted') {
+            setIsRunning(false);
+            closeSSE();
+            void loadRunDetails(runId);
+            void refreshRuns();
+          }
+        } else if (event.type === 'node_status') {
+          void loadRunDetails(runId);
+        }
+      } catch (error) {
+        console.error('SSE parse error:', error);
+      }
+    };
+    // Backend sends named events (`event: run_status`), so EventSource does
+    // not dispatch them to `onmessage`; subscribe to the known event names too.
+    source.onmessage = handleEvent;
+    for (const eventName of ['run_status', 'node_status', 'artifact_status', 'finding_summary', 'coverage', 'edge_data', 'delivery_status']) {
+      source.addEventListener(eventName, handleEvent as EventListener);
+    }
+    source.onerror = () => {
+      // Polling below remains the source of truth while a run is active.
+    };
+  }, [closeSSE, loadRunDetails, refreshRuns]);
+
+  const validateDraft = useCallback(async (wfId: string, nextDraft: WorkflowDraft) => {
+    const seq = ++validateSeq.current;
+    try {
+      const result = await apiClient.validateWorkflow(wfId, nextDraft);
+      if (seq === validateSeq.current) setValidationIssues(result.issues || []);
+      return result;
     } catch (e: any) {
       if (e instanceof AuthRequiredError) {
         setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
       }
-      console.error('Failed to load initial data:', e);
+      return null;
     }
-  };
+  }, []);
+
+  const loadInitialData = useCallback(async () => {
+    try {
+      const [artifactList, workflowList, runList] = await Promise.all([
+        apiClient.listArtifacts(),
+        apiClient.listWorkflows(),
+        apiClient.listRuns(),
+      ]);
+      setArtifacts(artifactList);
+      setCurrentArtifactId(artifactList[0]?.id || '');
+      setWorkflows(workflowList);
+      setRuns(runList);
+
+      const selectedWorkflow =
+        workflowList.find((item) => item.id === 'wf_secure_pr_gate') || workflowList[0];
+      if (selectedWorkflow?.draft) {
+        setWorkflowId(selectedWorkflow.id);
+        setDraft(selectedWorkflow.draft);
+        await validateDraft(selectedWorkflow.id, selectedWorkflow.draft);
+      } else {
+        showNotice('error', 'На сервере нет доступного workflow');
+      }
+
+      if (runList.length > 0) {
+        const latest = runList[0];
+        selectedRunRef.current = latest.id;
+        setCurrentRunId(latest.id);
+        setCurrentRun(latest);
+        await loadRunDetails(latest.id);
+      }
+    } catch (e: any) {
+      if (e instanceof AuthRequiredError) {
+        setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
+      } else {
+        setAuthError(e?.message || 'Сервер недоступен');
+        showNotice('error', e?.message || 'Сервер недоступен');
+      }
+    }
+  }, [loadRunDetails, showNotice, validateDraft]);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const state = await apiClient.getSession();
+        if (cancelled) return;
         setSession(state);
-        if (!state.authRequired || state.authenticated) {
-          await loadInitialData();
-        }
+        if (!state.authRequired || state.authenticated) await loadInitialData();
       } catch (e: any) {
+        if (cancelled) return;
         if (e instanceof AuthRequiredError) {
           setSession({ authenticated: false, authRequired: true, workspaceId: '', expiresInSec: 0 });
         } else {
@@ -127,15 +260,23 @@ export const App: React.FC = () => {
           setSession({ authenticated: false, authRequired: true, workspaceId: '', expiresInSec: 0 });
         }
       } finally {
-        setAuthLoading(false);
+        if (!cancelled) setAuthLoading(false);
       }
     })();
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      cancelled = true;
+      closeSSE();
     };
-  }, []);
+  }, [closeSSE, loadInitialData]);
+
+  // While a run is queued/running, poll as a fallback when SSE is silent or reconnects.
+  useEffect(() => {
+    if (!isRunning || !currentRunId) return;
+    const timer = window.setInterval(() => {
+      void loadRunDetails(currentRunId);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [currentRunId, isRunning, loadRunDetails]);
 
   const handleLogin = async (accessCode: string) => {
     setAuthBusy(true);
@@ -155,12 +296,11 @@ export const App: React.FC = () => {
     try {
       await apiClient.logout();
     } catch {
-      // cookie already gone / server unavailable — local state still resets
+      // Cookie already gone or server unavailable; local state still resets.
     }
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
+    closeSSE();
+    selectedRunRef.current = null;
+    runLoadSeq.current += 1;
     setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
     setCurrentRunId(null);
     setCurrentRun(null);
@@ -168,98 +308,65 @@ export const App: React.FC = () => {
     setFindings([]);
     setReport(null);
     setEvents([]);
+    setRuns([]);
+    setIsRunning(false);
+    setSelectedNodeId(null);
   };
 
-  // Validate draft helper
-  const validateDraft = async (wfId: string, d: WorkflowDraft) => {
+  const handleSelectRun = (runId: string) => {
+    if (!runId) return;
+    closeSSE();
+    selectedRunRef.current = runId;
+    setCurrentRunId(runId);
+    setCurrentRun(null);
+    setNodeRuns([]);
+    setFindings([]);
+    setReport(null);
+    setEvents([]);
+    setIsRunning(false);
+    void loadRunDetails(runId);
+  };
+
+  const handleSelectWorkflow = async (nextWorkflowId: string) => {
+    if (!nextWorkflowId) return;
     try {
-      const res = await apiClient.validateWorkflow(wfId, d);
-      setValidationIssues(res.issues || []);
-    } catch (e) {
-      console.error(e);
+      const workflow = await apiClient.getWorkflow(nextWorkflowId);
+      if (!workflow?.draft) {
+        showNotice('error', 'У сценария нет сохранённого draft');
+        return;
+      }
+      setWorkflowId(nextWorkflowId);
+      setDraft(workflow.draft);
+      setSelectedNodeId(null);
+      await validateDraft(nextWorkflowId, workflow.draft);
+      showNotice('ok', `Открыт сценарий: ${workflow.name || nextWorkflowId}`);
+    } catch (e: any) {
+      showNotice('error', e?.message || 'Не удалось открыть сценарий');
     }
   };
 
-  // Load run details from server
-  const loadRunDetails = async (rId: string) => {
-    try {
-      const runInfo = await apiClient.getRun(rId);
-      setCurrentRun(runInfo);
-      if (runInfo.execution_status === 'running' || runInfo.execution_status === 'queued') {
-        setIsRunning(true);
-      } else {
-        setIsRunning(false);
-      }
-
-      const nodes = await apiClient.getRunNodes(rId);
-      setNodeRuns(nodes);
-
-      const fnds = await apiClient.getRunFindings(rId);
-      setFindings(fnds);
-
-      try {
-        const rep = await apiClient.getRunReport(rId);
-        setReport(rep);
-      } catch {
-        setReport(null);
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  // Connect SSE for live updates
-  const connectSSE = useCallback((rId: string) => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    const es = apiClient.createEventSource(rId, 0);
-    eventSourceRef.current = es;
-
-    es.onmessage = (msg) => {
-      try {
-        const ev = JSON.parse(msg.data);
-        setEvents((prev) => [...prev, ev]);
-
-        if (ev.type === 'run_status') {
-          const status = ev.payload?.status;
-          if (status === 'succeeded' || status === 'failed') {
-            setIsRunning(false);
-            loadRunDetails(rId);
-          }
-        } else if (ev.type === 'node_status') {
-          loadRunDetails(rId);
-        }
-      } catch (err) {
-        console.error('SSE parse error:', err);
-      }
-    };
-
-    es.onerror = () => {
-      // Reconnection or close
-    };
-  }, []);
-
-  // Draft changes
   const handleDraftChange = (updated: WorkflowDraft) => {
     setDraft(updated);
-    validateDraft(workflowId, updated);
+    void validateDraft(workflowId, updated);
   };
 
   const handleSaveDraft = async () => {
     setIsSavingDraft(true);
     try {
       await apiClient.saveWorkflowDraft(workflowId, draft);
-      await validateDraft(workflowId, draft);
+      const result = await validateDraft(workflowId, draft);
+      if (result?.valid) {
+        showNotice('ok', 'Draft сохранён, граф валиден');
+      } else {
+        showNotice('error', `Draft сохранён, но есть ошибки валидации (${result?.issues?.length || 0})`);
+      }
     } catch (e: any) {
-      alert(`Ошибка сохранения: ${e.message}`);
+      showNotice('error', e?.message || 'Ошибка сохранения draft');
     } finally {
       setIsSavingDraft(false);
     }
   };
 
-  // Add node from palette
   const handleAddNode = (kind: NodeKind) => {
     const newId = `node_${kind}_${Date.now()}`;
     const newNode: WorkflowNode = {
@@ -270,85 +377,110 @@ export const App: React.FC = () => {
       config: {},
       position: { x: 300 + Math.random() * 100, y: 150 + Math.random() * 100 },
     };
-    const updated = { ...draft, nodes: [...draft.nodes, newNode] };
-    handleDraftChange(updated);
+    handleDraftChange({ ...draft, nodes: [...draft.nodes, newNode] });
     setSelectedNodeId(newId);
   };
 
-  // Update node config
   const handleUpdateNodeConfig = (nodeId: string, newConfig: Record<string, any>, newTitle?: string) => {
-    const updatedNodes = draft.nodes.map((n) => {
-      if (n.id === nodeId) {
-        return {
-          ...n,
-          config: newConfig,
-          title: newTitle !== undefined ? newTitle : n.title,
-        };
-      }
-      return n;
+    const updatedNodes = draft.nodes.map((node) => {
+      if (node.id !== nodeId) return node;
+      return {
+        ...node,
+        config: newConfig,
+        title: newTitle !== undefined ? newTitle : node.title,
+      };
     });
     handleDraftChange({ ...draft, nodes: updatedNodes });
   };
 
-  // Delete node
   const handleDeleteNode = (nodeId: string) => {
-    const updatedNodes = draft.nodes.filter((n) => n.id !== nodeId);
-    const updatedEdges = draft.edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
-    handleDraftChange({ ...draft, nodes: updatedNodes, edges: updatedEdges });
+    handleDraftChange({
+      ...draft,
+      nodes: draft.nodes.filter((node) => node.id !== nodeId),
+      edges: draft.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+    });
     setSelectedNodeId(null);
   };
 
-  // Reset to default template
   const handleResetToTemplate = async () => {
     try {
-      const wfs = await apiClient.listWorkflows();
-      if (wfs.length > 0 && wfs[0].draft) {
-        handleDraftChange(wfs[0].draft);
+      const workflow = await apiClient.getWorkflow(workflowId);
+      if (!workflow?.draft) {
+        showNotice('error', 'У сценария нет сохранённого draft');
+        return;
       }
-    } catch (e) {
-      console.error(e);
+      setDraft(workflow.draft);
+      setSelectedNodeId(null);
+      await validateDraft(workflowId, workflow.draft);
+      showNotice('ok', 'Draft сброшен к сохранённому состоянию');
+    } catch (e: any) {
+      showNotice('error', e?.message || 'Не удалось сбросить draft');
     }
   };
 
-  // Trigger Run
   const handleTriggerRun = async () => {
     if (isRunning) return;
+    const hasErrors = validationIssues.some((issue) => issue.level === 'error');
+    if (hasErrors) {
+      setActiveTab('editor');
+      showNotice('error', 'Сначала исправьте ошибки валидации графа');
+      return;
+    }
     setIsRunning(true);
     setEvents([]);
+    setReport(null);
     try {
-      // First save draft
       await apiClient.saveWorkflowDraft(workflowId, draft);
-      const res = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
-      setCurrentRunId(res.runId);
+      const result = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
+      selectedRunRef.current = result.runId;
+      setCurrentRunId(result.runId);
+      setCurrentRun(null);
+      setNodeRuns([]);
+      setFindings([]);
+      setReport(null);
+      setSelectedNodeId(null);
       setActiveTab('live');
-      connectSSE(res.runId);
+      connectSSE(result.runId);
+      await loadRunDetails(result.runId);
+      await refreshRuns();
     } catch (e: any) {
-      alert(`Ошибка запуска: ${e.message}`);
       setIsRunning(false);
+      showNotice('error', e?.message || 'Ошибка запуска workflow');
     }
   };
 
-  // Artifact loaded
   const handleArtifactLoaded = (manifest: ArtifactManifest) => {
-    setArtifacts((prev) => [manifest, ...prev]);
+    setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
     setCurrentArtifactId(manifest.id);
-    // Update project_input node if present
-    const updatedNodes = draft.nodes.map((n) => {
-      if (n.kind === 'project_input') {
-        return { ...n, config: { ...n.config, artifactId: manifest.id } };
-      }
-      return n;
+    handleDraftChange({
+      ...draft,
+      nodes: draft.nodes.map((node) =>
+        node.kind === 'project_input'
+          ? { ...node, config: { ...node.config, artifactId: manifest.id } }
+          : node,
+      ),
     });
-    handleDraftChange({ ...draft, nodes: updatedNodes });
+    showNotice('ok', `Артефакт выбран: ${manifest.filename}`);
   };
 
-  // Map node statuses for canvas
+  const handleSelectArtifact = (artifactId: string) => {
+    setCurrentArtifactId(artifactId);
+    handleDraftChange({
+      ...draft,
+      nodes: draft.nodes.map((node) =>
+        node.kind === 'project_input'
+          ? { ...node, config: { ...node.config, artifactId } }
+          : node,
+      ),
+    });
+  };
+
   const nodeStatusMap: Record<string, NodeRunStatus> = {};
-  nodeRuns.forEach((nr) => {
-    nodeStatusMap[nr.node_id] = nr.status;
+  nodeRuns.forEach((nodeRun) => {
+    nodeStatusMap[nodeRun.node_id] = nodeRun.status;
   });
 
-  const selectedNode = draft.nodes.find((n) => n.id === selectedNodeId) || null;
+  const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
 
   if (authLoading) {
     return (
@@ -370,7 +502,6 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
-      {/* Navbar */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -380,12 +511,17 @@ export const App: React.FC = () => {
         isRunning={isRunning}
         latestVerdict={currentRun?.security_verdict}
         findingsCount={findings.length}
+        runs={runs}
+        currentRunId={currentRunId}
+        runsLoading={runsLoading}
+        onSelectRun={handleSelectRun}
+        onRefreshRuns={() => void refreshRuns()}
+        onLogout={() => void handleLogout()}
       />
 
-      {/* Main Content by Tab */}
       <main className="flex-1 flex overflow-hidden relative">
         {activeTab === 'editor' && (
-          <div className="flex-1 flex h-full overflow-hidden">
+          <div className="flex-1 flex flex-col md:flex-row h-full overflow-auto md:overflow-hidden">
             <NodePalette onAddNode={handleAddNode} />
             <WorkflowCanvas
               draft={draft}
@@ -397,6 +533,12 @@ export const App: React.FC = () => {
               onSaveDraft={handleSaveDraft}
               onResetToTemplate={handleResetToTemplate}
               isSaving={isSavingDraft}
+              workflows={workflows}
+              workflowId={workflowId}
+              onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
+              artifacts={artifacts}
+              currentArtifactId={currentArtifactId}
+              onSelectArtifact={handleSelectArtifact}
             />
             {selectedNode && (
               <InspectorPanel
@@ -415,7 +557,8 @@ export const App: React.FC = () => {
             currentRun={currentRun}
             nodeRuns={nodeRuns}
             events={events}
-            onSelectNode={(nId) => setSelectedNodeId(nId)}
+            onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
+            onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
           />
         )}
 
@@ -427,10 +570,12 @@ export const App: React.FC = () => {
 
         {activeTab === 'report' && <ReportView report={report} runId={currentRunId} />}
 
-        {activeTab === 'comparison' && <ComparisonView runs={runs} />}
+        {activeTab === 'comparison' && (
+          <ComparisonView runs={runs} onRefreshRuns={() => void refreshRuns()} />
+        )}
 
         {activeTab === 'schedule' && (
-          <div className="flex-1 flex items-center justify-center p-6 bg-slate-950">
+          <div className="flex-1 flex items-center justify-center p-6 bg-slate-950 overflow-auto">
             <div className="w-full max-w-xl">
               <ScheduleModal
                 workflowId={workflowId}
@@ -443,7 +588,6 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      {/* Modals */}
       <UploadModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
@@ -465,15 +609,19 @@ export const App: React.FC = () => {
         onClose={() => setIsAiTestOpen(false)}
       />
 
-      {session?.authenticated && (
-        <button
-          onClick={handleLogout}
-          className="fixed bottom-3 right-3 z-30 rounded-lg border border-slate-700 bg-slate-900/95 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white shadow-lg"
-          title="Завершить сессию"
+      {notice && (
+        <div
+          role={notice.kind === 'error' ? 'alert' : 'status'}
+          className={`fixed bottom-3 left-3 z-40 max-w-sm rounded-lg border px-3.5 py-2.5 text-xs shadow-2xl ${
+            notice.kind === 'error'
+              ? 'border-rose-800 bg-rose-950/95 text-rose-200'
+              : 'border-emerald-800 bg-emerald-950/95 text-emerald-200'
+          }`}
         >
-          Выйти
-        </button>
+          {notice.text}
+        </div>
       )}
+
     </div>
   );
 };

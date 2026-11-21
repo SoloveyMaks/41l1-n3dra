@@ -89,6 +89,10 @@ export const apiClient = {
     return (await request('/artifacts/sample', { method: 'POST' })).json();
   },
 
+  async loadTrainingArtifact(): Promise<ArtifactManifest> {
+    return (await request('/artifacts/sample/training', { method: 'POST' })).json();
+  },
+
   async listArtifacts(): Promise<ArtifactManifest[]> {
     return (await request('/artifacts')).json();
   },

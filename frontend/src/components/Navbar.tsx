@@ -1,9 +1,9 @@
 import React from 'react';
 import {
   ShieldCheck, Play, Upload, Clock, FileText, Bug,
-  Sparkles, CheckCircle2, AlertTriangle, Layers, Network, GitCompare
+  Sparkles, Layers, Network, GitCompare, RefreshCw, LogOut
 } from 'lucide-react';
-import { AppTab, SecurityVerdict } from '../types';
+import { AppTab, RunSummary, SecurityVerdict } from '../types';
 
 interface NavbarProps {
   activeTab: AppTab;
@@ -14,7 +14,31 @@ interface NavbarProps {
   isRunning: boolean;
   latestVerdict?: SecurityVerdict;
   findingsCount?: number;
+  runs: RunSummary[];
+  currentRunId: string | null;
+  runsLoading: boolean;
+  onSelectRun: (runId: string) => void;
+  onRefreshRuns: () => void;
+  onLogout: () => void;
 }
+
+const TAB_ITEMS: Array<{ id: AppTab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
+  { id: 'editor', label: 'Редактор', icon: Layers },
+  { id: 'live', label: 'Живое выполнение', icon: Play },
+  { id: 'findings', label: 'Находки и Evidence', icon: Bug },
+  { id: 'map', label: 'Карта безопасности', icon: Network },
+  { id: 'report', label: 'Отчёт', icon: FileText },
+  { id: 'comparison', label: 'Сравнение', icon: GitCompare },
+  { id: 'schedule', label: 'Расписание', icon: Clock },
+];
+
+const shortRun = (run: RunSummary) => {
+  const when = new Date(run.created_at);
+  const stamp = Number.isNaN(when.getTime())
+    ? '—'
+    : `${when.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })} ${when.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
+  return `${run.id.slice(0, 8)} · ${run.execution_status} · ${run.security_verdict} · ${stamp}`;
+};
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
@@ -25,167 +49,141 @@ export const Navbar: React.FC<NavbarProps> = ({
   isRunning,
   latestVerdict,
   findingsCount,
+  runs,
+  currentRunId,
+  runsLoading,
+  onSelectRun,
+  onRefreshRuns,
+  onLogout,
 }) => {
   return (
-    <header className="h-14 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between z-20 select-none">
-      {/* Brand */}
-      <div className="flex items-center gap-3">
+    <header className="min-h-14 bg-slate-900 border-b border-slate-800 px-3 sm:px-4 py-2 flex flex-wrap xl:flex-nowrap items-center gap-2 xl:gap-3 z-20 select-none">
+      <div className="flex items-center gap-2.5 min-w-0">
         <div className="p-2 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white shadow-lg shadow-indigo-500/20">
-          <ShieldCheck size={20} />
+          <ShieldCheck size={19} />
         </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-sm tracking-tight text-white">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold text-sm tracking-tight text-white whitespace-nowrap">
               AI Security Workflow
             </span>
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
+            <span className="hidden sm:inline px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
               Cyber Garden 2026
             </span>
           </div>
-          <p className="text-[10px] text-slate-400">
+          <p className="hidden sm:block text-[10px] text-slate-400 truncate">
             Банк «Центр-инвест» • Конструктор проверок безопасности
           </p>
         </div>
       </div>
 
-      {/* Tabs */}
-      <nav className="flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800">
-        <button
-          onClick={() => setActiveTab('editor')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-            activeTab === 'editor'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <Layers size={14} />
-          <span>Редактор</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('live')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer relative ${
-            activeTab === 'live'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <Play size={14} />
-          <span>Живое выполнение</span>
-          {isRunning && (
-            <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping absolute -top-0.5 -right-0.5" />
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab('findings')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-            activeTab === 'findings'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <Bug size={14} />
-          <span>Находки и Evidence</span>
-          {findingsCount !== undefined && findingsCount > 0 && (
-            <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-rose-950 text-rose-300 border border-rose-800">
-              {findingsCount}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab('map')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-            activeTab === 'map'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <Network size={14} />
-          <span>Карта безопасности</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('report')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-            activeTab === 'report'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <FileText size={14} />
-          <span>Отчёт</span>
-          {latestVerdict && (
-            <span
-              className={`ml-1 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
-                latestVerdict === 'fail'
-                  ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                  : latestVerdict === 'pass'
-                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                  : 'bg-yellow-950 text-yellow-300 border border-yellow-800'
+      <nav className="order-3 xl:order-none w-full xl:w-auto flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800 overflow-x-auto shrink-0">
+        {TAB_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer shrink-0 relative ${
+                activeTab === item.id
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
               }`}
             >
-              {latestVerdict}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab('comparison')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-            activeTab === 'comparison'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <GitCompare size={14} />
-          <span>Сравнение</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('schedule')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-            activeTab === 'schedule'
-              ? 'bg-indigo-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-          }`}
-        >
-          <Clock size={14} />
-          <span>Расписание</span>
-        </button>
+              <Icon size={14} />
+              <span>{item.label}</span>
+              {item.id === 'live' && isRunning && (
+                <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping absolute -top-0.5 -right-0.5" />
+              )}
+              {item.id === 'findings' && findingsCount !== undefined && findingsCount > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] bg-rose-950 text-rose-300 border border-rose-800">
+                  {findingsCount}
+                </span>
+              )}
+              {item.id === 'report' && latestVerdict && (
+                <span
+                  className={`ml-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
+                    latestVerdict === 'fail'
+                      ? 'bg-rose-950 text-rose-300 border border-rose-800'
+                      : latestVerdict === 'pass'
+                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                      : 'bg-yellow-950 text-yellow-300 border border-yellow-800'
+                  }`}
+                >
+                  {latestVerdict}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </nav>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2">
+      <div className="order-2 xl:order-none ml-auto flex items-center gap-1.5 sm:gap-2 min-w-0">
+        <div className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/60 px-1.5 py-1 min-w-0">
+          <span className="hidden 2xl:inline text-[10px] text-slate-500 whitespace-nowrap">Запуск</span>
+          <select
+            aria-label="История запусков"
+            value={currentRunId || ''}
+            onChange={(event) => event.target.value && onSelectRun(event.target.value)}
+            disabled={runsLoading || runs.length === 0}
+            className="max-w-[150px] sm:max-w-[210px] bg-transparent text-[11px] text-slate-200 outline-none disabled:text-slate-500"
+            title={currentRunId || 'Выберите запуск из истории'}
+          >
+            <option value="">{runs.length ? 'Выберите запуск' : 'Нет запусков'}</option>
+            {runs.map((run) => (
+              <option key={run.id} value={run.id}>
+                {shortRun(run)}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={onRefreshRuns}
+            disabled={runsLoading}
+            title="Обновить историю запусков"
+            className="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={runsLoading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+
         <button
           onClick={onOpenAiTest}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-fuchsia-950/60 hover:bg-fuchsia-900 border border-fuchsia-800/80 text-fuchsia-300 text-xs font-medium transition cursor-pointer"
+          className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-fuchsia-950/60 hover:bg-fuchsia-900 border border-fuchsia-800/80 text-fuchsia-300 text-xs font-medium transition cursor-pointer"
           title="Синтетический тест валидатора AI для жюри"
         >
           <Sparkles size={13} />
-          <span>Тест AI Trust Layer</span>
+          <span className="hidden lg:inline">Тест AI</span>
         </button>
 
         <button
           onClick={onOpenUpload}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
+          title="Загрузить ZIP проекта"
         >
           <Upload size={13} />
-          <span>Загрузить ZIP</span>
+          <span className="hidden sm:inline">Загрузить ZIP</span>
         </button>
 
         <button
           onClick={onTriggerRun}
           disabled={isRunning}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-lg cursor-pointer ${
+          className={`flex items-center gap-1.5 px-3 sm:px-4 py-1.5 rounded-lg text-xs font-bold transition shadow-lg cursor-pointer ${
             isRunning
               ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
               : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
           }`}
         >
           <Play size={13} fill="currentColor" />
-          <span>{isRunning ? 'Выполняется...' : 'Запустить workflow'}</span>
+          <span>{isRunning ? 'Выполняется...' : 'Запустить'}</span>
+        </button>
+
+        <button
+          onClick={onLogout}
+          className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-white"
+          title="Завершить сессию"
+        >
+          <LogOut size={13} />
+          <span className="hidden lg:inline">Выйти</span>
         </button>
       </div>
     </header>
