@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "reference-report/v2",
+  "comparatorVersion": "reference-checks/2",
+  "suiteId": "orders-reference-suite",
+  "suiteVersion": "1",
+  "projectId": "reference-checks/orders-service",
+  "reference": {
+    "branch": "SoloveyMaks/reference-branch-checks",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+    "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "bundleContentSha256": "653da0fcb59cf5ae84421a3aa773fe7e18ec21b9d35c1dcada671329dfb6e714",
+    "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
+    "runnerVersion": "cg26-analyzers/0.1.0",
+    "snapshotPresent": false
+  },
+  "target": {
+    "branch": null,
+    "sha": null,
+    "workspaceId": null,
+    "runId": null,
+    "snapshotId": null,
+    "artifactId": null,
+    "artifactHash": null,
+    "snapshotManifestHash": null,
+    "runnerVersions": [
+      "cg26-analyzers/0.1.0"
+    ],
+    "provenance": "raw-fixture-untrusted"
+  },
+  "status": "inconclusive",
+  "compatibility": {
+    "compatible": false,
+    "bundleSchemaVersion": "0.1",
+    "reasons": [
+      "rulesVersion differs: reference 'cg26-rules/0.1.0', bundle 'cg26-rules/0.2.0'"
+    ],
+    "coverageReasons": [
+      "SCA coverage is unavailable"
+    ],
+    "coverageWarnings": [
+      "SCA scanner status is 'partial'",
+      "SAST scanner status is 'partial'",
+      "SAST coverage is partial"
+    ]
+  },
+  "provenance": {
+    "mode": "raw-fixture",
+    "attestation": "none",
+    "verified": false,
+    "reasons": [
+      "reference: raw-fixture mode: pinned reference identity was not verified against server storage",
+      "target: raw-fixture mode: target bundle identity and commit were not verified against server storage"
+    ],
+    "reference": null,
+    "target": null,
+    "checks": {
+      "reference": {
+        "source": "raw-fixture"
+      },
+      "target": {
+        "source": "raw-fixture"
+      }
+    }
+  },
+  "findings": [],
+  "controls": [],
+  "unexpectedFindings": [],
+  "summary": {
+    "expectedFindings": 3,
+    "matchedFindings": 0,
+    "missingFindings": 0,
+    "mismatchedFindings": 0,
+    "inconclusiveFindings": 0,
+    "unexpectedFindings": 0,
+    "expectedControls": 2,
+    "matchedControls": 0,
+    "triggeredControls": 0,
+    "inconclusiveControls": 0
+  }
+}

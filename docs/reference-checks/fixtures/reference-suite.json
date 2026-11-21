@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "reference-suite/v1",
+  "suiteId": "orders-reference-suite",
+  "suiteVersion": "1",
+  "project": {
+    "id": "reference-checks/orders-service",
+    "repository": "41l1-n3dra",
+    "fixturePath": "docs/reference-checks/fixtures/project-reference"
+  },
+  "reference": {
+    "branch": "SoloveyMaks/reference-branch-checks",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+    "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
+    "bundleContentSha256": "653da0fcb59cf5ae84421a3aa773fe7e18ec21b9d35c1dcada671329dfb6e714",
+    "runnerVersion": "cg26-analyzers/0.1.0",
+    "signature": {
+      "parserVersion": "cg26-parser/0.1.0",
+      "rulesVersion": "cg26-rules/0.1.0",
+      "advisoryVersion": "osv-maven/2026-11-16",
+      "configVersion": "cg26-config/1",
+      "hmacKeyVersion": "local-demo-1",
+      "parserHash": "45a0c13955e43913ecc8ac477df678a58ffaf6b90895b51e40815edf5b6c02ab",
+      "rulesHash": "8731ddbc49fbbc6dc3a65824553b4aa8f468243dbacdef75ed9c7f1e57ef41ae",
+      "advisoryHash": "5b9fb142cdd8e7fe9a7885709920cb686e061564e7b6cac249597e689ef450ca",
+      "scanConfigHash": "67e1cca99a94de1b0123d6c6de092d25e5bde195e921c49df6732f3d7dea72ff",
+      "domainPolicyRevisionId": "cdd1d094-c895-57c5-947e-887203981154",
+      "domainPolicyVersion": "cg26-policy/1",
+      "domainPolicyHash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703"
+    },
+    "expectedFindings": [
+      {
+        "id": "REF-SEC-004",
+        "category": "SECRET",
+        "ruleId": "CG26-SEC-004",
+        "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+        "severity": "low",
+        "fingerprint": "2a7ec8eeea546f80c0f897b47f42c991f55f59426f225f7b9c1b4ecc791ff61f",
+        "symbolKey": "OrderClient.apiKey"
+      },
+      {
+        "id": "REF-SEC-003",
+        "category": "SECRET",
+        "ruleId": "CG26-SEC-003",
+        "path": "src/main/resources/application.yml",
+        "severity": "high",
+        "fingerprint": "e07512e7bc85ab9859ec968a5323c766929c522673c44f53098a35c1205ef2fa",
+        "symbolKey": "orders.callback.authorization"
+      },
+      {
+        "id": "REF-SAST-001",
+        "category": "SAST",
+        "ruleId": "CG26-SAST-001",
+        "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+        "severity": "high",
+        "fingerprint": "161edf21315328462ffdfb3379ca75d8ad9ea365ff462b51925ab4292417e84c",
+        "symbolKey": "OrderLookupController.find"
+      }
+    ],
+    "expectedControls": [
+      {
+        "id": "CTL-SAST-01",
+        "category": "SAST",
+        "ruleId": "CG26-SAST-001",
+        "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+        "description": "Параметризованный запрос не должен давать находку."
+      },
+      {
+        "id": "CTL-SECRET-01",
+        "category": "SECRET",
+        "ruleId": "CG26-SEC-004",
+        "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+        "description": "В безопасном контроллере нет fallback-секрета."
+      }
+    ]
+  },
+  "compatibility": {
+    "bundleSchemaVersion": "0.1"
+  }
+}

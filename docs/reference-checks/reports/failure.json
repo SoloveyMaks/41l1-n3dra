@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "reference-report/v2",
+  "comparatorVersion": "reference-checks/2",
+  "suiteId": "orders-reference-suite",
+  "suiteVersion": "1",
+  "projectId": "reference-checks/orders-service",
+  "reference": {
+    "branch": "SoloveyMaks/reference-branch-checks",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+    "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "bundleContentSha256": "653da0fcb59cf5ae84421a3aa773fe7e18ec21b9d35c1dcada671329dfb6e714",
+    "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
+    "runnerVersion": "cg26-analyzers/0.1.0",
+    "snapshotPresent": false
+  },
+  "target": {
+    "branch": null,
+    "sha": null,
+    "workspaceId": null,
+    "runId": null,
+    "snapshotId": null,
+    "artifactId": null,
+    "artifactHash": null,
+    "snapshotManifestHash": null,
+    "runnerVersions": [
+      "cg26-analyzers/0.1.0"
+    ],
+    "provenance": "raw-fixture-untrusted"
+  },
+  "status": "fail",
+  "compatibility": {
+    "compatible": true,
+    "bundleSchemaVersion": "0.1",
+    "reasons": [],
+    "coverageReasons": [
+      "SCA coverage is unavailable"
+    ],
+    "coverageWarnings": [
+      "SCA scanner status is 'partial'",
+      "SAST scanner status is 'partial'",
+      "SAST coverage is partial"
+    ]
+  },
+  "provenance": {
+    "mode": "raw-fixture",
+    "attestation": "none",
+    "verified": false,
+    "reasons": [
+      "reference: raw-fixture mode: pinned reference identity was not verified against server storage",
+      "target: raw-fixture mode: target bundle identity and commit were not verified against server storage"
+    ],
+    "reference": null,
+    "target": null,
+    "checks": {
+      "reference": {
+        "source": "raw-fixture"
+      },
+      "target": {
+        "source": "raw-fixture"
+      }
+    }
+  },
+  "findings": [
+    {
+      "id": "REF-SEC-004",
+      "category": "SECRET",
+      "ruleId": "CG26-SEC-004",
+      "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+      "expectedFingerprint": "2a7ec8eeea546f80c0f897b47f42c991f55f59426f225f7b9c1b4ecc791ff61f",
+      "status": "missing",
+      "reason": "expected finding is absent from a checked scope"
+    },
+    {
+      "id": "REF-SEC-003",
+      "category": "SECRET",
+      "ruleId": "CG26-SEC-003",
+      "path": "src/main/resources/application.yml",
+      "expectedFingerprint": "e07512e7bc85ab9859ec968a5323c766929c522673c44f53098a35c1205ef2fa",
+      "status": "missing",
+      "reason": "expected finding is absent from a checked scope"
+    },
+    {
+      "id": "REF-SAST-001",
+      "category": "SAST",
+      "ruleId": "CG26-SAST-001",
+      "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+      "expectedFingerprint": "161edf21315328462ffdfb3379ca75d8ad9ea365ff462b51925ab4292417e84c",
+      "status": "missing",
+      "reason": "expected finding is absent from a checked scope"
+    }
+  ],
+  "controls": [
+    {
+      "id": "CTL-SAST-01",
+      "category": "SAST",
+      "ruleId": "CG26-SAST-001",
+      "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+      "status": "matched",
+      "actualFindings": 0,
+      "reason": "control scope checked and clean"
+    },
+    {
+      "id": "CTL-SECRET-01",
+      "category": "SECRET",
+      "ruleId": "CG26-SEC-004",
+      "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+      "status": "matched",
+      "actualFindings": 0,
+      "reason": "control scope checked and clean"
+    }
+  ],
+  "unexpectedFindings": [],
+  "summary": {
+    "expectedFindings": 3,
+    "matchedFindings": 0,
+    "missingFindings": 3,
+    "mismatchedFindings": 0,
+    "inconclusiveFindings": 0,
+    "unexpectedFindings": 0,
+    "expectedControls": 2,
+    "matchedControls": 2,
+    "triggeredControls": 0,
+    "inconclusiveControls": 0
+  },
+  "untrusted": {
+    "bundleIdentity": {
+      "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+      "runId": "42c6cfa9-af8a-5136-8b00-e14c191e1fa6",
+      "snapshotId": "112c24a2-2e28-5cdf-8277-92aeb6c7b3bf",
+      "artifactHash": "a70db4e67e9e09ee398af6942bffaafa9072296ea6fcb444a38c67a01cdcfec3",
+      "snapshotManifestHash": "24d7d144616d238cd6cb6329c767bc01e9606fb30cb4308667f035ef6e0c0a6a",
+      "workflowRevisionId": "603ee9ca-d486-5e7a-a885-5e935fb36e2a"
+    },
+    "note": "Raw fixture comparison only. The bundle identity, commit and branch were supplied by the caller and are not attestation."
+  }
+}
