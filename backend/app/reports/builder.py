@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Optional
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
-from backend.app.reports.language import naturalize
+from backend.app.reports.language import (
+    completeness_label,
+    evidence_markdown,
+    naturalize,
+)
 from backend.app.contracts.schemas import (
     Coverage, ExplainResult, Finding, PolicyResult, SecurityPassport, SecurityVerdict
 )
@@ -160,26 +164,29 @@ class ReportBuilder:
         md.append(f"| Средние | {sum(1 for f in findings if f.severity.value == 'medium')} |")
         md.append(f"| Низкие | {sum(1 for f in findings if f.severity.value == 'low')} |")
         md.append(f"| Информационные | {sum(1 for f in findings if f.severity.value == 'info')} |")
-        md.append(f"| Подтверждено | {passport.confirmed_findings} |")
-        md.append(f"| Потенциально | {passport.potential_findings} |")
+        md.append(f"| Подтверждено | {sum(1 for f in findings if f.status.value == 'confirmed')} |")
+        md.append(f"| Потенциально | {sum(1 for f in findings if f.status.value == 'potential')} |")
+        md.append(f"| Не определено | {sum(1 for f in findings if f.status.value == 'inconclusive')} |")
         md.append(f"| Проверено файлов | {passport.files_scanned} |")
         md.append(f"| Пропущено файлов | {passport.files_skipped} |")
         md.append(f"| Строк кода | {passport.lines_of_code} |")
         md.append(f"| Запущено правил | {len(passport.rules_executed)} |")
         md.append(f"| Ошибок парсера | {passport.parser_errors} |")
         md.append(f"| Неразрешённых зависимостей | {passport.unresolved_dependencies} |")
-        if passport.completeness_known:
-            md.append("| Полнота проверки | подтверждена |")
+        md.append(
+            f"| Полнота проверки | {completeness_label(passport.completeness_known, passport.coverage_status)} |"
+        )
+        md.append("")
+
+        md.append("## Что проверено")
+        md.append(
+            f"Просканировано файлов: {passport.files_scanned}; пропущено: {passport.files_skipped}. "
+            "Результат относится только к указанным правилам и проверенным областям."
+        )
+        if passport.rules_executed:
+            md.append("\nЗапущенные правила: " + ", ".join(f"`{rule}`" for rule in passport.rules_executed) + ".")
         else:
-            if passport.coverage_status == "partial" or (
-                passport.coverage_status == "complete" and not passport.completeness_known
-            ):
-                completeness_label = "не установлена"
-            elif passport.coverage_status == "unavailable":
-                completeness_label = "недоступна"
-            else:
-                completeness_label = "неизвестна"
-            md.append(f"| Полнота проверки | {completeness_label} |")
+            md.append("\nСписок выполненных правил не сохранён; полнота набора проверок неизвестна.")
         md.append("")
 
         if passport.coverage_reasons:
@@ -239,16 +246,27 @@ class ReportBuilder:
                 md.append(f"- **Где:** `{finding.primaryLocation.path}:{finding.primaryLocation.startLine}`")
                 md.append(f"- **Почему это важно:** {mask_sensitive_text(naturalize(finding.severityBasis))}")
                 md.append(f"- **Достоверность:** {confidence} ({mask_sensitive_text(naturalize(finding.confidenceBasis))})")
+                finding_status = _CONFIDENCE_LABELS.get(finding.status.value, finding.status.value)
+                md.append(f"- **Статус доказательства:** {finding_status}")
                 if finding.advisoryIds:
                     md.append(f"- **Связанные записи безопасности:** {', '.join(finding.advisoryIds)}")
 
                 if finding.redactedEvidence:
-                    md.append(f"```text\n{mask_text(finding.redactedEvidence)}\n```")
+                    md.append(evidence_markdown(mask_text(finding.redactedEvidence)))
 
                 if finding.trace:
+                    md.append("")
                     md.append("**Цепочка доказательств:**")
                     for step in finding.trace:
-                        md.append(f"- {step.step}. {mask_sensitive_text(naturalize(step.description))}")
+                        location = f" (`{step.location.path}:{step.location.startLine}`)" if step.location else ""
+                        md.append(f"- {step.step}. {mask_sensitive_text(naturalize(step.description))}{location}")
+
+                md.append("")
+                md.append("**Ограничения:**")
+                for warning in finding.coverageWarnings:
+                    md.append(f"- {mask_sensitive_text(naturalize(warning))}")
+                if not finding.coverageWarnings:
+                    md.append("Отдельные ограничения этой находки не указаны; общие ограничения покрытия сохраняются.")
 
                 if finding.id in ai_item_map:
                     item = ai_item_map[finding.id]

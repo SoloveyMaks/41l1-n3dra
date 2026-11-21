@@ -19,6 +19,7 @@ from backend.app.reports.exports import (
     ReportNotFound,
     build_docx,
     build_jsonc,
+    build_markdown,
     load_export_bundle,
 )
 from backend.app.storage.database import DatabaseRepository
@@ -76,6 +77,14 @@ def create_report_exports_router(db: DatabaseRepository) -> APIRouter:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             ),
             headers=_headers(run_id, "docx"),
+        )
+
+    @router.get("/runs/{run_id}/report/export.md")
+    def export_markdown(run_id: str) -> Response:
+        return Response(
+            content=build_markdown(_load(run_id)),
+            media_type="text/markdown; charset=utf-8",
+            headers=_headers(run_id, "md"),
         )
 
     return router
