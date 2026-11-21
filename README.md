@@ -8,6 +8,8 @@ AI Security Workflow для Cyber Garden 2026: собственные прове
 
 - [Решения проекта и порядок сборки](PROJECT-DECISIONS.md)
 - [Пакет C: данные и карта](docs/c-data-handoff.md)
+- [Анализаторы пакета B](analyzers/README.md) — SECRET/SCA/SAST и выгрузка `AnalysisBundle`
+- [Отчёт по анализаторам](docs/analyzers-report.md)
 - [Общие DTO и открытые вопросы](docs/data-contracts/README.md)
 - [Миграции и сохранение результатов](db/README.md)
 - [Первый путь карты: pickup export](docs/security-map/INTEGRATION.md)
