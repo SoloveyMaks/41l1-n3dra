@@ -23,8 +23,9 @@ Usage: scripts/nedra-bootstrap.sh [--check | --write] [--refresh-key]
   --refresh-key  With --write, re-read REFORMBOSS_API_KEY from the source env.
 
 All existing non-managed CG_*/VECTOR_* entries are preserved. Missing
-CG_SESSION_SECRET, CG_ANCHOR_HMAC_KEY and CG_ACCESS_CODE are generated once.
-Secret values (especially the access code) are never printed.
+CG_SESSION_SECRET, CG_ANCHOR_HMAC_KEY, CG_ACCESS_CODE and CG_ADMIN_ACCESS_CODE
+are generated once. CG_ADMIN_ACCESS_CODE always differs from CG_ACCESS_CODE and
+is kept on repeat runs. Secret values are never printed or passed to argv.
 USAGE
       exit 0
       ;;
@@ -35,7 +36,7 @@ done
 managed_key() {
   case "$1" in
     REFORMBOSS_API_KEY|POSTGRES_USER|POSTGRES_DB|POSTGRES_PASSWORD|DATABASE_URL|\
-    CG_SESSION_SECRET|CG_ANCHOR_HMAC_KEY|CG_ACCESS_CODE|CG_DATA_DIR|\
+    CG_SESSION_SECRET|CG_ANCHOR_HMAC_KEY|CG_ACCESS_CODE|CG_ADMIN_ACCESS_CODE|CG_DATA_DIR|\
     CG_PUBLIC_DEMO|CG_ALLOWED_ORIGINS|CG_TRUST_PROXY|AI_PROVIDER|AI_MODEL|\
     VECTOR_RETRIEVAL_ENABLED|CG26_HMAC_KEY|CG26_HMAC_KEY_VERSION|CG26_ADVISORY_ROOT|\
     CG26_ADVISORY_DB)
@@ -81,6 +82,21 @@ existing_or_generate() {
 
 generate_hex_32() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
 generate_hex_8() { od -An -N8 -tx1 /dev/urandom | tr -d ' \n'; }
+
+# Separate admin code must never equal the shared user code. The value is
+# returned on stdout only; callers keep it in shell variables, never in argv
+# of an external command.
+generate_admin_code() {
+  local user_code=$1 candidate attempt
+  for attempt in 1 2 3 4 5; do
+    candidate=$(generate_hex_8)
+    if [ "$candidate" != "$user_code" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  die "не удалось сгенерировать CG_ADMIN_ACCESS_CODE, отличный от CG_ACCESS_CODE"
+}
 
 check_port() {
   command -v ss >/dev/null 2>&1 || { warn "ss недоступен, порт не проверен"; return 0; }
@@ -138,6 +154,19 @@ run_check() {
       say "$name: отсутствует, будет сгенерирован (значение не печатается)"
     fi
   done
+  local admin_code_value user_code_value
+  admin_code_value=$(existing_value CG_ADMIN_ACCESS_CODE)
+  user_code_value=$(existing_value CG_ACCESS_CODE)
+  if [ -n "$admin_code_value" ]; then
+    say "CG_ADMIN_ACCESS_CODE: есть, сохраняется (значение не печатается)"
+    if [ "$admin_code_value" = "$user_code_value" ]; then
+      warn "CG_ADMIN_ACCESS_CODE совпадает с CG_ACCESS_CODE; --write откажется, значения не печатаются"
+    fi
+  else
+    # --write всегда делает установку публичной (CG_PUBLIC_DEMO=1), поэтому
+    # отдельный admin-код генерируется сразу; без него admin login выключен.
+    say "CG_ADMIN_ACCESS_CODE: отсутствует, будет сгенерирован отдельно от CG_ACCESS_CODE (значение не печатается)"
+  fi
   say "public: CG_PUBLIC_DEMO=1, CG_ALLOWED_ORIGINS=https://$NEDRA_DOMAIN"
   say "AI: AI_PROVIDER=reformboss, AI_MODEL=deepseek-v4.1-flash-1017, ключ только env"
   say "vectors: VECTOR_RETRIEVAL_ENABLED=0"
@@ -183,7 +212,7 @@ run_check() {
 run_write() {
   require_cmd podman
   require_cmd python3
-  local ref_key existing_ref password session_secret anchor_key access_code database_url tmp pairs_tmp team_b_key team_b_version team_b_root team_b_db
+  local ref_key existing_ref password session_secret anchor_key access_code admin_code database_url tmp pairs_tmp team_b_key team_b_version team_b_root team_b_db
   existing_ref=$(existing_value REFORMBOSS_API_KEY)
   if [ "$REFRESH_KEY" = "1" ] || [ -z "$existing_ref" ]; then
     require_source_key
@@ -205,6 +234,14 @@ run_write() {
   session_secret=$(existing_or_generate CG_SESSION_SECRET generate_hex_32)
   anchor_key=$(existing_or_generate CG_ANCHOR_HMAC_KEY generate_hex_32)
   access_code=$(existing_or_generate CG_ACCESS_CODE generate_hex_8)
+  admin_code=$(existing_value CG_ADMIN_ACCESS_CODE)
+  if [ -z "$admin_code" ]; then
+    admin_code=$(generate_admin_code "$access_code")
+    say "сгенерирован CG_ADMIN_ACCESS_CODE"
+  fi
+  if [ "$admin_code" = "$access_code" ]; then
+    die "CG_ADMIN_ACCESS_CODE совпадает с CG_ACCESS_CODE; замените один из кодов вручную (значения не печатаются)"
+  fi
   team_b_key=$(existing_or_generate CG26_HMAC_KEY generate_hex_32)
   team_b_version=$(existing_value CG26_HMAC_KEY_VERSION)
   [ -n "$team_b_version" ] || team_b_version="nedra-team-b-1"
@@ -249,6 +286,7 @@ run_write() {
     printf 'CG_SESSION_SECRET=%s\n' "$session_secret"
     printf 'CG_ANCHOR_HMAC_KEY=%s\n' "$anchor_key"
     printf 'CG_ACCESS_CODE=%s\n' "$access_code"
+    printf 'CG_ADMIN_ACCESS_CODE=%s\n' "$admin_code"
     printf 'CG_PUBLIC_DEMO=1\n'
     printf 'CG_ALLOWED_ORIGINS=https://%s\n' "$NEDRA_DOMAIN"
     printf 'CG_TRUST_PROXY=1\n'
@@ -265,7 +303,7 @@ run_write() {
   mv -f "$tmp" "$NEDRA_RUNTIME_ENV"
   trap - EXIT
   [ "$(runtime_env_mode)" = "600" ] || die "не удалось выставить 600 на $NEDRA_RUNTIME_ENV"
-  say "записан $NEDRA_RUNTIME_ENV (mode 600); access code не выводился"
+  say "записан $NEDRA_RUNTIME_ENV (mode 600); access codes не выводились"
   if [ "$REFRESH_KEY" = "1" ]; then
     say "REFORMBOSS_API_KEY обновлён из $NEDRA_SECRET_SOURCE"
   fi

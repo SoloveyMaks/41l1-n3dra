@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.router import api_router, scheduler, db_repo
+from backend.app.api.admin import admin_router
 from backend.app.api.session import (
     allow_attempt,
     allowed_origins,
@@ -147,6 +148,7 @@ async def same_origin_session(request: Request, call_next):
 
 
 app.include_router(api_router)
+app.include_router(admin_router)
 
 frontend_dist = None
 try:
