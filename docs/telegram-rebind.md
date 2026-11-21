@@ -98,6 +98,13 @@ Sync psycopg может ждать row lock. В async-коде он теперь
 sender видит новый epoch и отменяет доставку. Снять guard без замены нельзя —
 это вернуло бы утечку прошлого владельца.
 
+Отмена задачи во время ожидания `FOR UPDATE` не оставляет conn/row lock:
+`_acquire_delivery_guard` создаёт task + `asyncio.shield`, при
+`CancelledError` дожидается завершения worker-а и освобождает полученный conn.
+Повторная отмена во время release тоже переживается (`_release_delivery_guard_safe`
+крутит shield до завершения release-task). Guard owner-e — результат worker-а,
+а не отменённой coroutine.
+
 ## Restart recovery (012)
 
 `db/migrations/012_telegram_job_recovery.up.sql`:
@@ -227,6 +234,21 @@ TG ASYNC SMOKE OK
 ждёт ту же строку в worker thread: 21 тик heartbeat, unbind 200, delivery
 завершается. Recovery 012 после перевода DB-вызовов в threads не
 регрессировал.
+
+## Cancellation evidence
+
+Живой PG17, row lock держится отдельной транзакцией, локальный API stub:
+
+```text
+cancel before acquire: row lock released
+cancel during send: row lock released, outbox pending
+TG CANCEL GUARD OK
+```
+
+Сценарий 1: delivery task отменена дважды, пока worker ждёт binding
+`FOR UPDATE`; после отпускания lock задача завершилась, а `SELECT ... FOR UPDATE`
+с `lock_timeout=300ms` прошёл — conn/row lock не утекли. Сценарий 2: отмена во
+время `send_message` — `finally` освободил lock, outbox вернулся в `pending`.
 
 ## Recovery limit evidence
 
