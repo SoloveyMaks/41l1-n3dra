@@ -147,6 +147,15 @@ class SecretAnalyzer(BaseAnalyzer):
                                         if match.lastindex and match.lastindex >= 1
                                         else full_match_str
                                     )
+                                if rule_id != "SECRET-PRIVATE-KEY":
+                                    if raw_for_hmac.startswith(("${", "$", "System.getenv", "getenv(", "process.env")):
+                                        continue
+                                    if re.fullmatch(r"(?i)(?:\*+|<[^>]+>|changeme|change[_-]me|placeholder|redacted)", raw_for_hmac):
+                                        continue
+                                if rule_id == "SECRET-ENV-DEFAULT":
+                                    context = line[:match.start()] + match.group(0).split(":", 1)[0]
+                                    if not re.search(r"(?i)password|passwd|pwd|secret|token|key|credential", context):
+                                        continue
 
                                 # Mask the whole line, including every @ in userinfo.
                                 redacted_evidence = mask_text(line.strip())
@@ -157,7 +166,7 @@ class SecretAnalyzer(BaseAnalyzer):
                                 byte_end = current_byte_offset + len(line[:match.end()].encode("utf-8"))
 
                                 secret_hmac_id = compute_secret_hmac(raw_for_hmac)
-                                fingerprint = hashlib.sha256(f"{rule_id}:{rel_path}:{secret_hmac_id}".encode("utf-8")).hexdigest()[:16]
+                                fingerprint = hashlib.sha256(f"{rule_id}:{rel_path}:{byte_start}:{secret_hmac_id}".encode("utf-8")).hexdigest()[:16]
                                 finding_id = f"fnd_sec_{fingerprint}"
 
                                 location = Location(
