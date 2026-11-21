@@ -64,6 +64,7 @@ const PALETTE_ITEMS: Array<{
   {
     category: '6. AI и Отчёты',
     items: [
+      { kind: 'ai_scan', title: 'AI Scan (гипотезы)', desc: 'Гипотезы по redacted-фрагментам', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
       { kind: 'ai_explain', title: 'AI Explain & Fix', desc: 'Объяснение и рекомендации', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
       { kind: 'build_report', title: 'Build Report', desc: 'Security Passport и JSON', icon: FileText, color: 'text-cyan-400 border-cyan-800/60 bg-cyan-950/30' },
       { kind: 'notify', title: 'Notify (Webhook)', desc: 'Отправка оповещения', icon: Send, color: 'text-sky-400 border-sky-800/60 bg-sky-950/30' },

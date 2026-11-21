@@ -5,6 +5,7 @@ export type PortType =
   | 'findings_bundle'
   | 'policy_result'
   | 'explain_result'
+  | 'ai_scan_result'
   | 'report'
   | 'condition_branch'
   | 'delivery_result';
@@ -21,6 +22,7 @@ export type NodeKind =
   | 'condition'
   | 'policy_gate'
   | 'ai_explain'
+  | 'ai_scan'
   | 'build_report'
   | 'notify';
 
@@ -66,6 +68,86 @@ export interface Finding {
     remediation: string;
     suggestedFixedVersion?: string;
   };
+}
+
+export type AiScanStatus = 'succeeded' | 'partial' | 'degraded' | 'rejected';
+
+export interface AiObservationGrounding {
+  fileRef: string;
+  sourceHash: string;
+  quoteSha256: string;
+  startByte: number;
+  endByte: number;
+  modelStartLine: number;
+  modelEndLine: number;
+}
+
+/** Гипотеза модели. Никогда не попадает в подтверждённые findings или вердикт. */
+export interface AiObservation {
+  id: string;
+  origin: 'ai_hypothesis';
+  ruleClass: string;
+  severity: Severity;
+  confidence: 'potential';
+  confidenceBasis: string;
+  status: 'potential';
+  primaryLocation: Location;
+  redactedEvidence: string;
+  rationale: string;
+  remediation: string;
+  grounding: AiObservationGrounding;
+}
+
+export interface AiScanCoverageIssue {
+  path: string;
+  code: string;
+  detail?: string;
+}
+
+export interface AiScanCoverage {
+  status: 'complete' | 'partial' | 'degraded' | 'rejected' | string;
+  filesTotal: number;
+  filesSelected: number;
+  filesSent: number;
+  bytesSelected: number;
+  bytesSent: number;
+  maxFiles: number;
+  maxBytes: number;
+  maxObservations: number;
+  truncatedFiles: string[];
+  omittedCount: number;
+  omitted: AiScanCoverageIssue[];
+  failedCount: number;
+  failed: AiScanCoverageIssue[];
+  limitsReached: string[];
+  providerErrors: string[];
+}
+
+export interface AiScanProvenance {
+  provider: string;
+  model: string;
+  endpoint: string;
+  promptVersion: string;
+  validatorVersion: string;
+  selectionVersion: string;
+  configVersion: string;
+  requestId?: string | null;
+  latencyMs: number;
+  usage: Record<string, number | null>;
+  finishReason?: string | null;
+  responseSha256?: string | null;
+  fallbackReason?: string | null;
+}
+
+export interface AiScanResult {
+  status: AiScanStatus;
+  observations: AiObservation[];
+  suppressedDuplicates: number;
+  validationErrors: string[];
+  coverage: AiScanCoverage;
+  provenance?: AiScanProvenance | null;
+  isHypothesis: boolean;
+  countsAsFindings: false;
 }
 
 export interface SecurityPassport {
@@ -172,6 +254,16 @@ export interface ComparisonDto {
 }
 
 export type SessionRole = 'user' | 'admin';
+export type SessionMode = 'account' | 'demo';
+
+export interface SessionUser {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: SessionRole;
+  workspaceId: string;
+  createdAt?: string | null;
+}
 
 export interface SessionState {
   authenticated: boolean;
@@ -180,6 +272,64 @@ export interface SessionState {
   expiresInSec: number;
   role?: SessionRole;
   adminAvailable?: boolean;
+  mode?: SessionMode | null;
+  user?: SessionUser | null;
+  sessionId?: string | null;
+  registrationInviteRequired?: boolean;
+}
+
+export interface RunHistoryItem {
+  id: string;
+  workflow_id: string;
+  revision_id: string;
+  artifact_id?: string | null;
+  trigger_type: string;
+  execution_status: ExecutionStatus;
+  security_verdict: SecurityVerdict;
+  total_findings: number;
+  critical_count: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  info_count: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+}
+
+export interface HistoryResponse {
+  mode: SessionMode;
+  userId?: string | null;
+  workspaceId: string;
+  sharedDemoWorkspace: boolean;
+  limit: number;
+  items: RunHistoryItem[];
+}
+
+export interface ProfileSummary {
+  runs: number;
+  lastRunAt?: string | null;
+  byStatus: Record<string, number>;
+  byVerdict: Record<string, number>;
+  totalFindings: number;
+}
+
+export interface ProfileData {
+  mode: 'account';
+  user: SessionUser;
+  session: {
+    sessionId?: string | null;
+    issuedAt?: number | null;
+    expiresAt?: number | null;
+  };
+  history: ProfileSummary;
+}
+
+export interface AccountCredentials {
+  email: string;
+  password: string;
+  displayName?: string;
+  registrationCode?: string;
 }
 
 export interface AdminOverview {

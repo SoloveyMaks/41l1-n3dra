@@ -1,9 +1,9 @@
 import React from 'react';
 import {
   ShieldCheck, Play, Upload, Clock, FileText, Bug,
-  Sparkles, Layers, Network, GitCompare, RefreshCw, LogOut
+  Sparkles, Layers, Network, GitCompare, RefreshCw, LogOut, User
 } from 'lucide-react';
-import { AppTab, RunSummary, SecurityVerdict } from '../types';
+import { AppTab, RunSummary, SecurityVerdict, SessionMode, SessionUser } from '../types';
 
 interface NavbarProps {
   activeTab: AppTab;
@@ -21,6 +21,9 @@ interface NavbarProps {
   onRefreshRuns: () => void;
   onLogout: () => void;
   isAdmin?: boolean;
+  user?: SessionUser | null;
+  mode?: SessionMode | null;
+  onOpenAccount: () => void;
 }
 
 const TAB_ITEMS: Array<{ id: AppTab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
@@ -73,8 +76,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   onRefreshRuns,
   onLogout,
   isAdmin = true,
+  user,
+  mode,
+  onOpenAccount,
 }) => {
   const visibleTabs = TAB_ITEMS.filter((item) => isAdmin || item.id !== 'schedule');
+  const accountLabel = user?.displayName || user?.email || (mode === 'demo' ? 'Demo' : 'Аккаунт');
+  const accountInitial = accountLabel.slice(0, 1).toUpperCase();
   return (
     <header className="min-h-14 bg-slate-900 border-b border-slate-800 px-3 sm:px-4 py-2 flex flex-wrap xl:flex-nowrap items-center gap-2 xl:gap-3 z-20 select-none">
       <div className="flex items-center gap-2.5 min-w-0">
@@ -196,6 +204,17 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <Play size={13} fill="currentColor" />
           <span>{isRunning ? 'Выполняется…' : 'Запустить проверку'}</span>
+        </button>
+
+        <button
+          onClick={onOpenAccount}
+          className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-1.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800 hover:text-white"
+          title="Аккаунт и история запусков"
+        >
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-600/30 text-[10px] font-bold text-indigo-200">
+            {mode === 'demo' ? <User size={11} /> : accountInitial}
+          </span>
+          <span className="hidden xl:inline max-w-[110px] truncate">{accountLabel}</span>
         </button>
 
         <button

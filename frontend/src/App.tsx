@@ -13,6 +13,7 @@ import { AccessGate } from './components/AccessGate';
 import { ComparisonView } from './components/ComparisonView';
 import { Navbar } from './components/Navbar';
 import { ScenarioCreateModal } from './components/ScenarioCreateModal';
+import { AccountModal } from './components/AccountModal';
 import { AdminShell, AdminSection } from './components/AdminShell';
 import {
   AdminAccessPanel,
@@ -23,14 +24,18 @@ import {
 } from './components/AdminPanels';
 
 import {
+  AccountCredentials,
   AdminOverview,
+  AiScanResult,
   AppTab,
   ArtifactManifest,
   Finding,
   NodeKind,
   NodeRunRecord,
   NodeRunStatus,
+  ProfileData,
   ReportData,
+  RunHistoryItem,
   RunSummary,
   SessionRole,
   SessionState,
@@ -68,6 +73,13 @@ const storeSelectedWorkflowId = (workflowId: string) => {
   }
 };
 
+const extractAiScan = (nodes: NodeRunRecord[]): AiScanResult | null => {
+  const aiNode = nodes.find((node) => node.kind === 'ai_scan');
+  const raw = aiNode?.output_data_masked?.ai_scan_result;
+  if (!raw || typeof raw !== 'object') return null;
+  return raw as AiScanResult;
+};
+
 export const App: React.FC = () => {
   const [adminSection, setAdminSection] = useState<AdminSection>('overview');
   const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
@@ -77,6 +89,11 @@ export const App: React.FC = () => {
   const [authLoading, setAuthLoading] = useState(true);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isAccountOpen, setIsAccountOpen] = useState(false);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [accountHistory, setAccountHistory] = useState<RunHistoryItem[]>([]);
+  const [accountLoading, setAccountLoading] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
 
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -107,6 +124,7 @@ export const App: React.FC = () => {
   const [nodeRuns, setNodeRuns] = useState<NodeRunRecord[]>([]);
   const [events, setEvents] = useState<Array<{ seq: number; timestamp: string; type: string; nodeId?: string; payload: any }>>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [aiScan, setAiScan] = useState<AiScanResult | null>(null);
   const [report, setReport] = useState<ReportData | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -244,6 +262,7 @@ export const App: React.FC = () => {
       setCurrentRun(runInfo);
       setNodeRuns(nodes);
       setFindings(runFindings);
+      setAiScan(extractAiScan(nodes));
       setReport(runReport);
       setIsRunning(runInfo.execution_status === 'running' || runInfo.execution_status === 'queued');
       if (runInfo.execution_status !== 'running' && runInfo.execution_status !== 'queued') {
@@ -291,6 +310,8 @@ export const App: React.FC = () => {
           }
         } else if (event.type === 'node_status') {
           void loadRunDetails(runId);
+        } else if (event.type === 'ai_scan_result') {
+          void loadRunDetails(runId);
         }
       } catch (error) {
         console.error('SSE parse error:', error);
@@ -299,7 +320,7 @@ export const App: React.FC = () => {
     // Backend sends named events (`event: run_status`), so EventSource does
     // not dispatch them to `onmessage`; subscribe to the known event names too.
     source.onmessage = handleEvent;
-    for (const eventName of ['run_status', 'node_status', 'artifact_status', 'finding_summary', 'coverage', 'edge_data', 'delivery_status']) {
+    for (const eventName of ['run_status', 'node_status', 'artifact_status', 'finding_summary', 'coverage', 'edge_data', 'delivery_status', 'ai_scan_result']) {
       source.addEventListener(eventName, handleEvent as EventListener);
     }
     source.onerror = () => {
@@ -329,6 +350,7 @@ export const App: React.FC = () => {
     setCurrentRun(null);
     setNodeRuns([]);
     setFindings([]);
+    setAiScan(null);
     setReport(null);
     setEvents([]);
     setIsRunning(false);
@@ -444,6 +466,60 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleAccountAuth = async (mode: 'login' | 'register', input: AccountCredentials) => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const state = mode === 'register'
+        ? await apiClient.registerAccount(input)
+        : await apiClient.loginAccount(input.email, input.password);
+      authRef.current = { epoch: authRef.current.epoch + 1, role: state.role };
+      setAdminOverview(null);
+      adminOverviewSeq.current += 1;
+      setSession(state);
+      await loadInitialData();
+      setAdminSection('overview');
+      setActiveTab('editor');
+    } catch (error: unknown) {
+      if (error instanceof ApiError) {
+        if (error.code === 'EMAIL_TAKEN') setAuthError('Этот email уже зарегистрирован');
+        else if (error.code === 'INVALID_CREDENTIALS') setAuthError('Неверный email или пароль');
+        else if (error.code === 'REGISTRATION_CODE_REQUIRED') setAuthError('Регистрация по приглашению: нужен код');
+        else setAuthError(error.message);
+      } else {
+        setAuthError(error instanceof Error ? error.message : 'Не удалось войти');
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const openAccount = async () => {
+    setIsAccountOpen(true);
+    setAccountLoading(true);
+    setAccountError(null);
+    setProfile(null);
+    setAccountHistory([]);
+    try {
+      const profilePromise = session?.mode === 'demo'
+        ? Promise.resolve(null)
+        : apiClient.getProfile().catch((error: unknown) => {
+            if (error instanceof ApiError && error.code === 'DEMO_SESSION') return null;
+            throw error;
+          });
+      const [profileValue, historyValue] = await Promise.all([
+        profilePromise,
+        apiClient.getHistory(20),
+      ]);
+      setProfile(profileValue);
+      setAccountHistory(historyValue.items);
+    } catch (error: unknown) {
+      setAccountError(error instanceof Error ? error.message : 'Не удалось загрузить аккаунт');
+    } finally {
+      setAccountLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
     // Invalidate in-flight admin/overview work before the network await.
     authRef.current = { epoch: authRef.current.epoch + 1, role: 'user' };
@@ -465,11 +541,16 @@ export const App: React.FC = () => {
     setCurrentRun(null);
     setNodeRuns([]);
     setFindings([]);
+    setAiScan(null);
     setReport(null);
     setEvents([]);
     setRuns([]);
     setIsRunning(false);
     setSelectedNodeId(null);
+    setIsAccountOpen(false);
+    setProfile(null);
+    setAccountHistory([]);
+    setAccountError(null);
   };
 
   const handleSelectRun = (runId: string) => {
@@ -480,6 +561,7 @@ export const App: React.FC = () => {
     setCurrentRun(null);
     setNodeRuns([]);
     setFindings([]);
+    setAiScan(null);
     setReport(null);
     setEvents([]);
     setIsRunning(false);
@@ -662,6 +744,7 @@ export const App: React.FC = () => {
       setCurrentRun(null);
       setNodeRuns([]);
       setFindings([]);
+      setAiScan(null);
       setReport(null);
       setSelectedNodeId(null);
       if (navigate) {
@@ -769,7 +852,9 @@ export const App: React.FC = () => {
         busy={authBusy}
         error={authError}
         adminAvailable={session.adminAvailable}
-        onSubmit={handleLogin}
+        registrationInviteRequired={session.registrationInviteRequired}
+        onAccountSubmit={(mode, input) => void handleAccountAuth(mode, input)}
+        onCodeSubmit={(code, role) => void handleLogin(code, role)}
       />
     );
   }
@@ -794,6 +879,9 @@ export const App: React.FC = () => {
           onRefreshRuns={() => void refreshRuns()}
           onLogout={() => void handleLogout()}
           isAdmin={false}
+          user={session?.user || null}
+          mode={session?.mode || null}
+          onOpenAccount={() => void openAccount()}
         />
 
         <main className="relative flex flex-1 overflow-hidden">
@@ -849,6 +937,7 @@ export const App: React.FC = () => {
           {activeTab === 'findings' && (
             <FindingsView
               findings={findings}
+              aiScan={aiScan}
               aiItems={report?.run_id === currentRunId ? report.ai_items : []}
               aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
               onOpenReport={() => setActiveTab('report')}
@@ -893,6 +982,17 @@ export const App: React.FC = () => {
           onName={setScenarioName}
           onClose={() => setIsScenarioOpen(false)}
           onCreate={() => void handleCreateScenario()}
+        />
+        <AccountModal
+          open={isAccountOpen}
+          session={session}
+          profile={profile}
+          history={accountHistory}
+          loading={accountLoading}
+          error={accountError}
+          onClose={() => setIsAccountOpen(false)}
+          onLogout={() => void handleLogout()}
+          onSelectRun={handleSelectRun}
         />
         {noticeNode}
       </div>
@@ -1023,6 +1123,7 @@ export const App: React.FC = () => {
         return (
           <FindingsView
             findings={findings}
+            aiScan={aiScan}
             aiItems={report?.run_id === currentRunId ? report.ai_items : []}
             aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
             onOpenReport={() => setAdminSection('report')}

@@ -206,6 +206,78 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             </div>
           )}
 
+          {node.kind === 'ai_scan' && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-fuchsia-900/60 bg-fuchsia-950/30 p-2.5 text-[10px] leading-relaxed text-fuchsia-200">
+                AI-сканер только предлагает гипотезы по ограниченному redacted-фрагменту.
+                Это не подтверждённые findings, он не меняет вердикт, отчёт и счётчики политики.
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-400 mb-1">Профиль бюджета:</label>
+                <select
+                  value={config.profile || 'balanced'}
+                  onChange={(e) => handleFieldChange('profile', e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-200"
+                >
+                  <option value="fast">fast — меньше файлов</option>
+                  <option value="balanced">balanced — по умолчанию</option>
+                  <option value="deep">deep — больше контекста</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="block text-[10px] text-slate-400 mb-1">Файлов:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={config.maxFiles ?? 6}
+                    onChange={(e) => handleFieldChange('maxFiles', parseInt(e.target.value, 10) || 1)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="block">
+                  <span className="block text-[10px] text-slate-400 mb-1">Гипотез:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={config.maxObservations ?? 12}
+                    onChange={(e) => handleFieldChange('maxObservations', parseInt(e.target.value, 10) || 1)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="block">
+                  <span className="block text-[10px] text-slate-400 mb-1">Всего байт:</span>
+                  <input
+                    type="number"
+                    min={1024}
+                    max={131072}
+                    step={1024}
+                    value={config.maxBytes ?? 24576}
+                    onChange={(e) => handleFieldChange('maxBytes', parseInt(e.target.value, 10) || 1024)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="block">
+                  <span className="block text-[10px] text-slate-400 mb-1">Байт на файл:</span>
+                  <input
+                    type="number"
+                    min={512}
+                    max={32768}
+                    step={512}
+                    value={config.perFileBytes ?? 4096}
+                    onChange={(e) => handleFieldChange('perFileBytes', parseInt(e.target.value, 10) || 512)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs"
+                  />
+                </label>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Провайдер, модель и ключ задаются только на сервере. Выбор блока разрешает отправку ограниченных redacted-фрагментов.
+              </p>
+            </div>
+          )}
+
           {node.kind === 'ai_explain' && (
             <div className="space-y-3">
               <div>

@@ -28,6 +28,7 @@ const KIND_CONFIG: Record<NodeKind, { icon: any; color: string; bg: string; bord
   condition: { icon: GitFork, color: 'text-yellow-400', bg: 'bg-yellow-950/40', border: 'border-yellow-600' },
   branch_merge: { icon: GitMerge, color: 'text-indigo-400', bg: 'bg-indigo-950/40', border: 'border-indigo-600' },
   ai_explain: { icon: Sparkles, color: 'text-fuchsia-400', bg: 'bg-fuchsia-950/40', border: 'border-fuchsia-600' },
+  ai_scan: { icon: Sparkles, color: 'text-fuchsia-300', bg: 'bg-fuchsia-950/30', border: 'border-fuchsia-700' },
   build_report: { icon: FileText, color: 'text-cyan-400', bg: 'bg-cyan-950/40', border: 'border-cyan-600' },
   notify: { icon: Send, color: 'text-sky-400', bg: 'bg-sky-950/40', border: 'border-sky-600' },
 };
@@ -153,6 +154,13 @@ function renderInputHandles(kind: NodeKind) {
       );
     case 'ai_explain':
       return <Handle type="target" position={Position.Left} id="findings_bundle" className="!bg-teal-500 !w-3 !h-3" />;
+    case 'ai_scan':
+      return (
+        <>
+          <Handle type="target" position={Position.Left} id="artifact" style={{ top: '35%' }} className="!bg-blue-500 !w-3 !h-3" />
+          <Handle type="target" position={Position.Left} id="findings_bundle" style={{ top: '70%' }} className="!bg-teal-500 !w-3 !h-3" />
+        </>
+      );
     case 'build_report':
       return (
         <>
@@ -193,6 +201,8 @@ function renderOutputHandles(kind: NodeKind) {
       return <Handle type="source" position={Position.Right} id="out" className="!bg-indigo-400 !w-3 !h-3" />;
     case 'ai_explain':
       return <Handle type="source" position={Position.Right} id="explain_result" className="!bg-fuchsia-400 !w-3 !h-3" />;
+    case 'ai_scan':
+      return <Handle type="source" position={Position.Right} id="ai_scan_result" className="!bg-fuchsia-300 !w-3 !h-3" />;
     case 'build_report':
       return <Handle type="source" position={Position.Right} id="report" className="!bg-cyan-400 !w-3 !h-3" />;
     case 'notify':
@@ -232,6 +242,12 @@ function renderConfigSummary(kind: NodeKind, config: Record<string, any>) {
       );
     case 'ai_explain':
       return <div className="text-fuchsia-300">Модель: deepseek-v4.1-flash-1017</div>;
+    case 'ai_scan':
+      return (
+        <div className="text-fuchsia-300">
+          Гипотезы · {config.profile || 'balanced'} · файлов ≤ {config.maxFiles ?? 6}
+        </div>
+      );
     case 'build_report':
       return <div>Security Passport + JSON</div>;
     case 'notify':
