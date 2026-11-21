@@ -1,0 +1,42 @@
+[
+  {
+    "side": "before",
+    "zip": "before.zip",
+    "zipSha256": "f84680849cbdd79070ef207c42a73a93ccf814ae888fac500b8351f15966448e",
+    "zipSizeBytes": 922,
+    "files": [
+      {
+        "path": "src/main/kotlin/demo/RepairLookupController.kt",
+        "sha256": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+        "sizeBytes": 621,
+        "mediaType": "text/x-kotlin"
+      },
+      {
+        "path": "src/main/kotlin/demo/SecurityConfig.kt",
+        "sha256": "d87cf487214f686d1d256fd5e1befbec0b1704025a411bd36f9e0fa12e8c7b17",
+        "sizeBytes": 549,
+        "mediaType": "text/x-kotlin"
+      }
+    ]
+  },
+  {
+    "side": "after",
+    "zip": "after.zip",
+    "zipSha256": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
+    "zipSizeBytes": 918,
+    "files": [
+      {
+        "path": "src/main/kotlin/demo/RepairLookupController.kt",
+        "sha256": "7be10172ff73e5df703033f5c98d615b6f415084375335599080f59d47c67d80",
+        "sizeBytes": 614,
+        "mediaType": "text/x-kotlin"
+      },
+      {
+        "path": "src/main/kotlin/demo/SecurityConfig.kt",
+        "sha256": "d87cf487214f686d1d256fd5e1befbec0b1704025a411bd36f9e0fa12e8c7b17",
+        "sizeBytes": 549,
+        "mediaType": "text/x-kotlin"
+      }
+    ]
+  }
+]
