@@ -37,6 +37,7 @@ from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
 from backend.app.codefacts.source import REDACTION_VERSION, mask_text
+from backend.app.security.presentation import mask_named_text_fields, mask_value_tree
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
 from backend.app.contracts.schemas import Finding, WorkflowDraft
@@ -438,7 +439,49 @@ def get_run(run_id: str):
 def get_run_nodes(run_id: str):
     if not db_repo.get_run(run_id):
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    return _strip_private_paths(db_repo.get_node_runs(run_id))
+    return _remask_node_runs(_strip_private_paths(db_repo.get_node_runs(run_id)))
+
+
+def _remask_json_text(raw: Any) -> Any:
+    if not isinstance(raw, str):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return mask_sensitive_text(raw)
+    return json.dumps(mask_value_tree(parsed, mask_sensitive_text), ensure_ascii=False)
+
+
+def _remask_node_runs(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+    result = copy.deepcopy(items)
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        for key in ("input_data_masked", "output_data_masked"):
+            if key in item:
+                item[key] = mask_value_tree(item[key], mask_sensitive_text)
+        for key in ("input_data_json", "output_data_json"):
+            if key in item:
+                item[key] = _remask_json_text(item[key])
+        if isinstance(item.get("error_message"), str):
+            item["error_message"] = mask_sensitive_text(item["error_message"])
+    return result
+
+
+def _remask_trace_json(raw: Any) -> Any:
+    if not isinstance(raw, str):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return mask_sensitive_text(raw)
+    if isinstance(parsed, list):
+        for step in parsed:
+            if isinstance(step, dict) and isinstance(step.get("description"), str):
+                step["description"] = mask_sensitive_text(step["description"])
+    return json.dumps(parsed, ensure_ascii=False)
 
 
 def _remask_finding(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -447,7 +490,9 @@ def _remask_finding(item: Dict[str, Any]) -> Dict[str, Any]:
     out = copy.deepcopy(item)
     if isinstance(out.get("redactedEvidence"), str):
         out["redactedEvidence"] = mask_text(out["redactedEvidence"])
-    for key in ("severityBasis", "confidenceBasis"):
+    if isinstance(out.get("redacted_evidence"), str):
+        out["redacted_evidence"] = mask_text(out["redacted_evidence"])
+    for key in ("severityBasis", "confidenceBasis", "severity_basis", "confidence_basis"):
         if isinstance(out.get(key), str):
             out[key] = mask_sensitive_text(out[key])
     trace = out.get("trace")
@@ -455,6 +500,8 @@ def _remask_finding(item: Dict[str, Any]) -> Dict[str, Any]:
         for step in trace:
             if isinstance(step, dict) and isinstance(step.get("description"), str):
                 step["description"] = mask_sensitive_text(step["description"])
+    if "trace_json" in out:
+        out["trace_json"] = _remask_trace_json(out["trace_json"])
     enrichment = out.get("ai_enrichment")
     if isinstance(enrichment, dict):
         for key in ("explanation", "remediation"):
@@ -520,6 +567,19 @@ def _remask_report_record(rep: Dict[str, Any]) -> Dict[str, Any]:
                 for key in ("explanation", "remediation"):
                     if isinstance(item.get(key), str):
                         item[key] = mask_sensitive_text(item[key])
+    if isinstance(out.get("ai_items_json"), str):
+        try:
+            parsed_items = json.loads(out["ai_items_json"])
+        except (TypeError, ValueError):
+            out["ai_items_json"] = mask_sensitive_text(out["ai_items_json"])
+        else:
+            if isinstance(parsed_items, list):
+                for item in parsed_items:
+                    if isinstance(item, dict):
+                        for key in ("explanation", "remediation"):
+                            if isinstance(item.get(key), str):
+                                item[key] = mask_sensitive_text(item[key])
+            out["ai_items_json"] = json.dumps(parsed_items, ensure_ascii=False)
     if isinstance(out.get("official_json"), str):
         out["official_json"] = _remask_official_json(out["official_json"])
     return out
@@ -661,7 +721,7 @@ def compare_runs(baseline_run_id: str, current_run_id: str, request: Request):
     if not current:
         raise HTTPException(status_code=404, detail="Current run не найден")
     try:
-        return compare_published_runs(
+        result = compare_published_runs(
             workspace=request_workspace(request),
             baseline_run_id=baseline_run_id,
             current_run_id=current_run_id,
@@ -669,6 +729,7 @@ def compare_runs(baseline_run_id: str, current_run_id: str, request: Request):
             current_run=current,
             store=codefacts_store,
         )
+        return mask_named_text_fields(result, mask_sensitive_text)
     except ComparisonError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -685,7 +746,7 @@ def compare_sql_pattern(baseline_run_id: str, current_run_id: str, request: Requ
     if not current:
         raise HTTPException(status_code=404, detail="Current run не найден")
     try:
-        return sql_pattern_proof(
+        result = sql_pattern_proof(
             workspace=request_workspace(request),
             baseline_run_id=baseline_run_id,
             current_run_id=current_run_id,
@@ -693,6 +754,7 @@ def compare_sql_pattern(baseline_run_id: str, current_run_id: str, request: Requ
             current_run=current,
             store=codefacts_store,
         )
+        return mask_named_text_fields(result, mask_sensitive_text)
     except ComparisonError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
 

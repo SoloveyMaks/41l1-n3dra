@@ -50,12 +50,18 @@ Regex «пароль до первого `@`» неверен для реаль�
 Старые `/1` findings/maps/evidence/reports не переписываются в БД.
 `api/router.py` на выдаче отдельно ремаскирует:
 
-- findings endpoint — `redactedEvidence`, basis, trace;
+- findings endpoint — `redactedEvidence`, basis, trace (both camel/snake
+  DTO fields);
 - security-map — map evidence snippets;
 - evidence endpoint — `maskedFragment`;
+- node-runs — `input_data_masked`/`output_data_masked` and JSON text fields;
+- SSE replay/live delivery — only `payload` text values, IDs/config keys not
+  rewritten;
+- comparison/SQL responses — only known reason/text fields;
 - report и `official.json` / `readable.md` downloads — findings, trace, AI
   summary/items, Markdown;
-- ID/hash/envelope не меняются; `bundleHash`/`sourceHash` остаются исходными.
+- ID/hash/envelope не меняются. `map.bundleHash` — published source bundle
+  reference, не хэш remasked-отображения; он не пересчитывается.
 
 Ответ evidence честно сообщает `redactionVersion: cg-redaction/2`,
 `storedRedactionVersion` и `remasked`. TeamB persist оставлен на `/1`:
@@ -82,12 +88,18 @@ API egress всё равно ремаскирует его на выдаче.
 - source `make_evidence` / masked source;
 - report Markdown и official JSON;
 - AI masked payload;
-- egress remask старых findings/maps/reports (`bundleHash`/`sourceHash`
-  проверены как неизменные).
+- egress remask старых findings/maps/reports;
+- live HTTP на isolated temp runtime: nodes, SSE replay, findings,
+  security-map, evidence, report и оба download; canary отсутствует,
+  canonical `bundleHash`/`sourceHash` неизменны.
+
+Comparison/SQL DTO не содержат source snippet; их reason/reasons всё равно
+проходят schema-aware masker. Это отмечено как проверенный канал без
+отдельных правок.
 
 Test output: только `redaction_live True`, `report_clean True`,
 `ai_payload_clean True`, `masked_source_clean True`,
-`egress_remask_clean True`; значения не печатались.
+`egress_remask_clean True`, `http_egress_clean True`; значения не печатались.
 
 Дополнительно: sample `application.properties` читался внутри процесса;
 исходный URI-секрет не появился в маскированном finding/source. TeamB
