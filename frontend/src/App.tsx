@@ -92,6 +92,7 @@ export const App: React.FC = () => {
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
   const adminOverviewSeq = useRef(0);
+  const authRef = useRef<{ epoch: number; role: SessionRole | undefined }>({ epoch: 0, role: undefined });
   const noticeTimer = useRef<number | null>(null);
 
   const showNotice = useCallback((kind: Notice['kind'], text: string) => {
@@ -112,28 +113,35 @@ export const App: React.FC = () => {
   }, []);
 
   const refreshAdminOverview = useCallback(async (): Promise<void> => {
-    if (session?.role !== 'admin') return;
+    const epoch = authRef.current.epoch;
+    if (authRef.current.role !== 'admin') return;
+    if (epoch !== authRef.current.epoch || authRef.current.role !== 'admin') return;
     const seq = ++adminOverviewSeq.current;
     try {
       const value = await apiClient.getAdminOverview();
-      if (seq !== adminOverviewSeq.current || session?.role !== 'admin') return;
+      if (epoch !== authRef.current.epoch || seq !== adminOverviewSeq.current || authRef.current.role !== 'admin') return;
       setAdminOverview(value);
     } catch {
       // Never keep stale counters looking current after a failed refresh.
-      if (seq === adminOverviewSeq.current && session?.role === 'admin') setAdminOverview(null);
+      if (epoch === authRef.current.epoch && seq === adminOverviewSeq.current && authRef.current.role === 'admin') {
+        setAdminOverview(null);
+      }
     }
-  }, [session?.role]);
+  }, []);
 
   const refreshRuns = useCallback(async (): Promise<RunSummary[]> => {
+    const epoch = authRef.current.epoch;
     setRunsLoading(true);
     try {
       const list = await apiClient.listRuns();
+      if (epoch !== authRef.current.epoch) return [];
       setRuns(list);
       // Overview counters must reflect a completed run and a manual refresh.
       // This is a no-op for user sessions; node-level SSE does not call it.
-      void refreshAdminOverview();
+      if (authRef.current.role === 'admin') void refreshAdminOverview();
       return list;
     } catch (e: any) {
+      if (epoch !== authRef.current.epoch) return [];
       if (e instanceof AuthRequiredError) {
         setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
       } else {
@@ -141,7 +149,7 @@ export const App: React.FC = () => {
       }
       return [];
     } finally {
-      setRunsLoading(false);
+      if (epoch === authRef.current.epoch) setRunsLoading(false);
     }
   }, [refreshAdminOverview, showNotice]);
 
@@ -324,6 +332,7 @@ export const App: React.FC = () => {
         setAuthError('Этот код не даёт доступ к админ-панели');
         return;
       }
+      authRef.current = { epoch: authRef.current.epoch + 1, role: state.role };
       setAdminOverview(null);
       adminOverviewSeq.current += 1;
       setSession(state);
@@ -337,6 +346,10 @@ export const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
+    // Invalidate in-flight admin/overview work before the network await.
+    authRef.current = { epoch: authRef.current.epoch + 1, role: 'user' };
+    adminOverviewSeq.current += 1;
+    setAdminOverview(null);
     try {
       await apiClient.logout();
     } catch {
@@ -526,6 +539,7 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
+    authRef.current = { ...authRef.current, role: session?.role };
     if (session?.role !== 'admin') {
       adminOverviewSeq.current += 1;
       setAdminOverview(null);
