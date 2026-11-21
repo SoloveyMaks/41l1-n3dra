@@ -510,6 +510,27 @@ class DatabaseRepository:
                 params,
             )
 
+    def claim_run_start(self, run_id: str, started_at: str) -> bool:
+        """Atomically promote a queued run to running.
+
+        Only the caller that wins the transition gets True. A second dispatcher
+        that acquired the same run through a stale watch lease gets False and
+        must not execute the run again.
+        """
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.runs
+                   SET execution_status = 'running',
+                       started_at = NULLIF(%s, '')::timestamptz
+                 WHERE workspace_id = %s AND id = %s
+                   AND execution_status = 'queued'
+                 RETURNING id
+                """,
+                (started_at, self.workspace_id, run_id),
+            ).fetchone()
+            return row is not None
+
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         ws = self.workspace_id
         with get_pool().connection() as conn:
