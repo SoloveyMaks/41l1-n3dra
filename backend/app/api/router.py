@@ -32,6 +32,7 @@ from backend.app.api.session import (
     verify_admin_code,
 )
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
+from backend.app.artifacts.repository import RepositoryImportError, import_repository
 from backend.app.artifacts.sample_source import build_zip_from_directory
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
@@ -120,6 +121,8 @@ def _public_artifact(row: Dict[str, Any]) -> Dict[str, Any]:
         public["snapshot_manifest_hash"] = meta.get("snapshotManifestHash")
         if meta.get("sourceRef"):
             public["source_ref"] = meta.get("sourceRef")
+        if isinstance(meta.get("repository"), dict):
+            public["repository"] = meta.get("repository")
     return _strip_private_paths(public)
 
 
@@ -240,6 +243,32 @@ async def upload_artifact(file: UploadFile = File(...)):
     except Exception as exc:  # noqa: BLE001
         logger.exception("Artifact intake failed: %s", exc)
         raise HTTPException(status_code=500, detail="Ошибка обработки архива") from exc
+
+
+@api_router.post("/artifacts/repository")
+async def import_artifact_repository(payload: Optional[Dict[str, Any]] = None):
+    data = payload or {}
+    url = data.get("url")
+    branch = data.get("branch")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=400, detail="Поле url обязательно")
+    if branch is not None and not isinstance(branch, str):
+        raise HTTPException(status_code=400, detail="Поле branch должно быть строкой")
+    try:
+        async with _INTAKE_SEM:
+            manifest = await import_repository(url, branch or None)
+        db_repo.save_artifact(_storage_manifest(manifest))
+        public = _public_artifact(manifest)
+        if manifest.get("repository"):
+            public["repository"] = manifest["repository"]
+        return public
+    except RepositoryImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except SafeIntakeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Repository import failed")
+        raise HTTPException(status_code=500, detail="Ошибка импорта репозитория") from exc
 
 
 def _load_sample_artifact_internal() -> Dict[str, Any]:
@@ -889,3 +918,18 @@ def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
     if run_id:
         findings = [Finding(**item) for item in db_repo.get_findings(run_id)]
     return ai_service.generate_synthetic_test(findings)
+
+
+def _include_repository_watch_router() -> None:
+    """Watch API живёт в отдельном модуле и подключается после api_router."""
+    try:
+        from backend.app.api.repository_watches import create_repository_watch_router
+    except ModuleNotFoundError as exc:
+        if exc.name != "backend.app.api.repository_watches":
+            raise
+        logger.warning("repository watches module is absent; watch API is not mounted")
+        return
+    api_router.include_router(create_repository_watch_router(db_repo, executor))
+
+
+_include_repository_watch_router()
