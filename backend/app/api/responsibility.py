@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.responsibility.service import (
+    ResponsibilityBusy,
     ResponsibilityNotFound,
     build_responsibility,
 )
@@ -42,6 +43,11 @@ def create_responsibility_router(
             raise HTTPException(
                 status_code=404,
                 detail={"code": "RESPONSIBILITY_NOT_FOUND", "message": str(exc)},
+            ) from None
+        except ResponsibilityBusy as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "RESPONSIBILITY_BUSY", "message": str(exc)},
             ) from None
         except Exception as exc:  # noqa: BLE001 - provider failures must not break analysis
             # The provider layer already converts network/rate-limit failures to
