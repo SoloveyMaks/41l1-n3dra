@@ -224,7 +224,7 @@ def authorize(row, *, expected_url, allow_local, allow_external):
         _lock_workspace(conn, ws)
         current = conn.execute(
             """SELECT delivery_status,lease_token,attempts,authorized_at,retry_cancelled,
-                      (lease_until > now()) AS lease_valid
+                      (lease_until > clock_timestamp()) AS lease_valid
                FROM runtime.completion_notifications
                WHERE workspace_id=%s AND run_id=%s FOR UPDATE""",
             (ws, row['run_id']),

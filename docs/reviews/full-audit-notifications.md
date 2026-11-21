@@ -131,3 +131,46 @@ exit 0, без замечаний
 3. Реальные TLS/DNS, внешний webhook, Telegram и production run не проверялись и в рамках данного задания наружу не отправлялись. Внешняя доставка здесь не объявляется успешной.
 
 Локальные дефекты исправлены и проверены в описанных границах; полную готовность уведомлений этот отчёт не подтверждает.
+
+## Дополнение: контракт runtime upgrade и блокировок
+
+Повторное поручение координатора: task_6bff2febb34e, base этого продолжения `f673bea9f6151e7f2a0df16a44d7e03e59e92ab8`. Новые правки затрагивают только `dispatch_guard.sql`, `store.py` и этот отчёт. PostgreSQL по-прежнему не запускался.
+
+При первом forward upgrade существующей notification schema теперь применяется fail-closed переход: если `retry_cancelled` ещё нет, добавляется колонка, все legacy pending/sending помечаются `retry_cancelled=true`, а ещё не authorized строки переводятся в skipped с очищенным lease. У legacy строки нет достоверной истории opt-out, поэтому её согласие нельзя доказывать текущим enabled=true. Authorized строка сохраняет фактический исход уже начатой отправки, но её retry запрещён даже после reclaim. Повторное применение forward-файла при существующей колонке **не** отменяет новые pending строки. История delivered/failed/skipped не переписывается. Это точечное намеренное изменение поведения при первом upgrade: legacy очередь не возобновляется автоматически.
+
+Дополнительно обнаружен статический дефект времени lease: `authorize` начинал транзакцию, ждал workspace advisory lock и сравнивал lease с `now()` — временем начала транзакции. Длительное ожидание могло разрешить уже просроченный lease. Сравнение изменено на `clock_timestamp()` после получения lock и строки. PostgreSQL воспроизведение этого случая остаётся в списке обязательных проверок.
+
+### Exact upgrade contract для владельца data
+
+1. Использовать точные файлы `backend/app/notifications/schema.sql` (неизменённый base) и `backend/app/notifications/dispatch_guard.sql` (новый forward upgrade). Их последовательно исполняет текущий `store.initialize`, включая существующий runtime v5; по просьбе координатора владелец data также должен включить этот контракт в свой fresh/existing runtime upgrade, до начала dispatch.
+2. Prerequisites: существуют `data_contract.workspaces` и `runtime.runs` с `(workspace_id,id)`; base notification SQL создаёт настройки/outbox, `authorized_at` и capture trigger. Forward SQL требует эти объекты, создаёт retry_cancelled и BEFORE lock trigger; отдельно без base SQL его запускать нельзя.
+3. Base + forward должны коммититься атомарно. В notification initialize уже берётся `pg_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))`; любой второй путь установки должен использовать **этот же DDL lock**, чтобы не устанавливать их параллельно. Ошибка SQL должна оборвать startup/upgrade; запрещено проглатывать ошибку и запускать dispatcher со старой схемой.
+4. Исторические ledger migrations и базовый notification SQL не менять. При добавлении в общий versioned runtime upgrade следует ссылаться на forward-файл и учитывать, что notification initialize всё ещё применяет тот же идемпотентный контракт.
+5. После upgrade проверить существование boolean NOT NULL DEFAULT false `retry_cancelled`, включённый BEFORE trigger `lock_run_completion_dispatch` на `runtime.runs` и capture trigger, а также сохранность старых финальных rows и отмену legacy active rows. Полагаться только на runtime version marker недостаточно.
+
+### Единый порядок блокировок и отмена повторов
+
+Dispatch lock: `pg_advisory_xact_lock(hashtext('nedra-completion-notifications-dispatch'), hashtext(workspace_id::text))`.
+
+- `save_settings`: workspace lock → read/write notification_settings → UPDATE completion rows. Не берёт run row locks.
+- `authorize`: workspace lock → completion row FOR UPDATE → settings read → guarded UPDATE RETURNING. Проверяет текущий lease, token, status, отсутствие authorized_at и retry_cancelled до action=send.
+- `finish`: workspace lock → completion row FOR UPDATE → guarded UPDATE. При retry_cancelled оставляет фактический failed вместо pending, успешный HTTP остаётся delivered.
+- Completion: BEFORE terminal trigger берёт workspace lock до AFTER capture INSERT. Для UPDATE PostgreSQL уже может удерживать run row lock; остальные notification пути не берут run row locks, поэтому обратной зависимости run-row/workspace-lock внутри этой области нет.
+- `claim`: только completion row через SKIP LOCKED; **не запрашивает workspace lock в той же транзакции**. Она завершается до authorize. `abort` также использует только completion row. Не добавлять workspace lock после уже взятого completion row lock.
+
+`retry_cancelled` — необратимый признак отмены именно события, а не временная проверка текущего enabled. Opt-in не снимает его; новые terminal runs получают новую строку со значением false. Поэтому отдельный settings generation счётчик здесь не нужен: pending/unauthorized события при opt-out окончательно skipped, authorized события сохраняют исход и навсегда лишаются повторов, включая reclaim после смерти worker. SQL correctness этого порядка и свежесть snapshot capture после ожидания BEFORE lock требуют живого PostgreSQL прогона.
+
+### Точный список оставшихся DB сценариев
+
+- Fresh install, upgrade base runtime v5 без notifications и upgrade существующих notification rows; повторный startup не отменяет новые pending и не меняет terminal history; ошибка forward SQL не допускает startup dispatcher.
+- Legacy pending и sending без authorized_at → skipped; legacy authorized sending → разрешён только настоящий finish, retry/reclaim не отправляет заново; delivered/failed/skipped/read_at не меняются.
+- Completion получает lock первой: opt-out ждёт и затем видит/отменяет pending; opt-out первой: completion ждёт и записывает skipped по новым настройкам. Проверить также INSERT уже terminal run и повтор terminal UPDATE без duplicate inbox.
+- Авторизация до opt-out: успешный finish → delivered, неуспешный с retry=True → failed без повторов; opt-out до authorize → skip/no action=send.
+- Disable → enable того же URL до finish и до reclaim: старый retry не оживает. Смена URL/flags → возврат исходных значений: тот же запрет.
+- Finish(retry=True) выигрывает lock до disable: pending затем отменяется; disable выигрывает раньше finish: durable retry_cancelled запрещает pending.
+- Crash после authorize, lease expiration, opt-out/opt-in, reclaim: retry_cancelled сохраняется; старый token не может finish/authorize; новый worker не отправляет отменённое событие.
+- Две authorize одного token → ровно одна send, фактический attempts увеличивается один раз; ожидание workspace lock дольше lease → lost по clock_timestamp, без POST.
+- 408/429/5xx/network failure максимум 3 авторизованные попытки, delayed pending, restart recovery; успешный, skipped и exhausted run не claim-ятся снова.
+- Два workspace с одинаковым run_id: settings/read/cancel/finish одного не меняют другой; параллельный claim не выдаёт одну строку дважды; чужой lease не записывает исход.
+
+В этом продолжении реально повторены literal-IP policy 11/11, ast.parse всех Python notification файлов и git diff --check; все прошли. Эти команды не доказывают выполнение новых SQL веток, миграции или гонок.

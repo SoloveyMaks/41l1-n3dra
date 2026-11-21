@@ -1,6 +1,25 @@
 -- Notification dispatch guard, installed after the base notification schema.
-ALTER TABLE runtime.completion_notifications
-    ADD COLUMN IF NOT EXISTS retry_cancelled boolean NOT NULL DEFAULT false;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'runtime.completion_notifications'::regclass
+          AND attname = 'retry_cancelled' AND NOT attisdropped
+    ) THEN
+        ALTER TABLE runtime.completion_notifications
+            ADD COLUMN retry_cancelled boolean NOT NULL DEFAULT false;
+        -- Legacy active rows have no durable opt-out history. Preserve real
+        -- in-flight outcomes, but never resume their unproven consent.
+        UPDATE runtime.completion_notifications
+        SET retry_cancelled=true
+        WHERE delivery_status IN ('pending','sending');
+        UPDATE runtime.completion_notifications
+        SET delivery_status='skipped',
+            detail='Ожидающая доставка отменена обновлением политики согласия',
+            lease_token=NULL,lease_until=NULL
+        WHERE delivery_status IN ('pending','sending') AND authorized_at IS NULL;
+    END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION runtime.lock_run_completion_dispatch() RETURNS trigger
 LANGUAGE plpgsql AS $$
