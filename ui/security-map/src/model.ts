@@ -188,10 +188,14 @@ const FINDING_TITLES: Record<string, string> = {
   "CG26-SAST-004": "Нет роли, а данные других пользователей",
   "CG26-SAST-002": "Отключена проверка имени хоста",
   "CG26-SAST-001": "Параметр меняет SQL-запрос",
-  "CG26-SAST-005": "Можно запросить чужой объект",
 };
 
-const findingTitle = (ruleId: string): string => {
+const findingTitle = (ruleId: string, confidence: string, status: string): string => {
+  if (ruleId === "CG26-SAST-005") {
+    return confidence === "high" && status === "confirmed"
+      ? "Можно запросить чужой объект"
+      : "Возможное чтение чужого объекта";
+  }
   if (FINDING_TITLES[ruleId]) return FINDING_TITLES[ruleId];
   if (ruleId.startsWith("SECRET-")) return "Секрет в коде";
   if (ruleId.startsWith("CF-SQL")) return "SQL-запрос без плейсхолдера";
@@ -216,7 +220,7 @@ export function productionModel(
     evidence: data.evidence,
     findings: findings.map((f) => ({
       id: f.id,
-      label: findingTitle(f.ruleId),
+      label: findingTitle(f.ruleId, f.confidence, f.status),
       status: f.status,
       severity: f.severity,
       confidence: f.confidence,

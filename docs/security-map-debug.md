@@ -60,18 +60,29 @@ npm run build --prefix frontend
 - Находки: человеческие заголовки вместо ruleId, status/severity/confidence
   переведены; выбранная проблема показывает «Почему так» с реальными
   reason из DTO, без AI-догадок.
-- Unknown: «связь не установлена», жёлтый пунктир, banner и source
-  сохраняются. Покрытие: «Проверенный объём завершён» /
-  «Проверено неполностью», не «проект безопасен».
+- Unknown и partial различаются: «связь не установлена» / «связь
+  подтверждена частично»; health и banner считают их отдельно. Покрытие:
+  «Проверенный объём завершён» / «Проверено неполностью», не «проект
+  безопасен».
 - Пробелы `runtime-configuration`, `runtime-guards`,
   `binaries-and-archives` получили человеческое пояснение; raw-строки и
   коды остались в «Технические подробности покрытия».
 - Первый экран: строка «Откуда приходит запрос, как проверяется доступ и
   какие данные затрагиваются» + «Нажмите на стрелку, чтобы увидеть
   основание».
-- Initial focus — читаемый участок `route/guard/function/sink` (на 1440
-  scale≈0.86, cards≈214px); на узком canvas — один route-узел при scale≈0.9.
-  Полная карта и unknown не скрываются: «Вся карта» / «Показать путь».
+- Без внешней selection карта сама выбирает фактическую проблему с
+  node-refs (severity/status/confidence) и её цепочку; desktop показывает
+  читаемый `route/guard/function/sink` (scale≈0.86), 390 — route-узел этой
+  проблемы при scale≈0.9. Вся карта и unknown остаются доступны.
+- Если у findings нет node-refs, выбирается сама проблема, показывается
+  пояснение «нет привязки к узлам», а viewport показывает общую карту;
+  случайный route как problem path не выбирается.
+- Source error возвращает человеческую причину в alert и `Код ошибки` +
+  исходный код в «Технические данные»; secrets не выводятся.
+- `focusViewport` не срабатывает повторно на resize/drag после первичного
+  фокуса; reset/смена run применяют фокус и очищают старую selection/source.
+- Scope/подпись переведены: «Технический контекст и подпись», «Рабочая
+  область», «Запуск», «Снимок», «Ревизия».
 - MiniMap скрыт на узком по умолчанию, кнопка «Мини» включает вручную.
 
 ## Проверка
@@ -79,24 +90,28 @@ npm run build --prefix frontend
 - default 33: `33 узла / 32 связи / 6 проблем / 39 доказательств`,
   1440 и 390, overlap `0`, overflow нет.
 - TeamB 43: `43 / 32 / 15 / 67`, overlap `0`, health
-  «Проверенный объём завершён».
+  «Проверенный объём завершён»; primary problem — «Можно запросить чужой
+  объект» (high/confirmed).
 - Реальный App: 10 узлов, 13 проблем, masked source `загружен`
   (`@GetMapping("/dump-database")`), 4 unknown-связи.
+- Отдельно проверены: source error (`source_unavailable`) → человеческая
+  причина + `Код ошибки` в details; no-node-refs → note и общий viewport,
+  route не выбран; partial+unknown → отдельные подписи и счётчики.
 - `npm run check --prefix ui/security-map`, build ui/security-map и
   build frontend прошли.
 
 ## Скриншоты (human labels)
 
-`/tmp/security-map-shots-6/human-default-33-1440-final.png`
-sha256 `09724aa46162f412370e1186379a26341428223ec1c73074886e0fb8445ccaea`;
-`/tmp/security-map-shots-6/human-default-33-390-final.png`
-sha256 `d88577b8ed5ff39cbb4fb7d6bb4fdf7ca14fa7438478105a22dc055117e003ad`;
-`/tmp/security-map-shots-6/human-teamb-43-1440-final.png`
-sha256 `caa1564b3f0da2314d221480e123eab4b72e4b61b17400408b83589e4d85f2e8`;
-`/tmp/security-map-shots-6/human-teamb-43-390-final.png`
-sha256 `f6191815fba5198655da3bbe3f2561e87f4fb89be4c7115328b9db758cb8238c`.
+`/tmp/security-map-shots-7/problem-default-33-1440.png`
+sha256 `b05080afab7725fb483e37c250fc5bf2bb884133834c15bcb5d1344621821c24`;
+`/tmp/security-map-shots-7/problem-default-33-390.png`
+sha256 `7deaf3f3b7147cd1ee0d8f5936a2fdd96eeb417c9d729b7a3b0bdfe45bd6bf50`;
+`/tmp/security-map-shots-7/problem-teamb-43-1440.png`
+sha256 `ef48bae349642c105ed725bc08986417b96cff9a9b6cc6b1f8b5b8877f69188a`;
+`/tmp/security-map-shots-7/problem-teamb-43-390.png`
+sha256 `2b2b2f6033f1ff4089ecb5eeaf228b10335fe4d82b7a6cbcdd8f9cc70e038581`.
 
-Ранние скриншоты: `/tmp/security-map-shots-5/`, `/tmp/security-map-shots-4/`.
+Ранние скриншоты: `/tmp/security-map-shots-6/`, `/tmp/security-map-shots-5/`.
 
 ## Что осталось интеграции
 
