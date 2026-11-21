@@ -1031,7 +1031,10 @@ export const App: React.FC = () => {
           error={accountError}
           onClose={() => setIsAccountOpen(false)}
           onLogout={() => void handleLogout()}
-          onSelectRun={handleSelectRun}
+          onSelectRun={(runId) => {
+            handleSelectRun(runId);
+            setActiveTab('live');
+          }}
         />
         {noticeNode}
       </div>
