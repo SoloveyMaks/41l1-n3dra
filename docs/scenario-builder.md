@@ -233,3 +233,42 @@ used.
   fallback, and there is no server-side audio path.
 - A provider outage is an explicit error, not a deterministic fake plan.
 - No push, merge to main, production deployment or external sends were made.
+
+## 10. End-to-end browser acceptance (read-only run)
+
+Local integrated app: isolated PostgreSQL, public account registration, real
+backend on `127.0.0.1:8091`, built frontend served by the backend, real
+ReformBoss preview. No production data, external messages, push or admin
+credential is included in this document.
+
+Observed flow:
+
+- account registered through `POST /api/auth/register`; account workspace had
+  the default 11-node workflow;
+- sample artifact selected in the editor (`art_bc490336c939`); existing run
+  `35f369f6-505a-465d-9822-cda106d3017b` selected in history;
+- «По описанию» → real preview → «Применить в редактор» produced 7 nodes:
+  manual trigger, project input, secret scan, SCA, merge, policy and report;
+- before Apply the canvas stayed unchanged (7/7/7 nodes across before,
+  preview-open and close); close without Apply did not mutate it;
+- project input retained `art_bc490336c939`; run selection changed from the
+  selected run to empty after Apply;
+- non-GET API calls during preview and Apply were only:
+  `POST /api/scenario-builder/preview` and
+  `POST /api/workflows/wf_secure_pr_gate/validate`. There was no workflow
+  create, draft save, artifact upload or run trigger;
+- «Сохранить draft» then produced «Draft сохранён, граф валиден», and a full
+  reload restored the same 7 nodes, valid graph and artifact selection;
+- mobile 390×844: the admin constructor/modal dialog fit inside the viewport
+  (`x=12, y=142, 366×560`), buttons and voice fallback text visible. Screenshot:
+  `/tmp/scenario-e2e-admin-390.png`;
+- admin path: admin session → «Конструктор» → «По описанию» → preview works
+  through the same modal/API;
+- voice: the microphone control is visible; clicking it entered the visible
+  «Слушаю…» state. No speech transcript was asserted as proof; real browser
+  recognition depends on browser service/permission.
+
+No product defect was found in this pass. One earlier harness-only artifact was
+a delayed `page.route` left from a stale-response check; it was removed before
+the real Apply, otherwise it fabricated a zero-node preview and is not a product
+behavior.
