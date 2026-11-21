@@ -1,9 +1,16 @@
 """Compare a pinned reference suite with one analyzer bundle.
 
-Compatibility is exact on the bundle's static signature and runner version.
-Coverage is checked per expected path/rule before any finding is called missing:
-a scope that was not ``checked`` yields ``inconclusive``, never ``pass`` and
-never a fabricated ``fail``.
+Two boundaries are enforced here:
+
+* The server, not the caller, supplies the reference identity and the target
+  run/snapshot/artifact hashes. ``compare_reference_suite`` receives already
+  loaded ``ServerSnapshot`` objects for server mode and the raw-fixture CLI
+  mode is explicitly marked as unattested.
+* Every scanner and finding used for a ``pass`` must be contract-valid and
+  complete. Missing coverage is ``inconclusive``; a missing expectation inside
+  a checked scope is an honest ``fail``. Failed, partial or unavailable
+  scanners never produce ``pass``, and each actual finding can satisfy at most
+  one expectation.
 """
 
 from __future__ import annotations
@@ -20,8 +27,18 @@ from .manifest import (
     ReferenceSuite,
     parse_manifest,
 )
+from .provenance import (
+    ServerSnapshot,
+    Verification,
+    identity_matches,
+    verify_reference_snapshot,
+    verify_target_snapshot,
+)
 
-COMPARATOR_VERSION = "reference-checks/1"
+COMPARATOR_VERSION = "reference-checks/2"
+REPORT_SCHEMA = "reference-report/v2"
+SERVER_MODE = "server-canonical"
+RAW_MODE = "raw-fixture"
 
 
 def _signature_reasons(suite: ReferenceSuite, bundle: BundleView) -> list[str]:
@@ -34,22 +51,12 @@ def _signature_reasons(suite: ReferenceSuite, bundle: BundleView) -> list[str]:
     return reasons
 
 
-def _compatibility(
-    suite: ReferenceSuite,
-    bundle: BundleView,
-    target_sha: str,
-    target_project_id: str,
-) -> list[str]:
+def _hard_compatibility(suite: ReferenceSuite, bundle: BundleView) -> list[str]:
     reasons: list[str] = []
     if suite.bundle_schema_version != bundle.schema_version:
         reasons.append(
             f"bundle schema {bundle.schema_version} is not compatible with "
             f"{suite.bundle_schema_version}"
-        )
-    if target_project_id != suite.project_id:
-        reasons.append(
-            f"target project {target_project_id!r} differs from reference project "
-            f"{suite.project_id!r}"
         )
     if len(bundle.runner_versions) != 1:
         reasons.append(
@@ -61,38 +68,50 @@ def _compatibility(
             f"bundle {bundle.runner_versions[0]!r}"
         )
     reasons.extend(_signature_reasons(suite, bundle))
-    if len(target_sha) not in {40, 64}:
-        reasons.append("target sha is not a 40/64 character commit SHA")
     return reasons
+
+
+def _scan_gaps(bundle: BundleView) -> list[str]:
+    """Reasons that can never coexist with ``pass``.
+
+    A failed/cancelled/unsupported scanner or ``unavailable`` coverage never
+    inspected its surface. Partial coverage is handled per scope: a checked
+    expectation can match, an unchecked one becomes inconclusive.
+    """
+
+    reasons: list[str] = []
+    for category in CATEGORIES:
+        outcome = bundle.outcomes[category]
+        if outcome.status in {"failed", "timeout", "unsupported"}:
+            reasons.append(
+                f"{category} scanner status is {outcome.status!r}; it did not complete"
+            )
+        if outcome.coverage_status == "unavailable":
+            reasons.append(f"{category} coverage is unavailable")
+    return reasons
+
+
+def _coverage_warnings(bundle: BundleView) -> list[str]:
+    warnings: list[str] = []
+    for category in CATEGORIES:
+        outcome = bundle.outcomes[category]
+        if outcome.status == "partial":
+            warnings.append(f"{category} scanner status is 'partial'")
+        if outcome.coverage_status == "partial":
+            warnings.append(f"{category} coverage is partial")
+    return warnings
 
 
 def _severity(value: Any) -> str | None:
     return value.strip().lower() if isinstance(value, str) and value.strip() else None
 
 
-def _identity_matches(expected: ExpectedFinding, actual: Mapping[str, Any]) -> bool:
-    if expected.category != actual.get("category"):
-        return False
-    if expected.rule_id != actual.get("ruleId"):
-        return False
-    location = actual.get("primaryLocation")
-    path = location.get("path") if isinstance(location, Mapping) else None
-    if expected.path != path:
-        return False
-    if expected.symbol_key is not None:
-        anchor = actual.get("anchor")
-        symbol = anchor.get("symbolKey") if isinstance(anchor, Mapping) else None
-        if expected.symbol_key != symbol:
-            return False
-    return True
-
-
 def _expected_row(
     expected: ExpectedFinding,
     outcome: ScanOutcome,
-    actual_findings: list[Mapping[str, Any]],
+    consumed: set[int],
 ) -> tuple[dict[str, Any], int | None, bool]:
-    """Return (row, matched index, hard failure) for one expected finding."""
+    """Return (row, consumed index, hard failure) for one expected finding."""
 
     scope = outcome.scopes.get((expected.path, expected.rule_id))
     row: dict[str, Any] = {
@@ -102,22 +121,32 @@ def _expected_row(
         "path": expected.path,
         "expectedFingerprint": expected.fingerprint,
     }
-    candidates = [
-        index for index, actual in enumerate(actual_findings) if _identity_matches(expected, actual)
-    ]
-    consumed = candidates[0] if len(candidates) == 1 else None
+    if not outcome.ready:
+        return {
+            **row,
+            "status": "inconclusive",
+            "reason": (
+                f"{expected.category} scanner is {outcome.status!r} with "
+                f"coverage {outcome.coverage_status!r}; not a complete scan"
+            ),
+        }, None, False
     if scope is None:
         return {
             **row,
             "status": "inconclusive",
             "reason": "bundle has no coverage scope for this path and rule",
-        }, consumed, False
+        }, None, False
     if scope != "checked":
         return {
             **row,
             "status": "inconclusive",
-            "reason": f"coverage scope is {scope}, not checked",
-        }, consumed, False
+            "reason": f"coverage scope is {scope!r}, not checked",
+        }, None, False
+    candidates = [
+        index
+        for index, actual in enumerate(outcome.findings)
+        if index not in consumed and identity_matches(expected, actual)
+    ]
     if not candidates:
         return {
             **row,
@@ -128,9 +157,18 @@ def _expected_row(
         return {
             **row,
             "status": "inconclusive",
-            "reason": "several actual findings match one reference identity",
+            "reason": "several unused actual findings match one reference identity",
         }, None, False
-    matched = actual_findings[candidates[0]]
+    index = candidates[0]
+    matched = outcome.findings[index]
+    status = matched.get("status")
+    if status != "confirmed":
+        return {
+            **row,
+            "status": "inconclusive",
+            "actualFingerprint": matched.get("fingerprint"),
+            "reason": f"actual finding status is {status!r}, not confirmed",
+        }, index, False
     if expected.fingerprint is not None and (
         str(matched.get("fingerprint", "")).lower() != expected.fingerprint
     ):
@@ -139,7 +177,7 @@ def _expected_row(
             "status": "mismatch",
             "actualFingerprint": matched.get("fingerprint"),
             "reason": "finding identity changed inside a checked scope",
-        }, candidates[0], True
+        }, index, True
     if expected.severity is not None and expected.severity != _severity(matched.get("severity")):
         return {
             **row,
@@ -147,14 +185,14 @@ def _expected_row(
             "actualFingerprint": matched.get("fingerprint"),
             "actualSeverity": _severity(matched.get("severity")),
             "reason": "severity differs from the pinned expectation",
-        }, candidates[0], True
+        }, index, True
     return {
         **row,
         "status": "matched",
         "actualFingerprint": matched.get("fingerprint"),
         "actualSeverity": _severity(matched.get("severity")),
         "reason": "expected finding matched inside a checked scope",
-    }, candidates[0], False
+    }, index, False
 
 
 def _control_row(
@@ -167,6 +205,16 @@ def _control_row(
         "ruleId": control.rule_id,
         "path": control.path,
     }
+    if not outcome.ready:
+        return {
+            **row,
+            "status": "inconclusive",
+            "actualFindings": None,
+            "reason": (
+                f"{control.category} scanner is {outcome.status!r} with "
+                f"coverage {outcome.coverage_status!r}; not a complete scan"
+            ),
+        }, False
     scope = outcome.scopes.get((control.path, control.rule_id))
     if scope is None:
         return {
@@ -180,7 +228,7 @@ def _control_row(
             **row,
             "status": "inconclusive",
             "actualFindings": None,
-            "reason": f"control scope is {scope}, not checked",
+            "reason": f"control scope is {scope!r}, not checked",
         }, False
     hits = [
         actual
@@ -189,13 +237,21 @@ def _control_row(
         and isinstance(actual.get("primaryLocation"), Mapping)
         and actual["primaryLocation"].get("path") == control.path
     ]
-    if hits:
+    confirmed = [item for item in hits if item.get("status") == "confirmed"]
+    if confirmed:
         return {
             **row,
             "status": "triggered",
-            "actualFindings": len(hits),
-            "reason": "safe control produced findings",
+            "actualFindings": len(confirmed),
+            "reason": "safe control produced confirmed findings",
         }, True
+    if hits:
+        return {
+            **row,
+            "status": "inconclusive",
+            "actualFindings": len(hits),
+            "reason": "safe control has non-confirmed findings; cannot call it clean",
+        }, False
     return {
         **row,
         "status": "matched",
@@ -227,33 +283,129 @@ def _summary(
     }
 
 
+def _raw_target(view: BundleView) -> dict[str, Any]:
+    return {
+        "branch": None,
+        "sha": None,
+        "workspaceId": None,
+        "runId": None,
+        "snapshotId": None,
+        "artifactId": None,
+        "artifactHash": None,
+        "snapshotManifestHash": None,
+        "runnerVersions": list(view.runner_versions),
+        "provenance": "raw-fixture-untrusted",
+    }
+
+
+def _server_target(snapshot: ServerSnapshot, view: BundleView) -> dict[str, Any]:
+    return {
+        "branch": snapshot.branch,
+        "sha": snapshot.commit_sha,
+        "workspaceId": snapshot.workspace_id,
+        "runId": snapshot.run_id,
+        "snapshotId": snapshot.snapshot_id,
+        "artifactId": snapshot.details.get("artifactId"),
+        "artifactHash": view.identity.get("artifactHash"),
+        "snapshotManifestHash": view.identity.get("snapshotManifestHash"),
+        "runnerVersions": list(view.runner_versions),
+        "provenance": snapshot.source,
+    }
+
+
+def _provenance_block(
+    *,
+    mode: str,
+    reference_snapshot: ServerSnapshot | None,
+    target_snapshot: ServerSnapshot | None,
+    reference_verification: Verification,
+    target_verification: Verification,
+    untrusted_claims: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    verified = reference_verification.verified and target_verification.verified
+    reasons = [
+        *(
+            f"reference: {reason}"
+            for reason in reference_verification.reasons
+        ),
+        *(
+            f"target: {reason}"
+            for reason in target_verification.reasons
+        ),
+    ]
+    block: dict[str, Any] = {
+        "mode": mode,
+        "attestation": "canonical-published"
+        if mode == SERVER_MODE and verified
+        else "none",
+        "verified": verified,
+        "reasons": reasons,
+        "reference": reference_snapshot.public() if reference_snapshot else None,
+        "target": target_snapshot.public() if target_snapshot else None,
+        "checks": {
+            "reference": dict(reference_verification.checks),
+            "target": dict(target_verification.checks),
+        },
+    }
+    if untrusted_claims:
+        block["untrustedClaims"] = dict(untrusted_claims)
+    return block
+
+
 def compare_reference_suite(
     *,
     manifest: Any,
     bundle: Any,
-    target_sha: str,
-    target_project_id: str,
-    target_branch: str | None = None,
+    mode: str = SERVER_MODE,
+    reference_snapshot: ServerSnapshot | None = None,
+    target_snapshot: ServerSnapshot | None = None,
+    untrusted_claims: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compare one publishing bundle with a pinned suite and return a report."""
+    """Compare one bundle with a pinned reference suite and return a report.
 
+    ``SERVER_MODE`` requires server-loaded snapshots. ``RAW_MODE`` compares a
+    local manifest and bundle for fixtures only; its report is explicitly
+    unattested and never carries a client-claimed target SHA.
+    """
+
+    if mode not in {SERVER_MODE, RAW_MODE}:
+        raise ReferenceCheckError("INVALID_MODE", f"unknown comparison mode: {mode!r}")
     suite = parse_manifest(manifest)
     view = parse_bundle(bundle)
-    target_sha = (target_sha or "").strip().lower()
-    target_project_id = (target_project_id or "").strip()
-    if not target_project_id:
-        raise ReferenceCheckError(
-            "INVALID_PROVENANCE", "targetProjectId must be pinned"
+
+    if mode == SERVER_MODE:
+        if target_snapshot is None:
+            raise ReferenceCheckError(
+                "TARGET_PROVENANCE_MISSING",
+                "server mode requires a server-loaded target snapshot",
+            )
+        reference_verification, reference_view = verify_reference_snapshot(
+            suite, reference_snapshot
         )
-    if len(target_sha) not in {40, 64} or any(
-        char not in "0123456789abcdef" for char in target_sha
-    ):
-        raise ReferenceCheckError(
-            "INVALID_PROVENANCE", "targetSha must be a 40 or 64 character hex SHA"
+        target_verification = verify_target_snapshot(target_snapshot, view)
+        target = _server_target(target_snapshot, view)
+    else:
+        reference_verification = Verification(
+            False,
+            (
+                "raw-fixture mode: pinned reference identity was not verified "
+                "against server storage",
+            ),
+            {"source": "raw-fixture"},
         )
+        reference_view = None
+        target_verification = Verification(
+            False,
+            (
+                "raw-fixture mode: target bundle identity and commit were not "
+                "verified against server storage",
+            ),
+            {"source": "raw-fixture"},
+        )
+        target = _raw_target(view)
 
     base: dict[str, Any] = {
-        "schemaVersion": "reference-report/v1",
+        "schemaVersion": REPORT_SCHEMA,
         "comparatorVersion": COMPARATOR_VERSION,
         "suiteId": suite.suite_id,
         "suiteVersion": suite.suite_version,
@@ -263,31 +415,35 @@ def compare_reference_suite(
             "sha": suite.sha,
             "snapshotManifestHash": suite.snapshot_manifest_hash,
             "artifactHash": suite.artifact_hash,
+            "bundleContentSha256": suite.bundle_content_sha256,
             "bundleSha256": suite.bundle_sha256,
             "runnerVersion": suite.runner_version,
+            "snapshotPresent": reference_view is not None,
         },
-        "target": {
-            "branch": target_branch,
-            "sha": target_sha,
-            "projectId": target_project_id,
-            "runId": view.identity["runId"],
-            "snapshotId": view.identity["snapshotId"],
-            "artifactHash": view.identity["artifactHash"],
-            "snapshotManifestHash": view.identity["snapshotManifestHash"],
-            "runnerVersions": list(view.runner_versions),
-        },
+        "target": target,
     }
+    provenance = _provenance_block(
+        mode=mode,
+        reference_snapshot=reference_snapshot,
+        target_snapshot=target_snapshot,
+        reference_verification=reference_verification,
+        target_verification=target_verification,
+        untrusted_claims=untrusted_claims,
+    )
 
-    reasons = _compatibility(suite, view, target_sha, target_project_id)
-    if reasons:
+    hard_reasons = _hard_compatibility(suite, view)
+    if hard_reasons:
         return {
             **base,
             "status": "inconclusive",
             "compatibility": {
                 "compatible": False,
                 "bundleSchemaVersion": view.schema_version,
-                "reasons": reasons,
+                "reasons": hard_reasons,
+                "coverageReasons": _scan_gaps(view),
+                "coverageWarnings": _coverage_warnings(view),
             },
+            "provenance": provenance,
             "findings": [],
             "controls": [],
             "unexpectedFindings": [],
@@ -312,7 +468,7 @@ def compare_reference_suite(
     for expected in suite.expected_findings:
         outcome = view.outcomes[expected.category]
         row, matched_index, failed = _expected_row(
-            expected, outcome, list(outcome.findings)
+            expected, outcome, used[expected.category]
         )
         if matched_index is not None:
             used[expected.category].add(matched_index)
@@ -337,26 +493,42 @@ def compare_reference_suite(
                 "status": actual.get("status"),
             })
 
+    coverage_reasons = _scan_gaps(view)
     inconclusive = any(
         row["status"] == "inconclusive" for row in [*findings, *controls]
     )
-    if hard_failure:
+    provenance_ok = reference_verification.verified and target_verification.verified
+    if mode == SERVER_MODE and not provenance_ok:
+        status = "inconclusive"
+    elif hard_failure:
         status = "fail"
-    elif inconclusive or unexpected:
+    elif inconclusive or unexpected or coverage_reasons:
         status = "inconclusive"
     else:
         status = "pass"
 
-    return {
+    report: dict[str, Any] = {
         **base,
         "status": status,
         "compatibility": {
             "compatible": True,
             "bundleSchemaVersion": view.schema_version,
             "reasons": [],
+            "coverageReasons": coverage_reasons,
+            "coverageWarnings": _coverage_warnings(view),
         },
+        "provenance": provenance,
         "findings": findings,
         "controls": controls,
         "unexpectedFindings": unexpected,
         "summary": _summary(findings, controls, unexpected, suite),
     }
+    if mode == RAW_MODE:
+        report["untrusted"] = {
+            "bundleIdentity": dict(view.identity),
+            "note": (
+                "Raw fixture comparison only. The bundle identity, commit and "
+                "branch were supplied by the caller and are not attestation."
+            ),
+        }
+    return report

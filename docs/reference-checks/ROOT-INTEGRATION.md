@@ -1,12 +1,21 @@
 # Root integration: reference checks
 
-Своя фича живёт отдельно. Root не переписывается: ниже два куска, которые
-владелец корня вставляет сам.
+Своя фича живёт отдельно. Root не переписывается: ниже точные куски, которые
+владелец корня вставляет сам. `main.py`, глобальный `api_router` и `App.tsx` в
+этой ветке не менялись.
 
-## Backend
+## Backend mount
 
-`backend/app/api/router.py` уже содержит `api_router = APIRouter(prefix="/api")`,
-поэтому достаточно после auth/workspace middleware:
+`backend/app/api/reference_checks_mount.py` содержит готовый helper:
+
+```python
+from backend.app.api.reference_checks_mount import mount_reference_checks
+
+# внутри существующего api_router (prefix="/api"), после auth/workspace middleware
+mount_reference_checks(api_router)
+```
+
+Эквивалент без helper:
 
 ```python
 from backend.app.api.reference_checks import create_reference_checks_router
@@ -14,28 +23,132 @@ from backend.app.api.reference_checks import create_reference_checks_router
 api_router.include_router(create_reference_checks_router())
 ```
 
-Получится `POST /api/reference-checks/compare`. Тело запроса:
+Получится `POST /api/reference-checks/compare`.
+
+Тело запроса — только серверные id:
 
 ```json
 {
-  "manifest": { "schemaVersion": "reference-suite/v1", "...": "..." },
-  "bundle": { "schemaVersion": "0.1", "...": "..." },
-  "targetSha": "<40-char commit sha>",
-  "targetProjectId": "reference-checks/orders-service",
-  "targetBranch": "fixtures/target-compatible"
+  "referenceManifestId": "reference-suite",
+  "targetRunId": "run_ab12cd34",
+  "targetArtifactId": "art_9f00"
 }
 ```
 
-Ответ — `reference-report/v1` со `status` `pass | fail | inconclusive`.
-Несовместимая версия анализаторов и потеря покрытия дают `inconclusive`,
-а не `pass`. Код `422` остаётся только для битого входа; сам несовместимый
-bundle — это вердикт в отчёте.
+`targetArtifactId` необязателен; если передан, обязан совпадать с артефактом
+запуска. Поля `manifest`, `bundle`, `targetSha`, `targetBranch`,
+`targetProjectId` отклоняются с `422` (`extra_forbidden`).
+
+Workspace по умолчанию берётся из `require_workspace_actor(request)`, то есть из
+уже существующей сессии. Root может заменить резолвер:
+
+```python
+mount_reference_checks(
+    api_router,
+    resolve_workspace=lambda request: my_session(request)["workspaceId"],
+)
+```
+
+## Loader hooks
+
+Все зависимости инжектируются. Сигнатуры — часть контракта:
+
+```python
+from backend.app.reference_checks import (
+    ReferenceSuite, ReferenceSuiteRegistry, ServerSnapshot,
+)
+from backend.app.reference_checks.canonical import (
+    load_canonical_snapshot, load_reference_snapshot,
+)
+
+# 1. target loaders
+def my_target_loader(
+    workspace: str, run_id: str, artifact_id: str | None
+) -> ServerSnapshot: ...
+
+# 2. reference loader
+def my_reference_loader(
+    workspace: str,
+    suite: ReferenceSuite,
+    registry: ReferenceSuiteRegistry,
+    manifest_id: str,
+) -> ServerSnapshot | None: ...
+
+mount_reference_checks(
+    api_router,
+    registry=ReferenceSuiteRegistry("/srv/reference-suites"),
+    load_target_snapshot=my_target_loader,
+    load_reference_snapshot=my_reference_loader,
+)
+```
+
+Defaults (если hook не передан):
+
+- `load_target_snapshot` → `backend.app.reference_checks.canonical.load_canonical_snapshot`
+  - workspace-scoped `DatabaseRepository.get_run/get_artifact`;
+  - `CodeFactsStore` run/artifact meta для snapshot id;
+  - `get_published_envelope(...)` из canonical storage;
+  - сверка `identity.workspaceId/runId/snapshotId/artifactHash/snapshotManifestHash`;
+  - source commit/branch из `runtime.repository_watch_commits` и
+    `runtime.repository_hook_deliveries`, плюс artifact meta.
+- `load_reference_snapshot` → `...canonical.load_reference_snapshot`
+  - сначала `<manifestId>.reference.json` из реестра;
+  - иначе `reference.runId` + `reference.snapshotId` через тот же canonical loader.
+- `registry` → `ReferenceSuiteRegistry()` читает `CG_REFERENCE_SUITES_DIR`,
+  по умолчанию `docs/reference-checks/fixtures`.
+
+Если canonical provenance не содержит commit/branch/хэш, hook возвращает
+`ServerSnapshot` с `None` в этом поле. Компаратор сделает `inconclusive` с
+причиной; фабриковать commit нельзя.
+
+## Формат registry
+
+```text
+$CG_REFERENCE_SUITES_DIR/
+  reference-suite.json
+  reference-suite.reference.json   # optional frozen reference snapshot
+```
+
+`reference-suite.json` — `reference-suite/v1` (см. README).
+
+`reference-suite.reference.json`:
+
+```json
+{
+  "sourceCommit": "<40-char commit>",
+  "sourceBranch": "<branch>",
+  "sourceExportSha256": "<optional sha256 of the raw exported bundle file>",
+  "bundle": { "schemaVersion": "0.1", "...": "..." }
+}
+```
+
+`bundleContentSha256` сервер считает из `bundle`; манифест должен
+закреплять то же значение.
+
+## Ответ
+
+`reference-report/v2`. Важные поля:
+
+- `status`: `pass | fail | inconclusive`;
+- `provenance.mode`: `server-canonical`;
+- `provenance.attestation`: `canonical-published` только если подтверждены и
+  reference, и target; иначе `none`;
+- `provenance.reasons`: почему provenance не подтверждён;
+- `provenance.reference/target`: server-owned source, commitSha, branch, hashes;
+- `target.sha`: source commit из provenance, не из запроса;
+- `compatibility.coverageReasons`: failed/unavailable сканеры;
+- `compatibility.coverageWarnings`: partial, не блокирующий проверенные scopes.
+
+`422` остаётся для невалидного id/манифеста, `404` — для чужого/неизвестного
+run/artifact, `409` — для неопубликованного или неполного canonical envelope.
+Несовместимая подпись и потеря покрытия — это вердикт `inconclusive`, а не
+HTTP-ошибка.
 
 ## Frontend
 
-Компонент standalone, лежит в
-`frontend/src/components/reference-checks/ReferenceChecksPanel.tsx` и требует
-только пропсы. `App.tsx` и чужие экраны не трогаются.
+Компонент standalone: `frontend/src/components/reference-checks/ReferenceChecksPanel.tsx`.
+Он не грузит bundle сам и не отправляет SHA. Root передаёт только серверные
+дескрипторы:
 
 ```tsx
 import { ReferenceChecksPanel } from './components/reference-checks/ReferenceChecksPanel';
@@ -43,31 +156,31 @@ import type { PinnedReference, PinnedTarget } from './components/reference-check
 
 const references: PinnedReference[] = [
   {
-    id: 'orders-v1',
+    id: 'reference-suite',          // referenceManifestId для сервера
     label: 'Orders reference suite',
     projectId: 'reference-checks/orders-service',
     branch: 'SoloveyMaks/reference-branch-checks',
-    sha: '<suite commit sha>',
-    manifest: referenceSuiteManifest, // docs/reference-checks/fixtures/reference-suite.json
+    sha: '<suite commit sha>',      // только подпись в UI; сервер проверит сам
   },
 ];
 
-const targets: PinnedTarget[] = artifacts.map((artifact) => ({
-  id: artifact.id,
-  label: artifact.filename,
-  projectId: 'reference-checks/orders-service',
-  sha: artifact.repository?.commit_sha ?? '',
-  branch: artifact.repository?.branch,
-  // Root владеет published envelope; компонент не выдумывает bundle.
-  loadBundle: () => loadPublishedAnalysisBundle(artifact.id),
+const targets: PinnedTarget[] = runs.map((run) => ({
+  id: run.id,
+  label: run.id,
+  runId: run.id,                    // серверный id запуска
+  artifactId: run.artifact_id ?? undefined,
 }));
 
 <ReferenceChecksPanel references={references} targets={targets} />
 ```
 
-`loadPublishedAnalysisBundle` — существующий путь корня к published immutable
-bundle (например, `get_published_envelope(...)["bundle"]`). Если bundle нет,
-компонент честно показывает ошибку, а не рисует `pass`.
+`compareUrl` можно переопределить, если роутер смонтирован под другим префиксом;
+по умолчанию `${API_BASE}/reference-checks/compare`.
 
-`compareUrl` можно переопределить, если сравнение монтируется под другим
-префиксом; по умолчанию `${API_BASE}/reference-checks/compare`.
+Компонент:
+- отправляет `{ referenceManifestId, targetRunId, targetArtifactId }`;
+- при смене эталона/цели инкрементит epoch, абортит in-flight запрос и сразу
+  выбрасывает старый отчёт;
+- поздний ответ A после выбора B не применяется (`epoch !== current`);
+- показывает `pass` только из ответа сервера и отдельно рисует
+  `attestation: none`, если provenance не подтверждён.

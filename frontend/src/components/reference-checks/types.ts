@@ -1,57 +1,27 @@
-/** Minimal published `AnalysisBundle` 0.1 shape used by the comparison. */
-export interface AnalysisBundle {
-  schemaVersion: '0.1';
-  identity: Record<string, string>;
-  signature: Record<string, string | null>;
-  scanResults: Array<{
-    category: 'SECRET' | 'SCA' | 'SAST';
-    status: string;
-    producerVersion: string;
-    findings: Array<Record<string, unknown>>;
-    coverage: { status: string; scopes: Array<Record<string, unknown>> };
-  }>;
-  [key: string]: unknown;
-}
-
-/** A pinned reference suite manifest (`reference-suite/v1`). */
-export interface ReferenceSuiteManifest {
-  schemaVersion: 'reference-suite/v1';
-  suiteId: string;
-  suiteVersion: string;
-  project: { id: string; repository?: string | null; fixturePath?: string };
-  reference: {
-    branch: string;
-    sha: string;
-    snapshotManifestHash?: string | null;
-    artifactHash?: string | null;
-    bundleSha256?: string | null;
-    runnerVersion: string;
-    signature: Record<string, string | null>;
-    expectedFindings: Array<Record<string, unknown>>;
-    expectedControls: Array<Record<string, unknown>>;
-  };
-  compatibility: { bundleSchemaVersion: string };
-}
-
-/** One artifact/ref the user can select as the comparison target. */
-export interface PinnedTarget {
-  id: string;
-  label: string;
-  projectId: string;
-  sha: string;
-  branch?: string;
-  /** Published immutable bundle; omit when `loadBundle` is provided. */
-  bundle?: AnalysisBundle;
-  loadBundle?: () => Promise<AnalysisBundle>;
-}
-
+/** UI descriptors are labels/IDs only. The server resolves manifests and runs. */
 export interface PinnedReference {
   id: string;
   label: string;
-  projectId: string;
-  branch: string;
-  sha: string;
-  manifest: ReferenceSuiteManifest;
+  projectId?: string;
+  branch?: string;
+  sha?: string;
+}
+
+/** One server-owned target run the user can select. */
+export interface PinnedTarget {
+  id: string;
+  label: string;
+  /** Server-owned run id; the router resolves the published envelope. */
+  runId: string;
+  /** Optional artifact id; the server requires it to belong to the run. */
+  artifactId?: string;
+  projectId?: string;
+}
+
+export interface ReferenceComparisonRequest {
+  referenceManifestId: string;
+  targetRunId: string;
+  targetArtifactId?: string;
 }
 
 export type ReferenceVerdict = 'pass' | 'fail' | 'inconclusive';
@@ -65,6 +35,7 @@ export interface ReferenceReportRow {
   reason: string;
   expectedFingerprint?: string | null;
   actualFingerprint?: string | null;
+  actualSeverity?: string | null;
   actualFindings?: number | null;
 }
 
@@ -76,8 +47,36 @@ export interface ReferenceUnexpectedFinding {
   status: string | null;
 }
 
+export interface ReferenceProvenanceSnapshot {
+  source: string;
+  workspaceId: string;
+  runId: string | null;
+  snapshotId: string | null;
+  commitSha: string | null;
+  branch: string | null;
+  snapshotManifestHash: string | null;
+  artifactHash: string | null;
+  bundleContentSha256: string | null;
+  sourceExportSha256: string | null;
+  manifestHash: string | null;
+}
+
+export interface ReferenceProvenance {
+  mode: 'server-canonical' | 'raw-fixture';
+  attestation: 'canonical-published' | 'none';
+  verified: boolean;
+  reasons: string[];
+  reference: ReferenceProvenanceSnapshot | null;
+  target: ReferenceProvenanceSnapshot | null;
+  checks: {
+    reference: Record<string, unknown>;
+    target: Record<string, unknown>;
+  };
+  untrustedClaims?: Record<string, unknown>;
+}
+
 export interface ReferenceComparisonReport {
-  schemaVersion: 'reference-report/v1';
+  schemaVersion: 'reference-report/v2';
   comparatorVersion: string;
   suiteId: string;
   suiteVersion: string;
@@ -86,23 +85,33 @@ export interface ReferenceComparisonReport {
   reference: {
     branch: string;
     sha: string;
+    snapshotManifestHash: string | null;
+    artifactHash: string | null;
+    bundleContentSha256: string | null;
+    bundleSha256: string | null;
     runnerVersion: string;
+    snapshotPresent: boolean;
   };
   target: {
     branch: string | null;
-    sha: string;
-    projectId: string;
-    runId: string;
-    snapshotId: string;
-    artifactHash: string;
-    snapshotManifestHash: string;
+    sha: string | null;
+    workspaceId: string | null;
+    runId: string | null;
+    snapshotId: string | null;
+    artifactId: string | null;
+    artifactHash: string | null;
+    snapshotManifestHash: string | null;
     runnerVersions: string[];
+    provenance: string;
   };
   compatibility: {
     compatible: boolean;
     bundleSchemaVersion: string;
     reasons: string[];
+    coverageReasons: string[];
+    coverageWarnings: string[];
   };
+  provenance: ReferenceProvenance;
   findings: ReferenceReportRow[];
   controls: ReferenceReportRow[];
   unexpectedFindings: ReferenceUnexpectedFinding[];
@@ -117,5 +126,9 @@ export interface ReferenceComparisonReport {
     matchedControls: number;
     triggeredControls: number;
     inconclusiveControls: number;
+  };
+  untrusted?: {
+    bundleIdentity: Record<string, string>;
+    note: string;
   };
 }

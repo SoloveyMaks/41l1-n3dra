@@ -1,6 +1,6 @@
 {
-  "schemaVersion": "reference-report/v1",
-  "comparatorVersion": "reference-checks/1",
+  "schemaVersion": "reference-report/v2",
+  "comparatorVersion": "reference-checks/2",
   "suiteId": "orders-reference-suite",
   "suiteVersion": "1",
   "projectId": "reference-checks/orders-service",
@@ -9,26 +9,57 @@
     "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
     "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
     "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "bundleContentSha256": "653da0fcb59cf5ae84421a3aa773fe7e18ec21b9d35c1dcada671329dfb6e714",
     "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
-    "runnerVersion": "cg26-analyzers/0.1.0"
+    "runnerVersion": "cg26-analyzers/0.1.0",
+    "snapshotPresent": false
   },
   "target": {
-    "branch": "fixtures/target-compatible",
-    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
-    "projectId": "reference-checks/orders-service",
-    "runId": "c8d00859-32ed-5096-9a09-ab11ee09f0e3",
-    "snapshotId": "db54c28e-67c2-562d-8121-eff6680cddc5",
-    "artifactHash": "f526e28a34362cf642d550df4389cc4209b24d5df61bda2959c8509e746782a7",
-    "snapshotManifestHash": "23d8eb0da35a8ff88f05f13f52d0d1eac4fb5be6fb125e00132c72b407956142",
+    "branch": null,
+    "sha": null,
+    "workspaceId": null,
+    "runId": null,
+    "snapshotId": null,
+    "artifactId": null,
+    "artifactHash": null,
+    "snapshotManifestHash": null,
     "runnerVersions": [
       "cg26-analyzers/0.1.0"
-    ]
+    ],
+    "provenance": "raw-fixture-untrusted"
   },
-  "status": "pass",
+  "status": "inconclusive",
   "compatibility": {
     "compatible": true,
     "bundleSchemaVersion": "0.1",
-    "reasons": []
+    "reasons": [],
+    "coverageReasons": [
+      "SCA coverage is unavailable"
+    ],
+    "coverageWarnings": [
+      "SCA scanner status is 'partial'",
+      "SAST scanner status is 'partial'",
+      "SAST coverage is partial"
+    ]
+  },
+  "provenance": {
+    "mode": "raw-fixture",
+    "attestation": "none",
+    "verified": false,
+    "reasons": [
+      "reference: raw-fixture mode: pinned reference identity was not verified against server storage",
+      "target: raw-fixture mode: target bundle identity and commit were not verified against server storage"
+    ],
+    "reference": null,
+    "target": null,
+    "checks": {
+      "reference": {
+        "source": "raw-fixture"
+      },
+      "target": {
+        "source": "raw-fixture"
+      }
+    }
   },
   "findings": [
     {
@@ -97,5 +128,16 @@
     "matchedControls": 2,
     "triggeredControls": 0,
     "inconclusiveControls": 0
+  },
+  "untrusted": {
+    "bundleIdentity": {
+      "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+      "runId": "c8d00859-32ed-5096-9a09-ab11ee09f0e3",
+      "snapshotId": "db54c28e-67c2-562d-8121-eff6680cddc5",
+      "artifactHash": "f526e28a34362cf642d550df4389cc4209b24d5df61bda2959c8509e746782a7",
+      "snapshotManifestHash": "23d8eb0da35a8ff88f05f13f52d0d1eac4fb5be6fb125e00132c72b407956142",
+      "workflowRevisionId": "603ee9ca-d486-5e7a-a885-5e935fb36e2a"
+    },
+    "note": "Raw fixture comparison only. The bundle identity, commit and branch were supplied by the caller and are not attestation."
   }
 }

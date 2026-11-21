@@ -1,12 +1,14 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
   ClipboardCheck,
   GitBranch,
   Loader2,
+  Server,
   ShieldQuestion,
   ShieldX,
+  Unplug,
 } from 'lucide-react';
 import { API_BASE } from '../../api/client';
 import type {
@@ -33,9 +35,9 @@ const VERDICT_LABEL: Record<ReferenceVerdict, string> = {
 };
 
 const VERDICT_HINT: Record<ReferenceVerdict, string> = {
-  pass: 'Все ожидаемые находки на месте, безопасные контроли молчат.',
-  fail: 'Есть подтверждённое расхождение: пропавшая находка, сработавший контроль или лишняя находка.',
-  inconclusive: 'Несовместимая версия анализаторов или потеря покрытия. Это не pass.',
+  pass: 'Все ожидаемые находки на месте в проверенных областях, контроли чисты, все сканеры завершены.',
+  fail: 'Есть подтверждённое расхождение: пропавшая находка в проверенной области, изменившийся fingerprint или сработавший контроль.',
+  inconclusive: 'Нет полного покрытия, сканер не завершён или сервер не подтвердил происхождение. Это не pass.',
 };
 
 const VERDICT_STYLE: Record<ReferenceVerdict, string> = {
@@ -61,14 +63,25 @@ const ROW_STYLE: Record<ReferenceReportRow['status'], string> = {
 };
 
 const ERROR_HINT: Record<string, string> = {
+  REFERENCE_UNKNOWN: 'Сервер не знает такой эталонный манифест.',
+  REFERENCE_UNREADABLE: 'Серверный манифест эталона недоступен или повреждён.',
   INVALID_MANIFEST: 'Манифест эталона неполный или противоречивый.',
   UNSUPPORTED_MANIFEST: 'Версия формата эталона не поддерживается этим сравнением.',
+  INVALID_PROVENANCE: 'Манифест эталона не закрепил SHA/хэши или версию runner.',
+  TARGET_RUN_UNKNOWN: 'Запуск не найден в вашем workspace.',
+  TARGET_ARTIFACT_UNKNOWN: 'Артефакт запуска не найден в вашем workspace.',
+  TARGET_RUN_ARTIFACT_MISMATCH: 'Артефакт не принадлежит выбранному запуску.',
+  TARGET_SNAPSHOT_UNKNOWN: 'У запуска нет снимка для сравнения.',
+  TARGET_SNAPSHOT_MISMATCH: 'Снимок запуска не совпал с закреплённым снимком.',
+  TARGET_NOT_PUBLISHED: 'У запуска нет опубликованного canonical bundle.',
+  TARGET_CANONICAL_INCOMPLETE: 'Опубликованный envelope неполный: нет manifest/provenance.',
+  TARGET_IDENTITY_MISMATCH: 'Опубликованный bundle не совпал с серверным запуском/артефактом.',
   INVALID_BUNDLE: 'Bundle повреждён или не соответствует контракту AnalysisBundle 0.1.',
-  INCOMPATIBLE_BUNDLE: 'Bundle несовместим: не хватает подписи, покрытия или идентичности.',
-  INVALID_PROVENANCE: 'Не закреплён SHA эталона/цели или версия runner.',
+  INCOMPATIBLE_BUNDLE: 'Bundle несовместим: подпись, fingerprintVersion или вложенная идентичность.',
 };
 
-const shortSha = (sha: string): string => (sha.length > 12 ? `${sha.slice(0, 12)}…` : sha);
+const shortSha = (sha: string | null | undefined): string =>
+  !sha ? '—' : sha.length > 12 ? `${sha.slice(0, 12)}…` : sha;
 
 const describeError = (error: unknown): string => {
   if (error instanceof Error) return error.message;
@@ -125,46 +138,72 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ReferenceComparisonReport | null>(null);
+  const requestEpoch = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const reference = useMemo(
     () => references.find((item) => item.id === referenceId) ?? null,
     [references, referenceId],
   );
   const target = useMemo(() => targets.find((item) => item.id === targetId) ?? null, [targets, targetId]);
-  const projectMismatch = Boolean(reference && target && reference.projectId !== target.projectId);
+  const projectMismatch = Boolean(reference?.projectId && target?.projectId && reference.projectId !== target.projectId);
+
+  const disposeResult = () => {
+    requestEpoch.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    setError(null);
+    setReport(null);
+  };
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const compare = async () => {
     if (!reference || !target || busy) return;
+    const epoch = requestEpoch.current + 1;
+    requestEpoch.current = epoch;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
     setError(null);
     setReport(null);
     try {
-      const bundle = target.bundle ?? (await target.loadBundle?.());
-      if (!bundle) throw new Error('У выбранного артефакта нет опубликованного bundle');
       const endpoint = compareUrl ?? `${API_BASE}/reference-checks/compare`;
       const response = await fetch(endpoint, {
         method: 'POST',
         credentials: 'include',
         cache: 'no-store',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          manifest: reference.manifest,
-          bundle,
-          targetSha: target.sha,
-          targetProjectId: target.projectId,
-          targetBranch: target.branch ?? null,
+          referenceManifestId: reference.id,
+          targetRunId: target.runId,
+          targetArtifactId: target.artifactId ?? null,
         }),
       });
       if (!response.ok) throw new Error(await readError(response));
       const result = (await response.json()) as ReferenceComparisonReport;
+      if (epoch !== requestEpoch.current) return;
       setReport(result);
       onResult?.(result);
     } catch (cause) {
+      if (epoch !== requestEpoch.current) return;
+      if (cause instanceof DOMException && cause.name === 'AbortError') return;
       setError(describeError(cause));
     } finally {
-      setBusy(false);
+      if (epoch === requestEpoch.current) {
+        setBusy(false);
+        abortRef.current = null;
+      }
     }
   };
+
+  const attestation =
+    report?.provenance.attestation === 'canonical-published' && report.provenance.verified
+      ? 'проверено сервером'
+      : 'без аттестации';
 
   return (
     <section className={`space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 ${className ?? ''}`}>
@@ -175,43 +214,45 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
             Эталонная проверка
           </h3>
           <p className="mt-1 max-w-2xl text-xs text-slate-400">
-            Сравниваем закреплённый эталон с опубликованным bundle другого снимка. Совпадение — только когда
-            все ожидаемые находки лежат в проверенных областях, а безопасные контроли не сработали.
+            Сервер сам загружает закреплённый эталон и опубликованный bundle выбранного запуска.
+            Клиент передаёт только id, не манифест, не bundle и не commit SHA.
           </p>
         </div>
       </header>
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-xs text-slate-400">
-          Эталон (ветка и коммит)
+          Эталон (серверный манифест)
           <select
             value={referenceId}
             onChange={(event) => {
               setReferenceId(event.target.value);
-              setReport(null);
+              disposeResult();
             }}
             className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
           >
             {references.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.label} · {item.branch}@{shortSha(item.sha)}
+                {item.label}
+                {item.branch ? ` · ${item.branch}` : ''}
+                {item.sha ? `@${shortSha(item.sha)}` : ''}
               </option>
             ))}
           </select>
         </label>
         <label className="text-xs text-slate-400">
-          Проверяемый снимок / артефакт
+          Проверяемый запуск
           <select
             value={targetId}
             onChange={(event) => {
               setTargetId(event.target.value);
-              setReport(null);
+              disposeResult();
             }}
             className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
           >
             {targets.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.label} · {shortSha(item.sha)}
+                {item.label}
               </option>
             ))}
           </select>
@@ -223,11 +264,14 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
           <span className="inline-flex items-center gap-1">
             <GitBranch className="h-3 w-3" /> эталон {shortSha(reference.sha)}
           </span>
-          <span>runner {String(reference.manifest.reference.runnerVersion)}</span>
-          <span>цель {shortSha(target.sha)}</span>
+          <span className="inline-flex items-center gap-1">
+            <Server className="h-3 w-3" /> запуск {target.runId}
+          </span>
+          {target.artifactId ? <span>артефакт {target.artifactId}</span> : null}
+          <span className="text-slate-500">SHA цели определит сервер</span>
           {projectMismatch ? (
             <span className="inline-flex items-center gap-1 text-amber-300">
-              <AlertTriangle className="h-3 w-3" /> другой проект: сравнение вернёт inconclusive
+              <AlertTriangle className="h-3 w-3" /> подписи проектов в UI различаются; сервер решит по provenance
             </span>
           ) : null}
         </div>
@@ -250,7 +294,7 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
       {report ? (
         <div className="space-y-4">
           <div className={`rounded-xl border p-4 ${VERDICT_STYLE[report.status]}`}>
-            <div className="flex items-center gap-2 text-sm font-semibold">
+            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
               {report.status === 'pass' ? (
                 <CheckCircle2 className="h-4 w-4" />
               ) : report.status === 'fail' ? (
@@ -259,11 +303,32 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
                 <ShieldQuestion className="h-4 w-4" />
               )}
               {VERDICT_LABEL[report.status]}
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                  attestation === 'проверено сервером'
+                    ? 'border-emerald-700 text-emerald-200'
+                    : 'border-amber-700 text-amber-200'
+                }`}
+              >
+                {attestation === 'проверено сервером' ? <Server className="h-3 w-3" /> : <Unplug className="h-3 w-3" />}
+                {attestation}
+              </span>
             </div>
             <p className="mt-1 text-xs opacity-90">{VERDICT_HINT[report.status]}</p>
+            <p className="mt-2 text-[11px] opacity-80">
+              эталон {shortSha(report.reference.sha)} · цель {shortSha(report.target.sha)} ·{' '}
+              {report.target.provenance}
+            </p>
             {report.compatibility.reasons.length ? (
               <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
                 {report.compatibility.reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            ) : null}
+            {report.provenance.reasons.length ? (
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                {report.provenance.reasons.map((reason) => (
                   <li key={reason}>{reason}</li>
                 ))}
               </ul>
@@ -293,6 +358,17 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
             </div>
           </dl>
 
+          {report.compatibility.coverageReasons.length ? (
+            <section className="rounded-xl border border-amber-800 bg-amber-950/30 p-4">
+              <h4 className="mb-2 text-sm font-semibold text-amber-200">Неполное покрытие</h4>
+              <ul className="space-y-1 text-xs text-amber-100/80">
+                {report.compatibility.coverageReasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           <RowTable title="Ожидаемые находки" rows={report.findings} />
           <RowTable title="Безопасные контроли" rows={report.controls} />
 
@@ -302,7 +378,7 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
               <ul className="space-y-1 text-xs text-amber-100/80">
                 {report.unexpectedFindings.map((item) => (
                   <li key={`${item.category}-${item.fingerprint}`}>
-                    {item.category} · {item.ruleId ?? '—'} · {item.path ?? '—'}
+                    {item.category} · {item.ruleId ?? '—'} · {item.path ?? '—'} · {item.status ?? '—'}
                   </li>
                 ))}
               </ul>

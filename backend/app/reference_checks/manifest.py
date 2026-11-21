@@ -73,6 +73,9 @@ class ReferenceSuite:
     snapshot_manifest_hash: str | None
     artifact_hash: str | None
     bundle_sha256: str | None
+    bundle_content_sha256: str | None
+    reference_run_id: str | None
+    reference_snapshot_id: str | None
     runner_version: str
     signature: Mapping[str, str | None]
     bundle_schema_version: str
@@ -262,6 +265,15 @@ def parse_manifest(raw: Any) -> ReferenceSuite:
             "UNSUPPORTED_MANIFEST",
             "only AnalysisBundle 0.1 is supported",
         )
+    reference_run_id = _optional_text(reference.get("runId"), "reference.runId")
+    reference_snapshot_id = _optional_text(
+        reference.get("snapshotId"), "reference.snapshotId"
+    )
+    if (reference_run_id is None) != (reference_snapshot_id is None):
+        raise ReferenceCheckError(
+            "INVALID_PROVENANCE",
+            "reference.runId and reference.snapshotId must be pinned together",
+        )
     return ReferenceSuite(
         suite_id=_text(manifest.get("suiteId"), "suiteId"),
         suite_version=_text(manifest.get("suiteVersion"), "suiteVersion"),
@@ -276,6 +288,11 @@ def parse_manifest(raw: Any) -> ReferenceSuite:
             reference.get("artifactHash"), "reference.artifactHash"
         ),
         bundle_sha256=_optional_sha(reference.get("bundleSha256"), "reference.bundleSha256"),
+        bundle_content_sha256=_optional_sha(
+            reference.get("bundleContentSha256"), "reference.bundleContentSha256"
+        ),
+        reference_run_id=reference_run_id,
+        reference_snapshot_id=reference_snapshot_id,
         runner_version=_text(reference.get("runnerVersion"), "reference.runnerVersion"),
         signature=_signature(reference.get("signature")),
         bundle_schema_version=bundle_schema,
