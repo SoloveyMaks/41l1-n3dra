@@ -141,9 +141,13 @@ empty/retry. Пока root не смонтировал router, панель по
 
 ## Живая проверка
 
-Merged backend, test PostgreSQL, account A/B, router mounted только в тестовой
-обёртке (root mount остаётся за интегратором).
+Merged backend, test PostgreSQL, account A/B. Router смонтирован в текущем dev;
+отдельная тестовая обёртка использовалась только для раннего прогона.
 
+- Root-mounted endpoint on current dev: training repo artifact
+  `art_4471bc181f46`, run `9c4979cd…` → 200; commit author/committer
+  `Bagirov Teimur / @TBagirov` раздельно, `pullRequestsStatus=none`; account B
+  on same run/finding → `404`.
 - Public training repo `https://github.com/TBagirov/training`, artifact
   `art_d3b87fdfe8ef`, commit `fe1fcbe212669783480666b9b60147c8a8c6eef4`:
   finding `SECRET-API-KEY` → history `available`, author `Bagirov Teimur`,
