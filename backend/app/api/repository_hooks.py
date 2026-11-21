@@ -1,0 +1,286 @@
+"""Приём push-событий GitHub/GitLab.
+
+Единственный публичный API без cookie/Origin: POST /api/repository-hooks/{id}.
+Маршрут всё равно проверяет credential провайдера по сырым байтам тела до
+разбора JSON. Валидное событие сначала durable-записывается в inbox, ответ
+202 не ждёт скачивания репозитория. Секрет и тело наружу/в логи не попадают.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import logging
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+
+logger = logging.getLogger("RepositoryHooks")
+
+MAX_BODY_BYTES = 1024 * 1024
+MAX_CONCURRENCY = 4
+_WATCH_ID_RE = re.compile(r"^rw_[A-Za-z0-9]{1,40}$")
+_DELIVERY_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_ZERO_SHA_RE = re.compile(r"^0+$")
+_HOOK_SEM = asyncio.Semaphore(MAX_CONCURRENCY)
+
+
+class WebhookKeyUnavailable(RuntimeError):
+    """Нет стабильного серверного ключа: секрет нельзя выпустить."""
+
+
+def webhook_key() -> Optional[bytes]:
+    for name in ("CG_REPOSITORY_WEBHOOK_KEY", "CG_SESSION_SECRET"):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value.encode("utf-8")
+    return None
+
+
+def webhook_key_available() -> bool:
+    return webhook_key() is not None
+
+
+def derive_webhook_secret(workspace: str, watch_id: str, nonce: str) -> str:
+    """Purpose-separated HMAC; plaintext секрет в БД не пишется."""
+    key = webhook_key()
+    if key is None:
+        raise WebhookKeyUnavailable(
+            "Серверный ключ вебхуков не задан (CG_REPOSITORY_WEBHOOK_KEY или CG_SESSION_SECRET)"
+        )
+    message = f"repository-webhook:v1:{workspace}:{watch_id}:{nonce}".encode("utf-8")
+    return "whsec_" + hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def _canonical_repo_url(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip() or len(value) > 2048:
+        return None
+    try:
+        parts = urlsplit(value.strip())
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return None
+    if parts.scheme != "https" or host not in ("github.com", "gitlab.com"):
+        return None
+    path = parts.path.rstrip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    if not path:
+        return None
+    return f"https://{host}{path.lower()}"
+
+
+def _delivery_id(provider: str, request: Request, body: bytes) -> Optional[str]:
+    if provider == "github":
+        value = request.headers.get("x-github-delivery", "").strip()
+        return value if _DELIVERY_RE.fullmatch(value) else None
+    # GitLab присылает один и тот же Webhook-UUID на все доставки hook-а,
+    # поэтому он не годится. UUID события уникален, digest тела — детерминирован.
+    event_uuid = request.headers.get("x-gitlab-event-uuid", "").strip()
+    if _UUID_RE.fullmatch(event_uuid):
+        return event_uuid.lower()
+    return hashlib.sha256(body).hexdigest()[:40]
+
+
+def _authenticate(provider: str, secret: str, request: Request,
+                  body: bytes) -> bool:
+    if provider == "github":
+        received = request.headers.get("x-hub-signature-256", "").strip()
+        expected = "sha256=" + hmac.new(
+            secret.encode("utf-8"), body, hashlib.sha256
+        ).hexdigest()
+        return bool(received) and hmac.compare_digest(received, expected)
+    received = request.headers.get("x-gitlab-token", "").strip()
+    return bool(received) and hmac.compare_digest(received, secret)
+
+
+async def _read_body(request: Request) -> bytes:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Тело вебхука слишком большое")
+    total = 0
+    chunks = []
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Тело вебхука слишком большое")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _ignored(detail: str, provider: str, delivery_id: Optional[str] = None) -> JSONResponse:
+    body: Dict[str, Any] = {"status": "ignored", "detail": detail, "provider": provider}
+    if delivery_id:
+        body["deliveryId"] = delivery_id
+    return JSONResponse(body, status_code=202, headers={"Cache-Control": "no-store"})
+
+
+def _bad_payload(detail: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=detail)
+
+
+class _HookIgnored(Exception):
+    def __init__(self, detail: str, provider: str):
+        super().__init__(detail)
+        self.detail = detail
+        self.provider = provider
+
+
+def _parse_push(provider: str, payload: Any, watch: Dict[str, Any]
+                ) -> Tuple[str, str, str]:
+    """Return (commit_sha, ref, canonical_repo) or raise HookIgnored."""
+    if not isinstance(payload, dict):
+        raise _bad_payload("Тело вебхука должно быть JSON-объектом")
+    if provider == "github":
+        repository = payload.get("repository")
+        repo_url = repository.get("html_url") if isinstance(repository, dict) else None
+        ref = payload.get("ref")
+        after = payload.get("after")
+        deleted = payload.get("deleted") is True
+    else:
+        project = payload.get("project")
+        repo_url = project.get("web_url") if isinstance(project, dict) else None
+        ref = payload.get("ref")
+        after = payload.get("after")
+        deleted = False
+    canonical = _canonical_repo_url(repo_url)
+    if canonical is None:
+        raise _bad_payload("В событии нет корректного адреса репозитория")
+    watch_repo = _canonical_repo_url(watch.get("url"))
+    if canonical != watch_repo:
+        raise _HookIgnored("Другой репозиторий", provider)
+    if not isinstance(ref, str):
+        raise _bad_payload("В событии нет ref")
+    if ref != f"refs/heads/{watch['branch']}":
+        raise _HookIgnored("Другая ветка или тег", provider)
+    if deleted or (isinstance(after, str) and _ZERO_SHA_RE.fullmatch(after)):
+        raise _HookIgnored("Ветка удалена", provider)
+    if not isinstance(after, str) or not _SHA_RE.fullmatch(after):
+        raise _bad_payload("Некорректный SHA после push")
+    return after, ref, canonical
+
+
+def create_repository_hook_router(db: Any) -> APIRouter:
+    router = APIRouter()
+    workspace = str(getattr(db, "workspace_id", ""))
+
+    @router.post("/repository-hooks/{watch_id}")
+    async def receive_repository_hook(watch_id: str, request: Request) -> JSONResponse:
+        if not _WATCH_ID_RE.fullmatch(watch_id):
+            raise HTTPException(status_code=404, detail="Вебхук не найден")
+        body = await _read_body(request)
+        try:
+            watch = await asyncio.to_thread(db.get_repository_watch, watch_id)
+        except Exception as exc:  # noqa: BLE001 - DSN/текст драйвера не наружу
+            logger.warning("Repository hook lookup failed: %s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Хранилище недоступно") from None
+        if not watch:
+            raise HTTPException(status_code=404, detail="Вебхук не найден")
+        if watch.get("trigger_mode") != "webhook" or not watch.get("webhook_nonce"):
+            raise HTTPException(status_code=409, detail="Вебхук для расписания не настроен")
+        if not webhook_key_available():
+            raise HTTPException(
+                status_code=503, detail="Серверный ключ вебхуков не задан"
+            )
+        provider = watch.get("provider")
+        if provider not in ("github", "gitlab"):
+            raise HTTPException(status_code=409, detail="Провайдер расписания не поддержан")
+        secret = derive_webhook_secret(workspace, watch_id, watch["webhook_nonce"])
+
+        async with _HOOK_SEM:
+            if not _authenticate(provider, secret, request, body):
+                raise HTTPException(status_code=401, detail="Неверный credential вебхука")
+
+            event = request.headers.get(
+                "x-github-event" if provider == "github" else "x-gitlab-event", ""
+            ).strip().lower()
+            if provider == "github":
+                if event == "ping":
+                    return _ignored("Проверка подключения (ping)", provider)
+                if event != "push":
+                    return _ignored("Событие не является push", provider)
+            elif event and event != "push hook":
+                return _ignored("Событие не является push", provider)
+
+            try:
+                payload = json.loads(body)
+            except (TypeError, ValueError):
+                raise _bad_payload("Тело вебхука не является JSON") from None
+            if provider == "gitlab" and isinstance(payload, dict):
+                if payload.get("object_kind") != "push":
+                    return _ignored("Событие не является push", provider)
+
+            if not watch.get("enabled"):
+                return _ignored("Отслеживание приостановлено", provider)
+
+            delivery_id = _delivery_id(provider, request, body)
+            if delivery_id is None:
+                raise _bad_payload("Некорректный идентификатор доставки")
+            try:
+                commit_sha, ref, _ = _parse_push(provider, payload, watch)
+            except _HookIgnored as exc:
+                return _ignored(exc.detail, provider, delivery_id)
+            except HTTPException:
+                raise
+
+            workflow = await asyncio.to_thread(db.get_workflow, watch["workflow_id"])
+            revision_id = (workflow or {}).get("latest_revision_id")
+            if not workflow or not revision_id or not workflow.get("draft"):
+                raise HTTPException(
+                    status_code=409, detail="У сценария нет сохранённой ревизии"
+                )
+
+            now = datetime.now(timezone.utc).isoformat()
+            row_id = f"whd_{uuid.uuid4().hex[:16]}"
+            try:
+                inserted = await asyncio.to_thread(
+                    db.enqueue_repository_hook_delivery,
+                    row_id, watch_id, provider, delivery_id, commit_sha, ref,
+                    revision_id, now,
+                )
+                if not inserted:
+                    ledger = await asyncio.to_thread(
+                        db.get_repository_watch_commit, watch_id, commit_sha
+                    )
+                    await asyncio.to_thread(
+                        db.mark_repository_watch_delivery, watch_id, "duplicate"
+                    )
+                    response: Dict[str, Any] = {
+                        "status": "duplicate", "provider": provider,
+                        "deliveryId": delivery_id,
+                    }
+                    if ledger and ledger.get("run_id"):
+                        response["runId"] = ledger["run_id"]
+                    return JSONResponse(
+                        response, status_code=202,
+                        headers={"Cache-Control": "no-store"},
+                    )
+                await asyncio.to_thread(
+                    db.mark_repository_watch_delivery, watch_id, "accepted"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Repository hook enqueue failed: %s", type(exc).__name__)
+                raise HTTPException(
+                    status_code=503, detail="Не удалось сохранить событие"
+                ) from None
+            return JSONResponse(
+                {"status": "accepted", "provider": provider, "deliveryId": delivery_id},
+                status_code=202,
+                headers={"Cache-Control": "no-store"},
+            )
+
+    return router

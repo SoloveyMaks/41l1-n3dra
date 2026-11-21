@@ -35,7 +35,8 @@ logger = logging.getLogger("RuntimeSchema")
 RUNTIME_SCHEMA_PATH = Path(__file__).with_name("runtime_schema.sql")
 RUNTIME_GUARDS_PATH = Path(__file__).with_name("runtime_guards.sql")
 RUNTIME_WATCH_SCHEMA_PATH = Path(__file__).with_name("runtime_repository_watches.sql")
-RUNTIME_SCHEMA_VERSION = 4
+RUNTIME_HOOK_SCHEMA_PATH = Path(__file__).with_name("runtime_repository_hooks.sql")
+RUNTIME_SCHEMA_VERSION = 5
 LEGACY_RUNTIME_SCHEMA = "runtime_legacy_v1"
 RUNTIME_DDL_LOCK_KEY = int.from_bytes(
     hashlib.sha256(b"41l1-n3dra/runtime-ddl").digest()[:8], "big", signed=True
@@ -201,6 +202,7 @@ def _install_fresh_runtime(conn) -> None:
     _exec_script(conn, RUNTIME_SCHEMA_PATH)
     _exec_script(conn, RUNTIME_GUARDS_PATH)
     _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
+    _exec_script(conn, RUNTIME_HOOK_SCHEMA_PATH)
     conn.execute(
         "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
         (RUNTIME_SCHEMA_VERSION,),
@@ -239,6 +241,7 @@ def _upgrade_legacy_runtime(conn, workspace_id: uuid.UUID) -> None:
     )
     _exec_script(conn, RUNTIME_GUARDS_PATH)
     _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
+    _exec_script(conn, RUNTIME_HOOK_SCHEMA_PATH)
     conn.execute(
         "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
         (RUNTIME_SCHEMA_VERSION,),
@@ -279,15 +282,23 @@ def init_db(workspace_id: uuid.UUID) -> None:
                 _install_fresh_runtime(conn)
         elif version == 2:
             # v2 = workspace isolation; v3 добавляет immutability-триггеры,
-            # v4 — durable repository watches.
+            # v4 — durable repository watches, v5 — push-доставки.
             _exec_script(conn, RUNTIME_GUARDS_PATH)
             _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
+            _exec_script(conn, RUNTIME_HOOK_SCHEMA_PATH)
             conn.execute(
                 "UPDATE runtime.schema_meta SET version = %s",
                 (RUNTIME_SCHEMA_VERSION,),
             )
         elif version == 3:
             _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
+            _exec_script(conn, RUNTIME_HOOK_SCHEMA_PATH)
+            conn.execute(
+                "UPDATE runtime.schema_meta SET version = %s",
+                (RUNTIME_SCHEMA_VERSION,),
+            )
+        elif version == 4:
+            _exec_script(conn, RUNTIME_HOOK_SCHEMA_PATH)
             conn.execute(
                 "UPDATE runtime.schema_meta SET version = %s",
                 (RUNTIME_SCHEMA_VERSION,),
@@ -801,23 +812,24 @@ class DatabaseRepository:
             ).fetchone()
             return _row(row)
 
-    # Repository watches (runtime v4)
+    # Repository watches
     def create_repository_watch(self, watch_id: str, workflow_id: str, url: str,
                                 provider: str, branch: str, cron_or_interval: str,
-                                next_check_at: str, baseline_commit: str,
-                                checked_at: str) -> None:
+                                next_check_at: Optional[str], baseline_commit: str,
+                                checked_at: str, trigger_mode: str = "poll") -> None:
         now = _now()
         with get_pool().connection() as conn:
             conn.execute(
                 """
                 INSERT INTO runtime.repository_watches (
                     workspace_id, id, workflow_id, url, provider, branch,
-                    cron_or_interval, enabled, next_check_at, last_checked_at,
-                    last_seen_commit, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, true, %s, %s, %s, %s, %s)
+                    cron_or_interval, trigger_mode, enabled, next_check_at,
+                    last_checked_at, last_seen_commit, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, %s, %s, %s)
                 """,
                 (self.workspace_id, watch_id, workflow_id, url, provider, branch,
-                 cron_or_interval, next_check_at, checked_at, baseline_commit, now, now),
+                 cron_or_interval, trigger_mode, next_check_at, checked_at,
+                 baseline_commit, now, now),
             )
 
     def get_repository_watch(self, watch_id: str) -> Optional[Dict[str, Any]]:
@@ -882,6 +894,7 @@ class DatabaseRepository:
                       FROM runtime.repository_watches
                      WHERE workspace_id = %s
                        AND enabled
+                       AND trigger_mode = 'poll'
                        AND (next_check_at IS NULL OR next_check_at <= now())
                        AND (claimed_until IS NULL OR claimed_until < now())
                      ORDER BY COALESCE(next_check_at, created_at)
@@ -1203,6 +1216,155 @@ class DatabaseRepository:
                 (self.workspace_id,),
             )
             return [_row(r) for r in stale]
+
+    # Push deliveries (runtime v5)
+    def set_repository_watch_webhook_nonce(self, watch_id: str,
+                                           nonce: str) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET webhook_nonce = %s, updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                 RETURNING *
+                """,
+                (nonce, self.workspace_id, watch_id),
+            ).fetchone()
+            return _row(row)
+
+    def mark_repository_watch_delivery(self, watch_id: str, status: str,
+                                       error: Optional[str] = None,
+                                       at: Optional[str] = None) -> None:
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET last_delivery_at = COALESCE(%s::timestamptz, now()),
+                       last_delivery_status = %s,
+                       last_delivery_error = %s,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                """,
+                (at, status[:32], error[:500] if error else None,
+                 self.workspace_id, watch_id),
+            )
+
+    def enqueue_repository_hook_delivery(
+        self, delivery_id: str, watch_id: str, provider: str, external_id: str,
+        commit_sha: str, ref: str, workflow_revision_id: str,
+        received_at: str,
+    ) -> bool:
+        """Persist the event before 202. False means the delivery is a replay."""
+        now = _now()
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO runtime.repository_hook_deliveries (
+                    workspace_id, id, watch_id, provider, delivery_id,
+                    commit_sha, ref, workflow_revision_id, state,
+                    attempt, next_attempt_at, received_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', 0, %s, %s, %s)
+                ON CONFLICT (workspace_id, watch_id, delivery_id) DO NOTHING
+                RETURNING id
+                """,
+                (self.workspace_id, delivery_id, watch_id, provider, external_id,
+                 commit_sha, ref, workflow_revision_id, received_at,
+                 received_at, now),
+            ).fetchone()
+            return row is not None
+
+    def claim_repository_hook_deliveries(self, limit: int, token: str,
+                                         lease_seconds: int) -> List[Dict[str, Any]]:
+        """Lease due deliveries; expired leases are retaken, never duplicated."""
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                WITH due AS (
+                    SELECT workspace_id, id
+                      FROM runtime.repository_hook_deliveries
+                     WHERE workspace_id = %s
+                       AND (
+                           (state = 'pending'
+                            AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
+                           OR (state = 'processing'
+                               AND (claimed_until IS NULL OR claimed_until < now()))
+                       )
+                     ORDER BY received_at
+                     LIMIT %s
+                     FOR UPDATE SKIP LOCKED
+                )
+                UPDATE runtime.repository_hook_deliveries d
+                   SET state = 'processing',
+                       claim_token = %s,
+                       claimed_until = now() + make_interval(secs => %s),
+                       attempt = attempt + 1,
+                       updated_at = now()
+                  FROM due
+                 WHERE d.workspace_id = due.workspace_id AND d.id = due.id
+                 RETURNING d.*
+                """,
+                (self.workspace_id, limit, token, lease_seconds),
+            ).fetchall()
+            return [_row(r) for r in rows]
+
+    def finish_repository_hook_delivery(self, delivery_id: str, token: str,
+                                        state: str, run_id: Optional[str],
+                                        detail: Optional[str],
+                                        error: Optional[str] = None) -> None:
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_hook_deliveries
+                   SET state = %s,
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       next_attempt_at = NULL,
+                       run_id = COALESCE(%s, run_id),
+                       detail = %s,
+                       error = %s,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                   AND state = 'processing' AND claim_token = %s
+                """,
+                (state, run_id, detail[:500] if detail else None,
+                 error[:500] if error else None,
+                 self.workspace_id, delivery_id, token),
+            )
+
+    def retry_repository_hook_delivery(self, delivery_id: str, token: str,
+                                       error: str, next_attempt_at: str) -> None:
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_hook_deliveries
+                   SET state = 'pending',
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       next_attempt_at = %s,
+                       error = %s,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                   AND state = 'processing' AND claim_token = %s
+                """,
+                (next_attempt_at, error[:500], self.workspace_id,
+                 delivery_id, token),
+            )
+
+    def list_repository_hook_deliveries(self, watch_id: str,
+                                        limit: int = 20) -> List[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, watch_id, provider, delivery_id, commit_sha, ref,
+                       state, attempt, run_id, detail, error, received_at
+                  FROM runtime.repository_hook_deliveries
+                 WHERE workspace_id = %s AND watch_id = %s
+                 ORDER BY received_at DESC
+                 LIMIT %s
+                """,
+                (self.workspace_id, watch_id, limit),
+            ).fetchall()
+            return [_row(r) for r in rows]
 
     # Deliveries (Webhook notifications)
     def save_delivery(self, delivery_id: str, run_id: str, channel: str, status: str,
