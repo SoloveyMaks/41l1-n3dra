@@ -42,25 +42,81 @@ export type MapViewProps = {
 };
 
 const resolutionText = {
-  resolved: "разрешена",
-  partial: "частично",
-  unknown: "неизвестно",
+  resolved: "подтверждена",
+  partial: "частично подтверждена",
+  unknown: "связь не установлена",
 } as const;
 
+const severityText: Record<string, string> = {
+  critical: "критично",
+  high: "высокий риск",
+  medium: "средний риск",
+  low: "низкий риск",
+  info: "информация",
+};
+
+const statusText: Record<string, string> = {
+  confirmed: "подтверждено",
+  inconclusive: "не подтверждено",
+  open: "открыто",
+  dismissed: "отклонено",
+};
+
+const confidenceText: Record<string, string> = {
+  high: "высокая уверенность",
+  medium: "средняя уверенность",
+  low: "низкая уверенность",
+};
+
+const coverageText: Record<string, string> = {
+  complete: "Проверенный объём завершён",
+  partial: "Проверено неполностью",
+  unknown: "Покрытие неизвестно",
+};
+
+const basisText: Record<string, string> = {
+  source: "по исходнику",
+  policy_assumption: "Предположение, нужно подтверждение",
+};
+
+const sourceStatusText: Record<string, string> = {
+  idle: "ожидает",
+  loading: "загружаем",
+  ready: "загружен",
+  error: "недоступен",
+  unavailable: "недоступен",
+};
+
 const edgeKindText: Record<string, string> = {
-  routes_to: "маршрут",
-  matches: "совпадает",
-  permits: "разрешает",
-  requires: "требует",
-  calls: "вызывает",
-  flows_to: "передаёт",
-  guards: "защищает",
-  reads: "читает",
-  writes: "пишет",
+  routes_to: "Обращается",
+  matches: "Подходит под правило",
+  permits: "Разрешает",
+  requires: "Требует",
+  calls: "Вызывает",
+  flows_to: "Передаёт данные",
+  guards: "Проверяет",
+  reads: "Читает",
+  writes: "Изменяет",
+};
+
+const humanCoverageWarning = (warning: string): string => {
+  if (warning === "runtime-configuration")
+    return "Не проверена конфигурация при запуске: переменные окружения и внешние фильтры.";
+  if (warning === "runtime-guards")
+    return "Не проверены проверки доступа, которые включаются во время работы.";
+  if (warning === "binaries-and-archives")
+    return "Не проверялись бинарные файлы и архивы.";
+  return warning;
+};
+
+const diagnosticText = (code: string, message: string): string => {
+  if (code === "CF-STATIC-ONLY")
+    return "Проверялся только исходный код: программа не запускалась, настройки среды и внешние фильтры не проверялись.";
+  return message;
 };
 
 const edgeText = (edge: MapViewModel["edges"][number]) =>
-  `${edgeKindText[edge.kind] ?? edge.kind}${
+  `${edgeKindText[edge.kind] ?? "Связь"}${
     edge.resolution === "resolved" ? "" : ` · ${resolutionText[edge.resolution]}`
   }`;
 
@@ -169,10 +225,10 @@ export function MapView(props: MapViewProps) {
     () => initialFocusNodeIds(model.nodes, model.edges, model.findings),
     [model.nodes, model.edges, model.findings],
   );
-  const compactFocusIds = useMemo(() => {
+  const readableFocusIds = useMemo(() => {
     const byId = new Map(model.nodes.map((node) => [node.id, node]));
     const routePath = focusIds.filter((id) =>
-      ["route", "function", "sink"].includes(byId.get(id)?.kind ?? ""),
+      ["route", "guard", "function", "sink"].includes(byId.get(id)?.kind ?? ""),
     );
     if (routePath.length >= 2) return routePath;
     const dataPath = focusIds.filter((id) =>
@@ -180,6 +236,11 @@ export function MapView(props: MapViewProps) {
     );
     return dataPath.length >= 2 ? dataPath : focusIds.filter((id) => byId.get(id)?.kind !== "actor");
   }, [focusIds, model.nodes]);
+  const narrowFocusIds = useMemo(() => {
+    const byId = new Map(model.nodes.map((node) => [node.id, node]));
+    const route = focusIds.find((id) => byId.get(id)?.kind === "route");
+    return route ? [route] : readableFocusIds.slice(0, 1);
+  }, [focusIds, readableFocusIds, model.nodes]);
   const nodesMeasured =
     mapNodes.length > 0 &&
     mapNodes.every((node) => Boolean(node.measured?.width && node.measured?.height));
@@ -297,14 +358,11 @@ export function MapView(props: MapViewProps) {
             key={id}
             onClick={() => open(id)}
             aria-pressed={openRequest?.evidenceId === id}
-            title={item.id}
           >
             <span className="sm-evidence-path">
               {item.location.path}:{item.location.line}–{item.location.endLine}
             </span>
-            <small>
-              evidence {item.id.slice(0, 8)}
-            </small>
+            <small>Фрагмент кода</small>
           </button>
         ) : null;
       })}
@@ -444,7 +502,13 @@ export function MapView(props: MapViewProps) {
     maxZoom = 0.9,
   ) => {
     if (!flow || !ids.length) return;
-    const selected = mapNodes.filter((node) => ids.includes(node.id));
+    const positions = layout?.nodePositions ?? computeMapLayout(model.nodes, model.edges);
+    const selected = ids.flatMap((id) => {
+      const position = positions[id];
+      if (!position) return [];
+      const stored = mapNodes.find((node) => node.id === id);
+      return [{ position, measured: stored?.measured }];
+    });
     if (!selected.length) return;
     const pad = 24;
     const minX = Math.min(...selected.map((node) => node.position.x));
@@ -488,17 +552,22 @@ export function MapView(props: MapViewProps) {
     if (ids.size) {
       focusViewport([...ids], 0.55, 1.15);
     } else {
-      focusViewport(focusIds);
+      const narrow = canvasSize.width > 0 && canvasSize.width < 600;
+      focusViewport(narrow && narrowFocusIds.length ? narrowFocusIds : readableFocusIds.length ? readableFocusIds : focusIds);
     }
   };
 
   useEffect(() => {
     if (!flow || !nodesMeasured || !focusIds.length) return;
-    const compact = canvasSize.width > 0 && canvasSize.width < 700;
-    const ids = compact && compactFocusIds.length ? compactFocusIds : focusIds;
+    const narrow = canvasSize.width > 0 && canvasSize.width < 600;
+    const ids = narrow && narrowFocusIds.length
+      ? narrowFocusIds
+      : readableFocusIds.length
+        ? readableFocusIds
+        : focusIds;
     const timer = window.setTimeout(() => focusViewport(ids), 60);
     return () => window.clearTimeout(timer);
-  }, [flow, nodesMeasured, model.revision, focusIds.join("|"), compactFocusIds.join("|"), canvasKey, canvasSize.width, canvasSize.height]);
+  }, [flow, nodesMeasured, model.revision, focusIds.join("|"), readableFocusIds.join("|"), narrowFocusIds.join("|"), canvasKey, canvasSize.width, canvasSize.height]);
 
   const reset = () => {
     const nextPositions = computeMapLayout(model.nodes, model.edges);
@@ -512,8 +581,8 @@ export function MapView(props: MapViewProps) {
       nodePositions: nextPositions,
     });
     requestAnimationFrame(() => {
-      const compact = canvasSize.width > 0 && canvasSize.width < 700;
-      focusViewport(compact && compactFocusIds.length ? compactFocusIds : focusIds);
+      const narrow = canvasSize.width > 0 && canvasSize.width < 600;
+      focusViewport(narrow && narrowFocusIds.length ? narrowFocusIds : readableFocusIds.length ? readableFocusIds : focusIds);
     });
   };
 
@@ -535,23 +604,27 @@ export function MapView(props: MapViewProps) {
         <div className="sm-counts" aria-label="Счётчики карты">
           <span><b>{model.nodes.length}</b> узлов</span>
           <span><b>{model.edges.length}</b> связей</span>
-          <span><b>{model.findings.length}</b> находок</span>
-          <span><b>{model.evidence.length}</b> evidence</span>
+          <span>
+            <b>{model.findings.length}</b>{" "}
+            {plural(model.findings.length, "проблема", "проблемы", "проблем")}
+          </span>
+          <span>
+            <b>{model.evidence.length}</b>{" "}
+            {plural(model.evidence.length, "доказательство", "доказательства", "доказательств")}
+          </span>
         </div>
         <div className="sm-actions">
           <span
             className={`sm-health ${unknownEdges.length ? "is-warn" : model.coverage.status === "complete" ? "is-ok" : "is-partial"}`}
           >
             {unknownEdges.length
-              ? `${unknownEdges.length} ${plural(unknownEdges.length, "неизвестная связь", "неизвестные связи", "неизвестных связей")}`
-              : model.coverage.status === "complete"
-                ? "полная картина"
-                : "частичная картина"}
+              ? `${unknownEdges.length} ${plural(unknownEdges.length, "связь не установлена", "связи не установлены", "связей не установлено")}`
+              : coverageText[model.coverage.status] ?? "Проверено неполностью"}
           </span>
           <button
             className={`sm-tool ${railOpen ? "is-active" : ""}`}
             onClick={() => setRailOpen((value) => !value)}
-            title="Путь и находки"
+            title="Путь и проблемы"
           >
             ◫ <span>Путь</span>
           </button>
@@ -577,12 +650,20 @@ export function MapView(props: MapViewProps) {
         </div>
       </header>
 
+      <div className="sm-intro">
+        <span>Откуда приходит запрос, как проверяется доступ и какие данные затрагиваются.</span>
+        <span>Нажмите на стрелку, чтобы увидеть основание.</span>
+      </div>
+
       {unknownEdges.length > 0 && (
         <button
           className="sm-unknown-banner"
           onClick={() => choose({ kind: "edge", id: unknownEdges[0].id })}
         >
-          <span>Неизвестные или частичные связи: {unknownEdges.length}</span>
+          <span>
+            {unknownEdges.length}{" "}
+            {plural(unknownEdges.length, "связь не установлена", "связи не установлены", "связей не установлено")}
+          </span>
           <small>Жёлтый пунктир — это пробел анализа, а не безопасное состояние. Открыть первую связь →</small>
         </button>
       )}
@@ -594,9 +675,9 @@ export function MapView(props: MapViewProps) {
       )}
 
       <div className={`sm-workspace ${railOpen ? "has-rail" : ""}`}>
-        <aside className={`sm-rail ${railOpen ? "is-open" : ""}`} aria-label="Путь и находки">
+        <aside className={`sm-rail ${railOpen ? "is-open" : ""}`} aria-label="Путь и проблемы">
           <div className="sm-rail-head">
-            <span>Путь и факты</span>
+            <span>Путь и проблемы</span>
             <button onClick={() => setRailOpen(false)} aria-label="Закрыть список">×</button>
           </div>
           <section className="sm-rail-section">
@@ -622,7 +703,7 @@ export function MapView(props: MapViewProps) {
             ))}
           </section>
           <section className="sm-rail-section">
-            <h2>Находки <span>{model.findings.length}</span></h2>
+            <h2>Проблемы <span>{model.findings.length}</span></h2>
             {model.findings.map((item) => (
               <button
                 key={item.id}
@@ -633,20 +714,22 @@ export function MapView(props: MapViewProps) {
                 <span>
                   <strong>{item.label}</strong>
                   <small>
-                    {item.status} · {item.severity} · {item.confidence}
+                    {statusText[item.status] ?? item.status} ·{" "}
+                    {severityText[item.severity] ?? item.severity} ·{" "}
+                    {confidenceText[item.confidence] ?? item.confidence}
                   </small>
                 </span>
               </button>
             ))}
             {!model.findings.length && (
-              <p className="sm-rail-empty">Связанных находок нет; это не оценка безопасности проекта.</p>
+              <p className="sm-rail-empty">Проблем не найдено; это не оценка безопасности проекта.</p>
             )}
           </section>
           <section className="sm-rail-section">
             <h2>Пробелы <span>{model.diagnostics.length}</span></h2>
             <p className="sm-rail-empty">{model.coverage.summary}</p>
             {model.coverage.warnings.slice(0, 5).map((warning, index) => (
-              <p className="sm-rail-warning" key={index}>{warning}</p>
+              <p className="sm-rail-warning" key={index}>{humanCoverageWarning(warning)}</p>
             ))}
           </section>
         </aside>
@@ -722,7 +805,10 @@ export function MapView(props: MapViewProps) {
           <div className="sm-details-head">
             <span className="sm-eyebrow">ДЕТАЛИ / ДОКАЗАТЕЛЬСТВА</span>
             <span className="sm-details-count">
-              {model.evidence.length} evidence · {model.findings.length} findings
+              {model.evidence.length}{" "}
+              {plural(model.evidence.length, "доказательство", "доказательства", "доказательств")} ·{" "}
+              {model.findings.length}{" "}
+              {plural(model.findings.length, "проблема", "проблемы", "проблем")}
             </span>
           </div>
           <h2>
@@ -732,20 +818,20 @@ export function MapView(props: MapViewProps) {
                   ? `${nodeMeta(node.kind).label}: ${node.label}`
                   : (finding
                       ? finding.label
-                      : "Выберите узел, стрелку или находку"))}
+                      : "Выберите узел, стрелку или проблему"))}
           </h2>
           {!selection && (
             <p className="sm-muted">
               Слева — фактический маршрут. Нажмите узел или стрелку: здесь появятся
-              основание, источник анализа и evidence. Расположение блоков можно менять.
+              основание и фрагменты кода. Расположение блоков можно менять.
             </p>
           )}
           {edge && (
             <>
               <div className="sm-detail-pills">
                 <span className={`sm-status sm-status--${edge.resolution}`}>{resolutionText[edge.resolution]}</span>
-                <span className="sm-pill">{edge.kind}</span>
-                <span className="sm-pill">{edge.basis === "source" ? "source" : "policy assumption"}</span>
+                <span className="sm-pill">{edgeKindText[edge.kind] ?? "Связь"}</span>
+                <span className="sm-pill">{basisText[edge.basis] ?? edge.basis}</span>
               </div>
               <p className={edge.resolution === "resolved" ? "" : "sm-amber-text"}>{edge.resolutionReason}</p>
               <h3>Доказательства связи</h3>
@@ -765,11 +851,17 @@ export function MapView(props: MapViewProps) {
             <>
               <div className="sm-detail-pills">
                 <span className={`sm-status sm-status--${nodeMeta(node.kind).tone}`}>{nodeMeta(node.kind).label}</span>
-                <span className="sm-pill">{node.evidenceRefs.length} evidence</span>
-                <span className="sm-pill">{findingCountByNode(node.id)} findings</span>
+                <span className="sm-pill">
+                  {node.evidenceRefs.length}{" "}
+                  {plural(node.evidenceRefs.length, "доказательство", "доказательства", "доказательств")}
+                </span>
+                <span className="sm-pill">
+                  {findingCountByNode(node.id)}{" "}
+                  {plural(findingCountByNode(node.id), "проблема", "проблемы", "проблем")}
+                </span>
               </div>
-              <p className="sm-node-symbol-detail">{node.symbolKey}</p>
-              <h3>Связанные находки</h3>
+              <p className="sm-node-hint">{nodeMeta(node.kind).hint}</p>
+              <h3>Связанные проблемы</h3>
               {model.findings.filter((item) => item.nodeIds.includes(node.id)).map((item) => (
                 <button className="sm-link-button" key={item.id} onClick={() => choose({ kind: "finding", id: item.id })}>
                   {item.label}
@@ -780,9 +872,10 @@ export function MapView(props: MapViewProps) {
               <details className="sm-tech">
                 <summary>Технические данные</summary>
                 <dl>
-                  <dt>Kind</dt><dd>{node.kind}</dd>
+                  <dt>Тип</dt><dd>{node.kind}</dd>
+                  <dt>Символ</dt><dd className="sm-mono">{node.symbolKey}</dd>
                   <dt>Источник анализа</dt><dd>{node.producerVersion}</dd>
-                  <dt>Node ID</dt><dd className="sm-mono">{node.id}</dd>
+                  <dt>ID элемента</dt><dd className="sm-mono">{node.id}</dd>
                 </dl>
               </details>
             </>
@@ -790,31 +883,32 @@ export function MapView(props: MapViewProps) {
           {finding && (
             <>
               <div className="sm-detail-pills">
-                <span className={`sm-status sm-status--${finding.status}`}>{finding.status}</span>
-                <span className={`sm-status sm-status--${finding.severity}`}>{finding.severity}</span>
-                <span className="sm-pill">confidence {finding.confidence}</span>
+                <span className={`sm-status sm-status--${finding.status}`}>{statusText[finding.status] ?? finding.status}</span>
+                <span className={`sm-status sm-status--${finding.severity}`}>{severityText[finding.severity] ?? finding.severity}</span>
+                <span className="sm-pill">{confidenceText[finding.confidence] ?? finding.confidence}</span>
               </div>
+              <h3>Почему так</h3>
               {finding.reasons.map((reason, index) => <p key={index}>{reason}</p>)}
               <h3>Связанные узлы</h3>
               <div className="sm-chips">
                 {finding.nodeIds.map((id) => (
                   <button key={id} onClick={() => choose({ kind: "node", id })}>
-                    {model.nodes.find((item) => item.id === id)?.label ?? id.slice(0, 8)}
+                    {model.nodes.find((item) => item.id === id)?.label ?? "Элемент карты"}
                   </button>
                 ))}
               </div>
-              <h3>Доказательства находки</h3>
+              <h3>Доказательства проблемы</h3>
               {evidenceButtons(finding.evidenceRefs)}
             </>
           )}
           {evidence && (
             <section ref={sourceRef} className="sm-source" aria-label="Фрагмент доказательства">
               <div className="sm-source-head">
-                <h3>{model.provenance === "manual_source_review" ? "Сохранённый фрагмент" : "Маскированный исходник"}</h3>
+                <h3>{model.provenance === "manual_source_review" ? "Сохранённый фрагмент" : "Фрагмент кода"}</h3>
                 <span className="sm-source-state">
                   {model.provenance === "manual_source_review"
-                    ? "reviewed"
-                    : activeSource?.status ?? "ожидает"}
+                    ? "проверен"
+                    : sourceStatusText[activeSource?.status ?? "idle"] ?? "ожидает"}
                 </span>
               </div>
               <p className="sm-source-path">
@@ -823,18 +917,18 @@ export function MapView(props: MapViewProps) {
               </p>
               {model.provenance === "manual_source_review" ? (
                 <>
-                  <p>Reviewed range · без добавленного контекста.</p>
+                  <p>Проверенный фрагмент без добавленного контекста.</p>
                   <pre>{evidence.redactedSnippet}</pre>
                 </>
               ) : activeSource?.status === "ready" ? (
                 <>
-                  <p>Redaction: {activeSource.redactionVersion}</p>
+                  <p>Версия маскирования: {activeSource.redactionVersion}</p>
                   <pre>{activeSource.maskedFragment}</pre>
                 </>
               ) : activeSource?.status === "error" || activeSource?.status === "unavailable" ? (
                 <>
                   <p role="alert" className="sm-amber-text">
-                    Исходник недоступен ({activeSource.code}).
+                    Фрагмент кода недоступен.
                   </p>
                   <button
                     onClick={() =>
@@ -855,10 +949,10 @@ export function MapView(props: MapViewProps) {
               <details className="sm-tech">
                 <summary>Технические данные</summary>
                 <dl>
-                  <dt>Source hash</dt><dd className="sm-mono">{evidence.sourceHash}</dd>
-                  <dt>Bytes</dt><dd className="sm-mono">{evidence.location.byteStart}–{evidence.location.byteEnd}</dd>
+                  <dt>Хеш фрагмента</dt><dd className="sm-mono">{evidence.sourceHash}</dd>
+                  <dt>Байты</dt><dd className="sm-mono">{evidence.location.byteStart}–{evidence.location.byteEnd}</dd>
                   <dt>Источник анализа</dt><dd>{evidence.producerVersion}</dd>
-                  <dt>Evidence ID</dt><dd className="sm-mono">{evidence.id}</dd>
+                  <dt>ID доказательства</dt><dd className="sm-mono">{evidence.id}</dd>
                 </dl>
               </details>
             </section>
@@ -876,20 +970,33 @@ export function MapView(props: MapViewProps) {
             <div className="sm-coverage-head">
               <h3>Покрытие</h3>
               <span className={`sm-status sm-status--${model.coverage.status === "complete" ? "checked" : "partial"}`}>
-                {model.coverage.status}
+                {coverageText[model.coverage.status] ?? "Проверено неполностью"}
               </span>
             </div>
             <p>{model.coverage.summary}</p>
             {model.coverage.warnings.map((warning, index) => (
-              <p className="sm-warning-text" key={index}>{warning}</p>
+              <p className="sm-warning-text" key={index}>{humanCoverageWarning(warning)}</p>
             ))}
+            {model.coverage.warnings.length > 0 && (
+              <details className="sm-tech">
+                <summary>Технические подробности покрытия</summary>
+                <ul>
+                  {model.coverage.warnings.map((warning, index) => (
+                    <li key={index} className="sm-mono">{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
             {model.diagnostics.length > 0 && (
               <details className="sm-tech">
-                <summary>Диагностика · {model.diagnostics.length}</summary>
+                <summary>Технические пробелы · {model.diagnostics.length}</summary>
                 {model.diagnostics.map((item) => (
                   <article key={item.id}>
-                    <strong>{item.code}</strong>
-                    <p>{item.message}</p>
+                    <strong>{diagnosticText(item.code, item.message)}</strong>
+                    <details>
+                      <summary>Технический код</summary>
+                      <code>{item.code}</code>
+                    </details>
                     {evidenceButtons(item.evidenceRefs)}
                   </article>
                 ))}
@@ -902,10 +1009,10 @@ export function MapView(props: MapViewProps) {
             {model.policies.map((policy) => (
               <details key={policy.id} className="sm-tech">
                 <summary>
-                  {policy.status === "assumption" ? "Предположение — не утверждено" : "Утверждённая политика"}
+                  {policy.status === "assumption" ? "Предположение, нужно подтверждение" : "Утверждённая политика"}
                 </summary>
-                <p>{policy.description}</p>
-                <p>Версия: {policy.version} · source: {policy.source}</p>
+                <pre>{policy.description}</pre>
+                <p>Версия: {policy.version} · источник: {policy.source}</p>
                 <p className="sm-mono">{policy.hash}</p>
                 {policy.limitations.map((limitation, index) => <p key={index}>{limitation}</p>)}
               </details>

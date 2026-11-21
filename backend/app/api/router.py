@@ -14,15 +14,20 @@ from backend.app.ai.service import AiService
 from backend.app.api.comparison import ComparisonError, compare_published_runs
 from backend.app.api.sql_pattern import sql_pattern_proof
 from backend.app.api.session import (
+    ROLE_ADMIN,
+    ROLE_USER,
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
+    admin_available,
     auth_required,
     issue_session,
     public_demo,
     request_workspace,
+    require_admin,
     session_from_request,
     set_session_cookie,
     verify_access_code,
+    verify_admin_code,
 )
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
 from backend.app.artifacts.sample_source import build_zip_from_directory
@@ -133,6 +138,8 @@ def get_session(request: Request, response: Response):
         return {
             "authenticated": True,
             "authRequired": auth_required(),
+            "role": session["role"],
+            "adminAvailable": admin_available(),
             "workspaceId": session["workspaceId"],
             "expiresInSec": SESSION_TTL_SECONDS,
         }
@@ -141,14 +148,17 @@ def get_session(request: Request, response: Response):
         return {
             "authenticated": False,
             "authRequired": True,
+            "adminAvailable": admin_available(),
             "workspaceId": request_workspace(request),
             "expiresInSec": 0,
         }
-    token = issue_session(request_workspace(request))
+    token = issue_session(request_workspace(request), ROLE_USER)
     set_session_cookie(response, token, request)
     return {
         "authenticated": True,
         "authRequired": False,
+        "role": ROLE_USER,
+        "adminAvailable": admin_available(),
         "workspaceId": request_workspace(request),
         "expiresInSec": SESSION_TTL_SECONDS,
     }
@@ -164,19 +174,41 @@ def logout(response: Response):
 def create_session(request: Request, response: Response,
                    payload: Optional[Dict[str, Any]] = None):
     payload = payload or {}
-    if public_demo():
-        code = payload.get("accessCode", payload.get("access_code"))
-        if not verify_access_code(code if isinstance(code, str) else None):
+    role = payload.get("role", ROLE_USER)
+    if not isinstance(role, str) or role not in {ROLE_USER, ROLE_ADMIN}:
+        raise HTTPException(status_code=400, detail="role должен быть user или admin")
+    code = payload.get("accessCode", payload.get("access_code"))
+    code_value = code if isinstance(code, str) else None
+    if role == ROLE_ADMIN:
+        if not admin_available():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Административный вход недоступен: задайте отдельный "
+                    "CG_ADMIN_ACCESS_CODE (не равный пользовательскому коду)"
+                ),
+            )
+        if not verify_admin_code(code_value):
             raise HTTPException(
                 status_code=401,
-                detail="Неверный код доступа",
+                detail="Неверный код администратора",
                 headers={"WWW-Authenticate": "AccessCode"},
             )
-    token = issue_session(request_workspace(request))
+    elif public_demo() and not verify_access_code(code_value):
+        # Публичный режим: user-login по прежнему коду; body role admin без
+        # admin-code не может повысить права.
+        raise HTTPException(
+            status_code=401,
+            detail="Неверный код доступа",
+            headers={"WWW-Authenticate": "AccessCode"},
+        )
+    token = issue_session(request_workspace(request), role)
     set_session_cookie(response, token, request)
     return {
         "authenticated": True,
         "authRequired": auth_required(),
+        "role": role,
+        "adminAvailable": admin_available(),
         "workspaceId": request_workspace(request),
         "expiresInSec": SESSION_TTL_SECONDS,
     }
@@ -219,7 +251,8 @@ def load_sample_artifact():
 
 
 @api_router.post("/artifacts/sample/training")
-def load_training_artifact():
+def load_training_artifact(request: Request):
+    require_admin(request)
     source = os.getenv("CG_TRAINING_PROJECT", "").strip()
     if not source:
         raise HTTPException(
@@ -286,7 +319,8 @@ def list_workflows():
 
 
 @api_router.post("/workflows")
-def create_workflow(draft: WorkflowDraft):
+def create_workflow(draft: WorkflowDraft, request: Request):
+    require_admin(request)
     wf_id = f"wf_{uuid.uuid4().hex[:8]}"
     rev_id = db_repo.save_workflow(wf_id, draft.name, draft.description, draft.model_dump())
     return {"id": wf_id, "latest_revision_id": rev_id}
@@ -301,7 +335,8 @@ def get_workflow(workflow_id: str):
 
 
 @api_router.put("/workflows/{workflow_id}/draft")
-def update_workflow_draft(workflow_id: str, draft: WorkflowDraft):
+def update_workflow_draft(workflow_id: str, draft: WorkflowDraft, request: Request):
+    require_admin(request)
     if not db_repo.get_workflow(workflow_id):
         raise HTTPException(status_code=404, detail="Сценарий не найден")
     rev_id = db_repo.save_workflow(workflow_id, draft.name, draft.description, draft.model_dump())
@@ -610,12 +645,14 @@ async def stream_run_events(run_id: str, after: int = Query(default=0)):
 
 # --- Schedules ---
 @api_router.get("/schedules")
-def list_schedules():
+def list_schedules(request: Request):
+    require_admin(request)
     return db_repo.list_schedules()
 
 
 @api_router.post("/schedules")
-def create_schedule(payload: Dict[str, Any]):
+def create_schedule(payload: Dict[str, Any], request: Request):
+    require_admin(request)
     sched_id = f"sch_{uuid.uuid4().hex[:8]}"
     wf_id = payload.get("workflowId")
     art_id = payload.get("artifactId")
@@ -635,7 +672,8 @@ def create_schedule(payload: Dict[str, Any]):
 
 
 @api_router.patch("/schedules/{schedule_id}")
-def update_schedule(schedule_id: str, payload: Dict[str, Any]):
+def update_schedule(schedule_id: str, payload: Dict[str, Any], request: Request):
+    require_admin(request)
     enabled = payload.get("enabled")
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled должен быть boolean")
@@ -673,13 +711,15 @@ async def webhook_test_receiver(request: Request):
 
 
 @api_router.get("/webhook-test/logs")
-def get_webhook_logs():
+def get_webhook_logs(request: Request):
+    require_admin(request)
     return received_webhooks
 
 
 # --- AI Synthetic Test for Jury Demo ---
 @api_router.post("/ai/synthetic-test")
-def run_ai_synthetic_test(payload: Dict[str, Any]):
+def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
+    require_admin(request)
     run_id = payload.get("runId")
     findings: List[Finding] = []
     if run_id:

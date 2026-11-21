@@ -13,6 +13,7 @@ export type NodeTone =
 
 export type NodeMeta = {
   label: string;
+  hint: string;
   tone: NodeTone;
   icon: ReactNode;
 };
@@ -77,20 +78,71 @@ const icons: Record<string, ReactNode> = {
 };
 
 const META: Record<string, NodeMeta> = {
-  actor: { label: "Актор", tone: "actor", icon: icons.actor },
-  route: { label: "Маршрут", tone: "route", icon: icons.route },
-  security_chain: { label: "Цепочка", tone: "access", icon: icons.access },
-  matcher: { label: "Matcher", tone: "access", icon: icons.access },
-  guard: { label: "Guard", tone: "access", icon: icons.access },
-  function: { label: "Обработчик", tone: "handler", icon: icons.handler },
-  source: { label: "Источник", tone: "source", icon: icons.source },
-  sink: { label: "Операция", tone: "operation", icon: icons.operation },
-  data: { label: "Данные", tone: "data", icon: icons.data },
-  config: { label: "Конфиг", tone: "config", icon: icons.config },
+  actor: {
+    label: "Кто обращается",
+    hint: "Пользователь или система, от имени которой приходит запрос.",
+    tone: "actor",
+    icon: icons.actor,
+  },
+  route: {
+    label: "Адрес запроса",
+    hint: "HTTP-метод и путь, по которому приходит запрос.",
+    tone: "route",
+    icon: icons.route,
+  },
+  security_chain: {
+    label: "Правило доступа",
+    hint: "Общее правило, которое разрешает или запрещает запрос.",
+    tone: "access",
+    icon: icons.access,
+  },
+  matcher: {
+    label: "Какие запросы охватывает правило",
+    hint: "Шаблон адресов, к которым применяется это правило.",
+    tone: "access",
+    icon: icons.access,
+  },
+  guard: {
+    label: "Проверка доступа",
+    hint: "Условие, которое должно выполниться перед обработкой запроса.",
+    tone: "access",
+    icon: icons.access,
+  },
+  function: {
+    label: "Обработчик запроса",
+    hint: "Код, который принимает запрос и выполняет действие.",
+    tone: "handler",
+    icon: icons.handler,
+  },
+  source: {
+    label: "Входные данные",
+    hint: "Значение из запроса, файла или окружения.",
+    tone: "source",
+    icon: icons.source,
+  },
+  sink: {
+    label: "Операция",
+    hint: "Действие с данными: запрос к БД, файлу или сети.",
+    tone: "operation",
+    icon: icons.operation,
+  },
+  data: {
+    label: "Данные",
+    hint: "Таблица, поле или объект, которые затрагивает операция.",
+    tone: "data",
+    icon: icons.data,
+  },
+  config: {
+    label: "Настройка",
+    hint: "Параметр, который влияет на поведение приложения.",
+    tone: "config",
+    icon: icons.config,
+  },
 };
 
 export const KIND_FALLBACK: NodeMeta = {
   label: "Факт",
+  hint: "Элемент карты, для которого нет отдельного пояснения.",
   tone: "unknown",
   icon: icons.unknown,
 };
