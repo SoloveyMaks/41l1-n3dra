@@ -36,6 +36,7 @@ import {
   WorkflowNode,
 } from './types';
 import { apiClient, AuthRequiredError } from './api/client';
+import { artifactLabel, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
 
@@ -559,8 +560,15 @@ export const App: React.FC = () => {
           : node,
       ),
     });
-    if (session?.role !== 'admin') resetRunSelection();
-    showNotice('ok', `Артефакт выбран: ${manifest.filename}`);
+    // Новый проект выбран: старый результат относился к другому артефакту.
+    resetRunSelection();
+    const repository = manifest.repository;
+    showNotice(
+      'ok',
+      repository
+        ? `Репозиторий импортирован: ${artifactLabel(manifest)} · ${repository.branch} · ${shortCommit(repository.commit_sha)}`
+        : `Проект выбран: ${artifactLabel(manifest)}`,
+    );
   };
 
   const handleSelectArtifact = (artifactId: string) => {
@@ -697,7 +705,7 @@ export const App: React.FC = () => {
                 onClick={() => setIsUploadOpen(true)}
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
               >
-                Загрузить ZIP
+                ZIP или репозиторий
               </button>
               <button
                 onClick={() => void handleTriggerRun()}
@@ -750,12 +758,18 @@ export const App: React.FC = () => {
       case 'schedule':
         return (
           <div className="flex h-full items-start justify-center overflow-y-auto bg-slate-950 p-4">
-            <div className="w-full max-w-xl">
+            <div className="w-full max-w-2xl">
               <ScheduleModal
                 workflowId={workflowId}
                 artifactId={currentArtifactId}
                 isOpen={true}
                 onClose={() => setAdminSection('overview')}
+                adminAllowed={isAdmin}
+                onOpenRun={(runId) => {
+                  if (!runId) return;
+                  handleSelectRun(runId);
+                  setAdminSection('live');
+                }}
                 embedded
               />
             </div>

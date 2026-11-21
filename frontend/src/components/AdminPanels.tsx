@@ -1,8 +1,10 @@
 import React from 'react';
-import { Activity, AlertTriangle, Bot, Database, FolderKanban, Gauge, KeyRound, ShieldCheck } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 import { AdminOverview, ArtifactManifest, Finding, NodeRunRecord, ReportData, RunSummary, SessionState } from '../types';
 import { coverageLabel, coverageReason, getCanonicalCoverage, scopeLabel } from '../coverage';
 import { AdminSection } from './AdminShell';
+import { RepositorySourceView } from './RepositorySourceView';
+import { artifactLabel, artifactRepository, findArtifact } from '../repository';
 
 const dateLabel = (value?: string): string => {
   if (!value) return '—';
@@ -113,16 +115,24 @@ export const AdminProjectsPanel: React.FC<{
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Проекты</h2>
       {artifacts.length === 0 ? <p className="text-xs text-slate-500">Проектов нет.</p> : (
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {artifacts.map((artifact) => (
+          {artifacts.map((artifact) => {
+            const repository = artifactRepository(artifact);
+            return (
             <button
               key={artifact.id}
               onClick={() => onSelectArtifact(artifact.id)}
               className={`rounded-lg border p-3 text-left text-xs ${artifact.id === currentArtifactId ? 'border-indigo-700 bg-indigo-950/40' : 'border-slate-800 bg-slate-950/50 hover:bg-slate-800/60'}`}
             >
-              <div className="font-medium text-slate-200">{artifact.filename}</div>
+              <div className="break-all font-medium text-slate-200">{artifactLabel(artifact)}</div>
+              {repository ? (
+                <RepositorySourceView repository={repository} className="mt-1" showProvider={false} />
+              ) : (
+                <div className="mt-1 text-[11px] text-slate-500">{artifact.filename}</div>
+              )}
               <div className="mt-1 text-[11px] text-slate-500">{artifact.kotlin_file_count} Kotlin · {artifact.file_count} файлов</div>
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -130,10 +140,13 @@ export const AdminProjectsPanel: React.FC<{
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">История проверок</h2>
       {runs.length === 0 ? <p className="text-xs text-slate-500">Проверок нет.</p> : (
         <div className="space-y-1.5">
-          {runs.slice(0, 30).map((run) => (
+          {runs.slice(0, 30).map((run) => {
+            const repository = artifactRepository(findArtifact(run.artifact_id, artifacts));
+            return (
             <div key={run.id} className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${run.id === currentRunId ? 'border-indigo-700 bg-indigo-950/30' : 'border-slate-800'}`}>
               <button onClick={() => onSelectRun(run.id)} className="min-w-0 text-left">
-                <div className="truncate text-slate-200">{artifacts.find((a) => a.id === run.artifact_id)?.filename || 'Проект не указан'}</div>
+                <div className="truncate text-slate-200">{artifactLabel(findArtifact(run.artifact_id, artifacts))}</div>
+                {repository && <RepositorySourceView repository={repository} className="mt-0.5" showProvider={false} />}
                 <div className="text-[11px] text-slate-500">{dateLabel(run.created_at)} · проблем: {run.total_findings}</div>
               </button>
               <div className="flex items-center gap-2">
@@ -142,7 +155,8 @@ export const AdminProjectsPanel: React.FC<{
                 <button onClick={() => { onSelectRun(run.id); onSection('problems'); }} className="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:bg-slate-800">Проблемы</button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
