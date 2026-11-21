@@ -17,7 +17,9 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
 import time
+from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -28,6 +30,37 @@ from backend.app.codefacts.identity import workspace_id
 
 SESSION_COOKIE = "cg_session"
 SESSION_TTL_SECONDS = int(os.getenv("CG_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
+_RATE_LOCK = threading.Lock()
+_RATE_EVENTS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+
+
+def trust_proxy_headers() -> bool:
+    return os.getenv("CG_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def client_key(request: Request) -> str:
+    if trust_proxy_headers():
+        cf = (request.headers.get("cf-connecting-ip") or "").strip()
+        if cf:
+            return cf
+        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    return request.client.host if request.client else "unknown"
+
+
+def allow_attempt(key: str, bucket: str, *, limit: int, window_seconds: int) -> bool:
+    """Простой in-memory sliding window для login/upload/run."""
+    now = time.monotonic()
+    cutoff = now - window_seconds
+    with _RATE_LOCK:
+        events = _RATE_EVENTS[(bucket, key)]
+        while events and events[0] < cutoff:
+            events.popleft()
+        if len(events) >= limit:
+            return False
+        events.append(now)
+        return True
 _EPHEMERAL_SECRET = secrets.token_urlsafe(48)
 
 
@@ -131,7 +164,9 @@ def request_origin_allowed(request: Request) -> bool:
         return False
     if not origin_host:
         return False
-    forwarded = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip().lower()
+    forwarded = ""
+    if trust_proxy_headers():
+        forwarded = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip().lower()
     request_host = forwarded or request.headers.get("host", "").lower() or request.url.netloc.lower()
     return origin_host == request_host
 
@@ -153,7 +188,8 @@ def request_workspace(request: Request) -> str:
 
 
 def set_session_cookie(response: Response, token: str, request: Request) -> None:
-    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower()
+    forwarded_proto = request.headers.get("x-forwarded-proto") if trust_proxy_headers() else ""
+    proto = (forwarded_proto or request.url.scheme or "").lower()
     response.set_cookie(
         SESSION_COOKIE,
         token,

@@ -1,4 +1,6 @@
 import logging
+import os
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,7 +10,9 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.router import api_router, scheduler, db_repo
 from backend.app.api.session import (
+    allow_attempt,
     allowed_origins,
+    client_key,
     issue_session,
     request_origin_allowed,
     session_from_request,
@@ -26,6 +30,22 @@ logger = logging.getLogger("App")
 _LOCAL_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health", "/api/webhook-test"}
 _PUBLIC_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health"}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_RATE_WINDOW = int(os.getenv("CG_RATE_WINDOW_SECONDS", "60"))
+_RATE_LOGIN = int(os.getenv("CG_RATE_LOGIN", "10"))
+_RATE_UPLOAD = int(os.getenv("CG_RATE_UPLOAD", "10"))
+_RATE_RUN = int(os.getenv("CG_RATE_RUN", "15"))
+
+
+def _rate_bucket(method: str, path: str) -> str | None:
+    if method != "POST":
+        return None
+    if path == "/api/session":
+        return "login"
+    if path == "/api/artifacts" or path.startswith("/api/artifacts/"):
+        return "upload"
+    if re.fullmatch(r"/api/workflows/[^/]+/runs", path):
+        return "run"
+    return None
 
 
 @asynccontextmanager
@@ -71,6 +91,16 @@ async def same_origin_session(request: Request, call_next):
         return await call_next(request)
     if request.method == "OPTIONS":
         return await call_next(request)
+    bucket = _rate_bucket(request.method, path)
+    if bucket:
+        limits = {"login": _RATE_LOGIN, "upload": _RATE_UPLOAD, "run": _RATE_RUN}
+        if not allow_attempt(client_key(request), bucket, limit=limits[bucket], window_seconds=_RATE_WINDOW):
+            return JSONResponse(
+                {"detail": "Слишком много запросов, попробуйте позже", "retryAfterSec": _RATE_WINDOW},
+                status_code=429,
+                headers={"Retry-After": str(_RATE_WINDOW)},
+            )
+
     if not request_origin_allowed(request):
         return JSONResponse({"detail": "Запрос с чужого origin запрещён"}, status_code=403)
 

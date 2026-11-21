@@ -62,8 +62,8 @@ export const AccessGate: React.FC<AccessGateProps> = ({ busy, error, onSubmit })
           {busy ? 'Проверяем…' : 'Войти'}
         </button>
         <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-          Код не сохраняется в URL, localStorage или логах. После входа сервер выдаёт
-          HttpOnly-сессию.
+          Это общий демонстрационный workspace: после входа данные стенда видны всем,
+          у кого есть код доступа.
         </p>
       </form>
     </div>
