@@ -146,18 +146,18 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               <label className="block text-[11px] text-slate-400 mb-1">
                 Интервал (сек) или Cron-выражение:
               </label>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   type="text"
                   value={cronOrInterval}
                   onChange={(e) => setCronOrInterval(e.target.value)}
                   placeholder="interval:60 или */10 * * * *"
-                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 font-mono text-purple-300 focus:outline-none focus:border-purple-500"
+                  className="w-full min-w-0 sm:flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 font-mono text-purple-300 focus:outline-none focus:border-purple-500"
                 />
                 <button
                   onClick={handleCreateSchedule}
                   disabled={isSaving}
-                  className="px-3.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium transition cursor-pointer"
+                  className="w-full sm:w-auto px-3.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium transition cursor-pointer"
                 >
                   Активировать
                 </button>

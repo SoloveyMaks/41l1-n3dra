@@ -72,9 +72,8 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
       {/* Main List */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Filter bar */}
-        <div className="p-3.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-            <div className="relative flex-1 max-w-xs">
+        <div className="p-3.5 bg-slate-900 border-b border-slate-800 space-y-2">
+          <div className="relative w-full">
               <Search size={14} className="absolute left-2.5 top-2.5 text-slate-500" />
               <input
                 type="text"
@@ -83,15 +82,16 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
                 placeholder="Поиск по файлу, CVE, правилу..."
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
               />
-            </div>
+          </div>
 
+          <div className="flex flex-wrap items-center gap-2">
             {/* Analyzer filter buttons */}
-            <div className="flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800 text-xs overflow-x-auto max-w-full">
+            <div className="flex w-full sm:w-auto shrink-0 items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800 text-xs overflow-x-auto max-w-full">
               {['all', 'secret', 'sca', 'sast'].map((a) => (
                 <button
                   key={a}
                   onClick={() => setAnalyzerFilter(a)}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition cursor-pointer capitalize ${
+                  className={`shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium transition cursor-pointer capitalize ${
                     analyzerFilter === a
                       ? 'bg-indigo-600 text-white'
                       : 'text-slate-400 hover:text-slate-200'
@@ -106,7 +106,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
             <select
               value={severityFilter}
               onChange={(e) => setSeverityFilter(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
+              className="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
             >
               <option value="all">Любой риск</option>
               <option value="critical">Критично</option>
@@ -114,10 +114,9 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
               <option value="medium">Средний</option>
               <option value="low">Низкий</option>
             </select>
-          </div>
 
           {/* Counts */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
+          <div className="flex w-full sm:w-auto sm:ml-auto flex-wrap items-center gap-2 sm:gap-3 text-xs">
             <span className="text-rose-400 font-semibold font-mono">
               Критично: {critCount}
             </span>
@@ -130,6 +129,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
             <span className="text-slate-400 font-mono">
               Проблем: {findings.length}
             </span>
+          </div>
           </div>
         </div>
 

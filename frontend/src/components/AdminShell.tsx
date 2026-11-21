@@ -95,7 +95,27 @@ export const AdminShell: React.FC<AdminShellProps> = ({
 
     <div className="flex min-h-0 flex-1 flex-col md:flex-row">
       <aside className="flex w-full shrink-0 flex-col border-b border-slate-800 bg-slate-900/80 md:w-60 md:border-b-0 md:border-r">
-        <nav className="flex gap-3 overflow-x-auto p-3 md:flex-col md:overflow-y-auto md:gap-4">
+        <div className="p-3 md:hidden">
+          <label htmlFor="admin-section" className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Раздел
+          </label>
+          <select
+            id="admin-section"
+            aria-label="Раздел админки"
+            value={section}
+            onChange={(event) => onSection(event.target.value as AdminSection)}
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100"
+          >
+            {GROUPS.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.items.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <nav className="hidden gap-3 p-3 md:flex md:flex-col md:overflow-y-auto md:gap-4">
           {GROUPS.map((group) => (
             <div key={group.label} className="min-w-max md:min-w-0">
               <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">

@@ -248,7 +248,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                 )}
               </section>
 
-              <section className={`rounded-2xl border p-5 ${verdictTone(currentRun?.security_verdict)}`}>
+              <section className={`rounded-2xl border p-5 ${currentRun ? 'order-first lg:order-none' : ''} ${verdictTone(currentRun?.security_verdict)}`}>
                 <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide opacity-80">
                   <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black/20">3</span>
                   Посмотрите результат
