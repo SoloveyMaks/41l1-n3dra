@@ -202,6 +202,10 @@ export const apiClient = {
     return (await request(`/workflows/${workflowId}`)).json();
   },
 
+  async createWorkflow(draft: WorkflowDraft): Promise<{ id: string; latest_revision_id: string }> {
+    return (await request('/workflows', jsonInit('POST', draft))).json();
+  },
+
   async saveWorkflowDraft(workflowId: string, draft: WorkflowDraft): Promise<any> {
     return (await request(`/workflows/${workflowId}/draft`, jsonInit('PUT', draft))).json();
   },

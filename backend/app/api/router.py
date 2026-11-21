@@ -132,6 +132,14 @@ def request_workspace_default() -> str:
     return workspace_id()
 
 
+def _require_authenticated(request: Request) -> Dict[str, Any]:
+    """Обычный пользователь и админ; без сессии — 401."""
+    session = session_from_request(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    return session
+
+
 # --- Session (same-origin demo) ---
 @api_router.get("/health")
 def health():
@@ -353,7 +361,7 @@ def list_workflows():
 
 @api_router.post("/workflows")
 def create_workflow(draft: WorkflowDraft, request: Request):
-    require_admin(request)
+    _require_authenticated(request)
     wf_id = f"wf_{uuid.uuid4().hex[:8]}"
     rev_id = db_repo.save_workflow(wf_id, draft.name, draft.description, draft.model_dump())
     return {"id": wf_id, "latest_revision_id": rev_id}
@@ -369,7 +377,7 @@ def get_workflow(workflow_id: str):
 
 @api_router.put("/workflows/{workflow_id}/draft")
 def update_workflow_draft(workflow_id: str, draft: WorkflowDraft, request: Request):
-    require_admin(request)
+    _require_authenticated(request)
     if not db_repo.get_workflow(workflow_id):
         raise HTTPException(status_code=404, detail="Сценарий не найден")
     rev_id = db_repo.save_workflow(workflow_id, draft.name, draft.description, draft.model_dump())
