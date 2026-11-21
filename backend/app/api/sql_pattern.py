@@ -24,6 +24,9 @@ _TIMEOUT = float(os.getenv("CG_SQL_PATTERN_TIMEOUT_SECONDS", "15"))
 
 
 def sql_pattern_cli_path() -> Path:
+    override = os.getenv("CG_SQL_PATTERN_CLI", "").strip()
+    if override:
+        return Path(override).resolve()
     return Path(__file__).resolve().parents[3] / "packages" / "comparison" / "sql-rule-cli.mjs"
 
 

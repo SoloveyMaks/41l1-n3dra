@@ -503,6 +503,7 @@ class CanonicalMapBuilder:
             and not parser_errors
             and not unresolved
             and not limits
+            and not skipped
             and all(scope["status"] == "checked" for scope in scopes)
         )
         coverage = {
