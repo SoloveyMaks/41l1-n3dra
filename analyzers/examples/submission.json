@@ -1,0 +1,153 @@
+{
+  "findings": [
+    {
+      "category": "SECRET",
+      "path": "src/main/kotlin/lab/repairdesk/integration/DepotStatusClient.kt",
+      "class": "secret-fallback",
+      "line": 8,
+      "severity": "LOW",
+      "description": "Если переменная окружения не задана, используется встроенный секрет по умолчанию. Значение скрыто.",
+      "remediation": "Удалить fallback: при отсутствии переменной отключать интеграцию."
+    },
+    {
+      "category": "SECRET",
+      "path": "src/main/kotlin/lab/repairdesk/integration/PartsImportSettings.kt",
+      "class": "password",
+      "line": 4,
+      "severity": "HIGH",
+      "description": "`legacyImportPassword` содержит встроенный секрет. Значение передаётся в заголовок `X-Import-Password`. Значение скрыто.",
+      "remediation": "Читать значение из переменной окружения или хранилища секретов; не хранить литерал в репозитории."
+    },
+    {
+      "category": "SECRET",
+      "path": "src/main/kotlin/lab/repairdesk/integration/QuoteRequest.kt",
+      "class": "api-key",
+      "line": 7,
+      "severity": "MEDIUM",
+      "description": "`pricingApiKey` содержит встроенный секрет. Значение передаётся в заголовок `X-Api-Key`. Значение скрыто.",
+      "remediation": "Читать значение из переменной окружения или хранилища секретов; не хранить литерал в репозитории."
+    },
+    {
+      "category": "SECRET",
+      "path": "src/main/kotlin/lab/repairdesk/integration/WarrantyHeaders.kt",
+      "class": "recoverable-token",
+      "line": 7,
+      "endLine": 10,
+      "severity": "MEDIUM",
+      "description": "Токен собирается из 2 строковых фрагментов и передаётся в защищённый заголовок через `setBearerAuth`. Значения фрагментов и итоговый токен скрыты.",
+      "remediation": "Хранить цельный токен в переменной окружения или хранилище секретов; не собирать credential из литералов в коде."
+    },
+    {
+      "category": "SECRET",
+      "path": "src/main/resources/application.yml",
+      "class": "configuration-token",
+      "line": 13,
+      "severity": "HIGH",
+      "description": "`pickup.callback.authorization` содержит встроенный токен авторизации. Значение скрыто.",
+      "remediation": "Задать свойство через переменную окружения без встроенного значения и собирать заголовок на границе адаптера."
+    },
+    {
+      "category": "SCA",
+      "path": "build.gradle.kts",
+      "severity": "CRITICAL",
+      "description": "`org.apache.commons:commons-text:1.9` попадает в уязвимый диапазон [1.5, 1.10.0). Advisory: GHSA-599f-7c49-w659, CVE-2022-42889.",
+      "remediation": "Обновить зависимость до исправленной версии: 1.10.0.",
+      "group": "org.apache.commons",
+      "artifact": "commons-text",
+      "version": "1.9",
+      "advisoryId": "GHSA-599f-7c49-w659"
+    },
+    {
+      "category": "SCA",
+      "path": "build.gradle.kts",
+      "severity": "HIGH",
+      "description": "`org.jsoup:jsoup:1.14.1` попадает в уязвимый диапазон (-∞, 1.14.2). Advisory: GHSA-m72m-mhq2-9p6c, CVE-2021-37714.",
+      "remediation": "Обновить зависимость до исправленной версии: 1.14.2.",
+      "group": "org.jsoup",
+      "artifact": "jsoup",
+      "version": "1.14.1",
+      "advisoryId": "GHSA-m72m-mhq2-9p6c"
+    },
+    {
+      "category": "SCA",
+      "path": "build.gradle.kts",
+      "severity": "MEDIUM",
+      "description": "`org.apache.commons:commons-compress:1.25.0` попадает в уязвимый диапазон [1.3, 1.26.0). Advisory: GHSA-4g9r-vxhx-9pgx, CVE-2024-25710.",
+      "remediation": "Обновить зависимость до исправленной версии: 1.26.0.",
+      "group": "org.apache.commons",
+      "artifact": "commons-compress",
+      "version": "1.25.0",
+      "advisoryId": "GHSA-4g9r-vxhx-9pgx"
+    },
+    {
+      "category": "SCA",
+      "path": "build.gradle.kts",
+      "severity": "MEDIUM",
+      "description": "`commons-net:commons-net:3.8.0` попадает в уязвимый диапазон (-∞, 3.9.0). Advisory: GHSA-cgp8-4m63-fhh5, CVE-2021-37533.",
+      "remediation": "Обновить зависимость до исправленной версии: 3.9.0.",
+      "group": "commons-net",
+      "artifact": "commons-net",
+      "version": "3.8.0",
+      "advisoryId": "GHSA-cgp8-4m63-fhh5"
+    },
+    {
+      "category": "SCA",
+      "path": "build.gradle.kts",
+      "severity": "HIGH",
+      "description": "`org.json:json:20230227` попадает в уязвимый диапазон (-∞, 20230618]. Advisory: GHSA-4jq9-2xhw-jpx7, CVE-2023-5072.",
+      "remediation": "Обновить зависимость до исправленной версии: 20231013.",
+      "group": "org.json",
+      "artifact": "json",
+      "version": "20230227",
+      "advisoryId": "GHSA-4jq9-2xhw-jpx7"
+    },
+    {
+      "category": "SAST",
+      "path": "src/main/kotlin/lab/repairdesk/config/RepairCors.kt",
+      "class": "credentialed-cors",
+      "line": 13,
+      "endLine": 14,
+      "severity": "MEDIUM",
+      "description": "`CorsConfiguration` одновременно разрешает шаблон `*` и `allowCredentials = true` для маршрута `/api/customer/summary`.",
+      "remediation": "Перечислить доверенные origin явно или отключить `allowCredentials` для этого маршрута."
+    },
+    {
+      "category": "SAST",
+      "path": "src/main/kotlin/lab/repairdesk/config/RepairSecurity.kt",
+      "class": "route-authorization",
+      "line": 18,
+      "severity": "HIGH",
+      "description": "Правило `permitAll()` открывает `GET /api/pickup/export`. Обработчик `export`: `queryForList` возвращает записи без фильтра владельца, поэтому данные доступны без нужной роли.",
+      "remediation": "Требовать роль для `GET /api/pickup/export` и проверить доступ для гостя, клиента и сотрудника."
+    },
+    {
+      "category": "SAST",
+      "path": "src/main/kotlin/lab/repairdesk/integration/SupplierHttpsClient.kt",
+      "class": "tls-verification",
+      "line": 13,
+      "severity": "MEDIUM",
+      "description": "`newConnection` устанавливает `HostnameVerifier`, который принимает любое имя хоста (`-> true`). Соединение продолжает использоваться для внешнего запроса.",
+      "remediation": "Не переопределять `HostnameVerifier`; использовать сертификат, действительный для имени хоста."
+    },
+    {
+      "category": "SAST",
+      "path": "src/main/kotlin/lab/repairdesk/repair/RepairLookupController.kt",
+      "class": "sql-injection",
+      "line": 13,
+      "endLine": 14,
+      "severity": "HIGH",
+      "description": "Параметр `frameTag` попадает в SQL через интерполяцию и передаётся в `queryForList` для маршрута `GET /api/customer/search/frame`. Параметризация `?` не используется.",
+      "remediation": "Использовать `?` и передавать значение отдельным аргументом JDBC."
+    },
+    {
+      "category": "SAST",
+      "path": "src/main/kotlin/lab/repairdesk/repair/RepairTicketReader.kt",
+      "class": "object-authorization",
+      "line": 10,
+      "endLine": 11,
+      "severity": "HIGH",
+      "description": "`read` читает объект по идентификатору из маршрута `GET /api/customer/tickets/{ticketId}`; выбрана owner-колонка `customer_id`, фильтр только по `ticket_id`. Политика: Объект принадлежит владельцу, указанному в owner-колонке. Если маршрут возвращает один объект по идентификатору, переданному клиентом, запрос обязан дополнительно ограничить выборку владельцем из аутентифицированного Principal. Совпадение имени поля с owner-колонкой само по себе доступ не доказывает.",
+      "remediation": "Добавить в запрос owner-колонку и значение из `Principal`; чужой и отсутствующий объект должны давать одинаковый ответ."
+    }
+  ]
+}

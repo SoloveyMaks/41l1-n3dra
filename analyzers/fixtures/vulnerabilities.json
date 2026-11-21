@@ -1,0 +1,161 @@
+{
+  "snapshot": {
+    "date": "2026-11-16",
+    "url": "https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip",
+    "sha256": "c7adfd1da096969751bf014817a5948d59241487937119413107037fc94e4ddf",
+    "advisories": "GitHub Advisory Database (CC BY 4.0), via OSV"
+  },
+  "note": "Минимальная выборка для self-test анализаторов; production использует полный advisory input.",
+  "vulnerabilities": [
+    {
+      "id": "GHSA-cgp8-4m63-fhh5",
+      "aliases": [
+        "CVE-2021-37533"
+      ],
+      "group": "commons-net",
+      "artifact": "commons-net",
+      "ranges": [
+        {
+          "lower": null,
+          "lowerInclusive": false,
+          "upper": "3.9.0",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "3.9.0"
+      ],
+      "severity": "MEDIUM",
+      "cvss": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-cgp8-4m63-fhh5",
+        "https://osv.dev/vulnerability/GHSA-cgp8-4m63-fhh5"
+      ]
+    },
+    {
+      "id": "GHSA-4g9r-vxhx-9pgx",
+      "aliases": [
+        "CVE-2024-25710"
+      ],
+      "group": "org.apache.commons",
+      "artifact": "commons-compress",
+      "ranges": [
+        {
+          "lower": "1.3",
+          "lowerInclusive": true,
+          "upper": "1.26.0",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "1.26.0"
+      ],
+      "severity": "MEDIUM",
+      "cvss": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:C/C:N/I:N/A:H"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-4g9r-vxhx-9pgx",
+        "https://osv.dev/vulnerability/GHSA-4g9r-vxhx-9pgx"
+      ]
+    },
+    {
+      "id": "GHSA-j288-q9x7-2f5v",
+      "aliases": [
+        "CVE-2025-48924"
+      ],
+      "group": "org.apache.commons",
+      "artifact": "commons-lang3",
+      "ranges": [
+        {
+          "lower": "3.0",
+          "lowerInclusive": true,
+          "upper": "3.18.0",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "3.18.0"
+      ],
+      "severity": "MEDIUM",
+      "cvss": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-j288-q9x7-2f5v",
+        "https://osv.dev/vulnerability/GHSA-j288-q9x7-2f5v"
+      ]
+    },
+    {
+      "id": "GHSA-599f-7c49-w659",
+      "aliases": [
+        "CVE-2022-42889"
+      ],
+      "group": "org.apache.commons",
+      "artifact": "commons-text",
+      "ranges": [
+        {
+          "lower": "1.5",
+          "lowerInclusive": true,
+          "upper": "1.10.0",
+          "upperInclusive": false
+        }
+      ],
+      "fixedVersions": [
+        "1.10.0"
+      ],
+      "severity": "CRITICAL",
+      "cvss": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-599f-7c49-w659",
+        "https://osv.dev/vulnerability/GHSA-599f-7c49-w659"
+      ]
+    },
+    {
+      "id": "GHSA-4jq9-2xhw-jpx7",
+      "aliases": [
+        "CVE-2023-5072"
+      ],
+      "group": "org.json",
+      "artifact": "json",
+      "ranges": [
+        {
+          "lower": null,
+          "lowerInclusive": false,
+          "upper": "20230618",
+          "upperInclusive": true
+        }
+      ],
+      "fixedVersions": [
+        "20231013"
+      ],
+      "severity": "HIGH",
+      "cvss": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-4jq9-2xhw-jpx7",
+        "https://osv.dev/vulnerability/GHSA-4jq9-2xhw-jpx7"
+      ]
+    }
+  ]
+}
