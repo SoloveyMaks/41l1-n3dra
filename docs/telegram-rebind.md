@@ -76,6 +76,35 @@ pending/sending строки прошлого владельца могли пе
   старая claimed доставка не может ни отправиться под новым владельцем, ни
   «завершиться» после отмены.
 
+## Restart recovery (012)
+
+`db/migrations/012_telegram_job_recovery.up.sql`:
+
+- `telegram.jobs.lease_token`, `lease_until`, `heartbeat_at`,
+  `recovery_attempts`;
+- статус `interrupted`;
+- индекс `(status, lease_until, recovery_attempts)`.
+
+`TelegramRuntime.start()` теперь запускает `_recovery_loop` даже при
+отсутствии bot token: recovery — это DB-работа, а не Telegram-транспорт.
+Раз в 5 секунд bounded-проход `recover_jobs_once()`:
+
+1. `queued` → `claim_job` (lease + token) → обычный `_run_job`;
+2. stale `importing` с `run_id IS NULL` → retry с новым lease, пока
+   `recovery_attempts < 3`; после исчерпания → terminal `interrupted`;
+3. `importing/running` с существующим `run_id` → **никогда** не re-import:
+   terminal run `succeeded/failed` переносится в job, иначе job становится
+   `interrupted` с сохранённым `run_id` и error `runtime restarted; run preserved`;
+4. expired lease старого worker-а не мешает, пока он жив: heartbeat продлевает
+   lease; чужой token не может обновить job.
+
+`claim_job` атомарен: только один runtime получает queued/stale-importing job.
+`job_lease_valid` проверяет token, lease, owner generation и статус перед
+импортом, сохранением артефакта, созданием run, executor-ом и уведомлением.
+`_run_job` heartbeats lease каждые 40 секунд; при потере lease работа
+прекращается без второго run. `set_job_status` с lease token не может
+перезаписать terminal history чужим/просроченным token-ом.
+
 ## API/runtime contract
 
 - `/api/telegram/me` под старым аккаунтом после rebind: `bound=false`.
@@ -120,6 +149,32 @@ outbox=sent owner=<legacy> epoch=1
 history_kept=1
 sent_kept=1
 ```
+
+## Recovery evidence
+
+Живой PG17, без Telegram API (recovery не зависит от транспорта):
+
+```text
+telegram runtime disabled: token not configured
+queued after start succeeded
+stale importing retried 1
+exhausted importing terminal interrupted
+running with run_id interrupted, no second run
+running with succeeded run settled
+two runtimes claim once
+lease fencing and heartbeat
+cancelled old job ignored
+TELEGRAM RECOVERY SMOKE OK
+```
+
+Проверено: новый runtime поднял queued job; stale importing без run
+перезапустился ровно один раз и завершился; исчерпанные retry стали
+`interrupted` без запуска executor; running с run_id не создал второй run и
+стал terminal `interrupted` (а succeeded run дал succeeded job); два runtime
+одновременно выполнили queued job ровно один раз; неверный lease token не
+обновил job, heartbeat и верный token работают; отменённый прошлый job не
+подхватывается. Миграция 012 на legacy-БД сохранила running job,
+`recovery_attempts=0`, lease null и разрешила `interrupted`.
 
 ## Ограничения
 

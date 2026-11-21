@@ -157,7 +157,7 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
             "status": "disabled",
             "verified": False,
             "countsAsFindings": False,
-            "limitations": ["AI_SCAN не входил в сценарий или не сформировал результат."],
+            "limitations": ["ИИ-сканер не входил в сценарий или не сформировал результат."],
             "observations": [],
             "provenance": None,
             "coverage": None,
@@ -394,11 +394,50 @@ def _cell_borders(cell: Any, mods: Dict[str, Any], color: str = "D9D9D9") -> Non
         element.set(mods["qn"]("w:color"), color)
 
 
+def _clear_paragraph_borders(paragraph_or_style: Any, mods: Dict[str, Any]) -> None:
+    element = getattr(paragraph_or_style, "element", None)
+    if element is None:
+        element = getattr(paragraph_or_style, "_p", None)
+    if element is None:
+        return
+    p_pr = element.find(mods["qn"]("w:pPr"))
+    if p_pr is None:
+        return
+    for border in list(p_pr.findall(mods["qn"]("w:pBdr"))):
+        p_pr.remove(border)
+
+
+def _set_table_widths(table: Any, widths: Sequence[float], mods: Dict[str, Any]) -> None:
+    table.autofit = False
+    table.alignment = mods["WD_TABLE_ALIGNMENT"].CENTER
+    tbl = table._tbl
+    tbl_pr = tbl.tblPr
+    total_twips = int(round(sum(widths) * 1440))
+    tbl_w = tbl_pr.find(mods["qn"]("w:tblW"))
+    if tbl_w is None:
+        tbl_w = mods["OxmlElement"]("w:tblW")
+        tbl_pr.append(tbl_w)
+    tbl_w.set(mods["qn"]("w:type"), "dxa")
+    tbl_w.set(mods["qn"]("w:w"), str(total_twips))
+    layout = tbl_pr.find(mods["qn"]("w:tblLayout"))
+    if layout is None:
+        layout = mods["OxmlElement"]("w:tblLayout")
+        tbl_pr.append(layout)
+    layout.set(mods["qn"]("w:type"), "fixed")
+    grid = tbl.tblGrid
+    for index, width in enumerate(widths):
+        twips = str(int(round(width * 1440)))
+        if index < len(grid.gridCol_lst):
+            grid.gridCol_lst[index].set(mods["qn"]("w:w"), twips)
+        table.columns[index].width = mods["Inches"](width)
+        for cell in table.columns[index].cells:
+            cell.width = mods["Inches"](width)
+
+
 def _table(doc: Any, headers: Sequence[str], rows: Sequence[Sequence[Any]],
            widths: Sequence[float], mods: Dict[str, Any], font_size: float = 9.5) -> Any:
     table = doc.add_table(rows=1, cols=len(headers))
-    table.alignment = mods["WD_TABLE_ALIGNMENT"].CENTER
-    table.autofit = False
+    _set_table_widths(table, widths, mods)
     header = table.rows[0]
     header_props = header._tr.get_or_add_trPr()
     repeat = mods["OxmlElement"]("w:tblHeader")
@@ -473,8 +512,10 @@ def build_docx(bundle: ExportBundle) -> bytes:
         style.font.color.rgb = mods["RGBColor"](0, 0, 0)
         style.paragraph_format.space_before = mods["Pt"](10)
         style.paragraph_format.space_after = mods["Pt"](4)
+        _clear_paragraph_borders(style, mods)
     styles["Title"].font.size = mods["Pt"](24)
     styles["Title"].paragraph_format.space_after = mods["Pt"](10)
+    _clear_paragraph_borders(styles["Title"], mods)
 
     footer = section.footer.paragraphs[0]
     footer.text = "NEDRA · Отчёт о проверке безопасности кода"
@@ -484,12 +525,22 @@ def build_docx(bundle: ExportBundle) -> bytes:
         run.font.color.rgb = mods["RGBColor"](0x59, 0x59, 0x59)
 
     run = bundle.run
-    doc.add_paragraph("Отчёт о проверке безопасности кода", style="Title")
+    verdict = _VERDICT_LABELS.get(
+        str(run.get("security_verdict")),
+        str(run.get("security_verdict") or "не определён"),
+    )
+    status = _STATUS_LABELS.get(
+        str(run.get("execution_status")),
+        str(run.get("execution_status") or "неизвестно"),
+    )
+    scenario = bundle.workflow_name or run.get("workflow_id") or "без названия"
+    title = doc.add_paragraph("Отчёт о проверке безопасности кода", style="Title")
+    _clear_paragraph_borders(title, mods)
     intro = doc.add_paragraph()
     intro.add_run(
-        "Отчёт собран по сохранённым результатам проверки. Повторный запуск сканеров "
-        "и обращения к модели не выполнялись. Итог относится к проверенному покрытию, "
-        "а не ко всему проекту."
+        f"Проверен сценарий «{scenario}». Итог: {verdict}. Ниже — что найдено "
+        "в проверенном объёме, какие гипотезы требуют проверки и что осталось "
+        "за пределами проверки."
     )
 
     if bundle.report is None:
@@ -498,8 +549,6 @@ def build_docx(bundle: ExportBundle) -> bytes:
             "сохранённые находки, статус запуска и технические сведения."
         )
 
-    verdict = _VERDICT_LABELS.get(str(run.get("security_verdict")), str(run.get("security_verdict") or "не определён"))
-    status = _STATUS_LABELS.get(str(run.get("execution_status")), str(run.get("execution_status") or "неизвестно"))
     _table(
         doc,
         ["Параметр", "Значение"],
@@ -515,7 +564,8 @@ def build_docx(bundle: ExportBundle) -> bytes:
         10,
     )
 
-    doc.add_heading("Основные показатели", level=1)
+    heading = doc.add_heading("Основные показатели", level=1)
+    heading.paragraph_format.keep_with_next = True
     passport = bundle.passport
     _table(
         doc,
@@ -541,17 +591,20 @@ def build_docx(bundle: ExportBundle) -> bytes:
 
     reasons = bundle.policy.get("reasons") if isinstance(bundle.policy.get("reasons"), list) else []
     if reasons:
-        doc.add_heading("Почему такой итог", level=1)
+        heading = doc.add_heading("Почему такой итог", level=1)
+        heading.paragraph_format.keep_with_next = True
         for reason in reasons:
             doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
     coverage_reasons = passport.get("coverage_reasons") if isinstance(passport.get("coverage_reasons"), list) else []
     if coverage_reasons:
-        doc.add_heading("Что осталось за пределами проверки", level=1)
+        heading = doc.add_heading("Что осталось за пределами проверки", level=1)
+        heading.paragraph_format.keep_with_next = True
         for reason in coverage_reasons:
             doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
 
     doc.add_page_break()
-    doc.add_heading("Находки", level=1)
+    heading = doc.add_heading("Находки", level=1)
+    heading.paragraph_format.keep_with_next = True
     if not bundle.findings:
         doc.add_paragraph(
             "Находок не обнаружено. Это не доказывает отсутствие уязвимостей за пределами "
@@ -581,13 +634,21 @@ def build_docx(bundle: ExportBundle) -> bytes:
         )
 
         for index, finding in enumerate(bundle.findings, 1):
-            doc.add_heading(
+            finding_heading = doc.add_heading(
                 f"{index}. {_severity_label(finding.get('severity')).capitalize()}: {finding.get('ruleId')}",
                 level=2,
             )
-            doc.add_paragraph(f"ID: {finding.get('id')}")
-            doc.add_paragraph(f"Правило: {finding.get('ruleId')} ({finding.get('analyzer')})")
-            doc.add_paragraph(f"Где: {_location_text(finding.get('primaryLocation'))}")
+            finding_heading.paragraph_format.keep_with_next = True
+            finding_id_paragraph = doc.add_paragraph(f"ID: {finding.get('id')}")
+            finding_id_paragraph.paragraph_format.keep_with_next = True
+            finding_rule_paragraph = doc.add_paragraph(
+                f"Правило: {finding.get('ruleId')} ({finding.get('analyzer')})"
+            )
+            finding_rule_paragraph.paragraph_format.keep_with_next = True
+            finding_location_paragraph = doc.add_paragraph(
+                f"Где: {_location_text(finding.get('primaryLocation'))}"
+            )
+            finding_location_paragraph.paragraph_format.keep_with_next = True
             doc.add_paragraph(f"Почему это важно: {finding.get('severityBasis') or 'без пояснения'}")
             confidence = _CONFIDENCE_LABELS.get(str(finding.get("confidence")), str(finding.get("confidence") or ""))
             doc.add_paragraph(f"Достоверность: {confidence}. {finding.get('confidenceBasis') or ''}".strip())
@@ -609,7 +670,8 @@ def build_docx(bundle: ExportBundle) -> bytes:
                     )
 
     doc.add_page_break()
-    doc.add_heading("Гипотезы AI-сканера", level=1)
+    heading = doc.add_heading("Гипотезы ИИ-сканера", level=1)
+    heading.paragraph_format.keep_with_next = True
     ai_scan = bundle.ai_scan
     doc.add_paragraph(
         "Это гипотезы, а не подтверждённые находки. Они не меняют итог проверки и не "
@@ -617,7 +679,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
     )
     observations = ai_scan.get("observations") or []
     if not observations:
-        doc.add_paragraph("AI-сканер не сформировал гипотез для этого запуска.")
+        doc.add_paragraph("ИИ-сканер не сформировал гипотез для этого запуска.")
     else:
         rows = []
         for index, item in enumerate(observations, 1):
@@ -641,10 +703,20 @@ def build_docx(bundle: ExportBundle) -> bytes:
             8.5,
         )
         for index, item in enumerate(observations, 1):
-            doc.add_heading(f"{index}. {item.get('ruleClass')} ({_severity_label(item.get('severity'))})", level=2)
+            ai_heading = doc.add_heading(
+                f"{index}. {item.get('ruleClass')} ({_severity_label(item.get('severity'))})",
+                level=2,
+            )
+            ai_heading.paragraph_format.keep_with_next = True
             ai_status = _AI_STATUS_LABELS.get(str(item.get("status")), str(item.get("status") or ""))
-            doc.add_paragraph(f"ID: {item.get('id')}; статус: {ai_status}; проверено: нет.")
-            doc.add_paragraph(f"Где: {_location_text(item.get('primaryLocation'))}")
+            ai_id_paragraph = doc.add_paragraph(
+                f"ID: {item.get('id')}; статус: {ai_status}; проверено: нет."
+            )
+            ai_id_paragraph.paragraph_format.keep_with_next = True
+            ai_location_paragraph = doc.add_paragraph(
+                f"Где: {_location_text(item.get('primaryLocation'))}"
+            )
+            ai_location_paragraph.paragraph_format.keep_with_next = True
             doc.add_paragraph(f"Почему: {item.get('rationale') or 'без пояснения'}")
             doc.add_paragraph(f"Что проверить: {item.get('remediation') or 'без рекомендации'}")
             if item.get("redactedEvidence"):
@@ -659,7 +731,8 @@ def build_docx(bundle: ExportBundle) -> bytes:
         for limitation in limitations:
             doc.add_paragraph(mask_sensitive_text(naturalize(str(limitation))), style="List Bullet")
 
-    doc.add_heading("Приложение А. Технические сведения", level=1)
+    heading = doc.add_heading("Приложение А. Технические сведения", level=1)
+    heading.paragraph_format.keep_with_next = True
     ai_analysis = bundle.technical.get("aiAnalysis") or {}
     ai_provenance = bundle.technical.get("aiScan") or {}
     ai_coverage = bundle.technical.get("aiScanCoverage") or {}
@@ -668,17 +741,17 @@ def build_docx(bundle: ExportBundle) -> bytes:
         ["Параметр", "Значение"],
         [
             ["Схема экспорта", EXPORT_SCHEMA_VERSION],
-            ["AI-пояснения", ai_analysis.get("status") or "disabled"],
-            ["Модель AI-пояснений", ai_analysis.get("model") or "—"],
-            ["Модель AI-скана", ai_provenance.get("model") or "—"],
+            ["ИИ-пояснения", ai_analysis.get("status") or "disabled"],
+            ["Модель ИИ-пояснений", ai_analysis.get("model") or "—"],
+            ["Модель ИИ-скана", ai_provenance.get("model") or "—"],
             ["Провайдер", ai_provenance.get("provider") or "—"],
             ["Версия промпта", ai_provenance.get("promptVersion") or "—"],
             ["Версия валидатора", ai_provenance.get("validatorVersion") or "—"],
             ["Версия конфигурации", ai_provenance.get("configVersion") or "—"],
             ["Идентификатор запроса", ai_provenance.get("requestId") or "—"],
             ["Адрес провайдера", ai_provenance.get("endpoint") or "—"],
-            ["Статус AI-скана", ai_scan.get("status") or "disabled"],
-            ["Покрытие AI-скана", ai_coverage.get("status") or "—"],
+            ["Статус ИИ-скана", ai_scan.get("status") or "disabled"],
+            ["Покрытие ИИ-скана", ai_coverage.get("status") or "—"],
         ],
         [2.4, 4.4],
         mods,
