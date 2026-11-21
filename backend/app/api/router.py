@@ -929,5 +929,7 @@ def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
 
 
 from backend.app.api.repository_watches import create_repository_watch_router
+from backend.app.api.repository_hooks import create_repository_hook_router
 
 api_router.include_router(create_repository_watch_router(db_repo, executor))
+api_router.include_router(create_repository_hook_router(db_repo))

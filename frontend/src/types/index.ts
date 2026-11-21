@@ -235,20 +235,37 @@ export interface ArtifactManifest {
   repository?: RepositorySource | null;
 }
 
+export type RepositoryTriggerMode = 'poll' | 'webhook';
+
 export interface RepositoryWatch {
   id: string;
   workflow_id: string;
   url: string;
   provider: RepositoryProvider;
   branch: string;
+  /** Пустая строка для webhook: запуск по событию не использует расписание. */
   cron_or_interval: string;
+  trigger_mode?: RepositoryTriggerMode;
+  /** Секрет выпущен на сервере. Это не подтверждение, что хук уже стоит в репозитории. */
+  webhook_ready?: boolean;
   enabled?: boolean | number | string;
   next_check_at?: string | null;
   last_checked_at?: string | null;
   last_seen_commit?: string | null;
   last_run_id?: string | null;
   last_error?: string | null;
+  last_delivery_at?: string | null;
+  last_delivery_status?: string | null;
+  last_delivery_error?: string | null;
   created_at?: string | null;
+}
+
+/** Ответ setup: секрет приходит один раз и только по явному действию администратора. */
+export interface RepositoryWebhookSetup {
+  endpointPath: string;
+  secret: string;
+  provider: RepositoryProvider;
+  event: 'push';
 }
 
 export interface RepositoryCheckResult {
