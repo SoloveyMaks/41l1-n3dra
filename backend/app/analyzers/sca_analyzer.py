@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.analyzers.base import BaseAnalyzer
+from backend.app.analyzers.file_discovery import prune_scan_dirs
 from backend.app.analyzers.version_comparator import matches_version_range
 from backend.app.contracts.schemas import (
     Confidence, Coverage, Diagnostic, Finding, FindingStatus,
@@ -44,6 +45,13 @@ class ScaAnalyzer(BaseAnalyzer):
                 diagnostics=[Diagnostic(level="error", message=f"Path not found: {artifact_path}", source="ScaAnalyzer")],
                 duration_ms=0.0
             )
+        if not self.advisories:
+            diagnostics.append(Diagnostic(
+                level="error",
+                message="Справочник уязвимостей пуст или недоступен; SCA-сопоставление не выполнялось",
+                source="ScaAnalyzer",
+                details={"code": "sca.database-missing"},
+            ))
 
         # 1. Parse Version Catalog (gradle/libs.versions.toml) if present
         version_catalog_versions: Dict[str, str] = {}
@@ -105,7 +113,8 @@ class ScaAnalyzer(BaseAnalyzer):
             r"""(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*libs\.([a-zA-Z0-9._]+)\s*\)"""
         )
 
-        for root, _, files in os.walk(root_path):
+        for root, dirnames, files in os.walk(root_path):
+            prune_scan_dirs(dirnames)
             for file_name in files:
                 if not (file_name.endswith(".gradle.kts") or file_name.endswith(".gradle")):
                     continue
@@ -202,6 +211,11 @@ class ScaAnalyzer(BaseAnalyzer):
 
             if is_vulnerable:
                 cve_id = adv.get("id", "CVE-UNKNOWN")
+                advisory_ids = [cve_id, *[str(alias) for alias in adv.get("aliases", []) if str(alias)]]
+                fixed_versions = [str(item) for item in adv.get("fixed_versions", []) if str(item)]
+                if not fixed_versions and adv.get("fixed_version"):
+                    fixed_versions = [str(adv["fixed_version"])]
+                sources = [str(item) for item in adv.get("sources", []) if str(item)]
                 fingerprint = hashlib.sha256(f"sca:{coord}:{version}:{cve_id}".encode("utf-8")).hexdigest()[:16]
                 finding_id = f"fnd_sca_{fingerprint}"
 
@@ -247,12 +261,17 @@ class ScaAnalyzer(BaseAnalyzer):
                         ),
                         TraceStep(
                             step=2,
-                            description=f"Сопоставление со справочником уязвимостей: обнаружена известная уязвимость {cve_id}. Рекомендуемая безопасная версия: {adv.get('fixed_version', 'latest')}",
+                            description=(
+                                f"Сопоставление со справочником уязвимостей: обнаружена известная уязвимость "
+                                f"{', '.join(advisory_ids)}. Рекомендуемая безопасная версия: "
+                                f"{', '.join(fixed_versions) if fixed_versions else 'latest'}."
+                                + (f" Источники: {', '.join(sources)}." if sources else "")
+                            ),
                             location=None
                         )
                     ],
                     redactedEvidence=line.strip(),
-                    advisoryIds=[cve_id],
+                    advisoryIds=advisory_ids,
                     coverageWarnings=[]
                 )
                 findings.append(finding)

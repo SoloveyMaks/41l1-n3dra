@@ -1,27 +1,31 @@
-# Team B runtime (opt-in)
+# Team B runtime
 
-Team B — отдельный пакет `analyzers/` (cg26). Runtime по умолчанию остаётся
-`backend/app/analyzers`; Team B включается только явно в draft workflow.
+Team B — пакет `analyzers/` (cg26). Он больше не opt-in: каждый scanner node
+выполняет Team B вместе с backend-анализом, а `engine: team_b`/`backend`
+сохранённых ревизий разрешается в тот же полный анализ. Актуальное поведение и
+ограничения: [full-analysis.md](full-analysis.md). Ниже — серверная часть и
+историческое описание adapter-а.
 
-## Как включить через API
+## Как это выглядит в API
 
-У всех трёх scanner nodes должен быть одинаковый engine:
+`engine` больше не переключает движок. Все допустимые значения выполняют
+полный анализ:
 
 ```json
 {
   "kind": "secret_scan",
-  "config": {"engine": "team_b"}
+  "config": {"engine": "full"}
 }
 ```
 
-То же для `sca_scan` и `kotlin_sast`. `PUT /api/workflows/{id}/draft` сохраняет
-draft, `POST /api/workflows/{id}/validate` проверяет его, затем
-`POST /api/workflows/{id}/runs`.
-
-- `engine` отсутствует или `backend` → прежний runtime.
-- `engine: "team_b"` → adapter Team B.
-- Смешанные engines в одном workflow отклоняются validation с перечнем нод.
-- Deploy default не переключается этим изменением.
+- `engine` отсутствует, `full`, `auto`, `backend` или `team_b` → backend +
+  Team B для этой категории.
+- Смешанные значения в одном workflow допустимы: каждая нода всё равно
+  выполняет полный анализ своей категории.
+- Набор категорий задаётся наличием нод; скрытого добавления нет.
+- `PUT /api/workflows/{id}/draft`, `POST /api/workflows/{id}/validate`, затем
+  `POST /api/workflows/{id}/runs` — как раньше. Исторические ревизии не
+  переписываются.
 
 ## Серверные требования
 
@@ -47,21 +51,24 @@ Kotlin/Gradle. Если advisory не задан, SCA работает без к
 3. нормализует identity: ZIP `artifactHash`, C-format full snapshot
    `snapshotManifestHash`; все `scanResults`/`codeFacts` получают ту же identity;
 4. переводит три ScanResult в backend DTO для policy/AI/report;
-5. сохраняет canonical `AnalysisBundle` в run artifact, строит
-   `SecurityMapDto` и публикует через существующий `CanonicalPublisher`.
+5. передаёт их в общий union: совпавшие с backend находки сливаются, остальные
+   добавляются, после чего canonical `SecurityMapDto` строится из объединённых
+   findings через codefacts и публикуется существующим `CanonicalPublisher`.
 
-Evidence и policyInputs Team B сохраняются как есть; 67 evidence не
-пересоздаются и не теряются. `expectedScopesVerified` остаётся false.
+Team B evidence остаётся в его `AnalysisBundle`; в объединённой карте evidence
+пересобирается из source-локаций каждого сохранённого finding. `expectedScopesVerified`
+остаётся false.
 
 ## Ограничения
 
-- Общий `compareBundles` остаётся `inconclusive` для Team B: policy/scope
-  attestation не выдаётся за полную.
+- Общий `compareBundles` остаётся `inconclusive`: policy/scope attestation не
+  выдаётся за полную.
 - SQL narrow endpoint (`/api/comparisons/{b}/{c}/sql-pattern`) ищет
-  `KOTLIN-SQL-INJECTION`; Team B rule `CG26-SAST-001` не переименовывается,
-  поэтому проверка честно unavailable/inconclusive.
+  `KOTLIN-SQL-INJECTION`; полный анализ приводит `CG26-SAST-001` к этому
+  каноническому id, поэтому merged-находка остаётся видимой.
 - Owner/auth policy не выдумывается; Team B policy assumption сохраняется.
-- В финальный образ нужен `COPY analyzers ./analyzers` (deploy change).
+- В финальный образ нужен `COPY analyzers ./analyzers` — он уже есть в
+  `deploy/Dockerfile` и включает `analyzers/advisory-snapshot/`.
 
 ## Локальный smoke
 

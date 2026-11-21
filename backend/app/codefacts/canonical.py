@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from backend.app.codefacts.extractor import (
     EXTRACTOR_VERSION,
@@ -45,6 +46,29 @@ from backend.app.codefacts.source import (
 from backend.app.contracts.schemas import Finding as BackendFinding
 
 PRODUCER_VERSION = "cg-evidence/1.0.0"
+# Версия композиции full-analysis: backend secret/sca/sast + Team B union.
+FULL_ANALYSIS_COMPOSITION_VERSION = "cg-full-analysis/1"
+_ANALYSIS_SIGNATURE_VERSION = "cg-config/2"
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_BACKEND_ANALYZERS = _REPO_ROOT / "backend" / "app" / "analyzers"
+_TEAM_B_ROOT = _REPO_ROOT / "analyzers"
+_TEAM_B_PARSER_FILES = (
+    "kotlin_lexer.py",
+    "kotlin_index.py",
+    "project.py",
+    "textfiles.py",
+    "yaml_lite.py",
+    "versions.py",
+)
+# Модули, которые собирают full-analysis и разрешают доверенный каталог.
+_COMPOSITION_MODULES = (
+    "backend/app/integrations/full_analysis.py",
+    "backend/app/integrations/team_b.py",
+    "backend/app/analyzers/advisory_catalog.py",
+)
+_ADVISORY_MAX_BYTES = 10 * 1024 * 1024
+
 ANALYZER_CATEGORY = {"secret": "SECRET", "sca": "SCA", "sast": "SAST", "codefacts": "SAST"}
 CONFIDENCE_MAP = {"confirmed": "high", "potential": "medium", "inconclusive": "low"}
 RULE_FAMILY = {
@@ -76,6 +100,137 @@ def _evidence_id(workspace: str, run_id: str, item: Dict[str, Any]) -> str:
         workspace, run_id, str(item.get("kind", "source")),
         loc["path"], int(loc["byteStart"]), int(loc["byteEnd"]), snippet_hash,
     )
+
+
+def _python_modules(base: Path) -> List[str]:
+    """Relative POSIX names of the Python modules under ``base``."""
+    if not base.is_dir():
+        return []
+    return sorted(
+        path.relative_to(base).as_posix()
+        for path in base.rglob("*.py")
+        if path.is_file()
+    )
+
+
+def _digest_files(base: Path, names: Iterable[str]) -> str:
+    """Digest file names and bytes only: the same tree hashes the same in any copy."""
+    digest = hashlib.sha256()
+    for name in sorted(names):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        path = base / name
+        try:
+            data = path.read_bytes()
+        except OSError:
+            digest.update(b"missing\0")
+            continue
+        digest.update(b"present\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _team_b_modules() -> List[str]:
+    names = ["__init__.py", "scan.py"]
+    names.extend(f"cg26/{name}" for name in _python_modules(_TEAM_B_ROOT / "cg26"))
+    return names
+
+
+def _fallback_trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
+    """Standalone copy of Team B's resolver, used only when the adapter is absent.
+
+    Mirrors ``backend.app.integrations.team_b._trusted_advisory_path``: only the
+    server-controlled ``CG26_ADVISORY_DB`` (bounded by ``CG26_ADVISORY_ROOT``)
+    or the packaged snapshot can be selected. The uploaded project never
+    influences this choice.
+    """
+    packaged = _TEAM_B_ROOT / "advisory-snapshot" / "trusted-advisories.json"
+    raw = os.getenv("CG26_ADVISORY_DB", "").strip()
+    warning: Optional[str] = None
+    path: Optional[Path] = packaged
+    if raw:
+        if raw.lower().startswith(("http://", "https://")):
+            warning = "CG26_ADVISORY_DB URL запрещён; используется встроенный advisory snapshot"
+        else:
+            configured: Optional[Path] = Path(raw).resolve()
+            root = os.getenv("CG26_ADVISORY_ROOT", "").strip()
+            if root:
+                trusted_root = Path(root).resolve()
+                if trusted_root != configured and trusted_root not in configured.parents:
+                    warning = (
+                        "CG26_ADVISORY_DB вне CG26_ADVISORY_ROOT; "
+                        "используется встроенный advisory snapshot"
+                    )
+                    configured = None
+            if configured is not None and configured.is_file():
+                path = configured
+            elif configured is not None:
+                warning = (
+                    "CG26_ADVISORY_DB не найден; используется встроенный доверенный "
+                    f"advisory snapshot {packaged.name}"
+                )
+    if path is not None and path.is_file():
+        if path.stat().st_size > _ADVISORY_MAX_BYTES:
+            warning = "advisory snapshot слишком большой; SCA работает без каталога"
+            path = None
+        return path, warning
+    return None, (
+        warning or
+        "доверенный advisory snapshot не найден; SCA работает без каталога, "
+        "SECRET/SAST продолжают анализ"
+    )
+
+
+def _trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
+    """Return Team B's selected catalog; fall back only without its contract."""
+    try:
+        from backend.app.analyzers.advisory_catalog import (
+            resolve_trusted_catalog as team_b_resolver,
+        )
+    except ImportError:
+        return _fallback_trusted_advisory_path()
+    try:
+        resolved = team_b_resolver()
+    except Exception:
+        return _fallback_trusted_advisory_path()
+    if isinstance(resolved, tuple) and len(resolved) == 2:
+        return resolved
+    # Older adapters returned only Optional[Path]; their resolver lacks the
+    # packaged-file and warning semantics, so use the conservative copy.
+    return _fallback_trusted_advisory_path()
+
+
+def _catalog_metadata(path: Optional[Path]) -> Tuple[Optional[str], str]:
+    """Return ``(sha256, version)`` for the selected catalog without exposing its path."""
+    if path is None:
+        return None, "unavailable"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, "unavailable"
+    version = "unknown"
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        version = "invalid"
+    else:
+        if isinstance(payload, dict):
+            snapshot_version = str(payload.get("snapshotVersion") or "").strip()
+            snapshot = payload.get("snapshot")
+            snapshot_date = (
+                str(snapshot.get("date") or "").strip()
+                if isinstance(snapshot, dict) else ""
+            )
+            version = (
+                snapshot_version
+                or (f"osv-maven/{snapshot_date}" if snapshot_date else "")
+                or str(payload.get("schemaVersion") or "").strip()
+                or "unknown"
+            )
+    # Metadata is not a secret, but keep the signature field bounded and printable.
+    version = re.sub(r"[\x00-\x1f\x7f]", "?", version)[:120]
+    return _sha(data), version
 
 
 class CanonicalMapBuilder:
@@ -448,14 +603,15 @@ class CanonicalMapBuilder:
         return mapping.get(finding.ruleId, "static_fact")
 
     # --- diagnostics / coverage -----------------------------------------
-    def _diag(self, code: str, message: str, evidence_id: Optional[str] = None) -> None:
+    def _diag(self, code: str, message: str, evidence_id: Optional[str] = None,
+              category: str = "SAST") -> None:
         self._diag_ordinal += 1
         self.diagnostics.append({
             "workspaceId": self.workspace_id,
             "runId": self.run_id,
             "snapshotId": self.snapshot_id,
             "id": diagnostic_uuid(self.workspace_id, self.run_id, code, self._diag_ordinal),
-            "category": "SAST",
+            "category": category,
             "code": code,
             "message": message,
             "evidenceId": evidence_id,
@@ -712,26 +868,70 @@ class CanonicalMapBuilder:
 
     # --- signature -------------------------------------------------------
     def _build_signature(self) -> Dict[str, Any]:
-        root = Path(__file__).resolve().parent
-        parser_digest = hashlib.sha256()
-        for name in ("extractor.py", "source.py", "canonical.py"):
-            parser_digest.update((root / name).read_bytes())
-        advisories = Path(__file__).resolve().parents[1] / "analyzers" / "advisories.json"
-        advisory_bytes = advisories.read_bytes() if advisories.exists() else b""
+        parser_root = Path(__file__).resolve().parent
+        advisories = _BACKEND_ANALYZERS / "advisories.json"
+        advisory_bytes: Optional[bytes] = None
+        if advisories.is_file():
+            try:
+                advisory_bytes = advisories.read_bytes()
+            except OSError:
+                advisory_bytes = None
+        catalog_path, _catalog_warning = _trusted_advisory_path()
+        catalog_digest, catalog_version = _catalog_metadata(catalog_path)
+        if catalog_digest is None:
+            self._diag(
+                "CF-SIGNATURE-CATALOG-UNAVAILABLE",
+                "Доверенный advisory-каталог не выбран или недоступен; "
+                "SCA-подпись консервативная, сверка с эталоном неполная.",
+                category="SCA",
+            )
+        backend_advisory_digest = _sha(advisory_bytes) if advisory_bytes is not None else None
+        parser_hash = _sha(canonical_json({
+            "backend": _digest_files(
+                parser_root, ("extractor.py", "source.py", "canonical.py"),
+            ),
+            "teamB": _digest_files(_TEAM_B_ROOT / "cg26", _TEAM_B_PARSER_FILES),
+        }).encode("utf-8"))
+        rules_hash = _sha(canonical_json({
+            "definitionsHash": _sha(canonical_json(RULE_DEFINITIONS).encode("utf-8")),
+            "backendAnalyzersHash": _digest_files(
+                _BACKEND_ANALYZERS, _python_modules(_BACKEND_ANALYZERS),
+            ),
+            "teamBHash": _digest_files(_TEAM_B_ROOT, _team_b_modules()),
+            "compositionHash": _digest_files(_REPO_ROOT, _COMPOSITION_MODULES),
+            "compositionVersion": FULL_ANALYSIS_COMPOSITION_VERSION,
+        }).encode("utf-8"))
+        advisory_hash = _sha(canonical_json({
+            "backend": backend_advisory_digest,
+            "trustedCatalog": catalog_digest,
+            "trustedCatalogVersion": catalog_version,
+        }).encode("utf-8"))
         config = {
             "extensions": sorted(TEXT_EXTENSIONS),
-            "maxGraphFiles": __import__("os").getenv("CG_MAX_GRAPH_FILES", "2000"),
+            "maxGraphFiles": os.getenv("CG_MAX_GRAPH_FILES", "2000"),
             "parserVersion": EXTRACTOR_VERSION,
+            "compositionVersion": FULL_ANALYSIS_COMPOSITION_VERSION,
+            "engines": {
+                category: ["backend", "team_b"]
+                for category in ("SECRET", "SCA", "SAST")
+            },
         }
+        hmac_version = re.sub(
+            r"[\x00-\x1f\x7f]", "?",
+            os.getenv("CG26_HMAC_KEY_VERSION", "").strip() or "unset",
+        )[:120]
         return {
             "parserVersion": EXTRACTOR_VERSION,
-            "rulesVersion": RULES_VERSION,
-            "advisoryVersion": "cg-advisories/1" if advisories.exists() else "cg-advisories/0",
-            "configVersion": "cg-config/1",
-            "hmacKeyVersion": "cg-anchor-hmac/v1",
-            "parserHash": parser_digest.hexdigest(),
-            "rulesHash": _sha(canonical_json(RULE_DEFINITIONS).encode("utf-8")),
-            "advisoryHash": _sha(advisory_bytes),
+            "rulesVersion": f"{RULES_VERSION}+{FULL_ANALYSIS_COMPOSITION_VERSION}",
+            "advisoryVersion": (
+                ("cg-advisories/1" if advisory_bytes is not None else "cg-advisories/0")
+                + f"+trusted-advisories/{catalog_version}"
+            ),
+            "configVersion": _ANALYSIS_SIGNATURE_VERSION,
+            "hmacKeyVersion": f"cg-anchor-hmac/v1+cg26/{hmac_version}",
+            "parserHash": parser_hash,
+            "rulesHash": rules_hash,
+            "advisoryHash": advisory_hash,
             "scanConfigHash": _sha(canonical_json(config).encode("utf-8")),
             "domainPolicyRevisionId": None,
             "domainPolicyVersion": None,

@@ -48,7 +48,7 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
         outputs=[
             PortDefinition(id="scan_result", name="Scan Result", type=PortType.SCAN_RESULT)
         ],
-        default_config={"detectEntropy": True, "scanProperties": True}
+        default_config={"engine": "full", "detectEntropy": True, "scanProperties": True}
     ),
     NodeKind.SCA_SCAN: NodeDefinition(
         kind=NodeKind.SCA_SCAN,
@@ -61,7 +61,7 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
         outputs=[
             PortDefinition(id="scan_result", name="Scan Result", type=PortType.SCAN_RESULT)
         ],
-        default_config={"checkTransitive": True}
+        default_config={"engine": "full", "checkTransitive": True}
     ),
     NodeKind.KOTLIN_SAST: NodeDefinition(
         kind=NodeKind.KOTLIN_SAST,
@@ -74,7 +74,7 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
         outputs=[
             PortDefinition(id="scan_result", name="Scan Result", type=PortType.SCAN_RESULT)
         ],
-        default_config={"rules": ["SQL_INJECTION", "PATH_TRAVERSAL", "COMMAND_INJECTION", "OPEN_ENDPOINT", "IDOR"]}
+        default_config={"engine": "full", "rules": ["SQL_INJECTION", "PATH_TRAVERSAL", "COMMAND_INJECTION", "OPEN_ENDPOINT", "IDOR"]}
     ),
     NodeKind.MERGE_FINDINGS: NodeDefinition(
         kind=NodeKind.MERGE_FINDINGS,
