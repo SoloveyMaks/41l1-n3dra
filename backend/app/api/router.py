@@ -171,7 +171,10 @@ def get_session(request: Request, response: Response):
             "role": session["role"],
             "adminAvailable": admin_available(),
             "workspaceId": session["workspaceId"],
-            "expiresInSec": SESSION_TTL_SECONDS,
+            "expiresInSec": max(
+                0,
+                int(session["expiresAt"] - datetime.now(timezone.utc).timestamp()),
+            ),
         }
     if public_demo():
         # Публичный режим: без passphrase cookie не выдаётся.
