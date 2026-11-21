@@ -689,6 +689,7 @@ class WorkflowExecutor:
                         deterministic_findings=findings,
                         config=config,
                         run_id=run_id,
+                        # Per-execution workspace; do not cache at executor init.
                         workspace=workspace_id(),
                     )
                 except Exception:  # noqa: BLE001 - AI block is advisory, never fatal

@@ -150,6 +150,7 @@ class AiScanService:
         workspace: Optional[str] = None,
     ) -> AiScanResult:
         limits = resolve_limits(config)
+        # Resolve per execution (ContextVar-compatible); never cache workspace on self.
         workspace = workspace or workspace_id()
         coverage = AiScanCoverage(
             maxFiles=limits.max_files,

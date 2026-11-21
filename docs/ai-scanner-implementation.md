@@ -313,9 +313,25 @@ printed. No production service, push or main branch was touched.
   deterministic-only.
 - No DB migration: the result lives in `runtime.node_runs.output_data_masked`
   and the SSE event. A typed observation table is a later decision.
-- `workspace` is passed from the existing `workspace_id()` resolver; no global
-  environment mutation was added. The profile owner can replace that resolver
-  with a ContextVar without changing AI_SCAN logic.
+
+## 9. Workspace/auth contract
+
+Verified against the auth-owner contract:
+
+- `AiScanService.__init__` caches only provider configuration; it does not read,
+  cache or freeze a workspace at init.
+- `WorkflowExecutor` resolves `workspace_id()` per `AI_SCAN` execution, not at
+  construction or module import, and passes it explicitly into
+  `AiScanService.scan`. `asyncio.to_thread` receives the already-resolved value.
+- `CodeFactsStore`, artifact lookup, node-run persistence and SSE all use the
+  current `DatabaseRepository`/workspace context; no second DB repository,
+  auth copy or context copy was added.
+- No `os.environ` mutation, no module-level workspace and no global identity
+  cache. A future ContextVar implementation in `identity.py` can replace the
+  resolver without changing AI_SCAN logic; scheduler work remains owned by root
+  and must pass its explicit workspace as usual.
+- AI node artifacts and outputs stay in the current workspace-scoped
+  `runtime.node_runs`; no cross-workspace read/write path exists.
 
 **Final status: implemented and live-checked on this branch; not pushed, not
 merged into main, not deployed.**
