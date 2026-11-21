@@ -10,8 +10,8 @@
   PostgreSQL publish и локальный деплой.
 - `main` — после финальной приёмки; PR #1 направлен из `dev` в `main`.
 - `https://nedra.soloveyka.bond` опубликован через отдельный Cloudflare Tunnel.
-  Хост — локальный ПК, не независимый VPS. Публичный образ `c01c96d`; новый
-  optional Team B adapter ждёт финальную пересборку.
+  Хост — локальный ПК, не независимый VPS. Optional Team B adapter уже
+  проверен в публичном контейнере на отдельном workflow.
 - Production readiness, внешняя auth-модель и преимущество retrieval не
   заявляются.
 
@@ -138,3 +138,18 @@ Adapter использует полный frozen manifest и ZIP hash из intak
 серверный advisory и серверный HMAC. Известный demo key запрещён. Без advisory
 SCA сохраняет error, zero findings дают `inconclusive`, а не `pass`. Team B
 `CG26-SAST-001` не переименовывается под SQL proof другого правила.
+
+
+## Проверенные исправления интеграции
+
+- Runtime и codefacts используют один resolver workspace; конфликт двух env
+  настроек останавливает старт, вместо разделения данных между workspace.
+- Runtime DDL сериализован advisory lock: два процесса стартовали на пустой БД
+  без deadlock. Missing/foreign run nodes и findings возвращают 404.
+- Два run одного artifact сохраняют отдельные evidence и строки findings.
+  Одинаковый scanner finding ID допустим внутри ключа `(workspace, run, id)`.
+- HTML перепроверяется после redeploy, hash assets кэшируются отдельно;
+  при сбое загрузки есть статический экран и React error boundary.
+- Повторный bootstrap сохраняет серверный Team B HMAC и custom version/advisory paths.
+- По запросу пользователя визуал карты переделывается в стиле workflow editor;
+  исходные DTO, доказательства и неизвестные связи при этом сохраняются.
