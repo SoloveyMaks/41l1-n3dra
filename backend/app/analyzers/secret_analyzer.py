@@ -121,8 +121,7 @@ class SecretAnalyzer(BaseAnalyzer):
                         continue
 
                     raw_bytes = file_path.read_bytes()
-                    # Decode as utf-8, replace bad chars
-                    content = raw_bytes.decode("utf-8", errors="replace")
+                    content = raw_bytes.decode("utf-8")
                     lines = content.splitlines(keepends=True)
                     files_scanned += 1
                     lines_of_code += len(lines)
