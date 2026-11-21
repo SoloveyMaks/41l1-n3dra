@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 from backend.app.contracts.schemas import WorkflowDraft
 from backend.app.storage.database import DatabaseRepository
 from backend.app.storage.telegram import (
+    JOB_LEASE_SECONDS,
+    MAX_JOB_RECOVERY_ATTEMPTS,
     JobOwnershipLost,
     OutboxItem,
     SettingsOwnershipLost,
@@ -36,6 +38,8 @@ MAX_OUTBOX_ATTEMPTS = 5
 OUTBOX_RETRY_BASE_SECONDS = 5
 OUTBOX_RETRY_MAX_SECONDS = 300
 JOB_STOP_GRACE_SECONDS = 15
+JOB_RECOVERY_INTERVAL_SECONDS = 5
+JOB_RECOVERY_BATCH = 20
 
 HELP_TEXT = """NEDRA Telegram
 
@@ -74,6 +78,8 @@ class TelegramRuntime:
         self._poll_task: Optional[asyncio.Task] = None
         self._outbox_task: Optional[asyncio.Task] = None
         self._job_tasks: Set[asyncio.Task] = set()
+        self._active_job_ids: Set[str] = set()
+        self._recovery_task: Optional[asyncio.Task] = None
         self._external_status = "not_started"
         self._last_error: Optional[str] = None
         self._bot_username: Optional[str] = None
@@ -83,6 +89,11 @@ class TelegramRuntime:
         if self._started:
             return self.status()
         self._started = True
+        # Recovery must run even without a bot token: queued/importing jobs are
+        # database work, not Telegram transport work.
+        self._recovery_task = asyncio.create_task(
+            self._recovery_loop(), name="telegram-job-recovery"
+        )
         if self.api is None:
             self._external_status = "not_configured"
             self._last_error = "TELEGRAM_BOT_TOKEN не настроен"
@@ -112,7 +123,10 @@ class TelegramRuntime:
     async def stop(self) -> None:
         self._stop.set()
         self._started = False
-        tasks = [task for task in (self._poll_task, self._outbox_task) if task is not None]
+        tasks = [
+            task for task in (self._poll_task, self._outbox_task, self._recovery_task)
+            if task is not None
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -125,6 +139,7 @@ class TelegramRuntime:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+        self._active_job_ids.clear()
         if self.api is not None:
             await self.api.close()
         self._external_status = "stopped"
@@ -202,6 +217,25 @@ class TelegramRuntime:
             if delivered:
                 continue
             await self._wait(self.outbox_interval)
+
+    async def _recovery_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.recover_jobs_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - recovery must not kill runtime
+                logger.warning("telegram job recovery failed: %s", self._safe_error(exc))
+            await self._wait(JOB_RECOVERY_INTERVAL_SECONDS)
+
+    async def recover_jobs_once(self) -> int:
+        """Bounded pass: settle orphaned runs and spawn claimable jobs."""
+        ids = await asyncio.to_thread(
+            self.repo.recover_jobs, JOB_RECOVERY_BATCH, MAX_JOB_RECOVERY_ATTEMPTS
+        )
+        for job_id in ids:
+            self._spawn_job(job_id)
+        return len(ids)
 
     async def _wait(self, seconds: float) -> None:
         try:
@@ -441,11 +475,15 @@ class TelegramRuntime:
         await self._reply(chat_id, f"Задача принята: {job.job_id}\nИмпорт и запуск сценария идут в фоне.")
 
     def _spawn_job(self, job_id: str) -> None:
+        if job_id in self._active_job_ids:
+            return
+        self._active_job_ids.add(job_id)
         task = asyncio.create_task(self._run_job(job_id), name=f"telegram-job-{job_id}")
         self._job_tasks.add(task)
 
         def _done(completed: asyncio.Task) -> None:
             self._job_tasks.discard(completed)
+            self._active_job_ids.discard(job_id)
             if completed.cancelled():
                 return
             exc = completed.exception()
@@ -454,26 +492,36 @@ class TelegramRuntime:
 
         task.add_done_callback(_done)
 
+    async def _heartbeat_job(self, job: Any) -> None:
+        interval = max(5.0, JOB_LEASE_SECONDS / 3)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                alive = await asyncio.to_thread(
+                    self.repo.heartbeat_job, job, JOB_LEASE_SECONDS
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("telegram job heartbeat failed: %s", self._safe_error(exc))
+                return
+            if not alive:
+                return
+
     async def _run_job(self, job_id: str) -> None:
-        job = self.repo.claim_job(job_id)
+        job = self.repo.claim_job(
+            job_id, JOB_LEASE_SECONDS, MAX_JOB_RECOVERY_ATTEMPTS
+        )
         if job is None:
             return
-
-        def _lost() -> None:
-            # Keep the old job as history; the new owner must never see it.
-            self.repo.set_job_status(
-                job_id, "cancelled", error="owner changed",
-                binding_epoch=job.binding_epoch, allow_cancelled=True,
-            )
-
+        heartbeat = asyncio.create_task(
+            self._heartbeat_job(job), name=f"telegram-heartbeat-{job_id}"
+        )
         try:
-            if not self.repo.job_is_current(job):
-                _lost()
+            if not self.repo.job_lease_valid(job):
                 return
             with telegram_workspace_scope(job.workspace_id):
                 manifest = await self.importer(job.repo_url)
-                if not self.repo.job_is_current(job):
-                    _lost()
+                # A stale/restarted worker must not create a second run.
+                if not self.repo.job_lease_valid(job):
                     return
                 self.db.save_artifact(manifest)
                 workflow = self.db.get_workflow(job.workflow_id)
@@ -490,17 +538,16 @@ class TelegramRuntime:
                     artifact_id=str(manifest["id"]),
                     trigger_type="telegram",
                 )
-                if not self.repo.job_is_current(job):
-                    _lost()
+                if not self.repo.job_lease_valid(job):
                     return
                 updated = self.repo.set_job_status(
                     job_id, "running", run_id=run_id,
                     binding_epoch=job.binding_epoch,
+                    lease_token=job.lease_token,
                 )
                 if updated is None:
                     return
-                if not self.repo.job_is_current(job):
-                    _lost()
+                if not self.repo.job_lease_valid(job):
                     return
                 await self.executor.execute_run(
                     run_id=run_id,
@@ -510,26 +557,29 @@ class TelegramRuntime:
                     workflow_id=job.workflow_id,
                     revision_id=str(revision_id),
                 )
-                if not self.repo.job_is_current(job):
-                    _lost()
+                if not self.repo.job_lease_valid(job):
                     return
                 run = self.db.get_run(run_id)
                 if not run:
                     raise ValueError("run не найден после выполнения")
                 terminal = str(run.get("execution_status") or "failed")
-                self.repo.set_job_status(
+                finished = self.repo.set_job_status(
                     job_id,
                     "succeeded" if terminal == "succeeded" else "failed",
                     run_id=run_id,
                     error=None if terminal == "succeeded" else terminal,
                     binding_epoch=job.binding_epoch,
+                    lease_token=job.lease_token,
                 )
-                await self._enqueue_notifications(job, run_id)
+                if finished is not None:
+                    await self._enqueue_notifications(job, run_id)
         except asyncio.CancelledError:
             try:
                 self.repo.set_job_status(
                     job_id, "cancelled", error="runtime stopped",
-                    binding_epoch=job.binding_epoch, allow_cancelled=True,
+                    binding_epoch=job.binding_epoch,
+                    lease_token=job.lease_token,
+                    allow_cancelled=True,
                 )
             except Exception:
                 pass
@@ -541,6 +591,7 @@ class TelegramRuntime:
                 updated = self.repo.set_job_status(
                     job_id, "failed", error=safe,
                     binding_epoch=job.binding_epoch,
+                    lease_token=job.lease_token,
                 )
             except Exception:
                 updated = None
@@ -550,6 +601,9 @@ class TelegramRuntime:
                     job.chat_id,
                     "Импорт или запуск не удался. Детерминированный анализ не затронут.",
                 )
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def _enqueue_notifications(self, job: Any, run_id: str) -> None:
         if not self.repo.job_is_current(job):
