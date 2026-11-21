@@ -1,6 +1,10 @@
 import { API_BASE } from '../api/client'
 import type { Finding, RunSummary, TelegramDeliveryMode, TelegramScenario, TelegramSettings } from '../types'
 
+// Все методы Mini App живут под одним префиксом бэкенда. Держим его в одном
+// месте, чтобы bearer-запросы не уезжали в /api/bootstrap и соседние пути.
+const MINI_API_BASE = `${API_BASE}/telegram/mini`
+
 export interface MiniSession {
   token: string
   expiresAt: number
@@ -131,16 +135,16 @@ export class MiniApi {
   }
 
   async authorize(initData: string, signal?: AbortSignal): Promise<MiniSession> {
-    return this.exchange('/telegram/mini/auth', { initData }, signal)
+    return this.exchange('/auth', { initData }, signal)
   }
 
   // Код приходит только из памяти формы и уходит только в JSON-теле.
   async bind(initData: string, code: string, signal?: AbortSignal): Promise<MiniSession> {
-    return this.exchange('/telegram/mini/bind', { initData, code: code.trim() }, signal)
+    return this.exchange('/bind', { initData, code: code.trim() }, signal)
   }
 
   private async exchange(path: string, body: Record<string, string>, signal?: AbortSignal): Promise<MiniSession> {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${MINI_API_BASE}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -161,7 +165,7 @@ export class MiniApi {
     if (!this.token) throw new MiniApiError('Сессия не активна', 401)
     const headers = new Headers(init.headers || {})
     headers.set('Authorization', `Bearer ${this.token}`)
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${MINI_API_BASE}${path}`, {
       ...init,
       headers,
       credentials: 'omit',
