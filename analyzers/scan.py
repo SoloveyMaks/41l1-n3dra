@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 if __package__ in {None, ""}:  # pragma: no cover - direct execution
@@ -32,16 +33,22 @@ else:
     from .cg26.project import Project
 
 
-def run(root: str | Path, database: str | Path | None = None) -> ScanResult:
-    project = Project(root)
+def run(root: str | Path, database: str | Path | None = None, project: Project | None = None) -> ScanResult:
+    project = project or Project(root)
     result = ScanResult()
     result.rules = [*secrets.RULES, *sca.RULES, *sast.RULES]
 
     for module in (secrets, sca, sast):
+        started = time.perf_counter()
+        category = module.RULES[0].category
         if module is sca:
             findings, diagnostics = sca.analyze(project, database)
         else:
             findings, diagnostics = module.analyze(project)
+        for diagnostic in diagnostics:
+            if not diagnostic.category:
+                diagnostic.category = category
+        result.durations_ms[category] = int((time.perf_counter() - started) * 1000)
         result.findings.extend(findings)
         result.diagnostics.extend(diagnostics)
 

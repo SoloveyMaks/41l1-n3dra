@@ -61,6 +61,9 @@ class Finding:
     severity_basis: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
     related: list[Location] = field(default_factory=list)
+    # Raw secret material for the contract fingerprint only.  It is never
+    # serialized: exports carry a mask, a length and an HMAC digest instead.
+    secret_value: str | None = field(default=None, repr=False)
 
     @property
     def location(self) -> Location:
@@ -140,9 +143,12 @@ class Diagnostic:
     path: str | None = None
     line: int | None = None
     level: str = "warning"
+    category: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"code": self.code, "level": self.level, "message": self.message}
+        if self.category:
+            data["category"] = self.category
         if self.path is not None:
             data["path"] = self.path
         if self.line is not None:
@@ -198,6 +204,7 @@ class ScanResult:
     coverage: Coverage = field(default_factory=lambda: Coverage(root="."))
     graph: dict[str, Any] = field(default_factory=dict)
     rules: list[RuleInfo] = field(default_factory=list)
+    durations_ms: dict[str, int] = field(default_factory=dict)
     scanner_version: str = SCANNER_VERSION
 
     def add(self, finding: Finding) -> None:
@@ -230,6 +237,7 @@ class ScanResult:
             "coverage": self.coverage.to_dict(),
             "rules": [r.to_dict() for r in self.rules],
             "graph": self.graph,
+            "durationsMs": self.durations_ms,
         }
 
     def summary(self) -> dict[str, Any]:

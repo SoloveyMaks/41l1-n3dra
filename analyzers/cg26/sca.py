@@ -22,7 +22,9 @@ RULES = [
 ]
 
 
-def _load_database(path: str | Path | None, project: Project) -> tuple[dict[str, Any] | None, str | None]:
+def locate_database(path: str | Path | None, project: Project) -> Path | None:
+    """Return the advisory file this scan would use, without reading it."""
+
     candidates: list[Path] = []
     if path is not None:
         candidates.append(Path(path))
@@ -35,11 +37,18 @@ def _load_database(path: str | Path | None, project: Project) -> tuple[dict[str,
     )
     for candidate in candidates:
         if candidate.is_file():
-            try:
-                return json.loads(candidate.read_text(encoding="utf-8")), str(candidate)
-            except (OSError, json.JSONDecodeError):
-                continue
-    return None, None
+            return candidate
+    return None
+
+
+def _load_database(path: str | Path | None, project: Project) -> tuple[dict[str, Any] | None, str | None]:
+    candidate = locate_database(path, project)
+    if candidate is None:
+        return None, None
+    try:
+        return json.loads(candidate.read_text(encoding="utf-8")), str(candidate)
+    except (OSError, json.JSONDecodeError):
+        return None, None
 
 
 def analyze(

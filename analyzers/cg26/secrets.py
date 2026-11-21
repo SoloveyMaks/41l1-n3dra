@@ -274,6 +274,7 @@ def analyze(project: Project) -> tuple[list[Finding], list[Diagnostic]]:
                     "maskedValue": _masked(folded.value),
                     "valueLength": len(folded.value),
                 },
+                secret_value=folded.value,
             )
         )
         consumed.add(id(prop))
@@ -306,6 +307,7 @@ def analyze(project: Project) -> tuple[list[Finding], list[Diagnostic]]:
                         "declaration": {"path": prop.file, "line": prop.line},
                         "fallback": {"line": line, "source": source, "maskedValue": _masked(value)},
                     },
+                    secret_value=value,
                 )
             )
             consumed.add(id(prop))
@@ -329,6 +331,7 @@ def analyze(project: Project) -> tuple[list[Finding], list[Diagnostic]]:
                     remediation="Удалить fallback и требовать явную настройку окружения.",
                     rule_id="CG26-SEC-004",
                     evidence={"fallback": {"line": line, "source": source, "maskedValue": _masked(value)}},
+                    secret_value=value,
                 )
             )
 
@@ -377,6 +380,7 @@ def analyze(project: Project) -> tuple[list[Finding], list[Diagnostic]]:
                         {"name": sink.name, "line": sink.line, "endLine": sink.end_line} if sink else None
                     ),
                 },
+                secret_value=folded.value,
             )
         )
 
@@ -418,6 +422,7 @@ def analyze(project: Project) -> tuple[list[Finding], list[Diagnostic]]:
                                 "property": entry.dotted,
                                 "maskedValue": _masked(default),
                             },
+                            secret_value=default,
                         )
                     )
                 continue
@@ -450,6 +455,7 @@ def analyze(project: Project) -> tuple[list[Finding], list[Diagnostic]]:
                         "maskedValue": _masked(secret),
                         "valueLength": len(secret),
                     },
+                    secret_value=secret,
                 )
             )
 

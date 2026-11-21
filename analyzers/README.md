@@ -28,6 +28,11 @@ python -m analyzers.compare analyzers/examples/submission.json `
   --truth <snapshot>/ground-truth/training-findings.json `
   --out analyzers/examples/comparison.json
 
+python -m analyzers.contract_export <snapshot>/training-project `
+  --db <snapshot>/vulnerability-database/vulnerabilities.json `
+  --out analyzers/examples/bundle.json
+node analyzers/validate_bundle.mjs analyzers/examples/bundle.json <snapshot>/training-project
+
 python -m analyzers.selftest
 ```
 
@@ -39,6 +44,11 @@ python -m analyzers.selftest
 
 * `submission.json` — обязательный формат из `docs/submission-format.md`;
 * `scan-full.json` — доказательства, диагностика, покрытие, правила и граф.
+
+`contract_export` пишет `AnalysisBundle` из `docs/data-contracts` — ту же
+находку с координатами, покрытием, подписями и графом для пакетов A/C/D.
+`validate_bundle.mjs` проверяет выгрузку их же чекером: ссылки, диапазоны
+строк/колонок/bytes и `sourceHash` по исходным байтам.
 
 ## Структура
 
@@ -62,6 +72,9 @@ python -m analyzers.selftest
 | `analyzers/cg26/policy.py` | явная политика владения объектом |
 | `analyzers/cg26/sast/` | пять классов SAST |
 | `analyzers/cg26/graph.py` | граф маршрутов, правил, обработчиков, источников и sink |
+| `analyzers/cg26/contract.py` | выгрузка `AnalysisBundle`: UUID, координаты, coverage, подписи, `fp/v1` |
+| `analyzers/contract_export.py` | CLI выгрузки контракта |
+| `analyzers/validate_bundle.mjs` | прогон чекера `docs/data-contracts/validate-bundle.mjs` по выгрузке |
 
 ## Правила
 
@@ -100,13 +113,48 @@ python -m analyzers.selftest
   статусом `unknown`. `routeReachable` показывает только статическую
   достижимость от маршрута и не означает «безопасно».
 
+## Выгрузка в общий контракт
+
+`analyzers/cg26/contract.py` переводит граф и находки в словарь
+`CodeNode`/`CodeEdge` из `docs/data-contracts`, не добавляя фактов:
+
+| Наш узел/ребро | В контракте |
+| --- | --- |
+| `route` | `route` |
+| `authorization-rule` | `guard`; ребро `permits` для `permitAll`, `guards` для `denyAll`, `requires` для ролей и `authenticated` |
+| `handler`, `function` | `function` |
+| `parameter-source` | `source`; ребро `reads` от функции |
+| `sink` sql/http | `sink`; ребро `calls`, а `flows_to` — только когда находка доказывает поток параметра в SQL |
+| CORS-настройка | `config` |
+| `handled-by` | `routes_to` |
+
+Что сознательно **не** выгружается: `contains-sink` для TLS-настройки и CORS
+(это не вызов), `registers-cors-for` (в словаре контракта нет подходящего
+ребра). Узел остаётся, ребро не рисуется.
+
+Координаты считаются по исходным байтам: `byteStart/byteEnd` и
+`line/column/endLine/endColumn` в code points, как требует контракт. Файлы не в
+UTF-8 получают диагностику `contract.unsupported-location`, а не выдуманные
+позиции. `fingerprint` — `fp/v1`; у SECRET `secretHmac` обязателен, у остальных
+`null`.
+
+HMAC-ключ задаётся `CG26_HMAC_KEY` и версией `CG26_HMAC_KEY_VERSION`. Без них
+выгрузка помечается `hmacKeyVersion: local-demo-1` и не считается сравнимой с
+production-прогоном. Значения секретов в bundle не попадают: строковые
+литералы в файлах с SECRET-находками маскируются, известные значения
+заменяются звёздочками.
+
+`artifactHash` локального прогона — sha256 от каталога-манифеста с префиксом
+`local-directory/v1`, а не от принятого ZIP. При ingestion A передаёт настоящий
+`artifactHash` и UUID через `--workspace-id/--run-id/--snapshot-id`.
+
 ## Проверка на учебном снимке
 
 ```text
 findings: 15 ({'SECRET': 5, 'SCA': 5, 'SAST': 5})
 expected: 15, correct: 15, missed: 0, false positives: 0
 controls: 6, control hits: 0
-SELFTEST PASSED: 19 проверок
+SELFTEST PASSED: 24 проверок
 ```
 
 Сценарии self-test включают:
@@ -120,7 +168,10 @@ SELFTEST PASSED: 19 проверок
 * чтение объекта без owner-предиката рядом с безопасным чтением по `customer_id`;
 * локальную константу версии, интерполяцию, Gradle property, многострочный
   `add(...)`, приоритет lock-файла, версию выше границы и неизвестную версию;
-* отсутствие значений секретов в JSON-отчётах.
+* отсутствие значений секретов в JSON-отчётах;
+* `AnalysisBundle`: три семейства, независимый пересчёт `fp/v1`, HMAC только у
+  SECRET, совпадение bytes/line координат с исходными файлами и отсутствие
+  значений секретов в выгрузке.
 
 ## Ограничения
 

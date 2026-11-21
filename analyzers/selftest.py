@@ -12,6 +12,7 @@ Run with::
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 import textwrap
@@ -19,8 +20,12 @@ from pathlib import Path
 
 if __package__ in {None, ""}:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from analyzers.cg26.contract import build_bundle
+    from analyzers.cg26.project import Project
     from analyzers.scan import run
 else:
+    from .cg26.contract import build_bundle
+    from .cg26.project import Project
     from .scan import run
 
 _HERE = Path(__file__).resolve().parent
@@ -280,7 +285,11 @@ def _by_class(findings, class_code: str):
     return [finding for finding in findings if finding.class_code == class_code]
 
 
+CHECKS: list[str] = []
+
+
 def _check(condition: bool, message: str, failures: list[str]) -> None:
+    CHECKS.append(message)
     if not condition:
         failures.append(message)
 
@@ -361,13 +370,77 @@ def main() -> int:
         renamed_sql = _by_class(renamed_result.findings, "sql-injection")
         _check(len(renamed_sql) == 1, "переименование файла не должно менять результат sql-injection", failures)
 
+        # Contract export: identifiers, coordinates, fingerprints and redaction.
+        project = Project(root)
+        scan_result = run(root, DATABASE, project=project)
+        bundle = build_bundle(root, project, scan_result, DATABASE)
+        bundle_text = json.dumps(bundle, ensure_ascii=False)
+
+        categories = [item["category"] for item in bundle["scanResults"]]
+        _check(categories == ["SECRET", "SCA", "SAST"], "bundle: три отдельных результата семейств", failures)
+        _check(
+            "SYNTHETIC_" not in bundle_text and "A1b2C3d4E5f6" not in bundle_text,
+            "bundle: значения секретов не должны попадать в выгрузку",
+            failures,
+        )
+
+        def recompute(finding: dict) -> str:
+            anchor = finding["anchor"]
+            payload = [
+                "fp/v1",
+                finding["category"],
+                finding["ruleId"],
+                anchor["normalizedPath"],
+                anchor["symbolKey"],
+                anchor["normalizedContextHash"],
+                anchor["role"],
+                anchor["secretHmac"],
+            ]
+            return hashlib.sha256(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+
+        contract_findings = [finding for item in bundle["scanResults"] for finding in item["findings"]]
+        _check(
+            all(finding["fingerprint"] == recompute(finding) for finding in contract_findings),
+            "bundle: fingerprint fp/v1 пересчитывается независимо",
+            failures,
+        )
+        secret_findings = [item for item in contract_findings if item["category"] == "SECRET"]
+        other_findings = [item for item in contract_findings if item["category"] != "SECRET"]
+        _check(
+            bool(secret_findings)
+            and all(item["anchor"]["secretHmac"] for item in secret_findings)
+            and all(item["anchor"]["secretHmac"] is None for item in other_findings),
+            "bundle: HMAC только у SECRET",
+            failures,
+        )
+
+        mismatched = []
+        for item in bundle["scanResults"]:
+            for evidence in item["evidence"]:
+                location = evidence["location"]
+                text = (root / location["path"]).read_bytes().decode("utf-8")
+                lines = text.split("\n")
+                start = sum(len(line) + 1 for line in lines[: location["line"] - 1])
+                row = lines[location["endLine"] - 1]
+                if row.endswith("\r"):
+                    row = row[:-1]
+                end = sum(len(line) + 1 for line in lines[: location["endLine"] - 1]) + len(row)
+                if (
+                    location["byteStart"] != len(text[:start].encode("utf-8"))
+                    or location["byteEnd"] != len(text[:end].encode("utf-8"))
+                ):
+                    mismatched.append(evidence["id"])
+        _check(not mismatched, f"bundle: координаты bytes/line расходятся ({len(mismatched)})", failures)
+
     if failures:
         print("SELFTEST FAILED")
         for failure in failures:
             print(f"- {failure}")
         return 1
 
-    print("SELFTEST PASSED: 19 проверок")
+    print(f"SELFTEST PASSED: {len(CHECKS)} проверок")
     return 0
 
 
