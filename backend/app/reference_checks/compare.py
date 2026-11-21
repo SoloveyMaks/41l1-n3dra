@@ -70,7 +70,7 @@ def _severity(value: Any) -> str | None:
     return value.strip().lower() if isinstance(value, str) and value.strip() else None
 
 
-def _matches(expected: ExpectedFinding, actual: Mapping[str, Any]) -> bool:
+def _identity_matches(expected: ExpectedFinding, actual: Mapping[str, Any]) -> bool:
     if expected.category != actual.get("category"):
         return False
     if expected.rule_id != actual.get("ruleId"):
@@ -79,13 +79,11 @@ def _matches(expected: ExpectedFinding, actual: Mapping[str, Any]) -> bool:
     path = location.get("path") if isinstance(location, Mapping) else None
     if expected.path != path:
         return False
-    anchor = actual.get("anchor")
     if expected.symbol_key is not None:
+        anchor = actual.get("anchor")
         symbol = anchor.get("symbolKey") if isinstance(anchor, Mapping) else None
         if expected.symbol_key != symbol:
             return False
-    if expected.severity is not None and expected.severity != _severity(actual.get("severity")):
-        return False
     return True
 
 
@@ -104,29 +102,22 @@ def _expected_row(
         "path": expected.path,
         "expectedFingerprint": expected.fingerprint,
     }
+    candidates = [
+        index for index, actual in enumerate(actual_findings) if _identity_matches(expected, actual)
+    ]
+    consumed = candidates[0] if len(candidates) == 1 else None
     if scope is None:
         return {
             **row,
             "status": "inconclusive",
             "reason": "bundle has no coverage scope for this path and rule",
-        }, None, False
+        }, consumed, False
     if scope != "checked":
         return {
             **row,
             "status": "inconclusive",
             "reason": f"coverage scope is {scope}, not checked",
-        }, None, False
-
-    candidates = [
-        index for index, actual in enumerate(actual_findings) if _matches(expected, actual)
-    ]
-    if expected.fingerprint is not None:
-        candidates = [
-            index
-            for index in candidates
-            if str(actual_findings[index].get("fingerprint", "")).lower()
-            == expected.fingerprint
-        ]
+        }, consumed, False
     if not candidates:
         return {
             **row,
@@ -140,6 +131,23 @@ def _expected_row(
             "reason": "several actual findings match one reference identity",
         }, None, False
     matched = actual_findings[candidates[0]]
+    if expected.fingerprint is not None and (
+        str(matched.get("fingerprint", "")).lower() != expected.fingerprint
+    ):
+        return {
+            **row,
+            "status": "mismatch",
+            "actualFingerprint": matched.get("fingerprint"),
+            "reason": "finding identity changed inside a checked scope",
+        }, candidates[0], True
+    if expected.severity is not None and expected.severity != _severity(matched.get("severity")):
+        return {
+            **row,
+            "status": "mismatch",
+            "actualFingerprint": matched.get("fingerprint"),
+            "actualSeverity": _severity(matched.get("severity")),
+            "reason": "severity differs from the pinned expectation",
+        }, candidates[0], True
     return {
         **row,
         "status": "matched",
@@ -209,6 +217,7 @@ def _summary(
         "expectedFindings": len(suite.expected_findings),
         "matchedFindings": count(findings, "matched"),
         "missingFindings": count(findings, "missing"),
+        "mismatchedFindings": count(findings, "mismatch"),
         "inconclusiveFindings": count(findings, "inconclusive"),
         "unexpectedFindings": len(unexpected),
         "expectedControls": len(suite.expected_controls),
@@ -286,6 +295,7 @@ def compare_reference_suite(
                 "expectedFindings": len(suite.expected_findings),
                 "matchedFindings": 0,
                 "missingFindings": 0,
+                "mismatchedFindings": 0,
                 "inconclusiveFindings": 0,
                 "unexpectedFindings": 0,
                 "expectedControls": len(suite.expected_controls),

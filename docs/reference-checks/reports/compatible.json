@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "reference-report/v1",
+  "comparatorVersion": "reference-checks/1",
+  "suiteId": "orders-reference-suite",
+  "suiteVersion": "1",
+  "projectId": "reference-checks/orders-service",
+  "reference": {
+    "branch": "SoloveyMaks/reference-branch-checks",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+    "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
+    "runnerVersion": "cg26-analyzers/0.1.0"
+  },
+  "target": {
+    "branch": "fixtures/target-compatible",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "projectId": "reference-checks/orders-service",
+    "runId": "c8d00859-32ed-5096-9a09-ab11ee09f0e3",
+    "snapshotId": "db54c28e-67c2-562d-8121-eff6680cddc5",
+    "artifactHash": "f526e28a34362cf642d550df4389cc4209b24d5df61bda2959c8509e746782a7",
+    "snapshotManifestHash": "23d8eb0da35a8ff88f05f13f52d0d1eac4fb5be6fb125e00132c72b407956142",
+    "runnerVersions": [
+      "cg26-analyzers/0.1.0"
+    ]
+  },
+  "status": "pass",
+  "compatibility": {
+    "compatible": true,
+    "bundleSchemaVersion": "0.1",
+    "reasons": []
+  },
+  "findings": [
+    {
+      "id": "REF-SEC-004",
+      "category": "SECRET",
+      "ruleId": "CG26-SEC-004",
+      "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+      "expectedFingerprint": "2a7ec8eeea546f80c0f897b47f42c991f55f59426f225f7b9c1b4ecc791ff61f",
+      "status": "matched",
+      "actualFingerprint": "2a7ec8eeea546f80c0f897b47f42c991f55f59426f225f7b9c1b4ecc791ff61f",
+      "actualSeverity": "low",
+      "reason": "expected finding matched inside a checked scope"
+    },
+    {
+      "id": "REF-SEC-003",
+      "category": "SECRET",
+      "ruleId": "CG26-SEC-003",
+      "path": "src/main/resources/application.yml",
+      "expectedFingerprint": "e07512e7bc85ab9859ec968a5323c766929c522673c44f53098a35c1205ef2fa",
+      "status": "matched",
+      "actualFingerprint": "e07512e7bc85ab9859ec968a5323c766929c522673c44f53098a35c1205ef2fa",
+      "actualSeverity": "high",
+      "reason": "expected finding matched inside a checked scope"
+    },
+    {
+      "id": "REF-SAST-001",
+      "category": "SAST",
+      "ruleId": "CG26-SAST-001",
+      "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+      "expectedFingerprint": "161edf21315328462ffdfb3379ca75d8ad9ea365ff462b51925ab4292417e84c",
+      "status": "matched",
+      "actualFingerprint": "161edf21315328462ffdfb3379ca75d8ad9ea365ff462b51925ab4292417e84c",
+      "actualSeverity": "high",
+      "reason": "expected finding matched inside a checked scope"
+    }
+  ],
+  "controls": [
+    {
+      "id": "CTL-SAST-01",
+      "category": "SAST",
+      "ruleId": "CG26-SAST-001",
+      "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+      "status": "matched",
+      "actualFindings": 0,
+      "reason": "control scope checked and clean"
+    },
+    {
+      "id": "CTL-SECRET-01",
+      "category": "SECRET",
+      "ruleId": "CG26-SEC-004",
+      "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+      "status": "matched",
+      "actualFindings": 0,
+      "reason": "control scope checked and clean"
+    }
+  ],
+  "unexpectedFindings": [],
+  "summary": {
+    "expectedFindings": 3,
+    "matchedFindings": 3,
+    "missingFindings": 0,
+    "mismatchedFindings": 0,
+    "inconclusiveFindings": 0,
+    "unexpectedFindings": 0,
+    "expectedControls": 2,
+    "matchedControls": 2,
+    "triggeredControls": 0,
+    "inconclusiveControls": 0
+  }
+}

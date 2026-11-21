@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "reference-report/v1",
+  "comparatorVersion": "reference-checks/1",
+  "suiteId": "orders-reference-suite",
+  "suiteVersion": "1",
+  "projectId": "reference-checks/orders-service",
+  "reference": {
+    "branch": "SoloveyMaks/reference-branch-checks",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+    "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
+    "runnerVersion": "cg26-analyzers/0.1.0"
+  },
+  "target": {
+    "branch": "fixtures/target-fixed",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
+    "projectId": "reference-checks/orders-service",
+    "runId": "42c6cfa9-af8a-5136-8b00-e14c191e1fa6",
+    "snapshotId": "112c24a2-2e28-5cdf-8277-92aeb6c7b3bf",
+    "artifactHash": "a70db4e67e9e09ee398af6942bffaafa9072296ea6fcb444a38c67a01cdcfec3",
+    "snapshotManifestHash": "24d7d144616d238cd6cb6329c767bc01e9606fb30cb4308667f035ef6e0c0a6a",
+    "runnerVersions": [
+      "cg26-analyzers/0.1.0"
+    ]
+  },
+  "status": "inconclusive",
+  "compatibility": {
+    "compatible": false,
+    "bundleSchemaVersion": "0.1",
+    "reasons": [
+      "rulesVersion differs: reference 'cg26-rules/0.1.0', bundle 'cg26-rules/0.2.0'"
+    ]
+  },
+  "findings": [],
+  "controls": [],
+  "unexpectedFindings": [],
+  "summary": {
+    "expectedFindings": 3,
+    "matchedFindings": 0,
+    "missingFindings": 0,
+    "mismatchedFindings": 0,
+    "inconclusiveFindings": 0,
+    "unexpectedFindings": 0,
+    "expectedControls": 2,
+    "matchedControls": 0,
+    "triggeredControls": 0,
+    "inconclusiveControls": 0
+  }
+}

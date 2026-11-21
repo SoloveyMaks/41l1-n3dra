@@ -47,6 +47,7 @@ const VERDICT_STYLE: Record<ReferenceVerdict, string> = {
 const ROW_LABEL: Record<ReferenceReportRow['status'], string> = {
   matched: 'совпало',
   missing: 'пропало',
+  mismatch: 'изменилось',
   inconclusive: 'не проверено',
   triggered: 'контроль сработал',
 };
@@ -54,6 +55,7 @@ const ROW_LABEL: Record<ReferenceReportRow['status'], string> = {
 const ROW_STYLE: Record<ReferenceReportRow['status'], string> = {
   matched: 'text-emerald-300',
   missing: 'text-rose-300',
+  mismatch: 'text-rose-300',
   inconclusive: 'text-amber-300',
   triggered: 'text-rose-300',
 };

@@ -61,7 +61,7 @@ export interface ReferenceReportRow {
   category: string;
   ruleId: string;
   path: string;
-  status: 'matched' | 'missing' | 'inconclusive' | 'triggered';
+  status: 'matched' | 'missing' | 'mismatch' | 'inconclusive' | 'triggered';
   reason: string;
   expectedFingerprint?: string | null;
   actualFingerprint?: string | null;
@@ -110,6 +110,7 @@ export interface ReferenceComparisonReport {
     expectedFindings: number;
     matchedFindings: number;
     missingFindings: number;
+    mismatchedFindings: number;
     inconclusiveFindings: number;
     unexpectedFindings: number;
     expectedControls: number;
