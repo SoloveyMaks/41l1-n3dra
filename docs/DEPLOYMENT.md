@@ -91,6 +91,12 @@ quoted/export значения парсятся и переписываются 
   (cloudflared передаёт `X-Forwarded-Proto`, поэтому Secure cookie),
   `AI_PROVIDER=reformboss`, `AI_MODEL=deepseek-v4.1-flash-1017`,
   `VECTOR_RETRIEVAL_ENABLED=0`;
+- optional Team B: `CG26_HMAC_KEY` (отдельный persistent random secret),
+  `CG26_HMAC_KEY_VERSION=nedra-team-b-1`,
+  `CG26_ADVISORY_ROOT=/app/data/team-b-advisories`,
+  `CG26_ADVISORY_DB=/app/data/team-b-advisories/vulnerabilities.json`.
+  Advisory — доверенный server-side каталог в volume, не uploaded snapshot;
+  значения не печатаются;
 - значения не печатаются, access code не выводится ни в `--check`, ни в
   `--write`; model/key передаются только через env-file, не argv.
 
@@ -214,9 +220,10 @@ PC-хост должен быть включён. `Linger=no`: после reboot
 Текущий loopback/публичный образ собран из `integration-dev` HEAD `c01c96d`
 (worktree не изменялся):
 
-- `localhost/nedra-app:local` = `c322a7f6d1e3...`, revision `c01c96d`,
-  Node `v22.23.5`, `db/`, `docs/`, `packages/comparison`, healthcheck,
-  Python wheels и `frontend/dist` внутри.
+- `localhost/nedra-app:local` = `29b62158aed5...`, revision `dd6e541`,
+  Node `v22.23.5`, `db/`, `docs/`, `analyzers/`, `packages/comparison`,
+  healthcheck, Python wheels и `frontend/dist` внутри; `analyzers` import
+  проверен внутри контейнера.
 - Backend стартовал, применил ledger 001/002/004/005; `vector 0.8.7`,
   `published_bundles=1`.
 - Auth: `GET /api/health` 200; `GET /api/runs` без сессии 401;
@@ -228,6 +235,12 @@ PC-хост должен быть включён. `Linger=no`: после reboot
 - Systemd user units переустановлены из `integration-dev`; app unit cycle прошёл,
   artifact в volume `nedra-app-data` сохранился. Tunnel unit enabled/active,
   DNS опубликован только для `nedra.soloveyka.bond`.
+- Optional Team B на отдельном workflow `wf_29522fd3`: run
+  `cc781c1b-f60e-4d60-908a-4c04036b1a97` succeeded/fail, 15 findings,
+  map 43 nodes/32 edges/67 evidence, все 67 evidence ready, published
+  `62a608b25f90...`; default workflow остался `backend` (default run
+  `3aadba14-...`: 6 findings). Advisory прочитан только из
+  `/app/data/team-b-advisories`, не из ZIP.
 - Node-образ `node-verify` (`7874a386f36b...`, 20 шагов) содержит
   `node v22.23.5`; committed
   `examples/demo/sql-before-after/{baseline,current}.published.json` прогнаны
@@ -244,8 +257,7 @@ PC-хост должен быть включён. `Linger=no`: после reboot
 - `CG_PUBLIC_DEMO=1` требует access code; без него backend не стартует. Код
   хранится только в `runtime.env` и никогда не печатается.
 - Optional 003 — зона PG worker; deploy не выполняет его SQL.
-- Публичный образ `c322a7f6d1e3` (HEAD c01c96d) содержит Node и comparison;
-  пакет `analyzers` добавлен в Dockerfile для следующей сборки, но в этом образе
-  его нет. Optional `config.engine=team_b` не включён по умолчанию, adapter не
-  заявляется активным до проверки на final dev SHA.
+- Публичный образ `29b62158aed5` (HEAD dd6e541) содержит Node, comparison и
+  `analyzers`; optional `config.engine=team_b` проверен на отдельном workflow,
+  default engine остаётся `backend`.
 - Volumes удаляются только вручную и осознанно; скрипты этого не делают.

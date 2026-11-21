@@ -37,7 +37,8 @@ managed_key() {
     REFORMBOSS_API_KEY|POSTGRES_USER|POSTGRES_DB|POSTGRES_PASSWORD|DATABASE_URL|\
     CG_SESSION_SECRET|CG_ANCHOR_HMAC_KEY|CG_ACCESS_CODE|CG_DATA_DIR|\
     CG_PUBLIC_DEMO|CG_ALLOWED_ORIGINS|CG_TRUST_PROXY|AI_PROVIDER|AI_MODEL|\
-    VECTOR_RETRIEVAL_ENABLED)
+    VECTOR_RETRIEVAL_ENABLED|CG26_HMAC_KEY|CG26_HMAC_KEY_VERSION|CG26_ADVISORY_ROOT|\
+    CG26_ADVISORY_DB)
       return 0
       ;;
     *) return 1 ;;
@@ -204,6 +205,7 @@ run_write() {
   session_secret=$(existing_or_generate CG_SESSION_SECRET generate_hex_32)
   anchor_key=$(existing_or_generate CG_ANCHOR_HMAC_KEY generate_hex_32)
   access_code=$(existing_or_generate CG_ACCESS_CODE generate_hex_8)
+  team_b_key=$(existing_or_generate CG26_HMAC_KEY generate_hex_32)
 
   mkdir -p "$NEDRA_RUNTIME_DIR"
   chmod 700 "$NEDRA_RUNTIME_DIR"
@@ -247,6 +249,10 @@ run_write() {
     printf 'AI_PROVIDER=reformboss\n'
     printf 'AI_MODEL=deepseek-v4.1-flash-1017\n'
     printf 'VECTOR_RETRIEVAL_ENABLED=0\n'
+    printf 'CG26_HMAC_KEY=%s\n' "$team_b_key"
+    printf 'CG26_HMAC_KEY_VERSION=nedra-team-b-1\n'
+    printf 'CG26_ADVISORY_ROOT=/app/data/team-b-advisories\n'
+    printf 'CG26_ADVISORY_DB=/app/data/team-b-advisories/vulnerabilities.json\n'
   } >>"$tmp"
 
   chmod 600 "$tmp"
