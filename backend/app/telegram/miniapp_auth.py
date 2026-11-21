@@ -320,11 +320,13 @@ def verify_mini_token(
     now: Optional[int] = None,
 ) -> MiniTokenClaims:
     """Verify signature, shape, role and lifetime before any DB lookup."""
-    if not isinstance(token, str) or not token or len(token.encode("utf-8")) > TOKEN_MAX_BYTES:
+    if not isinstance(token, str) or not token or len(token) > TOKEN_MAX_BYTES:
         raise MiniTokenError("token is missing or too large")
     parts = token.split(".")
     if len(parts) != _TOKEN_PARTS or parts[0] != "v1":
         raise MiniTokenError("token version is invalid")
+    if not _B64_RE.fullmatch(parts[1]) or not _B64_RE.fullmatch(parts[2]):
+        raise MiniTokenError("token encoding is invalid")
     signed = f"{parts[0]}.{parts[1]}"
     provided_signature = _b64decode(parts[2])
     expected_signature = hmac.new(secret, signed.encode("ascii"), hashlib.sha256).digest()
@@ -423,6 +425,7 @@ class MiniAppAuth:
         return token
 
     def _secret(self) -> bytes:
+        bot_token = self._bot_token()
         if self._token_secret is not None:
             if len(self._token_secret) < 16:
                 raise MiniConfigError("Mini App token secret is too short")
@@ -430,7 +433,7 @@ class MiniAppAuth:
         explicit = configured_token_secret()
         if explicit is not None:
             return explicit
-        return derive_token_secret(self._bot_token())
+        return derive_token_secret(bot_token)
 
     def _now(self) -> int:
         return int(self._clock())
@@ -557,6 +560,7 @@ class MiniAppAuth:
 
     def assert_live(self, identity: MiniIdentity) -> MiniIdentity:
         """Re-read binding/account after I/O; used before starting any work."""
+        self._bot_token()
         binding, account = self._binding_and_account(identity.chat_id)
         fresh = self._identity(binding, account)
         if (
@@ -572,4 +576,6 @@ def _load_bot_token_from_settings() -> str:
     # Delayed import keeps this module usable in isolation and avoids a cycle.
     from backend.app.telegram.bot_api import load_bot_settings
 
+    if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() not in {"1", "true", "yes"}:
+        raise MiniConfigError("telegram bot is disabled")
     return load_bot_settings().token
