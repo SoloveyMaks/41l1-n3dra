@@ -7,8 +7,9 @@ immutable bundles.
 **Статус:** приложение опубликовано на [nedra.soloveyka.bond](https://nedra.soloveyka.bond)
 за общим кодом доступа. Хост — локальный ПК + отдельный Cloudflare Tunnel.
 `dev` содержит интеграцию команды; PR в `main` ждёт финальную отладку.
-Работающий публичный образ пока `c01c96d`; optional Team B adapter добавлен в
-`dev` и ожидает пересборку. Версию образа проверяйте через runbook.
+Публичная сборка включает оба analyzer engines и защиту от пустого экрана
+при сбое загрузки. Team B проверен на отдельном workflow: 15 findings и
+67 evidence; default engine — `backend`. Версию образа проверяйте через runbook.
 
 ## Что внутри
 
