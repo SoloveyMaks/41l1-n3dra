@@ -6,9 +6,11 @@ import {
 import { AiScanResult, Finding, Severity } from '../types';
 import { EvidenceCard } from './EvidenceCard';
 import { AiHypothesesPanel } from './AiHypothesesPanel';
+import { ResponsibilityPanel } from './ResponsibilityPanel';
 
 interface FindingsViewProps {
   findings: Finding[];
+  runId?: string | null;
   aiScan?: AiScanResult | null;
   aiItems?: Array<{ findingId: string; explanation: string; remediation: string; suggestedFixedVersion?: string }>;
   aiStatus?: string;
@@ -68,7 +70,7 @@ function compareFindings(left: Finding, right: Finding, mode: SortMode): number 
   return compareText(left.id, right.id);
 }
 
-export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiScan = null, aiItems = [], aiStatus, onOpenReport }) => {
+export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = null, aiScan = null, aiItems = [], aiStatus, onOpenReport }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -301,15 +303,20 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiScan = n
         </div>
       </div>
 
-      {/* Right: Evidence Card */}
+      {/* Right: Evidence Card + responsibility enrichment (separate from analyzer facts) */}
       {selectedFinding && (
-        <EvidenceCard
-          finding={selectedFinding}
-          aiEnrichment={selectedAi}
-          aiStatus={aiStatus}
-          onOpenReport={onOpenReport}
-          onClose={() => setSelectedFindingId(null)}
-        />
+        <div className="w-full lg:w-[450px] max-h-[75vh] lg:max-h-none flex flex-col h-full shrink-0 border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900 overflow-y-auto lg:overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <EvidenceCard
+              finding={selectedFinding}
+              aiEnrichment={selectedAi}
+              aiStatus={aiStatus}
+              onOpenReport={onOpenReport}
+              onClose={() => setSelectedFindingId(null)}
+            />
+          </div>
+          <ResponsibilityPanel runId={runId} findingId={selectedFinding.id} />
+        </div>
       )}
     </div>
   );

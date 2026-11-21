@@ -9,6 +9,7 @@ import {
   NodeRunRecord,
   ProfileData,
   ReportData,
+  ResponsibilityData,
   RepositoryCheckResult,
   RepositoryWatch,
   RepositoryWebhookSetup,
@@ -137,6 +138,17 @@ export const apiClient = {
       filename = (quoted?.[1] || plain?.[1] || fallback).trim();
     }
     return { blob, filename };
+  },
+
+  async getFindingResponsibility(
+    runId: string,
+    findingId: string,
+    signal?: AbortSignal,
+  ): Promise<ResponsibilityData> {
+    return (await request(
+      `/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(findingId)}/responsibility`,
+      signal ? { signal } : {},
+    )).json();
   },
 
   async getTelegramMe(): Promise<TelegramMe> {
