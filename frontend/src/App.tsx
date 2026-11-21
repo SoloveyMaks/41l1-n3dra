@@ -267,7 +267,15 @@ export const App: React.FC = () => {
     const handleEvent = (message: MessageEvent) => {
       if (selectedRunRef.current !== runId) return;
       try {
-        const event = JSON.parse(message.data);
+        const parsed = JSON.parse(message.data);
+        // Historical replay uses `node_id`; live broker uses `nodeId`. Live broker
+        // events carry no timestamp, so the client receive time keeps the
+        // running-stage duration honest instead of showing zero.
+        const event = {
+          ...parsed,
+          nodeId: parsed?.nodeId ?? parsed?.node_id,
+          timestamp: parsed?.timestamp ?? new Date().toISOString(),
+        };
         setEvents((prev) => {
           if (prev.some((item) => item.seq === event.seq)) return prev;
           const next = [...prev, event];
@@ -829,8 +837,12 @@ export const App: React.FC = () => {
               currentRun={currentRun}
               nodeRuns={nodeRuns}
               events={events}
+              plannedNodes={draft.nodes}
               onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
               onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+              onOpenMap={() => setActiveTab('map')}
+              onOpenFindings={() => setActiveTab('findings')}
+              onOpenReport={() => setActiveTab('report')}
             />
           )}
 
@@ -999,8 +1011,12 @@ export const App: React.FC = () => {
             currentRun={currentRun}
             nodeRuns={nodeRuns}
             events={events}
+            plannedNodes={draft.nodes}
             onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
             onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+            onOpenMap={() => setAdminSection('map')}
+            onOpenFindings={() => setAdminSection('problems')}
+            onOpenReport={() => setAdminSection('report')}
           />
         );
       case 'problems':

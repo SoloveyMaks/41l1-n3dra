@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
-  KeyRound, PackageSearch, FileCode2, ShieldAlert,
-  Search, Filter, ExternalLink, ChevronRight, CheckCircle2
+  KeyRound, PackageSearch, FileCode2,
+  Search, ChevronRight, CheckCircle2
 } from 'lucide-react';
 import { Finding, Severity } from '../types';
 import { EvidenceCard } from './EvidenceCard';
@@ -27,10 +27,50 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   inconclusive: 'не подтверждено',
 };
 
+type SortMode = 'severity' | 'file';
+
+const SEVERITY_RANK: Record<Severity, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+const CONFIDENCE_RANK: Record<string, number> = {
+  confirmed: 0,
+  potential: 1,
+  inconclusive: 2,
+};
+
+const compareText = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+function compareFindings(left: Finding, right: Finding, mode: SortMode): number {
+  if (mode === 'severity') {
+    const severityDiff =
+      (SEVERITY_RANK[left.severity] ?? 9) - (SEVERITY_RANK[right.severity] ?? 9);
+    if (severityDiff !== 0) return severityDiff;
+    const confidenceDiff =
+      (CONFIDENCE_RANK[left.confidence] ?? 9) - (CONFIDENCE_RANK[right.confidence] ?? 9);
+    if (confidenceDiff !== 0) return confidenceDiff;
+  }
+  const pathDiff = compareText(left.primaryLocation.path, right.primaryLocation.path);
+  if (pathDiff !== 0) return pathDiff;
+  const lineDiff = left.primaryLocation.startLine - right.primaryLocation.startLine;
+  if (lineDiff !== 0) return lineDiff;
+  const columnDiff = left.primaryLocation.startColumn - right.primaryLocation.startColumn;
+  if (columnDiff !== 0) return columnDiff;
+  const ruleDiff = compareText(left.ruleId, right.ruleId);
+  if (ruleDiff !== 0) return ruleDiff;
+  return compareText(left.id, right.id);
+}
+
 export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = [], aiStatus, onOpenReport }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
+  const [sortMode, setSortMode] = useState<SortMode>('severity');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   useEffect(() => {
@@ -48,24 +88,28 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
     ? aiItems.find((item) => item.findingId === selectedFinding.id)
     : undefined;
 
-  const filteredFindings = findings.filter((f) => {
-    if (analyzerFilter !== 'all' && f.analyzer !== analyzerFilter) return false;
-    if (severityFilter !== 'all' && f.severity !== severityFilter) return false;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return (
-        f.ruleId.toLowerCase().includes(q) ||
-        f.primaryLocation.path.toLowerCase().includes(q) ||
-        f.severityBasis.toLowerCase().includes(q) ||
-        f.advisoryIds.some((cve) => cve.toLowerCase().includes(q))
-      );
-    }
-    return true;
-  });
+  const filteredFindings = findings
+    .filter((f) => {
+      if (analyzerFilter !== 'all' && f.analyzer !== analyzerFilter) return false;
+      if (severityFilter !== 'all' && f.severity !== severityFilter) return false;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        return (
+          f.ruleId.toLowerCase().includes(q) ||
+          f.primaryLocation.path.toLowerCase().includes(q) ||
+          f.severityBasis.toLowerCase().includes(q) ||
+          f.advisoryIds.some((cve) => cve.toLowerCase().includes(q))
+        );
+      }
+      return true;
+    })
+    .sort((left, right) => compareFindings(left, right, sortMode));
 
   const critCount = findings.filter((f) => f.severity === 'critical').length;
   const highCount = findings.filter((f) => f.severity === 'high').length;
   const medCount = findings.filter((f) => f.severity === 'medium').length;
+  const lowCount = findings.filter((f) => f.severity === 'low').length;
+  const infoCount = findings.filter((f) => f.severity === 'info').length;
 
   return (
     <div className="flex-1 h-full flex flex-col lg:flex-row overflow-hidden bg-slate-950">
@@ -113,7 +157,22 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
               <option value="high">Высокий</option>
               <option value="medium">Средний</option>
               <option value="low">Низкий</option>
+              <option value="info">Инфо</option>
             </select>
+
+            {/* Sort mode */}
+            <label className="flex w-full sm:w-auto items-center gap-1.5">
+              <span className="sr-only">Сортировка проблем</span>
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value === 'file' ? 'file' : 'severity')}
+                className="w-full sm:w-auto bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
+                title="Порядок списка проблем"
+              >
+                <option value="severity">Сначала критичные</option>
+                <option value="file">По файлу и строке</option>
+              </select>
+            </label>
 
           {/* Counts */}
           <div className="flex w-full sm:w-auto sm:ml-auto flex-wrap items-center gap-2 sm:gap-3 text-xs">
@@ -125,6 +184,12 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
             </span>
             <span className="text-yellow-400 font-semibold font-mono">
               Средний: {medCount}
+            </span>
+            <span className="text-sky-400 font-mono">
+              Низкий: {lowCount}
+            </span>
+            <span className="text-slate-500 font-mono">
+              Инфо: {infoCount}
             </span>
             <span className="text-slate-400 font-mono">
               Проблем: {findings.length}
@@ -145,6 +210,16 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
               const isSelected = selectedFinding?.id === f.id;
               const isCritical = f.severity === 'critical';
               const isHigh = f.severity === 'high';
+              const severityBadgeClass =
+                isCritical
+                  ? 'bg-rose-950 text-rose-300 border border-rose-800'
+                  : isHigh
+                    ? 'bg-orange-950 text-orange-300 border border-orange-800'
+                    : f.severity === 'medium'
+                      ? 'bg-yellow-950 text-yellow-300 border border-yellow-800'
+                      : f.severity === 'low'
+                        ? 'bg-sky-950 text-sky-300 border border-sky-800'
+                        : 'bg-slate-800 text-slate-300 border border-slate-700';
 
               return (
                 <div
@@ -178,13 +253,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span
-                          className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider ${
-                            isCritical
-                              ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                              : isHigh
-                              ? 'bg-orange-950 text-orange-300 border border-orange-800'
-                              : 'bg-yellow-950 text-yellow-300 border border-yellow-800'
-                          }`}
+                          className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider ${severityBadgeClass}`}
                         >
                           {SEVERITY_LABEL[f.severity] || f.severity}
                         </span>
