@@ -279,6 +279,8 @@ def load_session(session_id: str) -> Optional[Dict[str, Any]]:
               FROM account.sessions s
               JOIN account.users u ON u.user_id = s.user_id
              WHERE s.session_id = %s
+               AND s.role = u.role
+               AND s.workspace_id = u.workspace_id
             """,
             (session_id,),
         ).fetchone()

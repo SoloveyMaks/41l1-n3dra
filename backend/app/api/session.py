@@ -93,13 +93,21 @@ def registration_invite_required() -> bool:
     return bool(registration_code())
 
 
+def _code_matches(value: Optional[str], expected: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        candidate = value.strip().encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return hmac.compare_digest(candidate, expected.encode("utf-8"))
+
+
 def verify_registration_code(value: Optional[str]) -> bool:
     expected = registration_code()
     if not expected:
         return True
-    if not isinstance(value, str):
-        return False
-    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
+    return _code_matches(value, expected)
 
 
 def admin_available() -> bool:
@@ -112,9 +120,7 @@ def verify_admin_code(value: Optional[str]) -> bool:
     expected = admin_access_code()
     if not expected or expected == access_code():
         return False
-    if not isinstance(value, str):
-        return False
-    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
+    return _code_matches(value, expected)
 
 
 def public_config_error() -> Optional[str]:
@@ -134,9 +140,7 @@ def verify_access_code(value: Optional[str]) -> bool:
     expected = access_code()
     if not expected:
         return not public_demo()
-    if not isinstance(value, str):
-        return False
-    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
+    return _code_matches(value, expected)
 
 
 def auth_required() -> bool:
