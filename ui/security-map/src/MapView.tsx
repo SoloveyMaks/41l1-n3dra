@@ -551,8 +551,17 @@ export function MapView(props: MapViewProps) {
     selectedNodeIds.add(edge.toId);
   }
   if (finding) finding.nodeIds.forEach((id) => selectedNodeIds.add(id));
+  // The highlighted path belongs to the selected finding, not to the primary
+  // one: its own anchors decide which chain is emphasised.
+  const selectedFindingFocusIds = useMemo(
+    () =>
+      finding && finding.nodeIds.length
+        ? initialFocusNodeIds(model.nodes, model.edges, model.findings, finding.id)
+        : [],
+    [finding, model.nodes, model.edges, model.findings],
+  );
   const adjacentIds = new Set(selectedNodeIds);
-  if (finding) focusIds.forEach((id) => adjacentIds.add(id));
+  if (finding) selectedFindingFocusIds.forEach((id) => adjacentIds.add(id));
   for (const item of model.edges) {
     if (selectedNodeIds.has(item.fromId)) adjacentIds.add(item.toId);
     if (selectedNodeIds.has(item.toId)) adjacentIds.add(item.fromId);
@@ -578,7 +587,10 @@ export function MapView(props: MapViewProps) {
   if (edge) connectedEdges.add(edge.id);
   if (finding) {
     for (const item of model.edges) {
-      if (focusIds.includes(item.fromId) && focusIds.includes(item.toId)) {
+      if (
+        selectedFindingFocusIds.includes(item.fromId) &&
+        selectedFindingFocusIds.includes(item.toId)
+      ) {
         connectedEdges.add(item.id);
       }
     }
@@ -1023,18 +1035,27 @@ export function MapView(props: MapViewProps) {
     return () => window.clearTimeout(timer);
   }, [flow, nodesMeasured, modelFocusKey, canvasSize.width]);
 
-  const firstModeChange = useRef(true);
+  // Fit-all belongs to a real user mode switch only. Keying this effect on
+  // `flow` alone used to re-run it after onInit/StrictMode remount and wipe the
+  // readable initial focus with a fit of the whole graph. The fit also waits for
+  // the switched layout to reach the canvas: ReactFlow re-initialises on a
+  // canvas resize, and a fit against the previous instance is lost.
+  const previousViewMode = useRef(viewMode);
+  const pendingModeFit = useRef(false);
   useEffect(() => {
-    if (firstModeChange.current) {
-      firstModeChange.current = false;
-      return;
-    }
-    if (!flow) return;
+    if (previousViewMode.current === viewMode) return;
+    previousViewMode.current = viewMode;
+    pendingModeFit.current = true;
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (!pendingModeFit.current || !flow || !nodesMeasured) return;
     const timer = window.setTimeout(() => {
+      pendingModeFit.current = false;
       void flow.fitView({ padding: 0.14, minZoom: 0.05, maxZoom: 1.2, duration: 220 });
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [viewMode, flow]);
+  }, [viewMode, flow, nodesMeasured, mapNodes]);
 
   const reset = () => {
     const nextPositions = computeMapLayout(model.nodes, model.edges);

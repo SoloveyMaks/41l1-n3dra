@@ -54,9 +54,22 @@ export function buildExplorationTree(
   const rootSet = new Set(roots);
   const seenComponents = new Set<string>();
 
-  // A pure cycle has no in-degree-zero node. Give each weak component a
-  // deterministic representative so it remains reachable, without inventing
-  // a node or a synthetic edge.
+  const reachableIds = (startIds: readonly string[]): Set<string> => {
+    const reached = new Set<string>();
+    const stack = [...startIds];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (reached.has(id)) continue;
+      reached.add(id);
+      for (const edge of outgoing.get(id) ?? []) stack.push(edge.toId);
+    }
+    return reached;
+  };
+
+  // A component with an in-degree-zero root can still hold a basin no directed
+  // walk reaches — typically a cycle that only feeds a rooted branch. Every
+  // such basin gets a deterministic representative, so its factual nodes and
+  // edges stay visible; edges into already-visited nodes surface as crosslinks.
   for (const node of [...nodes].sort((a, b) => a.id.localeCompare(b.id))) {
     if (seenComponents.has(node.id)) continue;
     const stack = [node.id];
@@ -68,18 +81,23 @@ export function buildExplorationTree(
       component.push(id);
       for (const next of undirected.get(id) ?? []) stack.push(next);
     }
-    if (!component.some((id) => rootSet.has(id))) {
-      const candidate = component
+    const connected = component.filter((id) => (degree.get(id) ?? 0) > 0);
+    if (!connected.length) continue;
+    let reached = reachableIds(connected.filter((id) => rootSet.has(id)));
+    let missing = connected.filter((id) => !reached.has(id));
+    while (missing.length) {
+      const candidate = missing
         .map((id) => byId.get(id)!)
         .sort(
           (a, b) =>
             (incomingCount.get(a.id) ?? 0) - (incomingCount.get(b.id) ?? 0) ||
             a.id.localeCompare(b.id),
         )[0];
-      if (candidate) {
-        roots.push(candidate.id);
-        rootSet.add(candidate.id);
-      }
+      if (!candidate) break;
+      roots.push(candidate.id);
+      rootSet.add(candidate.id);
+      reached = reachableIds(connected.filter((id) => rootSet.has(id)));
+      missing = connected.filter((id) => !reached.has(id));
     }
   }
   roots.sort();
