@@ -1,14 +1,16 @@
 """Bounded public file-history and PR evidence for one frozen commit.
 
-This is intentionally *not* blame and not vulnerability attribution: the
-provider returns the last commit for one file and PRs associated with that exact
-commit. Reviews are shown only as provider facts, with an explicit limitation
-when they cannot be proven current for the merged head commit.
+This is intentionally *not* blame and not vulnerability attribution. The
+provider returns the last commit for one file. Associated PRs are looked up for
+that file commit (not for the current branch head). Reviews show both the latest
+opinion and the reconstructed decision; no comment can silently erase an
+approval, and no unseen page can turn an old approval into an active one.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,12 +30,14 @@ from backend.app.responsibility.models import (
 
 MAX_RESPONSE_BYTES = 256 * 1024
 REQUEST_TIMEOUT_SECONDS = 4.0
+ENRICHMENT_DEADLINE_SECONDS = 9.0
 CACHE_TTL_SECONDS = 15 * 60
 CACHE_ERROR_TTL_SECONDS = 90
 MAX_CACHE_ENTRIES = 256
 MAX_PRS = 3
 MAX_PRS_WITH_REVIEWS = 2
-MAX_REVIEWERS = 24
+MAX_REVIEWERS = 20
+MAX_REVIEWS_PER_PAGE = 100
 _ALLOWED_HOSTS = {"github.com": "github", "gitlab.com": "gitlab"}
 _GITHUB_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
@@ -91,6 +95,21 @@ def _identity(login: Any, name: Any = None) -> Optional[PersonEvidence]:
     return person if person.login or person.displayName else None
 
 
+def _safe_provider_url(value: Any, provider: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str) or provider not in _ALLOWED_HOSTS.values():
+        return None
+    try:
+        parts = urlsplit(value.strip())
+    except ValueError:
+        return None
+    if parts.scheme != "https" or parts.username or parts.password:
+        return None
+    host_provider = _ALLOWED_HOSTS.get(parts.netloc.lower())
+    if host_provider != provider:
+        return None
+    return value.strip()
+
+
 def parse_repository_target(repository: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Return (provider, project_path, commit_sha) or reasons safe to return."""
     if not isinstance(repository, dict):
@@ -144,42 +163,68 @@ def _client() -> httpx.AsyncClient:
     )
 
 
+async def _fetch_json_page(
+    client: httpx.AsyncClient, url: str, params: Dict[str, Any]
+) -> Tuple[str, Any, str, Dict[str, str]]:
+    """Stream a response with a decompressed byte ceiling.
+
+    httpx's `aiter_bytes()` yields decoded/decompressed chunks; the ceiling is
+    enforced while reading, before the whole body exists in memory.
+    """
+    try:
+        async with client.stream("GET", url, params=params) as response:
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            status = response.status_code
+            if status in {301, 302, 303, 307, 308}:
+                return "failed", None, "Provider вернул redirect; переход отклонён.", headers
+            if status == 429 or (status == 403 and headers.get("x-ratelimit-remaining") == "0"):
+                return "rate_limited", None, "Provider временно ограничил публичные запросы.", headers
+            if status in {401, 403, 404}:
+                return "unavailable", None, f"Provider ответил HTTP {status}.", headers
+            if status != 200:
+                return "failed", None, f"Provider ответил HTTP {status}.", headers
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                    return "failed", None, "Ответ provider превысил допустимый размер.", headers
+                chunks.extend(chunk)
+            try:
+                return "ok", json.loads(bytes(chunks).decode("utf-8")), "", headers
+            except (UnicodeDecodeError, ValueError):
+                return "failed", None, "Provider вернул не-JSON ответ.", headers
+    except (httpx.HTTPError, OSError) as exc:
+        return "failed", None, f"Provider временно недоступен ({type(exc).__name__}).", {}
+
+
 async def _fetch_json(
     client: httpx.AsyncClient, url: str, params: Dict[str, Any]
 ) -> Tuple[str, Any, str]:
-    try:
-        response = await client.get(url, params=params)
-        raw = await response.aread()
-        if len(raw) > MAX_RESPONSE_BYTES:
-            return "failed", None, "Ответ provider превысил допустимый размер."
-        if response.status_code in {301, 302, 303, 307, 308}:
-            return "failed", None, "Provider вернул redirect; переход отклонён."
-        if response.status_code == 429 or (
-            response.status_code == 403
-            and response.headers.get("x-ratelimit-remaining") == "0"
-        ):
-            return "rate_limited", None, "Provider временно ограничил публичные запросы."
-        if response.status_code in {401, 403, 404}:
-            return "unavailable", None, f"Provider ответил HTTP {response.status_code}."
-        if response.status_code != 200:
-            return "failed", None, f"Provider ответил HTTP {response.status_code}."
-        try:
-            return "ok", response.json(), ""
-        except ValueError:
-            return "failed", None, "Provider вернул не-JSON ответ."
-    except (httpx.HTTPError, OSError) as exc:
-        return "failed", None, f"Provider временно недоступен ({type(exc).__name__})."
+    kind, payload, reason, _ = await _fetch_json_page(client, url, params)
+    return kind, payload, reason
 
 
-def _review_last_decisions(
+def _has_next_page(headers: Dict[str, str]) -> bool:
+    link = headers.get("link", "")
+    return 'rel="next"' in link
+
+
+def _review_decisions(
     raw_reviews: Any,
     *,
     head_sha: Optional[str],
     merged_at: Optional[str],
+    incomplete: bool,
 ) -> Tuple[List[ReviewEvidence], bool, str]:
+    """Reconstruct review decisions without erasing approvals with comments.
+
+    GitHub's review list is chronological. A later COMMENTED review does not
+    revoke an APPROVED decision, while CHANGES_REQUESTED and DISMISSED do. The
+    latest opinion is kept separately from the decision. If pagination or the
+    head commit is not proven, `appliesToMerge` is false.
+    """
     if not isinstance(raw_reviews, list):
         return [], False, "Provider не вернул список reviews."
-    by_reviewer: Dict[str, Dict[str, Any]] = {}
+    by_reviewer: Dict[str, List[Dict[str, Any]]] = {}
     for item in raw_reviews:
         if not isinstance(item, dict):
             continue
@@ -189,64 +234,89 @@ def _review_last_decisions(
             continue
         submitted = item.get("submitted_at") if isinstance(item.get("submitted_at"), str) else None
         if merged_at and submitted and submitted > merged_at:
-            # A review submitted after merge cannot be the reviewer decision
-            # "before merge"; do not let a later approval rewrite history.
+            # A review after merge cannot be a reviewer decision before merge.
             continue
-        previous = by_reviewer.get(login)
-        if previous is None or (submitted or "") >= (previous.get("submitted_at") or ""):
-            by_reviewer[login] = item
-    ordered = sorted(by_reviewer.values(), key=lambda item: (str(item.get("submitted_at") or ""), str((item.get("user") or {}).get("login") or "")))
-    truncated = len(ordered) > MAX_REVIEWERS
+        by_reviewer.setdefault(login, []).append(item)
+
+    ordered_reviewers = sorted(
+        by_reviewer,
+        key=lambda login: (
+            str((by_reviewer[login][-1].get("submitted_at") if by_reviewer[login] else "") or ""),
+            login,
+        ),
+    )
+    truncated = len(ordered_reviewers) > MAX_REVIEWERS
     results: List[ReviewEvidence] = []
-    for item in ordered[:MAX_REVIEWERS]:
-        user = item.get("user") if isinstance(item.get("user"), dict) else {}
-        login = user.get("login") if isinstance(user.get("login"), str) else None
-        name = user.get("name") if isinstance(user.get("name"), str) else None
-        submitted = item.get("submitted_at") if isinstance(item.get("submitted_at"), str) else None
-        state = str(item.get("state") or "COMMENTED").upper()
-        review_commit = item.get("commit_id") if isinstance(item.get("commit_id"), str) else None
-        limitation = None
+    for login in ordered_reviewers[:MAX_REVIEWERS]:
+        reviews = sorted(
+            by_reviewer[login],
+            key=lambda item: (str(item.get("submitted_at") or ""), str(item.get("id") or "")),
+        )
+        latest = reviews[-1]
+        opinion_state = str(latest.get("state") or "COMMENTED").upper()
+        decision_state = "NONE"
+        decision_at: Optional[str] = None
+        decision_commit: Optional[str] = None
+        for review in reviews:
+            state = str(review.get("state") or "COMMENTED").upper()
+            submitted = review.get("submitted_at") if isinstance(review.get("submitted_at"), str) else None
+            commit = review.get("commit_id") if isinstance(review.get("commit_id"), str) else None
+            if state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+                decision_state = state
+                decision_at = submitted
+                decision_commit = commit
+            # COMMENTED/PENDING do not erase an earlier approval or change request.
+        user = latest.get("user") if isinstance(latest.get("user"), dict) else {}
+        submitted = latest.get("submitted_at") if isinstance(latest.get("submitted_at"), str) else None
+        limitation: Optional[str] = None
         applies = False
-        if merged_at is None:
+        if incomplete:
+            limitation = "Список reviews неполный: unseen dismissal/approval может изменить решение."
+        elif merged_at is None:
             limitation = "PR не merged; текущее review-состояние нельзя выдать за действующее перед merge."
-        elif not submitted:
-            limitation = "У review нет submitted_at; актуальность к merge не доказана."
-        elif not head_sha or review_commit != head_sha:
-            limitation = "Review относится к другому/неизвестному head commit; подтверждение к merged head отсутствует."
-        elif review_commit == head_sha and submitted <= merged_at:
+        elif decision_state == "NONE":
+            limitation = "Есть только комментарии; активного решения review нет."
+        elif not decision_at:
+            limitation = "У решения нет submitted_at; актуальность к merge не доказана."
+        elif not head_sha or decision_commit != head_sha:
+            limitation = "Решение относится к другому/неизвестному head commit; подтверждение к merged head отсутствует."
+        else:
             applies = True
         results.append(
             ReviewEvidence(
-                reviewer=_person(login, name),
-                state=state,
+                reviewer=_person(user.get("login"), user.get("name")),
+                state=decision_state,
+                opinionState=opinion_state,
                 submittedAt=submitted,
+                decisionAt=decision_at,
                 appliesToMerge=applies,
                 limitation=limitation,
             )
         )
-    return results, truncated, ""
+    reason = "Список reviews неполный; активность approval не доказана." if incomplete else ""
+    return results, truncated, reason
 
 
 async def _github_pull_requests(
     client: httpx.AsyncClient,
     owner: str,
     repo: str,
-    commit_sha: str,
+    association_sha: str,
 ) -> Tuple[List[PullRequestEvidence], str, str, bool]:
     kind, payload, reason = await _fetch_json(
         client,
-        f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/commits/{commit_sha}/pulls",
+        f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/commits/{association_sha}/pulls",
         {"per_page": MAX_PRS + 1},
     )
     if kind != "ok":
         return [], kind, reason, False
     items = payload if isinstance(payload, list) else []
     if not items:
-        return [], "none", "Для frozen commit нет связанного PR.", False
+        return [], "none", "Для последнего коммита файла нет связанного PR.", False
     truncated = len(items) > MAX_PRS
-    pull_requests: List[PullRequestEvidence] = []
-    # Details and reviews are fetched only for the first two PRs; the rest stay
-    # listed as associated facts without pretending we reviewed them.
+    first = [item for item in items[:MAX_PRS] if isinstance(item, dict)]
+    # Bounded concurrency: at most two detail requests and two review-page
+    # requests in flight; never unbounded fan-out.
     detail_results = await asyncio.gather(
         *[
             _fetch_json(
@@ -254,7 +324,7 @@ async def _github_pull_requests(
                 f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{item.get('number')}",
                 {},
             )
-            for item in items[:MAX_PRS_WITH_REVIEWS]
+            for item in first[:MAX_PRS_WITH_REVIEWS]
             if isinstance(item.get("number"), int)
         ],
         return_exceptions=True,
@@ -267,7 +337,28 @@ async def _github_pull_requests(
         if isinstance(detail.get("number"), int):
             detail_by_number[detail["number"]] = detail
 
-    async def build_pr(item: Dict[str, Any], index: int) -> PullRequestEvidence:
+    review_results = await asyncio.gather(
+        *[
+            _fetch_json_page(
+                client,
+                f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{item.get('number')}/reviews",
+                {"per_page": MAX_REVIEWS_PER_PAGE},
+            )
+            for item in first[:MAX_PRS_WITH_REVIEWS]
+            if isinstance(item.get("number"), int)
+        ],
+        return_exceptions=True,
+    )
+    review_by_number: Dict[int, Tuple[str, Any, str, Dict[str, str]]] = {}
+    for item, result in zip(first[:MAX_PRS_WITH_REVIEWS], review_results):
+        number = item.get("number") if isinstance(item, dict) else None
+        if not isinstance(number, int) or isinstance(result, Exception):
+            continue
+        if isinstance(result, tuple) and len(result) == 4:
+            review_by_number[number] = result
+
+    pull_requests: List[PullRequestEvidence] = []
+    for index, item in enumerate(first):
         number = item.get("number") if isinstance(item.get("number"), int) else 0
         detail = detail_by_number.get(number, item)
         user = detail.get("user") if isinstance(detail.get("user"), dict) else {}
@@ -280,19 +371,23 @@ async def _github_pull_requests(
         reviews_status = "not_loaded"
         reviews_reason = ""
         reviews_truncated = False
+        reviews_incomplete = False
         if index < MAX_PRS_WITH_REVIEWS:
-            review_kind, review_payload, review_reason = await _fetch_json(
-                client,
-                f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{number}/reviews",
-                {"per_page": 100},
+            review_kind, review_payload, review_reason, review_headers = review_by_number.get(
+                number, ("failed", None, "Reviews не загрузились.", {})
             )
             if review_kind == "ok":
-                reviews, reviews_truncated, reviews_reason = _review_last_decisions(
-                    review_payload,
-                    head_sha=head_sha,
-                    merged_at=merged_at,
+                page_incomplete = _has_next_page(review_headers) or (
+                    isinstance(review_payload, list) and len(review_payload) >= MAX_REVIEWS_PER_PAGE
                 )
-                reviews_status = "available"
+                reviews, reviews_truncated, reviews_reason = _review_decisions(
+                    review_payload,
+                    head_sha=head_sha if merged_at is not None else None,
+                    merged_at=merged_at,
+                    incomplete=page_incomplete,
+                )
+                reviews_incomplete = page_incomplete
+                reviews_status = "incomplete" if page_incomplete else "available"
             else:
                 reviews_status = review_kind
                 reviews_reason = review_reason
@@ -302,46 +397,43 @@ async def _github_pull_requests(
             limitations.append(reviews_reason)
         if merged_at is None:
             limitations.append("PR не merged: approvals/reviews не выдаются за действующие перед merge.")
-        return PullRequestEvidence(
-            number=number,
-            title=str(detail.get("title") or ""),
-            url=str(detail.get("html_url") or "") or None,
-            author=_identity(user.get("login"), user.get("name")),
-            mergedBy=_identity(merged_by.get("login"), merged_by.get("name")),
-            mergedAt=merged_at,
-            headSha=head_sha,
-            reviews=reviews,
-            reviewsStatus=reviews_status,
-            reviewsReason=reviews_reason,
-            reviewsTruncated=reviews_truncated,
-            limitations=limitations,
+        pull_requests.append(
+            PullRequestEvidence(
+                number=number,
+                title=str(detail.get("title") or ""),
+                url=_safe_provider_url(detail.get("html_url"), "github"),
+                author=_identity(user.get("login"), user.get("name")),
+                mergedBy=_identity(merged_by.get("login"), merged_by.get("name")),
+                mergedAt=merged_at,
+                headSha=head_sha,
+                reviews=reviews,
+                reviewsStatus=reviews_status,
+                reviewsReason=reviews_reason,
+                reviewsTruncated=reviews_truncated,
+                reviewsIncomplete=reviews_incomplete,
+                limitations=limitations,
+            )
         )
-
-    for index, item in enumerate(items[:MAX_PRS]):
-        if not isinstance(item, dict):
-            continue
-        pull_requests.append(await build_pr(item, index))
     return pull_requests, "available", "", truncated
 
 
 async def _gitlab_pull_requests(
     client: httpx.AsyncClient,
     project: str,
-    commit_sha: str,
+    association_sha: str,
 ) -> Tuple[List[PullRequestEvidence], str, str, bool]:
     kind, payload, reason = await _fetch_json(
         client,
-        f"https://gitlab.com/api/v4/projects/{quote(project, safe='')}/repository/commits/{commit_sha}/merge_requests",
+        f"https://gitlab.com/api/v4/projects/{quote(project, safe='')}/repository/commits/{association_sha}/merge_requests",
         {"per_page": MAX_PRS + 1},
     )
     if kind != "ok":
         return [], kind, reason, False
     items = payload if isinstance(payload, list) else []
     if not items:
-        return [], "none", "Для frozen commit нет связанного MR.", False
-    bounded = items[:MAX_PRS]
+        return [], "none", "Для последнего коммита файла нет связанного MR.", False
     result: List[PullRequestEvidence] = []
-    for item in bounded:
+    for item in items[:MAX_PRS]:
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         merged_by = item.get("merged_by") if isinstance(item.get("merged_by"), dict) else {}
         merged_at = item.get("merged_at") if isinstance(item.get("merged_at"), str) else None
@@ -349,7 +441,7 @@ async def _gitlab_pull_requests(
             PullRequestEvidence(
                 number=int(item.get("iid") or 0),
                 title=str(item.get("title") or ""),
-                url=str(item.get("web_url") or "") or None,
+                url=_safe_provider_url(item.get("web_url"), "gitlab"),
                 author=_identity(author.get("username"), author.get("name")),
                 mergedBy=_identity(merged_by.get("username"), merged_by.get("name")),
                 mergedAt=merged_at,
@@ -358,6 +450,7 @@ async def _gitlab_pull_requests(
                 reviewsStatus="unsupported",
                 reviewsReason="Публичный GitLab API без токена не даёт доказать историческое review-состояние на merge.",
                 reviewsTruncated=False,
+                reviewsIncomplete=False,
                 limitations=["GitLab reviews/approvals не выдаются за подтверждённые на head commit."],
             )
         )
@@ -367,19 +460,19 @@ async def _gitlab_pull_requests(
 async def _fetch_pull_requests(
     provider: str,
     project: str,
-    commit_sha: str,
+    association_sha: str,
 ) -> Tuple[List[PullRequestEvidence], str, str, bool]:
     try:
         async with _client() as client:
             if provider == "github":
                 owner, repo = project.split("/", 1)
-                return await _github_pull_requests(client, owner, repo, commit_sha)
-            return await _gitlab_pull_requests(client, project, commit_sha)
+                return await _github_pull_requests(client, owner, repo, association_sha)
+            return await _gitlab_pull_requests(client, project, association_sha)
     except (httpx.HTTPError, OSError) as exc:
         return [], "failed", f"PR provider недоступен ({type(exc).__name__}).", False
 
 
-async def fetch_file_history(repository: Any, path: str) -> HistoryInfo:
+async def _fetch_file_history(repository: Any, path: str) -> HistoryInfo:
     provider, project, commit_sha = parse_repository_target(repository)
     if provider is None or project is None or commit_sha is None:
         return _unavailable(
@@ -426,9 +519,10 @@ async def fetch_file_history(repository: Any, path: str) -> HistoryInfo:
                     author=_identity(author_user.get("login"), author_data.get("name")),
                     committer=_identity(committer_user.get("login"), committer_data.get("name")),
                     date=str(author_data.get("date") or committer_data.get("date") or "") or None,
-                    url=str(item.get("html_url") or "") or None,
+                    url=_safe_provider_url(item.get("html_url"), provider),
                     message=(str(commit_data.get("message") or "")[:240] or None),
                 ),
+                frozenCommitSha=commit_sha,
                 lineBlame=LineBlameInfo(),
                 limitations=[
                     "Это последний коммит файла, не автор уязвимости.",
@@ -446,12 +540,13 @@ async def fetch_file_history(repository: Any, path: str) -> HistoryInfo:
                 notBlame=True,
                 commit=CommitEvidence(
                     sha=str(item.get("id") or ""),
-                    author=_identity(item.get("author_name"), item.get("author_name")),
-                    committer=_identity(item.get("committer_name"), item.get("committer_name")),
+                    author=_identity(None, item.get("author_name")),
+                    committer=_identity(None, item.get("committer_name")),
                     date=str(item.get("committed_date") or item.get("authored_date") or "") or None,
-                    url=str(item.get("web_url") or "") or None,
+                    url=_safe_provider_url(item.get("web_url"), provider),
                     message=(str(item.get("title") or item.get("message") or "")[:240] or None),
                 ),
+                frozenCommitSha=commit_sha,
                 lineBlame=LineBlameInfo(),
                 limitations=[
                     "Это последний коммит файла, не автор уязвимости.",
@@ -460,19 +555,36 @@ async def fetch_file_history(repository: Any, path: str) -> HistoryInfo:
                 ],
             )
 
-    if result.status == "available":
+    if result.status == "available" and result.commit:
+        association_sha = result.commit.sha or commit_sha
         pull_requests, pr_status, pr_reason, truncated = await _fetch_pull_requests(
-            provider, project, commit_sha
+            provider, project, association_sha
         )
         result = result.model_copy(
             update={
+                "associationCommitSha": association_sha,
                 "pullRequests": pull_requests,
                 "pullRequestsStatus": pr_status,
                 "pullRequestsReason": pr_reason,
                 "pullRequestsTruncated": truncated,
                 "limitations": result.limitations
-                + ["PR association — только факт связи с frozen commit; reviews не определяют виновного."],
+                + [
+                    "PR association — только факт связи с association commit; reviews не определяют виновного.",
+                ],
             }
         )
     _cache_put(cache_key, result)
     return result
+
+
+async def fetch_file_history(repository: Any, path: str) -> HistoryInfo:
+    try:
+        return await asyncio.wait_for(
+            _fetch_file_history(repository, path),
+            timeout=ENRICHMENT_DEADLINE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return _unavailable(
+            "failed",
+            "Ответ provider превысил общий deadline enrichment; частичные данные не выдаются.",
+        )
