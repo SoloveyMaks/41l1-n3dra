@@ -72,6 +72,27 @@ counts computed from the same list. Coverage wording comes from the same
 `completeness_known`/`coverage_status` pair through one helper, so all three
 say «подтверждена», «не установлена», «недоступна» or «неизвестна» alike.
 
+A legacy passport can carry `completeness_known=true` next to `partial`,
+`unknown` or `unavailable`. That contradiction never renders as «подтверждена»:
+both readable formats downgrade the label to «не установлена»/«неизвестна»/
+«недоступна» and add an explicit warning that the completeness is not
+established. JSONC keeps the canonical passport unchanged and repeats the same
+warning in `limitations`.
+
+Before JSONC/DOCX rendering, technical provenance is sanitized recursively at
+the export boundary: URL userinfo becomes `***@host`, values of
+credential-looking query parameters (`token`, `api_key`, `sig`,
+`X-Amz-Signature`, …) become `***`, and secret-named fields (`apiKey`,
+`Authorization`, `client_secret`, …) become `[REDACTED]`. Hosts, paths, models,
+versions, request ids and non-secret query parameters are preserved. This is a
+display/export copy: the stored official JSON is not rewritten, and no export
+path logs the raw values.
+
+When a saved passport has no measurement key (`files_scanned`, `lines_of_code`,
+`parser_errors`, …), readable exports say «неизвестно» and the DOCX summary
+uses «—». An explicitly saved `0` stays a measured zero; absence is never
+presented as zero.
+
 ## 4. JSONC contract
 
 The file is strict JSON with a `.jsonc` extension (JSON is a JSONC subset; no
@@ -128,7 +149,11 @@ comments that break strict parsers).
 
 `aiHypotheses` is always separate from `deterministic`; it is never counted in
 `summary` and never changes `run.securityVerdict`. Technical provider
-endpoint/request id lives only in `technicalProvenance` and the DOCX appendix.
+endpoint/request id lives only in `technicalProvenance` and the DOCX appendix;
+both are emitted after recursive credential sanitization. `securityPassport`
+and `policyResult` stay canonical machine data, while `limitations` carries the
+contradictory-coverage warning when a saved passport claims completeness next
+to a non-complete status.
 
 `reportAvailable=false` is a valid export for a queued/failed run with no saved
 report; deterministic findings may be empty and are still exported honestly.
@@ -164,6 +189,14 @@ report; deterministic findings may be empty and are still exported honestly.
   warning block does not leave a page holding one bullet.
 - Coverage wording is shared with Markdown: «подтверждена», «не установлена»,
   «недоступна», «неизвестна»; DOCX never prints `100%` for a `partial` run.
+  A contradictory `completeness_known=true` is downgraded and the warning is
+  listed under `Предупреждения по покрытию`.
+- Missing passport measurements print «—» in the summary and «неизвестно» in
+  `Что проверено`; a saved `0` is kept. An absent measurement is never rendered
+  as a measured zero.
+- Appendix A is built from the sanitized technical copy: userinfo and secret
+  query values are masked, secret-named fields are `[REDACTED]`, while safe
+  provider/model/request metadata remains visible.
 - Display headings use «ИИ», while machine JSON fields remain `aiHypotheses`,
   `aiScan`, `aiAnalysis` and `provenance`.
 - AI hypotheses are labeled unverified and excluded from counts/verdict; the
@@ -195,6 +228,11 @@ section built from `ai_scan` observations. It emits natural Russian:
 - model explanations remain a separate short section;
 - evidence fences widen when the snippet itself contains backticks, so a code
   sample cannot break the document;
+- no technical provenance (provider endpoint, request id) is emitted; the
+  machine copy lives only in JSONC and the DOCX appendix;
+- a saved passport without measurement keys renders «неизвестно» for those
+  rows instead of the model default `0`; a contradictory
+  `completeness_known=true` adds the same warning and never says «подтверждена»;
 - `reportAvailable=false` adds an explicit line that no saved report exists.
 
 The official machine JSON (`build_official_json`) is unchanged and keeps
@@ -265,6 +303,31 @@ test target; deployment pins it in `deploy/requirements.txt`.
   bundles with `rolldown`; its DOCX/JSONC buttons and both Markdown links point
   at the three endpoints above.
 
+### 2026-11-21 inherited-risk fix (provenance, coverage, no-report counts)
+
+- Disposable PostgreSQL 16.16 container, `network=none`, Unix socket; real
+  `runtime.*` rows through `DatabaseRepository`, no production/stage services.
+- Direct bundle checks: 54/54. Parity cases (`canonical`, empty canonical,
+  `findings=null`, string findings, no report) produced identical IDs in the
+  same order in JSONC, Markdown and DOCX; empty canonical stayed 0 and malformed
+  findings fell back to runtime rows.
+- Contradictory legacy passport: `completeness_known=true` with `partial`,
+  `unknown` and `unavailable` rendered «не установлена», «неизвестна» and
+  «недоступна»; the contradiction warning appeared in Markdown, DOCX and JSONC
+  `limitations`, never «подтверждена». `complete` with `true` still rendered
+  «подтверждена».
+- No-report run: `reportAvailable=false`; Markdown and DOCX said
+  «Просканировано файлов: неизвестно; пропущено: неизвестно.», DOCX summary used
+  «—»; an explicit saved `0` was not rewritten.
+- Fake sentinel credentials (`FAKE_*`): none appeared in JSONC, Markdown or DOCX.
+  URL userinfo became `***@provider.invalid`, secret query values became `***`,
+  secret fields became `[REDACTED]`; `model=safe-model`, `temperature=0`,
+  `requestId=req-safe-1` and provider/version fields survived. A malformed port
+  next to userinfo was still redacted without an exception.
+- In-process ASGI over the same rows: 61/61 — `md`/`docx`/`jsonc` returned 200
+  with `attachment` and `no-store` for parity, empty, null, sanitize,
+  contradictory and no-report runs; JSONC parsed; foreign Referer still 403.
+
 ## 8. Limitations
 
 - Word binary is not available here; LibreOffice and python-docx opening were
@@ -272,6 +335,10 @@ test target; deployment pins it in `deploy/requirements.txt`.
   layout was checked through rendered PDF text and page images.
 - The DOCX table wraps long finding IDs across two lines where necessary; no
   clipping was observed.
+- Provenance sanitation is heuristic: it masks URL userinfo, credential-looking
+  query keys and secret-named fields. A secret stored under an arbitrary benign
+  key or hidden inside an opaque non-URL string is not detectable from key
+  names alone.
 - The export is intentionally a snapshot of saved rows. A run without a saved
   report exports `reportAvailable=false` rather than fabricating a report.
 - Markdown is generated on request from the same bundle; the stored

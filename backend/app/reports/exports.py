@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
@@ -18,6 +20,184 @@ from backend.app.reports.language import completeness_label, evidence_markdown, 
 from backend.app.storage.database import DatabaseRepository
 
 EXPORT_SCHEMA_VERSION = "nedra-report-export/1"
+
+_SECRET_KEY_WORDS = {
+    "key", "apikey", "accesskey", "secret", "clientsecret", "token", "password",
+    "passwd", "pwd", "authorization", "credential", "credentials", "privatekey",
+    "bearer",
+}
+_SECRET_QUERY_KEYS = {"key", "sig", "signature"}
+_URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_PROVENANCE_MAX_DEPTH = 12
+_COVERAGE_STATUS_LABELS = {
+    "complete": "полное",
+    "partial": "частичное",
+    "unavailable": "недоступно",
+    "unknown": "неизвестно",
+}
+
+
+def _is_secret_field(name: str) -> bool:
+    """CamelCase/snake_case aware: `promptTokens` is safe, `accessToken` is not."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
+    words = [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
+    return any(word in _SECRET_KEY_WORDS for word in words)
+
+
+def _is_secret_query_key(name: str) -> bool:
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
+    words = [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
+    return any(word in _SECRET_KEY_WORDS or word in _SECRET_QUERY_KEYS for word in words)
+
+
+def _redact_query(query: str) -> str:
+    """Drop values of credential-looking params, keep every other byte as-is."""
+    pairs: List[str] = []
+    changed = False
+    for raw in query.split("&"):
+        key, separator, value = raw.partition("=")
+        if separator and value and _is_secret_query_key(unquote_plus(key)):
+            pairs.append(f"{key}=***")
+            changed = True
+        else:
+            pairs.append(raw)
+    return "&".join(pairs) if changed else query
+
+
+def _sanitize_url(url: str) -> str:
+    """Drop URL userinfo and secret query values, keep host/path/useful params."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return mask_sensitive_text(url)
+    netloc = parts.netloc
+    if "@" in netloc:
+        # Keep the raw authority after userinfo: it preserves IPv6 brackets and
+        # odd ports that `parts.port` would reject on historical values.
+        host = netloc.rsplit("@", 1)[1]
+        netloc = f"***@{host}" if host else "***"
+    return urlunsplit(
+        (parts.scheme, netloc, parts.path, _redact_query(parts.query), parts.fragment)
+    )
+
+
+def _sanitize_text(value: str) -> str:
+    """Mask secrets in prose without letting the text masker eat URL params."""
+    chunks: List[str] = []
+    cursor = 0
+    for match in _URL_IN_TEXT_RE.finditer(value):
+        chunks.append(mask_sensitive_text(value[cursor:match.start()]))
+        chunks.append(_sanitize_url(match.group(0)))
+        cursor = match.end()
+    chunks.append(mask_sensitive_text(value[cursor:]))
+    return "".join(chunks)
+
+
+def _sanitize_provenance(value: Any, key: str = "", depth: int = 0) -> Any:
+    """Recursively strip credentials from provenance while keeping safe fields.
+
+    Export is the last boundary before a file leaves the process, so a
+    historical row must not carry URL userinfo, secret query values or
+    secret-named fields into JSONC/DOCX.
+    """
+    if depth > _PROVENANCE_MAX_DEPTH:
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for name, item in value.items():
+            name = str(name)
+            if _is_secret_field(name) and item not in (None, ""):
+                cleaned[name] = "[REDACTED]"
+            else:
+                cleaned[name] = _sanitize_provenance(item, name, depth + 1)
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_provenance(item, key, depth + 1) for item in value]
+    if isinstance(value, str):
+        if _is_secret_field(key) and value:
+            return "[REDACTED]"
+        return _sanitize_text(value)
+    return value
+
+
+def _contradictory_coverage_warning(passport: Dict[str, Any]) -> Optional[str]:
+    """A passport may claim confirmed completeness while naming another status."""
+    if not passport.get("completeness_known"):
+        return None
+    status = str(passport.get("coverage_status") or "unknown")
+    if status == "complete":
+        return None
+    label = _COVERAGE_STATUS_LABELS.get(status, status)
+    return (
+        "Сохранённый паспорт противоречив: полнота помечена как подтверждённая, "
+        f"но статус покрытия — «{label}». Полнота считается не установленной."
+    )
+
+
+def _display_passport(passport: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Conservative display copy; canonical JSONC passport stays untouched."""
+    result = dict(passport or {})
+    warning = _contradictory_coverage_warning(result)
+    if warning:
+        result["completeness_known"] = False
+        warnings = result.get("coverage_warnings")
+        result["coverage_warnings"] = [
+            *(warnings if isinstance(warnings, list) else []),
+            warning,
+        ]
+    return result
+
+
+def _passport_count(passport: Dict[str, Any], key: str) -> Optional[int]:
+    """A saved count, or None when the passport did not store that measurement."""
+    if key not in passport:
+        return None
+    value = passport.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _passport_rules_count(passport: Dict[str, Any]) -> Optional[int]:
+    if "rules_executed" not in passport:
+        return None
+    rules = passport.get("rules_executed")
+    return len(rules) if isinstance(rules, list) else None
+
+
+def _count_display(value: Optional[int]) -> Any:
+    return "—" if value is None else value
+
+
+def _rewrite_unknown_coverage(text: str, passport: Dict[str, Any]) -> str:
+    """Never present an absent saved measurement as a measured zero."""
+    scanned = _passport_count(passport, "files_scanned")
+    skipped = _passport_count(passport, "files_skipped")
+    if scanned is None or skipped is None:
+        text = re.sub(
+            r"(?m)^Просканировано файлов: \d+; пропущено: \d+\.",
+            "Просканировано файлов: "
+            f"{'неизвестно' if scanned is None else scanned}; пропущено: "
+            f"{'неизвестно' if skipped is None else skipped}.",
+            text,
+        )
+    measurements = {
+        "Проверено файлов": scanned,
+        "Пропущено файлов": skipped,
+        "Строк кода": _passport_count(passport, "lines_of_code"),
+        "Запущено правил": _passport_rules_count(passport),
+        "Ошибок парсера": _passport_count(passport, "parser_errors"),
+        "Неразрешённых зависимостей": _passport_count(passport, "unresolved_dependencies"),
+    }
+    for label, value in measurements.items():
+        if value is None:
+            text = re.sub(
+                rf"(?m)^\| {re.escape(label)} \| [^|]* \|$",
+                f"| {label} | неизвестно |",
+                text,
+            )
+    return text
+
 
 _VERDICT_LABELS = {
     "pass": "нарушений не обнаружено",
@@ -193,7 +373,7 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
             str(item.get("id") or ""),
         )
     )
-    coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else None
+    coverage = _sanitize_provenance(result.get("coverage")) if isinstance(result.get("coverage"), dict) else None
     limitations = [
         "Гипотеза не подтверждена детерминированными сканерами и не меняет итог проверки.",
         "Модель видела только выбранный фрагмент проекта с удалёнными секретами, а не весь репозиторий.",
@@ -208,14 +388,14 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
                 f"Часть файлов отправлена не полностью: {len(coverage['truncatedFiles'])}."
             )
         for error in (coverage.get("providerErrors") or [])[:5]:
-            limitations.append(f"Ошибка провайдера: {mask_sensitive_text(str(error))}")
+            limitations.append(f"Ошибка провайдера: {_sanitize_text(str(error))}")
     return {
         "status": result.get("status") or "disabled",
         "verified": False,
         "countsAsFindings": False,
         "limitations": limitations,
         "observations": observations,
-        "provenance": result.get("provenance"),
+        "provenance": _sanitize_provenance(result.get("provenance")),
         "coverage": coverage,
     }
 
@@ -307,9 +487,9 @@ def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
 
     technical = {
         "exportSchemaVersion": EXPORT_SCHEMA_VERSION,
-        "aiAnalysis": official.get("aiAnalysis"),
-        "aiScan": ai_scan.get("provenance"),
-        "aiScanCoverage": ai_scan.get("coverage"),
+        "aiAnalysis": _sanitize_provenance(official.get("aiAnalysis")),
+        "aiScan": _sanitize_provenance(ai_scan.get("provenance")),
+        "aiScanCoverage": _sanitize_provenance(ai_scan.get("coverage")),
     }
     return ExportBundle(
         run=run,
@@ -328,6 +508,14 @@ def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
 def build_jsonc(bundle: ExportBundle) -> bytes:
     """Strict-JSON report (JSONC-compatible; no comments, no duplicate source)."""
     run = bundle.run
+    limitations = [
+        "Отчёт собран по сохранённым результатам; повторный анализ и обращения к модели не выполнялись.",
+        "Итог проверки относится к подтверждённому покрытию, а не ко всему проекту.",
+        *bundle.ai_scan.get("limitations", []),
+    ]
+    coverage_warning = _contradictory_coverage_warning(bundle.passport)
+    if coverage_warning:
+        limitations.append(coverage_warning)
     document = {
         "schemaVersion": EXPORT_SCHEMA_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -356,11 +544,7 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
         "securityPassport": bundle.passport,
         "policyResult": bundle.policy,
         "technicalProvenance": bundle.technical,
-        "limitations": [
-            "Отчёт собран по сохранённым результатам; повторный анализ и обращения к модели не выполнялись.",
-            "Итог проверки относится к подтверждённому покрытию, а не ко всему проекту.",
-            *bundle.ai_scan.get("limitations", []),
-        ],
+        "limitations": limitations,
     }
     return json.dumps(document, ensure_ascii=False, indent=2, default=str).encode("utf-8")
 
@@ -371,7 +555,8 @@ def build_markdown(bundle: ExportBundle) -> str:
     from backend.app.reports.builder import ReportBuilder
 
     verdict = bundle.run.get("security_verdict") or "pending"
-    passport = SecurityPassport.model_validate({**bundle.passport, "verdict": verdict})
+    display = _display_passport(bundle.passport)
+    passport = SecurityPassport.model_validate({**display, "verdict": verdict})
     policy = PolicyResult.model_validate({**bundle.policy, "verdict": verdict})
     analysis = bundle.official.get("aiAnalysis") or {}
     items = [
@@ -390,6 +575,7 @@ def build_markdown(bundle: ExportBundle) -> str:
         [Finding.model_validate(item) for item in bundle.findings], explanation,
         execution_status=str(bundle.run.get("execution_status") or "queued"),
     )
+    text = _rewrite_unknown_coverage(text, bundle.passport)
     if bundle.report is None:
         text += "\n\nСохранённый отчёт не сформирован; показаны только сохранённые результаты запуска.\n"
     text += "\n\n## Гипотезы ИИ-сканера\n\n"
@@ -639,7 +825,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
 
     heading = doc.add_heading("Основные показатели", level=1)
     heading.paragraph_format.keep_with_next = True
-    passport = bundle.passport
+    passport = _display_passport(bundle.passport)
     _table(
         doc,
         ["Показатель", "Значение"],
@@ -653,10 +839,10 @@ def build_docx(bundle: ExportBundle) -> bytes:
             ["Подтверждено", bundle.counts["confirmed"]],
             ["Потенциально", bundle.counts["potential"]],
             ["Не определено", bundle.counts["inconclusive"]],
-            ["Проверено файлов", passport.get("files_scanned", "—")],
-            ["Пропущено файлов", passport.get("files_skipped", "—")],
-            ["Запущено правил", len(passport.get("rules_executed") or [])],
-            ["Строк кода", passport.get("lines_of_code", "—")],
+            ["Проверено файлов", _count_display(_passport_count(passport, "files_scanned"))],
+            ["Пропущено файлов", _count_display(_passport_count(passport, "files_skipped"))],
+            ["Запущено правил", _count_display(_passport_rules_count(passport))],
+            ["Строк кода", _count_display(_passport_count(passport, "lines_of_code"))],
             [
                 "Полнота проверки",
                 completeness_label(
@@ -672,9 +858,12 @@ def build_docx(bundle: ExportBundle) -> bytes:
 
     reasons = bundle.policy.get("reasons") if isinstance(bundle.policy.get("reasons"), list) else []
     doc.add_heading("Что проверено", level=1)
+    scanned = _passport_count(passport, "files_scanned")
+    skipped = _passport_count(passport, "files_skipped")
     doc.add_paragraph(
-        f"Просканировано файлов: {passport.get('files_scanned', 0)}; "
-        f"пропущено: {passport.get('files_skipped', 0)}. "
+        "Просканировано файлов: "
+        f"{'неизвестно' if scanned is None else scanned}; пропущено: "
+        f"{'неизвестно' if skipped is None else skipped}. "
         "Результат относится только к указанным правилам и проверенным областям."
     )
     rules = passport.get("rules_executed") or []

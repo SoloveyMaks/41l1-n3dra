@@ -55,8 +55,13 @@ def naturalize(text: str) -> str:
 
 
 def completeness_label(completeness_known: bool, coverage_status: str) -> str:
-    """One wording for the coverage verdict in Markdown and DOCX."""
-    if completeness_known:
+    """One conservative wording for the coverage verdict in Markdown and DOCX.
+
+    A passport can carry a stale boolean next to a non-complete status. Only
+    `complete` may claim confirmed completeness; every other status is named
+    as it is.
+    """
+    if completeness_known and coverage_status == "complete":
         return "подтверждена"
     if coverage_status in ("partial", "complete"):
         return "не установлена"
