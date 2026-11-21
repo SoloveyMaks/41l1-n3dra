@@ -92,15 +92,38 @@ def _unavailable(status: str, reason: str, provider: Optional[str] = None) -> Hi
     )
 
 
-def _person(login: Any = None, name: Any = None) -> PersonEvidence:
+def _person(account: Any = None, name: Any = None, *, provider: str) -> PersonEvidence:
+    account = account if isinstance(account, dict) else {}
+    raw_login = account.get("login" if provider == "github" else "username")
+    login = None
+    if isinstance(raw_login, str):
+        base_login = raw_login.removesuffix("[bot]") if provider == "github" else raw_login
+        pattern = _GITHUB_OWNER if provider == "github" else _GITLAB_SEGMENT
+        if provider in {"github", "gitlab"} and pattern.fullmatch(base_login) and ".." not in base_login:
+            login = raw_login
+    display_name = name if isinstance(name, str) and name else account.get("name")
+    is_bot = None
+    if login and provider == "github":
+        if account.get("type") == "Bot" or login.endswith("[bot]"):
+            is_bot = True
+        elif account.get("type") in {"User", "Organization"}:
+            is_bot = False
+    elif login and provider == "gitlab" and isinstance(account.get("bot"), bool):
+        is_bot = account["bot"]
+    # Construct the profile from official account metadata, never from html_url or a git name.
+    host = "github.com" if provider == "github" else "gitlab.com"
+    profile = f"https://{host}/{quote(login, safe='[]')}" if login else None
     return PersonEvidence(
-        login=str(login) if isinstance(login, str) and login else None,
-        displayName=str(name) if isinstance(name, str) and name else None,
+        login=login,
+        displayName=display_name if isinstance(display_name, str) and display_name else None,
+        provider=provider if provider in {"github", "gitlab"} else None,
+        profileUrl=_safe_provider_url(profile, provider),
+        isBot=is_bot,
     )
 
 
-def _identity(login: Any, name: Any = None) -> Optional[PersonEvidence]:
-    person = _person(login, name)
+def _identity(account: Any, name: Any = None, *, provider: str) -> Optional[PersonEvidence]:
+    person = _person(account, name, provider=provider)
     return person if person.login or person.displayName else None
 
 
@@ -111,7 +134,7 @@ def _safe_provider_url(value: Any, provider: Optional[str]) -> Optional[str]:
         parts = urlsplit(value.strip())
     except ValueError:
         return None
-    if parts.scheme != "https" or parts.username or parts.password:
+    if parts.scheme != "https" or parts.username or parts.password or parts.query or parts.fragment:
         return None
     host_provider = _ALLOWED_HOSTS.get(parts.netloc.lower())
     if host_provider != provider:
@@ -318,7 +341,7 @@ def _review_decisions(
         if not isinstance(item, dict):
             continue
         user = item.get("user") if isinstance(item.get("user"), dict) else {}
-        login = user.get("login") if isinstance(user.get("login"), str) else ""
+        login = _person(user, provider="github").login
         if not login:
             continue
         submitted = item.get("submitted_at") if isinstance(item.get("submitted_at"), str) else None
@@ -373,7 +396,7 @@ def _review_decisions(
             applies = True
         results.append(
             ReviewEvidence(
-                reviewer=_person(user.get("login"), user.get("name")),
+                reviewer=_person(user, provider="github"),
                 state=decision_state,
                 opinionState=opinion_state,
                 submittedAt=submitted,
@@ -491,8 +514,8 @@ async def _github_pull_requests(
                 number=number,
                 title=str(detail.get("title") or ""),
                 url=_safe_provider_url(detail.get("html_url"), "github"),
-                author=_identity(user.get("login"), user.get("name")),
-                mergedBy=_identity(merged_by.get("login"), merged_by.get("name")),
+                author=_identity(user, provider="github"),
+                mergedBy=_identity(merged_by, provider="github"),
                 mergedAt=merged_at,
                 headSha=head_sha,
                 reviews=reviews,
@@ -531,8 +554,8 @@ async def _gitlab_pull_requests(
                 number=int(item.get("iid") or 0),
                 title=str(item.get("title") or ""),
                 url=_safe_provider_url(item.get("web_url"), "gitlab"),
-                author=_identity(author.get("username"), author.get("name")),
-                mergedBy=_identity(merged_by.get("username"), merged_by.get("name")),
+                author=_identity(author, provider="gitlab"),
+                mergedBy=_identity(merged_by, provider="gitlab"),
                 mergedAt=merged_at,
                 headSha=None,
                 reviews=[],
@@ -613,8 +636,8 @@ async def _fetch_file_history(repository: Any, path: str) -> HistoryInfo:
                 notBlame=True,
                 commit=CommitEvidence(
                     sha=str(item.get("sha") or ""),
-                    author=_identity(author_user.get("login"), author_data.get("name")),
-                    committer=_identity(committer_user.get("login"), committer_data.get("name")),
+                    author=_identity(author_user, author_data.get("name"), provider="github"),
+                    committer=_identity(committer_user, committer_data.get("name"), provider="github"),
                     date=str(author_data.get("date") or committer_data.get("date") or "") or None,
                     url=_safe_provider_url(item.get("html_url"), provider),
                     message=(str(commit_data.get("message") or "")[:240] or None),
@@ -637,8 +660,8 @@ async def _fetch_file_history(repository: Any, path: str) -> HistoryInfo:
                 notBlame=True,
                 commit=CommitEvidence(
                     sha=str(item.get("id") or ""),
-                    author=_identity(None, item.get("author_name")),
-                    committer=_identity(None, item.get("committer_name")),
+                    author=_identity(None, item.get("author_name"), provider="gitlab"),
+                    committer=_identity(None, item.get("committer_name"), provider="gitlab"),
                     date=str(item.get("committed_date") or item.get("authored_date") or "") or None,
                     url=_safe_provider_url(item.get("web_url"), provider),
                     message=(str(item.get("title") or item.get("message") or "")[:240] or None),

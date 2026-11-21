@@ -87,6 +87,9 @@ export interface ResponsibilityCodeowners {
 }
 
 export interface ResponsibilityPerson {
+  provider?: 'github' | 'gitlab' | null;
+  profileUrl?: string | null;
+  isBot?: boolean | null;
   displayName?: string | null;
   login?: string | null;
 }
