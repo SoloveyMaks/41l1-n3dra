@@ -2,7 +2,30 @@
 
 Дата проверки: 2026-11-21. Проверял отдельной веткой после fast-forward merge локальной `dev`; исходный проверенный HEAD: `75c2f09aaa9d2fd49c3de408084be8b8688638ac` (до последующего owner fix). Использовались отдельные PostgreSQL 16/pgvector контейнер и ASGI-приложение; production-порты не трогались. Все приведённые итоговые Telegram proofs повторены с синтетическим токеном и локальным либо отключённым транспортом.
 
-## Findings
+## Targeted recheck: rebind fix f82cd4b
+
+Проверен owner commit `f82cd4b6ff17a2a3947d62cf7562bff9cd267a5d`, включённый в локальный `dev`/review HEAD `b53a3c7465f2930df0bad0f219eebe6e9530b75d`. Старый baseline/auth concurrency повторно не запускался. **Rebind целиком пока не принят: найден новый блокирующий дефект event loop. Restart recovery остаётся fix pending и этим recheck не принимался.**
+
+### High — синхронный rebind блокирует event loop, пока sender держит delivery_guard
+
+`backend/app/telegram/runtime.py:616-626` держит PostgreSQL binding row lock через `await self.api.send_message/send_document`. В том же event loop polling вызывает `_handle_start`, который синхронно вызывает `consume_binding_code` (`runtime.py:287`); тот ждёт тот же `SELECT ... FOR UPDATE` (`backend/app/storage/telegram.py:241-244`). Пока sync psycopg ждёт sender, event loop не может возобновить sender и освободить lock. DB lock timeout в storage не задан. Асинхронный HTTP timeout также требует работающего event loop, поэтому не разрывает этот цикл.
+
+Независимое воспроизведение без внешней отправки, на настоящей PG: coroutine sender открыл реальный `delivery_guard(item)` и сделал `await asyncio.sleep(0.2)`; соседняя coroutine вызвала настоящий `telegram_runtime._handle_start(chat, None, new_binding_code)`. Watchdog в отдельном OS thread через 1.5 секунды увидел в `pg_stat_activity` ровно один заблокированный binding SELECT и отменил только этот запрос через `pg_cancel_backend`. Вывод: `200ms_timer_actual_seconds 1.504 blocked_rebind_connections 1 cancel QueryCanceled`. Без этой внешней отмены sender и rebind ждут друг друга; страдает весь ASGI event loop. Это не вывод из thread-only успешного lock proof: сценарий специально повторён в одном loop, как runtime polling/outbox.
+
+Нужно сохранять сериализацию send/rebind, но исключить синхронное ожидание binding lock на event loop, включая соседние runtime/API пути. Изменения исходников reviewer не делал; дефект передан координатору.
+
+### Что rebind fix уже исправил в живом proof
+
+* A→B в том же chat: owner/workspace переключились, epoch вырос на 1, settings стали `both`/пустой scenario; B не видит jobs A, A `/api/telegram/me` вернул `bound=false`.
+* Старые queued/importing jobs и pending/sending outbox стали `cancelled`; строки сохранились. Stale claimed job не считается current, не claim-ится повторно и не может заменить cancelled на succeeded.
+* Stale owner/epoch не может создать job/outbox или обновить settings. Уже claimed delivery не проходит `delivery_is_current`/`delivery_guard`, `finish_outbox(sent)` не воскрешает cancelled. Настоящий `_deliver_outbox(old_item)` завершился до транспорта.
+* B может выбрать свой scenario через ASGI; чужой scenario даёт 400. Новый job claim и новый outbox claim принадлежат B. Same-owner bind сохраняет epoch, выбранный scenario и pending outbox.
+* Отдельный thread-only concurrency proof подтвердил SQL сериализацию: rebind ждал lock sender (ожидание видно в `pg_stat_activity`), затем прошёл после выхода из guard; guard старого item после rebind вернул false. Этот успешный DB proof не устраняет описанный выше same-loop deadlock.
+* На отдельной legacy010 БД миграция применила только `011_telegram_rebind.up.sql`, повтор вернул `[]`; pending/sending отменились, sent/failed и queued job сохранились, owner/workspace/epoch проставлены, workspace sentinel сохранён.
+
+Перенос того же аккаунта в другой chat действительно удаляет telegram jobs/outbox старого chat через существующий `ON DELETE CASCADE`. Это ограничение продукта «один активный chat»: Telegram delivery/job history пропадает, runtime run/report source этим кодом не удаляется. Утечку чужого report этот сценарий не доказывает. Внешний Telegram API и repo download в recheck не вызывались; синтетический env token не удалялся, transport отключён.
+
+## Исходные findings на 75c2f09 (история до rebind fix)
 
 ### High — повторная Telegram-привязка переносит только owner, но оставляет состояние старого owner
 
@@ -28,4 +51,4 @@
 
 ## Ограничения проверки
 
-Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Rebind finding передан владельцу; до его cleanup fix выпускать результат как полностью безопасный нельзя.
+Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, но новый same-loop lock defect блокирует принятие этого fix; restart recovery также остаётся fix pending.
