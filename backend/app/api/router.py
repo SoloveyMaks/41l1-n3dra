@@ -53,6 +53,7 @@ from backend.app.engine.scheduler import WorkflowScheduler, validate_schedule_ex
 from backend.app.engine.sse import SSEBroker
 from backend.app.engine.validator import WorkflowValidator
 from backend.app.storage.database import DatabaseRepository
+from backend.app.telegram import create_telegram_router, create_telegram_runtime
 
 logger = logging.getLogger("ApiRouter")
 
@@ -63,6 +64,7 @@ db_repo = DatabaseRepository()
 sse_broker = SSEBroker(db_repo)
 executor = WorkflowExecutor(db_repo, sse_broker)
 scheduler = WorkflowScheduler(db_repo, executor)
+telegram_runtime = create_telegram_runtime(db_repo, executor, import_repository)
 validator = WorkflowValidator()
 ai_service = AiService()
 intake = SafeArtifactIntake()
@@ -966,3 +968,15 @@ api_router.include_router(create_auth_router())
 api_router.include_router(create_profile_router())
 api_router.include_router(create_repository_watch_router(db_repo, executor))
 api_router.include_router(create_repository_hook_router(db_repo))
+
+
+def _telegram_principal(request: Request) -> Optional[Dict[str, Any]]:
+    session = session_from_request(request)
+    if not session or session.get("mode") != MODE_ACCOUNT:
+        return None
+    return {"userId": session["userId"], "workspaceId": session["workspaceId"]}
+
+
+api_router.include_router(create_telegram_router(
+    db_repo, telegram_runtime, principal_resolver=_telegram_principal,
+))

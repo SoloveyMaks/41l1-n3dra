@@ -265,3 +265,12 @@ files and was never printed.
 
 **Final status: implemented and live-checked where the local network allows;
 not pushed, not merged into main, not deployed.**
+## Интеграция приложения
+
+`api/router.py` монтирует binding/settings через проверенную account-сессию.
+Demo-сессии не принимаются. `main.py` запускает polling/outbox только при
+`TELEGRAM_ENABLED=1`; это позволяет проверять приложение без второго poller
+того же бота. Завершение приложения отменяет startup и закрывает runtime.
+Сохранение токена само по себе не включает polling. На хосте подтверждён
+`getMe` для `@chilli_nedra_bot` через существующий HTTP-прокси; контейнерный
+маршрут и доставка конечному пользователю ещё требуют живой проверки.

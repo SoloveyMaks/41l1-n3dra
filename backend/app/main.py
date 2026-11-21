@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api.router import api_router, scheduler, db_repo
+from backend.app.api.router import api_router, scheduler, db_repo, telegram_runtime
 from backend.app.api.admin import admin_router
 from backend.app.api.session import (
     allow_attempt,
@@ -71,11 +72,21 @@ async def lifespan(app: FastAPI):
             "Это допустимо только для локального режима; для CG_PUBLIC_DEMO=1 секрет обязателен."
         )
     scheduler.start()
-    yield
-    scheduler.stop()
-    close = getattr(db_repo, "close", None)
-    if callable(close):
-        close()
+    telegram_task = None
+    if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
+        telegram_task = asyncio.create_task(telegram_runtime.start(), name="telegram-start")
+    try:
+        yield
+    finally:
+        if telegram_task is not None and not telegram_task.done():
+            telegram_task.cancel()
+        if telegram_task is not None:
+            await asyncio.gather(telegram_task, return_exceptions=True)
+        await telegram_runtime.stop()
+        scheduler.stop()
+        close = getattr(db_repo, "close", None)
+        if callable(close):
+            close()
 
 
 app = FastAPI(
