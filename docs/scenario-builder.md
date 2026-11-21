@@ -27,11 +27,12 @@ from backend.app.api.scenario_builder import create_scenario_builder_router
 api_router.include_router(create_scenario_builder_router())
 ```
 
-Full endpoint: `POST /api/scenario-builder/preview`.
-
-The route is mounted into the existing `/api` router after account/session and
-workspace middleware. No new session or auth implementation exists here. The
-endpoint does not read or write `runtime` data.
+Full endpoints: `POST /api/scenario-builder/preview` and
+`POST /api/scenario-builder/validate`. Both are mounted by the same factory into
+the existing `/api` router after account/session and workspace middleware; root
+does not need a second mount or an `App.tsx` change. The validate endpoint only
+runs `WorkflowValidator` on the posted draft: it never reads, saves, schedules,
+notifies or runs anything.
 
 ## 3. API contract
 
@@ -68,6 +69,25 @@ Errors:
 
 There is no invented model answer on provider failure. The endpoint returns an
 explicit error; the modal keeps the text and offers a retry.
+
+Authoritative pre-Apply check:
+
+```http
+POST /api/scenario-builder/validate
+Content-Type: application/json
+
+{"schemaVersion":1,"name":"...","description":"...","nodes":[],"edges":[]}
+```
+
+Response is the real `WorkflowValidator` result:
+
+```json
+{"valid": false, "issues": [{"level": "error", "message": "..."}]}
+```
+
+A body that is not a valid `WorkflowDraft` (for example `config` is an array or
+a kind is unknown) is rejected by Pydantic with HTTP 422. This endpoint has no
+storage or execution side effects.
 
 ## 4. What the model may decide
 
@@ -202,6 +222,18 @@ Anything else is rejected with `SCENARIO_PREVIEW_INVALID`; the modal shows the
 error, keeps the current canvas untouched and never offers Apply. A valid
 server preview applies as before.
 
+Structural checks alone do not make a draft executable. After the shape checks,
+the client posts the exact received draft to
+`POST /api/scenario-builder/validate` and enables success/Apply only when the
+real `WorkflowValidator` returns `valid=true`. This catches rules the client
+does not duplicate: scanner `config.engine`, AI_SCAN budgets, and port-type
+compatibility such as `AI_SCAN_RESULT -> POLICY_RESULT`. A rejected draft shows
+the server's first error and never changes the canvas. If the validation call
+fails, returns malformed JSON, or is aborted, Apply stays disabled and the
+current canvas is preserved. The modal's request generation guard also discards
+preview/validation results that resolve after close or a newer submit, so a
+stale response cannot enable Apply.
+
 The report node renders all three registry inputs
 (`findings_bundle`, `policy_result`, `explain_result`), so
 `MERGE_FINDINGS -> BUILD_REPORT` (including the planner edge
@@ -317,9 +349,37 @@ Built frontend in Chromium at 390×844 with route-controlled preview responses:
 - `ai_explain+report`: 9 nodes / 12 edges, `sb_e_explain_report` visible;
 - `ai_scan`: 8 nodes / 10 edges, `ai_scan_result` output handle present;
 - no `Couldn't create edge` / React Flow `#008` console warnings;
-- non-GET calls were only `POST /scenario-builder/preview` and
-  `POST /workflows/wf-a/validate`; no save, workflow create or run;
+- non-GET calls were only `POST /scenario-builder/preview`,
+  `POST /scenario-builder/validate` and `POST /workflows/wf-a/validate`; no
+  save, workflow create or run;
 - SpeechRecognition removed: typed text stayed, readable text fallback shown.
+
+Authoritative pre-Apply recheck (2026-11-21), real FastAPI ASGI validator:
+
+| Draft | Result |
+| --- | --- |
+| `secrets+report`, untouched | `200 {"valid":true,"issues":[]}` |
+| `secret_scan.config.engine="broken"` | `200 {"valid":false}`, «Неизвестный engine 'broken'…» |
+| `ai_scan.ai_scan_result -> build_report.policy_result` | `200 {"valid":false}`, «Несовместимые типы данных…» |
+| `config: []` | `422`, Pydantic rejects the draft shape |
+
+Built frontend in Chromium at 390×844, with the validate request forwarded to
+that real ASGI validator while preview responses were corrupted on purpose:
+
+- corrupted engine preview with `validation.valid=true` → error
+  «Черновик не прошёл серверную проверку: Неизвестный engine…», zero Apply,
+  canvas stayed 6/6;
+- incompatible `AI_SCAN_RESULT -> POLICY_RESULT` → error with the type mismatch,
+  zero Apply, canvas stayed 6/6;
+- unknown kind → `SCENARIO_PREVIEW_INVALID`, zero Apply, no validate call;
+- validate endpoint 500 → «Серверная проверка черновика недоступна…», zero Apply;
+- malformed validate body → «неоднозначный результат проверки», zero Apply;
+- close while preview or validation was delayed → no Apply, canvas stayed 6/6;
+- valid `secrets+report` applied 6/6 edges (including `sb_e_merge_report`);
+  valid `secrets+ai_scan+ai_explain+report` applied 8 nodes / 10 edges with
+  `sb_e_explain_report` and the `ai_scan_result` handle;
+- no React Flow `#008` warnings, no notify/save/run requests; typed voice
+  fallback still preserved.
 
 `npm run build` (tsc + Vite production build) passed.
 

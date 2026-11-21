@@ -71,19 +71,22 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function isValidation(value: unknown): value is ScenarioPreview['validation'] {
+  if (!isObject(value) || typeof value.valid !== 'boolean' || !Array.isArray(value.issues)) return false;
+  return value.issues.every((issue) => isObject(issue)
+    && typeof issue.level === 'string' && typeof issue.message === 'string');
+}
+
 function isPreview(payload: unknown): payload is ScenarioPreview {
   if (!isObject(payload)) return false;
   const { draft, validation, summary, warnings, intents } = payload;
   if (!isObject(draft) || draft.schemaVersion !== 1
     || typeof draft.name !== 'string' || typeof draft.description !== 'string'
     || !Array.isArray(draft.nodes) || !draft.nodes.length || !Array.isArray(draft.edges)) return false;
-  if (!isObject(validation) || validation.valid !== true || !Array.isArray(validation.issues)) return false;
-  for (const issue of validation.issues) {
-    if (!isObject(issue) || typeof issue.level !== 'string' || typeof issue.message !== 'string') return false;
-    // valid=true paired with an error issue is self-contradictory: refuse to
-    // advertise "graph verified" and never allow Apply.
-    if (issue.level !== 'warning' && issue.level !== 'info') return false;
-  }
+  if (!isValidation(validation) || validation.valid !== true) return false;
+  // valid=true paired with an error issue is self-contradictory: refuse to
+  // advertise "graph verified" and never allow Apply.
+  if (validation.issues.some((issue) => issue.level !== 'warning' && issue.level !== 'info')) return false;
   if (typeof summary !== 'string' || !Array.isArray(warnings)
     || !warnings.every((warning) => typeof warning === 'string')
     || !Array.isArray(intents) || !intents.every((intent) => typeof intent === 'string')) return false;
@@ -112,6 +115,68 @@ function isPreview(payload: unknown): payload is ScenarioPreview {
     if (typeof edge.targetPort !== 'string' || !targetPorts.inputs.includes(edge.targetPort)) return false;
   }
   return true;
+}
+
+async function requestDraftValidation(
+  draft: ScenarioDraft,
+  signal?: AbortSignal,
+): Promise<ScenarioPreview['validation']> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/scenario-builder/validate`, {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new ScenarioBuilderApiError(
+      'Серверная проверка черновика недоступна. Применение отключено, текущий граф не изменён.',
+      0,
+      'SCENARIO_PREVIEW_UNVERIFIED',
+    );
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    throw new ScenarioBuilderApiError('Требуется вход в аккаунт', 401, 'AUTH_REQUIRED');
+  }
+  if (!response.ok) {
+    throw new ScenarioBuilderApiError(
+      response.status === 422
+        ? 'Сервер отклонил форму черновика. Применение отключено, текущий граф не изменён.'
+        : 'Серверная проверка черновика недоступна. Применение отключено, текущий граф не изменён.',
+      response.status,
+      'SCENARIO_PREVIEW_UNVERIFIED',
+    );
+  }
+  if (!isValidation(payload)) {
+    throw new ScenarioBuilderApiError(
+      'Сервер вернул неоднозначный результат проверки. Применение отключено.',
+      422,
+      'SCENARIO_PREVIEW_UNVERIFIED',
+    );
+  }
+  if (!payload.valid) {
+    const firstError = payload.issues.find((issue) => issue.level === 'error');
+    throw new ScenarioBuilderApiError(
+      firstError
+        ? `Черновик не прошёл серверную проверку: ${firstError.message}`
+        : 'Черновик не прошёл серверную проверку. Применение отключено.',
+      422,
+      'SCENARIO_PREVIEW_INVALID',
+    );
+  }
+  if (payload.issues.some((issue) => issue.level !== 'warning' && issue.level !== 'info')) {
+    throw new ScenarioBuilderApiError(
+      'Сервер вернул неоднозначный результат проверки. Применение отключено.',
+      422,
+      'SCENARIO_PREVIEW_UNVERIFIED',
+    );
+  }
+  return payload;
 }
 
 export async function requestScenarioPreview(prompt: string, signal?: AbortSignal): Promise<ScenarioPreview> {
@@ -143,5 +208,8 @@ export async function requestScenarioPreview(prompt: string, signal?: AbortSigna
       'SCENARIO_PREVIEW_INVALID',
     );
   }
-  return payload;
+  // The preview crossed an untrusted boundary: re-run the authoritative server
+  // validator on the concrete draft before the UI may claim success or Apply.
+  const validation = await requestDraftValidation(payload.draft, signal);
+  return { ...payload, validation };
 }
