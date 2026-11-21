@@ -62,3 +62,19 @@ Reviewed implementation commit `cb766ca637787dbc402bd6aaabcc84492a016fa4` togeth
 The independent live `/tmp/sol-signature-focused.py` check copied analyzer inputs into a temporary directory and called the real canonical signature builder. Changing each input independently produced these results: Team B `secrets.py` changed `rulesHash`; composition `full_analysis.py` changed `rulesHash`; Team B `kotlin_lexer.py` changed `parserHash`; selected trusted catalog bytes changed `advisoryHash`. Selecting an identical catalog copy under a different path preserved the entire signature. No repository source was mutated for these probes.
 
 Observed versions: `cf-rules/1+cg-full-analysis/1`, `cg-config/2`, and `cg-advisories/1+trusted-advisories/organizer-fe1fcbe21266+backend-catalog-v1`. This resolves the proven omission of Team B/composition/catalog from canonical provenance for the reviewed combination. A final merge verdict still awaits the separately assigned frozen-input and distinct-secret fixes and their exact SHA; this section does not approve the earlier unfixed candidate.
+
+## Final focused review of c3c3adb: one blocker remains
+
+Exact fixes reviewed: `c3c3adb31b8bff0fe5b1c8a7041383ea6d5e9e91` on implementation `cb766ca637787dbc402bd6aaabcc84492a016fa4`, combined with signature fix `22bbc5f964afa30a1f2d1428cb1d8c4d84b6b141`. Their isolated review merge is `7c50d65ad23d22c1a0ed574b4876ebddd9aa7bfb`; root's clean combined worktree was observed at `92f9035d2ca7727aeb3a871efb1c827566f6209c`.
+
+**Verdict: do not release this combination yet; the added-file integrity case fails.** No broad baseline audit or training rerun was performed in this follow-up. Root supplied owner isolated-PG evidence for the default workflow: 15 reference findings plus one unproven owner warning, zero safe-control hits, and zero known secret-prefix leaks. Those executor numbers are owner evidence, not independently repeated here.
+
+The independent real-code `/tmp/sol-final-focused.py` run established:
+
+- Two distinct SECRET fingerprints at disjoint byte ranges on one source line now survive as two findings. The previously reproduced merge defect is fixed.
+- An unchanged frozen file is accepted. Changing that existing file raises `SnapshotIntegrityError`; source order in `scan_category_full` calls verification before scheduling either analyzer. The existing-file mutation defect is fixed at that entrypoint.
+- **Adding a new file after freezing is still accepted.** Freeze a project containing only `README.md`, then add `injected.properties` with a newly generated synthetic password. `verify_frozen_artifact` returns successfully; the real backend `SecretAnalyzer.analyze` then finds `SECRET-PASSWORD-LITERAL` in that added file. The check at `backend/app/integrations/full_analysis.py:111` only visits manifest members, while both analyzers recursively scan the directory. Thus bytes absent from the immutable manifest still become analyzer input under the old snapshot identity. Compare the actual file set against the frozen manifest (and reject added/escaping paths), or restrict both analyzers to a validated immutable input copy. Root received this proof immediately.
+
+Proof output: `ORIGINAL_ACCEPTED=True`, `MUTATION_REJECTED=SnapshotIntegrityError`, `ADDED_FILE_ACCEPTED=True`, `SCANNER_READS_ADDED_FILE=[('injected.properties','SECRET-PASSWORD-LITERAL')]`, `DISTINCT_SECRET_COUNT=2`. Local proof directory: `/tmp/sol-final-frozen-2qj_q8a3`.
+
+The focused signature mutation checks were repeated on this exact merged combination and passed for Team B rules, composition, parser and selected catalog; an identical catalog at a different path again preserved the signature. Proof directory: `/tmp/sol-signature-jsol2w8v`. The catalog/signature issues are resolved for this combination; the remaining acceptance condition is rejection/exclusion of added frozen-input files, followed by verification of its exact fix SHA.
