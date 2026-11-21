@@ -348,6 +348,73 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 401, response.text)
             self.assertEqual(response.json()["detail"]["code"], "INVALID_INIT_DATA")
 
+    async def test_miniapp_page_is_served_without_cookie(self) -> None:
+        import pathlib
+        import tempfile
+
+        old_dist = self.main.frontend_dist
+        dist = pathlib.Path(tempfile.mkdtemp(prefix="nedra-miniapp-dist-"))
+        (dist / "index.html").write_text(
+            "<!doctype html><html><body><div id=\"miniapp-live\">ok</div></body></html>",
+            encoding="utf-8",
+        )
+        self.main.frontend_dist = dist
+        try:
+            async with await self._client() as client:
+                for path in ("/miniapp", "/miniapp/"):
+                    response = await client.get(path)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertIn("text/html", response.headers.get("content-type", ""))
+                    self.assertIn("miniapp-live", response.text)
+                    self.assertNotIn("set-cookie", response.headers)
+
+                # No catch-all: API misses stay API 404s, and missing assets
+                # are not replaced by the SPA shell.
+                response = await client.get("/api/definitely-missing")
+                self.assertEqual(response.status_code, 404, response.text)
+                self.assertNotIn("miniapp-live", response.text)
+
+                response = await client.get("/assets/definitely-missing.js")
+                self.assertEqual(response.status_code, 404, response.text)
+                self.assertNotIn("miniapp-live", response.text)
+        finally:
+            self.main.frontend_dist = old_dist
+
+    async def test_auth_and_bind_rate_limits_are_live(self) -> None:
+        from backend.app.api.session import _RATE_EVENTS
+
+        old_auth = self.main._RATE_MINI_AUTH
+        old_bind = self.main._RATE_MINI_BIND
+        try:
+            self.main._RATE_MINI_AUTH = 1
+            self.main._RATE_MINI_BIND = 1
+            _RATE_EVENTS.clear()
+            async with await self._client() as client:
+                first = await client.post(
+                    "/api/telegram/mini/auth", json={"initData": "not-signed"}
+                )
+                self.assertEqual(first.status_code, 401, first.text)
+                second = await client.post(
+                    "/api/telegram/mini/auth", json={"initData": "not-signed"}
+                )
+                self.assertEqual(second.status_code, 429, second.text)
+
+                _RATE_EVENTS.clear()
+                first = await client.post(
+                    "/api/telegram/mini/bind",
+                    json={"initData": "not-signed", "code": "0" * 32},
+                )
+                self.assertEqual(first.status_code, 401, first.text)
+                second = await client.post(
+                    "/api/telegram/mini/bind",
+                    json={"initData": "not-signed", "code": "0" * 32},
+                )
+                self.assertEqual(second.status_code, 429, second.text)
+        finally:
+            self.main._RATE_MINI_AUTH = old_auth
+            self.main._RATE_MINI_BIND = old_bind
+            _RATE_EVENTS.clear()
+
     async def test_bind_with_code_issues_working_token(self) -> None:
         from backend.app.storage.telegram import TelegramRepository
 

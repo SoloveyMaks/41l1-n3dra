@@ -298,7 +298,8 @@ def create_miniapp_router(
                 409,
                 "TELEGRAM_NOT_BOUND",
                 "Telegram ещё не привязан к аккаунту. Откройте веб-кабинет, раздел Telegram, "
-                "создайте код привязки и отправьте боту /start <код> или введите код здесь.",
+                "создайте код привязки, отправьте боту /start, а затем код обычным сообщением. "
+                "В Mini App этот же код можно ввести здесь.",
             )
         except Exception as exc:  # noqa: BLE001 - no raw initData/token in errors
             logger.info("mini initData rejected: %s", type(exc).__name__)
