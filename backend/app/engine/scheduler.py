@@ -24,6 +24,11 @@ WATCH_CLAIM_SECONDS = 30 * 60
 WATCH_TICK_SECONDS = 5
 MAX_ACTIVE_WATCH_CHECKS = 2
 WATCH_RECOVERY_SECONDS = 60
+WEBHOOK_LEASE_SECONDS = 10 * 60
+WEBHOOK_BATCH = 10
+MAX_ACTIVE_WEBHOOK_PROCESSING = 2
+WEBHOOK_MAX_ATTEMPTS = 3
+WEBHOOK_RETRY_SECONDS = 5
 
 _STORAGE_MANIFEST_KEYS = (
     "id", "filename", "hash_sha256", "size_bytes", "uncompressed_size_bytes",
@@ -188,14 +193,19 @@ class RepositoryWatchService:
         self.db = db
         self.executor = executor
         self._sem = asyncio.Semaphore(MAX_ACTIVE_WATCH_CHECKS)
+        self._hook_sem = asyncio.Semaphore(MAX_ACTIVE_WEBHOOK_PROCESSING)
         self._dispatch_tasks: set[asyncio.Task] = set()
+        self._hook_tasks: set[asyncio.Task] = set()
 
     async def _db(self, name: str, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(getattr(self.db, name), *args, **kwargs)
 
     # --- admin operations -------------------------------------------------
     async def create_watch(self, workflow_id: Any, url: Any, branch: Any,
-                           cron_or_interval: Any) -> Dict[str, Any]:
+                           cron_or_interval: Any,
+                           trigger_mode: Any = "poll") -> Dict[str, Any]:
+        if trigger_mode not in ("poll", "webhook"):
+            raise WatchValidationError("triggerMode должен быть poll или webhook")
         if not isinstance(workflow_id, str) or not workflow_id.strip():
             raise WatchValidationError("workflowId обязателен")
         if not isinstance(url, str) or not url.strip() or len(url) > 2048:
@@ -223,10 +233,15 @@ class RepositoryWatchService:
             raise WatchValidationError(
                 "Разрешены только публичные HTTPS-репозитории без credentials и порта в URL"
             )
-        try:
-            expression = validate_watch_expression(cron_or_interval)
-        except ValueError as exc:
-            raise WatchValidationError(str(exc)) from exc
+        if trigger_mode == "webhook":
+            # Push-режим не опрашивает провайдера: cadence остаётся дефолтной
+            # для схемы, next_check_at пустой, due-запрос такие строки не берёт.
+            expression = f"interval:{DEFAULT_WATCH_INTERVAL_SECONDS}"
+        else:
+            try:
+                expression = validate_watch_expression(cron_or_interval)
+            except ValueError as exc:
+                raise WatchValidationError(str(exc)) from exc
         workflow = await self._db("get_workflow", workflow_id.strip())
         if not workflow:
             raise WatchValidationError("Сценарий не найден")
@@ -250,7 +265,7 @@ class RepositoryWatchService:
 
         data = _validated_repository(resolved)
         now = datetime.now(timezone.utc)
-        next_at = _next_watch_at(expression, now)
+        next_at = None if trigger_mode == "webhook" else _next_watch_at(expression, now)
         watch_id = f"rw_{uuid.uuid4().hex[:10]}"
         await self._db(
             "create_repository_watch",
@@ -260,9 +275,10 @@ class RepositoryWatchService:
             data["provider"],
             data["branch"],
             expression,
-            next_at.isoformat(),
+            next_at.isoformat() if next_at else None,
             data["commit_sha"],
             now.isoformat(),
+            trigger_mode,
         )
         row = await self._db("get_repository_watch", watch_id)
         if row is None:
@@ -274,7 +290,7 @@ class RepositoryWatchService:
         if not watch:
             raise WatchNotFoundError("Расписание репозитория не найдено")
         next_at = None
-        if enabled:
+        if enabled and watch.get("trigger_mode") != "webhook":
             next_at = _next_watch_at(
                 watch.get("cron_or_interval", f"interval:{DEFAULT_WATCH_INTERVAL_SECONDS}"),
                 datetime.now(timezone.utc),
@@ -293,9 +309,37 @@ class RepositoryWatchService:
         if not claimed:
             return {
                 "status": "busy",
+                "mode": "branch_check",
                 "detail": "Проверка уже выполняется другим процессом",
             }
-        return await self.check_claimed(claimed, token)
+        result = await self.check_claimed(claimed, token)
+        result["mode"] = "branch_check"
+        return result
+
+    async def get_watch(self, watch_id: str) -> Dict[str, Any]:
+        watch = await self._db("get_repository_watch", watch_id)
+        if not watch:
+            raise WatchNotFoundError("Расписание репозитория не найдено")
+        return watch
+
+    async def setup_webhook(self, watch_id: str,
+                            rotate: bool = False) -> Dict[str, Any]:
+        """Initialize or rotate the per-watch nonce; the secret is derived by API."""
+        watch = await self.get_watch(watch_id)
+        if watch.get("trigger_mode") != "webhook":
+            raise WatchValidationError(
+                "Вебхук доступен только для отслеживания по push"
+            )
+        nonce = watch.get("webhook_nonce")
+        if rotate or not nonce:
+            nonce = uuid.uuid4().hex + uuid.uuid4().hex
+            row = await self._db(
+                "set_repository_watch_webhook_nonce", watch_id, nonce
+            )
+            if row is None:
+                raise WatchNotFoundError("Расписание репозитория не найдено")
+            return row
+        return watch
 
     async def check_claimed(self, watch: Dict[str, Any], token: str) -> Dict[str, Any]:
         async with self._sem:
@@ -345,12 +389,26 @@ class RepositoryWatchService:
             )
             return {"status": "unchanged", "commitSha": commit_sha}
 
+        return await self._process_commit(
+            watch, commit_sha, token, workflow["latest_revision_id"], now, next_at
+        )
+
+    async def _process_commit(self, watch: Dict[str, Any], commit_sha: str,
+                              token: str, revision_id: str, now: datetime,
+                              next_at: Optional[datetime]) -> Dict[str, Any]:
+        """Import the exact SHA and open at most one run for this watch+SHA.
+
+        Polling, manual branch checks and webhook deliveries share this gate.
+        The ledger row is claimed atomically, so a concurrent caller neither
+        imports a second time nor enqueues a second run.
+        """
         existing = await self._db("get_repository_watch_commit", watch["id"], commit_sha)
         if existing and existing.get("state") in ("queued", "running", "done"):
-            await self._db(
-                "finish_repository_watch_unchanged",
-                watch["id"], token, now.isoformat(), next_at.isoformat(), commit_sha,
-            )
+            if next_at is not None:
+                await self._db(
+                    "finish_repository_watch_unchanged",
+                    watch["id"], token, now.isoformat(), next_at.isoformat(), commit_sha,
+                )
             return {
                 "status": "unchanged",
                 "commitSha": commit_sha,
@@ -363,16 +421,22 @@ class RepositoryWatchService:
         if not claim:
             fresh = await self._db("get_repository_watch_commit", watch["id"], commit_sha)
             if fresh and fresh.get("state") == "processing":
-                await self._db(
-                    "finish_repository_watch_unchanged",
-                    watch["id"], token, now.isoformat(), next_at.isoformat(),
-                )
+                if next_at is not None:
+                    await self._db(
+                        "finish_repository_watch_unchanged",
+                        watch["id"], token, now.isoformat(), next_at.isoformat(),
+                    )
                 return {
                     "status": "busy",
                     "commitSha": commit_sha,
                     "detail": "Тот же коммит уже проверяется",
                 }
             if fresh and fresh.get("state") in ("queued", "running", "done"):
+                if next_at is not None:
+                    await self._db(
+                        "finish_repository_watch_unchanged",
+                        watch["id"], token, now.isoformat(), next_at.isoformat(), commit_sha,
+                    )
                 return {
                     "status": "unchanged",
                     "commitSha": commit_sha,
@@ -412,8 +476,9 @@ class RepositoryWatchService:
         committed = await self._db(
             "commit_repository_watch_run",
             watch["id"], commit_sha, token, run_id,
-            watch["workflow_id"], workflow["latest_revision_id"],
-            stored["id"], now.isoformat(), next_at.isoformat(),
+            watch["workflow_id"], revision_id,
+            stored["id"], now.isoformat(),
+            next_at.isoformat() if next_at else None,
         )
         if not committed:
             return {
@@ -425,12 +490,12 @@ class RepositoryWatchService:
         return {"status": "started", "runId": run_id, "commitSha": commit_sha}
 
     async def _fail(self, watch: Dict[str, Any], token: str, message: str,
-                    now: datetime, next_at: datetime) -> Dict[str, Any]:
+                    now: datetime, next_at: Optional[datetime]) -> Dict[str, Any]:
         detail = _safe_error_text(message, "Проверка не завершилась")
         try:
             await self._db(
                 "fail_repository_watch", watch["id"], token, detail,
-                now.isoformat(), next_at.isoformat(),
+                now.isoformat(), next_at.isoformat() if next_at else None,
             )
         except Exception as exc:  # noqa: BLE001 - claim всё равно истечёт
             logger.warning("Failed to persist watch error: %s", type(exc).__name__)
@@ -441,17 +506,154 @@ class RepositoryWatchService:
         }
 
     async def _fail_commit(self, watch: Dict[str, Any], token: str, commit_sha: str,
-                           message: str, now: datetime, next_at: datetime) -> Dict[str, Any]:
+                           message: str, now: datetime,
+                           next_at: Optional[datetime]) -> Dict[str, Any]:
         detail = _safe_error_text(message, "Проверка не завершилась")
         try:
             await self._db(
                 "fail_repository_watch_commit",
                 watch["id"], commit_sha, token, detail,
-                now.isoformat(), next_at.isoformat(),
+                now.isoformat(), next_at.isoformat() if next_at else None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to persist watch commit error: %s", type(exc).__name__)
         return {"status": "error", "commitSha": commit_sha, "detail": detail}
+
+    # --- durable webhook inbox -------------------------------------------
+    async def drain_hook_inbox(self) -> None:
+        """Lease and process accepted deliveries, regardless of poll schedules."""
+        free = MAX_ACTIVE_WEBHOOK_PROCESSING - len(self._hook_tasks)
+        if free <= 0:
+            return
+        token = f"whb_{uuid.uuid4().hex}"
+        rows = await self._db(
+            "claim_repository_hook_deliveries",
+            min(free, WEBHOOK_BATCH), token, WEBHOOK_LEASE_SECONDS,
+        )
+        for row in rows:
+            task = asyncio.create_task(self.process_delivery(row, token))
+            self._hook_tasks.add(task)
+            task.add_done_callback(self._hook_tasks.discard)
+
+    async def process_delivery(self, row: Dict[str, Any], token: str) -> None:
+        async with self._hook_sem:
+            await self._process_delivery(row, token)
+
+    async def _process_delivery(self, row: Dict[str, Any], token: str) -> None:
+        delivery_row_id = row.get("id")
+        watch_id = row.get("watch_id")
+        commit_sha = row.get("commit_sha")
+        now = datetime.now(timezone.utc)
+        try:
+            watch = await self._db("get_repository_watch", watch_id)
+            if not watch:
+                return await self._finish_delivery(
+                    delivery_row_id, token, "ignored", None,
+                    "Расписание удалено до обработки", None,
+                )
+            if not watch.get("enabled"):
+                return await self._finish_delivery(
+                    delivery_row_id, token, "ignored", None,
+                    "Отслеживание приостановлено", None,
+                )
+            if watch.get("trigger_mode") != "webhook":
+                return await self._finish_delivery(
+                    delivery_row_id, token, "ignored", None,
+                    "Расписание не в режиме push", None,
+                )
+            if not isinstance(commit_sha, str) or not _SHA_RE.match(commit_sha):
+                return await self._finish_delivery(
+                    delivery_row_id, token, "failed", None,
+                    "В доставке нет корректного SHA", "Некорректный commit SHA",
+                )
+            revision_id = row.get("workflow_revision_id")
+            if not revision_id:
+                workflow = await self._db("get_workflow", watch["workflow_id"])
+                revision_id = (workflow or {}).get("latest_revision_id")
+            if not revision_id:
+                return await self._finish_delivery(
+                    delivery_row_id, token, "failed", None,
+                    "Сохранённая ревизия сценария недоступна",
+                    "Ревизия сценария недоступна",
+                )
+            result = await self._process_commit(
+                watch, commit_sha, f"whc_{uuid.uuid4().hex}",
+                revision_id, now, None,
+            )
+        except asyncio.CancelledError:
+            raise  # lease истечёт, доставку заберёт следующий тик
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Repository hook delivery failed: %s", type(exc).__name__)
+            return await self._retry_delivery(
+                row, token, "Не удалось обработать push-событие",
+            )
+
+        status = result.get("status")
+        if status == "started":
+            await self._finish_delivery(
+                delivery_row_id, token, "done", result.get("runId"),
+                "Прогон создан", None,
+            )
+            await self._watch_delivery(watch_id, "started", None)
+            return
+        if status == "unchanged":
+            await self._finish_delivery(
+                delivery_row_id, token, "ignored", result.get("runId"),
+                "Этот коммит уже обработан", None,
+            )
+            await self._watch_delivery(watch_id, "unchanged", None)
+            return
+        if status == "error":
+            return await self._retry_delivery(
+                row, token, result.get("detail") or "Импорт коммита не удался",
+            )
+        return await self._retry_delivery(
+            row, token, result.get("detail") or "Коммит уже проверяется",
+        )
+
+    async def _finish_delivery(self, delivery_row_id: str, token: str,
+                               state: str, run_id: Optional[str],
+                               detail: str, error: Optional[str]) -> None:
+        try:
+            await self._db(
+                "finish_repository_hook_delivery",
+                delivery_row_id, token, state, run_id, detail, error,
+            )
+        except Exception as exc:  # noqa: BLE001 - lease всё равно истечёт
+            logger.warning("Failed to finish hook delivery: %s", type(exc).__name__)
+
+    async def _retry_delivery(self, row: Dict[str, Any], token: str,
+                              detail: str) -> None:
+        safe_detail = _safe_error_text(detail, "Push-событие не обработано")
+        attempt = int(row.get("attempt") or 0)
+        if attempt >= WEBHOOK_MAX_ATTEMPTS:
+            await self._finish_delivery(
+                row.get("id"), token, "failed", None,
+                "Повторы исчерпаны", safe_detail,
+            )
+            await self._watch_delivery(row.get("watch_id"), "failed", safe_detail)
+            return
+        try:
+            next_at = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=WEBHOOK_RETRY_SECONDS * max(1, attempt))
+            ).isoformat()
+            await self._db(
+                "retry_repository_hook_delivery",
+                row.get("id"), token, safe_detail, next_at,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to retry hook delivery: %s", type(exc).__name__)
+        await self._watch_delivery(row.get("watch_id"), "retrying", safe_detail)
+
+    async def _watch_delivery(self, watch_id: Optional[str], status: str,
+                              error: Optional[str]) -> None:
+        if not watch_id:
+            return
+        try:
+            await self._db("mark_repository_watch_delivery", watch_id, status, error)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to mark watch delivery: %s", type(exc).__name__)
 
     # --- run dispatch and recovery ---------------------------------------
     def _schedule_dispatch(self, run_id: str) -> None:
@@ -547,6 +749,9 @@ class RepositoryWatchService:
         for task in list(self._dispatch_tasks):
             task.cancel()
         self._dispatch_tasks.clear()
+        for task in list(self._hook_tasks):
+            task.cancel()
+        self._hook_tasks.clear()
 
 
 class WorkflowScheduler:
@@ -597,6 +802,9 @@ class WorkflowScheduler:
         last_recovery = time.monotonic()
         while self._running:
             try:
+                # Push-доставки не зависят от due-времени polling: тик сначала
+                # добирает durable inbox, затем (если есть слоты) опрашивает.
+                await self.watches.drain_hook_inbox()
                 free = MAX_ACTIVE_WATCH_CHECKS - len(self._active_watch_checks)
                 if free > 0:
                     token = f"wtick_{uuid.uuid4().hex}"
