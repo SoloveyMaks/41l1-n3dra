@@ -24,10 +24,9 @@ Only :func:`finish` (with ``authorized_at IS NOT NULL``) can record a send
 result; :func:`abort` handles policy/settings refusals before a request starts.
 """
 
-from pathlib import Path
 from uuid import UUID, uuid4
 
-from backend.app.storage.database import get_pool
+from backend.app.storage.database import get_pool, initialize_notification_schema
 
 MAX_DELIVERY_ATTEMPTS = 3
 DISPATCH_LOCK_NAMESPACE = 'nedra-completion-notifications-dispatch'
@@ -67,10 +66,7 @@ def _settings_row(conn, workspace) -> dict:
 
 
 def initialize():
-    with get_pool().connection() as conn:
-        conn.execute("SELECT pg_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))")
-        conn.execute(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
-        conn.execute(Path(__file__).with_name('dispatch_guard.sql').read_text(encoding='utf-8'))
+    initialize_notification_schema()
 
 
 def settings(workspace):

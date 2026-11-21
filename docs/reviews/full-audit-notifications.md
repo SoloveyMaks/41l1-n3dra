@@ -174,3 +174,11 @@ Dispatch lock: `pg_advisory_xact_lock(hashtext('nedra-completion-notifications-d
 - Два workspace с одинаковым run_id: settings/read/cancel/finish одного не меняют другой; параллельный claim не выдаёт одну строку дважды; чужой lease не записывает исход.
 
 В этом продолжении реально повторены literal-IP policy 11/11, ast.parse всех Python notification файлов и git diff --check; все прошли. Эти команды не доказывают выполнение новых SQL веток, миграции или гонок.
+
+## Integration delta: единый владелец notification schema
+
+Поручение task_7319f176e7f6, исходный HEAD `52c34600884b1fba8ca96c875bf1d6ddc120689e`. По согласованному с data contract `storage.database.initialize_notification_schema(conn=None)` теперь единственный владелец установки notification schema. `notifications.store.initialize()` только вызывает этот helper без conn; собственное открытие connection, raw SQL, DDL lock и чтение SQL-файлов из store удалены вместе с неиспользуемым импортом Path. Исключения не перехватываются: ошибка helper прерывает runtime startup.
+
+Обязанность helper при conn=None — владеть своей транзакцией/закрытием; при переданном conn из init_db — исполнять атомарно base schema.sql и exact forward dispatch_guard.sql под согласованным notification DDL lock в текущей транзакции без самостоятельного commit/close. Runtime v5→v6 принадлежит владельцу data. Предыдущий контракт прямого исполнения SQL в store.initialize заменён этим делегированием; содержимое SQL этим integration delta не менялось. `database.py` и data checkout не изменялись, data ветка не мерджилась.
+
+Фактически выполнено: ast.parse всех notification Python файлов прошёл; git diff --check прошёл; реальный import notifications завершился ожидаемым `ImportError: cannot import name 'initialize_notification_schema' from 'backend.app.storage.database'`, потому что data helper ещё отсутствует в этом изолированном checkout. Это **pending combined verification**, а не успешный запуск приложения. Этот коммит нельзя использовать отдельно от соответствующего data commit. После объединения обязательны настоящий import/startup, свежая и existing v5→v6 установка, повторный startup, исключение helper с отказом startup и остальные перечисленные PostgreSQL проверки. Никакие старые результаты локальных проб не означают прохождение текущего combined import.
