@@ -9,7 +9,7 @@ for name in "$NEDRA_APP_CONTAINER" "$NEDRA_DB_CONTAINER"; do
   if container_exists "$name"; then
     require_owned_container "$name"
     if container_running "$name"; then
-      podman stop "$name" >/dev/null
+      podman stop --time 45 "$name" >/dev/null
     fi
     podman rm "$name" >/dev/null
     say "удалён только собственный контейнер $name"

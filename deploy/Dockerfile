@@ -25,6 +25,8 @@ COPY deploy/requirements.txt /tmp/requirements.txt
 RUN python -m pip wheel --wheel-dir /wheels -r /tmp/requirements.txt
 
 FROM ${PYTHON_IMAGE} AS runtime
+ARG NEDRA_REVISION
+LABEL org.opencontainers.image.revision=${NEDRA_REVISION}
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
@@ -43,21 +45,27 @@ RUN python -m pip install --no-index --find-links=/wheels -r /tmp/requirements.t
     && rm -rf /wheels /tmp/requirements.txt
 COPY backend ./backend
 COPY analyzers ./analyzers
+COPY rag ./rag
 COPY db ./db
 COPY docs ./docs
 COPY packages/comparison ./packages/comparison
-COPY deploy/healthcheck.py /usr/local/bin/nedra-healthcheck.py
+COPY deploy/healthcheck.py ./deploy/healthcheck.py
+COPY deploy/requirements.txt ./deploy/requirements.txt
+COPY scripts/nedra_manifest.py /usr/local/bin/nedra-manifest.py
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=frontend-build /src/frontend/dist ./frontend/dist
 # Fail the build if the pinned Node binary cannot use the Python-slim libs.
 RUN /usr/local/bin/node --version
+RUN python /usr/local/bin/nedra-manifest.py --revision "$NEDRA_REVISION" \
+    && chmod -R a+rX /app /usr/local/bin/nedra-manifest.py
 
 RUN install -d -o nedra -g nedra /app/data
 USER nedra
+RUN python /usr/local/bin/nedra-manifest.py --revision "$NEDRA_REVISION" --verify
 EXPOSE 18080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "/usr/local/bin/nedra-healthcheck.py"]
+    CMD ["python", "/app/deploy/healthcheck.py"]
 
 # Bind all interfaces inside the container; the host publishes only 127.0.0.1:18080.
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "18080", "--no-access-log"]

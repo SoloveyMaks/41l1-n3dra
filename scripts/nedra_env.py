@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Read one key from a dotenv-style file without shell evaluation.
 
-Supports `export KEY=value`, single/double quotes, inline comments and escaped
-quotes. Only the requested key is emitted; other values (including any WikiVibe
-key) are never printed or copied.
+Supports export, quoted values and comments after quoted values in source
+files. Canonical mode accepts only the literal KEY=value format used by Podman.
 """
 from __future__ import annotations
 
@@ -20,16 +19,23 @@ class EnvError(RuntimeError):
     pass
 
 
-def parse(path: Path) -> dict[str, str]:
+def parse(path: Path, *, canonical: bool = False) -> dict[str, str]:
     try:
         text = path.read_text(encoding="utf-8-sig")
-    except FileNotFoundError as exc:
-        raise EnvError(f"файл не найден: {path}") from exc
+    except OSError as exc:
+        raise EnvError(f"файл не читается: {path}") from exc
     except UnicodeDecodeError as exc:
         raise EnvError(f"файл не в UTF-8: {path}") from exc
 
     values: dict[str, str] = {}
     for raw in text.splitlines():
+        if canonical and raw and not raw.startswith("#"):
+            key, separator, value = raw.partition("=")
+            if (not separator or not KEY_RE.fullmatch(key) or key in values
+                    or value.startswith(("'", '"'))):
+                raise EnvError(f"нужен канонический KEY=value без export/кавычек/дубликатов: {path}")
+            values[key] = value
+            continue
         line = raw.lstrip()
         if not line or line.startswith("#"):
             continue
@@ -47,7 +53,7 @@ def parse(path: Path) -> dict[str, str]:
             continue
         if raw_value[:1] in ("'", '"'):
             try:
-                parts = shlex.split(raw_value, comments=False, posix=True)
+                parts = shlex.split(raw_value, comments=True, posix=True)
             except ValueError as exc:
                 raise EnvError(f"незакрытая кавычка в {path}") from exc
             if parts:
@@ -58,6 +64,9 @@ def parse(path: Path) -> dict[str, str]:
             # Canonical env-file format: everything after '=' is the literal
             # value; only whole-line comments are supported, matching podman.
             values[key] = raw_value
+    for key, value in values.items():
+        if any(ch in value for ch in "\r\n\x00"):
+            raise EnvError(f"{key}: contains control characters")
     return values
 
 
@@ -68,6 +77,7 @@ def main() -> int:
     parser.add_argument("--allow-missing", action="store_true")
     parser.add_argument("--check", action="store_true", help="print present/missing, never the value")
     parser.add_argument("--pairs", action="store_true", help="emit key NUL value NUL for every entry")
+    parser.add_argument("--canonical", action="store_true", help="require literal Podman env-file format")
     args = parser.parse_args()
 
     if not args.pairs and not args.key:
@@ -77,7 +87,7 @@ def main() -> int:
         print("invalid key name", file=sys.stderr)
         return 2
     try:
-        values = parse(args.source)
+        values = parse(args.source, canonical=args.canonical)
     except EnvError as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -23,7 +23,7 @@ stop_one() {
   fi
   require_owned_container "$name"
   if container_running "$name"; then
-    podman stop "$name" >/dev/null
+    podman stop --time 45 "$name" >/dev/null
     say "остановлен $name"
   else
     say "$name уже остановлен"
