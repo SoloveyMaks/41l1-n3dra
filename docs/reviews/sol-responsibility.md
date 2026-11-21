@@ -28,6 +28,32 @@
 * Source-read concern: cache только completed, 256 entries; нет global network concurrency budget, singleflight или provider-wide cooldown. Одновременные одинаковые miss и разные path могут повторять те же PR reads. Последствия под настоящей массовой нагрузкой здесь не измерены; это конкретный открытый resource concern, а не доказанная production авария.
 * Baseline/auth80/Telegram, tenant ASGI и frontend build не повторялись. Исходники не менялись, внешней сети, sends, credentials и production-портов не было.
 
+## Targeted recheck: 2af8c391 — частично принято
+
+Точный owner SHA `2af8c39183755270e0ad33a60bbdd9619dd2b6aa`, локальный merge HEAD на момент этой проверки `5543d2c19d5e6e4f57c369e48fdf5f70ccb3edb5`. Этот раздел не переоткрывает уже принятый review-state/PR fix и не закрывает 864273d streaming allocation gap.
+
+### Подтверждено живыми локальными прогонами
+
+* Вредный 60-byte CODEOWNERS pattern (`"*" + "a*" * 25 + "b @owner\n"`) завершился за **0.006 s** через реальный `SafeArtifactIntake` → immutable snapshot → matcher; event-loop blocking ReDoS из предыдущего review больше не воспроизвёлся.
+* На том же intake доказаны `/src/` root anchoring (nested path получает fallback), ownerless `/src/` снимает fallback, `**/A.kt` совпадает с root `A.kt`, inline `# comment` не становится owner, а файл с правилами после 400 возвращает `status=incomplete` и пустых owners вместо поздней атрибуции.
+* Реальный disposable PG proof с десятью занятыми pool connections: ожидание отсутствующего run заняло **0.351 s**, ticker max gap **0.011 s**, все connections возвращены (`all_returned=true`). `service.py` теперь переносит синхронный DB/filesystem/CODEOWNERS context в `asyncio.to_thread`.
+* Source-read `service.py:217-240`: active semaphore ограничен **4**, inflight key включает `workspace_id`, `run_id`, `finding_id`, а `asyncio.shield` и done-callback отделяют отмену одного awaiter от общей task. Runtime cancellation/tenant proof ниже подтверждает это на данном SHA; будущая замена to_thread требует повторной проверки передачи ContextVar.
+
+### Medium — nested PR 429 не включает provider cooldown
+
+`backend/app/responsibility/history.py:505-510` включает provider cooldown только когда **первичный file-history** запрос вернул `rate_limited`; `:570-574` делает то же после aggregate `pr_status`. Но `_github_pull_requests` возвращает `"available"` из `:419` даже если один из detail/reviews запросов внутри `review_by_number` вернул `rate_limited` (`:352-358`, `:376-393`); этот статус теряется. Поэтому 429 на PR detail/reviews не включает `PROVIDER_COOLDOWN_SECONDS=60`, и следующий cache-miss может немедленно повторить provider запрос. Это source-confirmed finding, внешние запросы не выполнялись; нужен явный propagation rate-limited из nested calls.
+
+### Medium — bounded DP всё ещё даёт ложное совпадение по префиксу имени
+
+`backend/app/responsibility/codeowners.py:89-96` обрабатывает `**/` так, что wildcard может поглотить символы до первого slash, включая часть последнего filename. Новый live intake proof (immutable ZIP snapshot, без host files) вернул владельца `@owner` для правил `A.kt @owner` и пути `BA.kt`, а также для `**/src/A.kt @owner` и пути `notsrc/A.kt`; оба случая должны были остаться на fallback/без совпадения. Это уже не ReDoS, а неправильная ownership attribution: безопасный путь получает чужую подсказку владельца. Нужна проверка directory boundary при `**/` и обычном непути pattern; не считать matcher полностью закрытым до fix.
+
+### Не закрыто
+
+* 864273d gzip/decompressor allocation gap остаётся: `aiter_bytes()` может выделить большой decoded chunk до проверки 256 KiB (см. живой UDS proof выше).
+* Service inflight key включает tenant/run/finding, но разные findings одного public repo/path не объединяют history network requests. Provider-wide cooldown не покрывает потерянный nested 429 до owner fix. Кроме того, 10 s wait_for начинается после входа в semaphore, поэтому это бюджет активной обработки, а не жёсткий общий wall-clock deadline с очередью; при очереди elapsed может быть выше. Отмена coroutine не останавливает уже работающий `to_thread` DB вызов; это известная граница API, а не доказанная утечка connections.
+* Дополнительный real-PG concurrency proof: два одинаковых awaiter в одном tenant и один в другом дали независимые inflight keys; отмена одного awaiter не отменила другого, результаты сохранили пути `one/A.kt` и `two/A.kt`, cleanup оставил 0 inflight. Восемь разных запросов упёрлись ровно в semaphore=4 (четыре ожидали pool), после освобождения все завершились и pool вернулся. Это подтверждает cancellation/tenant scope для service layer; внешний provider не вызывался.
+* Production/provider traffic, external Telegram, baseline/auth80, tenant ASGI and frontend build не повторялись.
+
 ## PR/reviewers targeted review: 5f0b549
 
 Точный source commit `5f0b5490543927433844eec3f48d2fdd762a6b65`, review merge HEAD `0d17a4f4c03127fb4951effbc9d6ddbb20f6b070`. Предыдущие resource blockers не исправлены этим commit и повторно не запускались. **Release acceptance остаётся открытой до owner fix SHA и targeted recheck.** Внешние provider запросы не выполнялись; ниже прямой вызов owning reducer на synthetic review events, без mock network/pytest.
@@ -86,3 +112,8 @@
 ## Ограничения
 
 Provider live traffic намеренно не запускался: oversized-body, 429 и timeout подтверждены чтением кода и bounded DTO branches, но не внешним HTTP. CODEOWNERS и PG proof были локальными и read-only для исходников; implementation не менялся. Отдельных новых внешних writes, Telegram sends или production-портов не было.
+
+
+## Следующий candidate: admission b3f7240 — не принят
+
+Координатор предоставил `b3f72400bf2c76629a9278acb631e73ef40771c1` и сразу указал найденную им регрессию: `run_in_executor(None, _load_context, ...)` не переносит request ContextVar, в отличие от `asyncio.to_thread`. Этот SHA здесь не объявлен tenant-safe и не включён в доказательства 2af8c391. Для совместного targeted admission/cancellation/ContextVar acceptance ожидается точный исправленный SHA; gzip allocation и новые matcher/cooldown findings также остаются открытыми. Базовые auth/TG прогоны не нужны.
