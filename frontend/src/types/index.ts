@@ -86,12 +86,41 @@ export interface ResponsibilityCodeowners {
   limitations: string[];
 }
 
+export interface ResponsibilityPerson {
+  displayName?: string | null;
+  login?: string | null;
+}
+
 export interface ResponsibilityCommit {
   sha: string;
-  author?: string | null;
+  author?: ResponsibilityPerson | null;
+  committer?: ResponsibilityPerson | null;
   date?: string | null;
   url?: string | null;
   message?: string | null;
+}
+
+export interface ResponsibilityReview {
+  reviewer: ResponsibilityPerson;
+  state: string;
+  submittedAt?: string | null;
+  appliesToMerge: boolean;
+  limitation?: string | null;
+}
+
+export interface ResponsibilityPullRequest {
+  number: number;
+  title: string;
+  url?: string | null;
+  author?: ResponsibilityPerson | null;
+  mergedBy?: ResponsibilityPerson | null;
+  mergedAt?: string | null;
+  headSha?: string | null;
+  reviews: ResponsibilityReview[];
+  reviewsStatus: string;
+  reviewsReason: string;
+  reviewsTruncated: boolean;
+  limitations: string[];
 }
 
 export interface ResponsibilityLineBlame {
@@ -106,6 +135,10 @@ export interface ResponsibilityHistory {
   evidenceKind: string;
   notBlame: boolean;
   commit?: ResponsibilityCommit | null;
+  pullRequests: ResponsibilityPullRequest[];
+  pullRequestsStatus: string;
+  pullRequestsReason: string;
+  pullRequestsTruncated: boolean;
   lineBlame: ResponsibilityLineBlame;
   limitations: string[];
 }

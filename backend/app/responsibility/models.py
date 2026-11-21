@@ -32,12 +32,43 @@ class LineBlameInfo(BaseModel):
     reason: str = "Line blame не запрашивался: безопасной поддержки без токена нет."
 
 
+class PersonEvidence(BaseModel):
+    """Public identity only: display name/login. Email is deliberately absent."""
+
+    displayName: Optional[str] = None
+    login: Optional[str] = None
+
+
 class CommitEvidence(BaseModel):
     sha: str
-    author: Optional[str] = None
+    author: Optional[PersonEvidence] = None
+    committer: Optional[PersonEvidence] = None
     date: Optional[str] = None
     url: Optional[str] = None
     message: Optional[str] = None
+
+
+class ReviewEvidence(BaseModel):
+    reviewer: PersonEvidence
+    state: str  # APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+    submittedAt: Optional[str] = None
+    appliesToMerge: bool = False
+    limitation: Optional[str] = None
+
+
+class PullRequestEvidence(BaseModel):
+    number: int
+    title: str
+    url: Optional[str] = None
+    author: Optional[PersonEvidence] = None
+    mergedBy: Optional[PersonEvidence] = None
+    mergedAt: Optional[str] = None
+    headSha: Optional[str] = None
+    reviews: List[ReviewEvidence] = Field(default_factory=list)
+    reviewsStatus: str = "unavailable"
+    reviewsReason: str = ""
+    reviewsTruncated: bool = False
+    limitations: List[str] = Field(default_factory=list)
 
 
 class HistoryInfo(BaseModel):
@@ -47,6 +78,10 @@ class HistoryInfo(BaseModel):
     evidenceKind: str = "last_file_commit"
     notBlame: bool = True
     commit: Optional[CommitEvidence] = None
+    pullRequests: List[PullRequestEvidence] = Field(default_factory=list)
+    pullRequestsStatus: str = "not_requested"  # available | none | unavailable | rate_limited | failed | unsupported | not_requested
+    pullRequestsReason: str = ""
+    pullRequestsTruncated: bool = False
     lineBlame: LineBlameInfo = Field(default_factory=LineBlameInfo)
     limitations: List[str] = Field(default_factory=list)
 
