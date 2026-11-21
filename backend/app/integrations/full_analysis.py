@@ -10,14 +10,26 @@ engines stays one finding while a backend-only path traversal survives.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from analyzers.cg26.textfiles import (
+    EXCLUDED_DIRS as TEAM_B_EXCLUDED_DIRS,
+    MAX_FILE_BYTES as TEAM_B_MAX_FILE_BYTES,
+    SELF_DIR_NAMES as TEAM_B_SELF_DIRS,
+    TEXT_SUFFIXES as TEAM_B_TEXT_SUFFIXES,
+)
 from backend.app.analyzers.advisory_catalog import advisory_sources, expand_advisory_ids
 from backend.app.analyzers.redaction import mask_secret_text
 from backend.app.analyzers.sast_analyzer import SastAnalyzer
 from backend.app.analyzers.sca_analyzer import ScaAnalyzer
-from backend.app.analyzers.secret_analyzer import SecretAnalyzer
+from backend.app.analyzers.secret_analyzer import (
+    MAX_FILE_SIZE as SECRET_MAX_FILE_BYTES,
+    TEXT_EXTENSIONS as SECRET_TEXT_EXTENSIONS,
+    SecretAnalyzer,
+)
+from backend.app.artifacts.intake import _SKIP_DIR_NAMES as INTAKE_SKIP_DIRS
 from backend.app.codefacts.identity import sha256_hex, workspace_id
 from backend.app.codefacts.source import (
     SnapshotIntegrityError,
@@ -85,6 +97,46 @@ _CONFIDENCE_RANK = {
 }
 
 
+def _engine_reads(path: str, size: int) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    suffix = Path(name).suffix.lower()
+    if suffix == ".kt":
+        # SAST reads every Kotlin file; it has no size ceiling.
+        return True
+    if (suffix in SECRET_TEXT_EXTENSIONS or name.startswith(".env")) and size <= SECRET_MAX_FILE_BYTES:
+        return True
+    parts = path.split("/")[:-1]
+    if any(part in TEAM_B_EXCLUDED_DIRS or part in TEAM_B_SELF_DIRS for part in parts):
+        return False
+    if suffix not in TEAM_B_TEXT_SUFFIXES and name not in {".env", ".env.local"}:
+        return False
+    return size <= TEAM_B_MAX_FILE_BYTES
+
+
+def _reject_added_scan_files(root: Path, snapshot: Dict[str, Any]) -> None:
+    known = {str(item.get("path") or "") for item in snapshot.get("files", [])}
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames if name.casefold() not in INTAKE_SKIP_DIRS
+        )
+        current_path = Path(current)
+        for name in sorted(filenames):
+            target = current_path / name
+            rel = target.relative_to(root).as_posix()
+            if rel in known:
+                continue
+            if target.is_symlink():
+                if _engine_reads(rel, 0):
+                    raise SnapshotIntegrityError(f"Файл сканирования добавлен после приёма: {rel}")
+                continue
+            try:
+                size = target.stat().st_size
+            except OSError:
+                continue
+            if _engine_reads(rel, size):
+                raise SnapshotIntegrityError(f"Файл сканирования добавлен после приёма: {rel}")
+
+
 def verify_frozen_artifact(artifact_row: Dict[str, Any], artifact_path: str) -> None:
     """Reject bytes that no longer match the intake snapshot.
 
@@ -124,6 +176,7 @@ def verify_frozen_artifact(artifact_row: Dict[str, Any], artifact_path: str) -> 
             raise SnapshotIntegrityError(f"Файл snapshot отсутствует: {rel}")
         if sha256_hex(target.read_bytes()) != str(item.get("sha256") or ""):
             raise SnapshotIntegrityError(f"Файл snapshot изменён после приёма: {rel}")
+    _reject_added_scan_files(root, snapshot)
 
 
 async def scan_category_full(
