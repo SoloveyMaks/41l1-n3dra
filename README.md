@@ -9,12 +9,17 @@
 
 - Публичный стенд [nedra.soloveyka.bond](https://nedra.soloveyka.bond) собран из
   `9862e19`: там ещё старый интерфейс, один общий код и нет user/admin-разделения.
-- Локальная `dev` (`1dfd5b2`) содержит user/admin, админский обзор и принятые
-  исправления: `006`/происхождение снимков, один артефакт на проверку, защита
-  канонического вердикта, фактический статус выполнения в отчёте, защита
-  синтетического сравнения.
-- **Релиз не готов.** Sol baseline `95da50b` нашёл blockers; focused retest по UI
-  и маскировке ещё не выполнен. Не заявляем «все проверки пройдены».
+- Локальная `dev` (`b6abde4`) содержит user/admin и принятые исправления:
+  `006`/происхождение снимков, один артефакт на проверку, защита канонического
+  вердикта, фактический статус выполнения и каноническая полнота отчёта.
+- Три независимых Sol-отчёта имеют AFTER85: logic закрыл artifact A/B и
+  failed-report, visual — основные мобильные блокеры, structure — 4 из 6.
+  Два остатка structure исправлены в `b6abde4`: Markdown-полнота `9bcb5fa`,
+  свежесть/авторизация админки `6a9dd99`.
+- Review стенда 18082 на точном `b6abde4` — READY; structure выполняет узкий
+  независимый FINAL этих двух исправлений. Root build PASS.
+- **Финальная приёмка не заявлена.** Новый UI ещё не опубликован; «все проверки
+  пройдены» не говорим.
 - `main` — после приёмки; merge/push делает координатор, не worker.
 
 ## Проверить проект за 3 шага
@@ -49,7 +54,10 @@
 - [Release handoff](docs/RELEASE-HANDOFF.md)
 - [Сценарий показа для жюри](docs/JURY-WALKTHROUGH.md)
 - [Словарь продукта](docs/PRODUCT-GLOSSARY.md)
-- [Sol baseline review](docs/reviews/sol-structure.md) — blockers до focused retest
+- [Sol logic: AFTER85](docs/reviews/sol-logic.md) — artifact A/B и failed-report
+- [Sol visual: AFTER85](docs/reviews/sol-visual.md) — мобильные блокеры
+- [Sol structure: AFTER85](docs/reviews/sol-structure.md) — 4 из 6 и остатки
+- [Report coverage](docs/report-coverage.md) — каноническая полнота отчёта
 - [Контракты данных](docs/data-contracts/README.md), [SQL ↔ DTO](docs/data-contracts/mapping.md)
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
 
@@ -97,7 +105,7 @@ cd frontend && npm ci && npm run build       # production build
 - Общее сравнение остаётся `inconclusive`; SQL-проверка узкая
   (`source_pattern`). Синтетический источник никогда не даёт `comparable=true`.
 - AI-объяснения — отдельный слой и не меняют проблемы, покрытие и вердикт.
-  Векторные представления текста необязательны и сейчас недоступны (403),
+  Векторные представления текста необязательны, retrieval выключен; сейчас недоступны (403),
   проверенных примеров 0. Политика предметной области не подключена к
   канонической подписи; допущения не являются работающим ограничением.
 - Workspace общий: аккаунтов, списков доступа и приватных кабинетов нет.
@@ -105,13 +113,15 @@ cd frontend && npm ci && npm run build       # production build
 
 ## Ограничения
 
-Публичный стенд `9862e19` старый: user/admin и принятые исправления появятся там
-только после пересборки. Sol baseline `95da50b` зафиксировал blockers: результат
-может не привязаться к новому ZIP, «100% полноты» может скрывать неполноту,
-админский обзор смешивает общие и выбранные данные, сравнение требует понятного
-выбора пары, карточка проблемы не ведёт к рекомендации, а маскировка sample
-credential была неполной. Focused retest по UI и redaction ещё не выполнен.
+Публичный стенд `9862e19` старый: новый UI ещё не public, после пересборки
+нужен отдельный публичный smoke. AFTER85 закрыл artifact A/B, failed-report и
+основные мобильные блокеры. Два остатка structure — Markdown-полнота `9bcb5fa`
+и admin freshness/auth `6a9dd99` — уже в `b6abde4`; их узкий FINAL ещё идёт.
+Неблокирующие visual-остатки: короткие edge labels, часть comparison-текста на
+390, конструктор на 390 повторно не проверялся.
 
-Полные ограничения и честные статусы — в [release handoff](docs/RELEASE-HANDOFF.md)
+Хост публичного стенда — локальный ПК; `Linger=no`, после reboot нужен
+пользовательский login. Полные ограничения и честные статусы — в
+[release handoff](docs/RELEASE-HANDOFF.md)
 и [словаре](docs/PRODUCT-GLOSSARY.md). Production readiness и полное покрытие не
 заявляются.

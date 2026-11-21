@@ -4,17 +4,27 @@
 [README](README.md) и [release handoff](docs/RELEASE-HANDOFF.md); детали
 контрактов — в [docs/data-contracts](docs/data-contracts/README.md).
 
+Независимые проверки: [Sol logic](docs/reviews/sol-logic.md),
+[Sol visual](docs/reviews/sol-visual.md),
+[Sol structure](docs/reviews/sol-structure.md),
+[report coverage](docs/report-coverage.md).
+
 ## Статус
 
 - Публичный стенд `https://nedra.soloveyka.bond` собран из `9862e19`: старый
   интерфейс, один общий код, без user/admin-разделения. Это не текущий `dev`.
-- Локальная `dev` (`1dfd5b2`) содержит user/admin, `GET /api/admin/overview` и
+- Локальная `dev` (`b6abde4`) содержит user/admin, `GET /api/admin/overview` и
   принятые исправления: `006`/происхождение снимков, один артефакт на проверку,
-  защита канонического вердикта, фактический `executionStatus` отчёта и защита
-  синтетического сравнения.
-- Релиз не готов: Sol baseline `95da50b` нашёл blockers, focused retest по UI и
-  redaction не выполнен. Production readiness и «все проверки пройдены» не
-  заявляются.
+  защита канонического вердикта, фактический `executionStatus` и каноническая
+  полнота отчёта.
+- Три независимых Sol-отчёта имеют AFTER85: logic закрыл artifact A/B и
+  failed-report, visual — основные мобильные блокеры, structure — 4 из 6.
+  Два остатка structure закрыты в `b6abde4`: Markdown-полнота `9bcb5fa`,
+  свежесть/авторизация админки `6a9dd99`.
+- Review стенда 18082 на точном `b6abde4` — READY; structure выполняет узкий
+  независимый FINAL этих двух. Root build PASS.
+- Финальная приёмка, публичный релиз и «все проверки пройдены» не заявляются.
+  Production пока `9862e19`, новый UI ещё не public.
 - `main` — после приёмки. Merge/push делает координатор, не worker.
 
 ## Продукт и команда
@@ -60,6 +70,11 @@
 - `executionStatus` отчёта — фактическое выполнение (`succeeded`/`failed`/
   `running`), отдельно от вердикта безопасности. Позднее падение condition даёт
   `failed`; падение notify не делает анализ failed.
+- Полнота проверки берётся из канонического покрытия и expected scopes. `100%`
+  возможны только при `complete` и подтверждённых scopes; `partial`,
+  `unavailable` и `unknown` дают «не установлена/недоступна/неизвестна», а не
+  процент. Parser ratio остаётся отдельным legacy-полем и не выдаётся за общую
+  полноту.
 
 ### Факты, AI и политика
 
@@ -95,7 +110,7 @@
 - Единственный chat-провайдер — ReformBoss; default model
   `deepseek-v4.1-flash-1017`. Ответы валидируются; ошибка провайдера или отказ
   валидатора даёт детерминированный fallback и не ломает отчёт.
-- Embeddings optional и сейчас `unavailable`: реальный `POST /v1/embeddings`
+- Embeddings optional, retrieval выключен и сейчас `unavailable`: реальный `POST /v1/embeddings`
   вернул 403 `token_model_not_allowed`. Это векторные представления текста для
   точного поиска, без ANN-индекса. `embedding_specs` pending, fake vectors нет.
 - `vetted` remediation example требует реального scanner provenance, published
@@ -126,18 +141,20 @@
 
 ## Ветки и приёмка
 
-`feature branch → review + live check → dev → focused retest → приёмка → main →
+`feature branch → review + live check → dev → focused retest/FINAL → приёмка → main →
 отдельная публикация`. Merge/push в `main` выполняет координатор после приёмки.
 В репозиторий не попадают ключи, исходные ZIP, личные переписки и память машины.
 
 ## Что ещё не доказано
 
-- Sol baseline `95da50b` нашёл blockers: результат может не привязаться к новому
-  ZIP, «100% полноты» может скрывать неполноту, админский обзор смешивает общие
-  и выбранные данные, сравнение требует понятного выбора пары, карточка проблемы
-  не ведёт к рекомендации, маскировка sample credential была неполной. Часть
-  правок после baseline уже в `dev`, но focused retest не выполнен; blockers не
-  считать закрытыми.
+- AFTER85: logic закрыл artifact A/B и failed-report живой независимой
+  проверкой; visual закрыл основные мобильные блокеры; structure закрыл 4 из 6.
+  Два остатка structure исправлены в `b6abde4` (`9bcb5fa` — полнота Markdown,
+  `6a9dd99` — свежесть/авторизация админки), review стенда 18082 на exact `b6abde4`
+  — READY, но узкий FINAL этих двух ещё не заявлен. Это не финальная приёмка.
+- После AFTER85 остаются неблокирующие визуальные остатки: подписи коротких
+  связей и часть comparison-текста на 390. Конструктор на 390 повторно не
+  проверялся. Полного нового аудита всех сценариев не было.
 - Семантика parser/anchor и полнота runtime graph (`runtime-configuration`,
   `runtime-guards`, `binaries-and-archives`) не доказаны. Такие gaps остаются
   видимыми; graph comparison может быть `inconclusive`.
