@@ -6,6 +6,8 @@ import {
   NodeDefinition,
   NodeRunRecord,
   ReportData,
+  RepositoryCheckResult,
+  RepositoryWatch,
   RunSummary,
   SessionRole,
   SessionState,
@@ -103,6 +105,79 @@ export const apiClient = {
     return (await request('/artifacts', { method: 'POST', body: formData })).json();
   },
 
+  /** ZIP с реальным прогрессом загрузки и возможностью отмены. */
+  uploadArtifactWithProgress(
+    file: File,
+    onProgress: (percent: number) => void,
+    signal?: AbortSignal,
+  ): Promise<ArtifactManifest> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/artifacts`);
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onerror = () => reject(new ApiError('Сервер недоступен', 0));
+      xhr.onabort = () => reject(new DOMException('Загрузка отменена', 'AbortError'));
+      xhr.onload = () => {
+        let payload: unknown = null;
+        try {
+          payload = JSON.parse(xhr.responseText);
+        } catch {
+          payload = null;
+        }
+        if (xhr.status === 401) {
+          reject(new AuthRequiredError(detailText(payload) || 'Требуется вход по коду доступа'));
+          return;
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
+          const detail = record?.detail && typeof record.detail === 'object' ? (record.detail as Record<string, unknown>) : null;
+          const code = typeof detail?.code === 'string' ? detail.code : typeof record?.code === 'string' ? record.code : undefined;
+          reject(new ApiError(detailText(payload) || `HTTP ${xhr.status}`, xhr.status, code));
+          return;
+        }
+        resolve(payload as ArtifactManifest);
+      };
+      signal?.addEventListener('abort', () => xhr.abort(), { once: true });
+      const formData = new FormData();
+      formData.append('file', file);
+      xhr.send(formData);
+    });
+  },
+
+  async importRepository(url: string, branch?: string, signal?: AbortSignal): Promise<ArtifactManifest> {
+    return (await request(
+      '/artifacts/repository',
+      { ...jsonInit('POST', branch ? { url, branch } : { url }), signal },
+    )).json();
+  },
+
+  async listRepositoryWatches(): Promise<RepositoryWatch[]> {
+    return (await request('/repository-watches')).json();
+  },
+
+  async createRepositoryWatch(input: {
+    workflowId: string;
+    url: string;
+    branch?: string;
+    cronOrInterval: string;
+  }): Promise<RepositoryWatch> {
+    const body = input.branch
+      ? input
+      : { workflowId: input.workflowId, url: input.url, cronOrInterval: input.cronOrInterval };
+    return (await request('/repository-watches', jsonInit('POST', body))).json();
+  },
+
+  async setRepositoryWatchEnabled(watchId: string, enabled: boolean): Promise<RepositoryWatch> {
+    return (await request(`/repository-watches/${watchId}`, jsonInit('PATCH', { enabled }))).json();
+  },
+
+  async checkRepositoryWatchNow(watchId: string): Promise<RepositoryCheckResult> {
+    return (await request(`/repository-watches/${watchId}/check`, { method: 'POST' })).json();
+  },
+
   async loadSampleArtifact(): Promise<ArtifactManifest> {
     return (await request('/artifacts/sample', { method: 'POST' })).json();
   },
@@ -113,6 +188,10 @@ export const apiClient = {
 
   async listArtifacts(): Promise<ArtifactManifest[]> {
     return (await request('/artifacts')).json();
+  },
+
+  async getArtifact(artifactId: string): Promise<ArtifactManifest> {
+    return (await request(`/artifacts/${encodeURIComponent(artifactId)}`)).json();
   },
 
   async listWorkflows(): Promise<any[]> {

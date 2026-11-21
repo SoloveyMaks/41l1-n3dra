@@ -36,6 +36,7 @@ import {
   WorkflowNode,
 } from './types';
 import { apiClient, AuthRequiredError } from './api/client';
+import { artifactLabel, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
 
@@ -88,6 +89,9 @@ export const App: React.FC = () => {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const selectedRunRef = useRef<string | null>(null);
+  const artifactIdsRef = useRef<Set<string>>(new Set());
+  const artifactFetchRef = useRef<Map<string, Promise<ArtifactManifest | null>>>(new Map());
+  const artifactCacheRef = useRef<Map<string, ArtifactManifest>>(new Map());
   const runLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
@@ -100,6 +104,10 @@ export const App: React.FC = () => {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(null), 7000);
   }, []);
+
+  useEffect(() => {
+    artifactIdsRef.current = new Set(artifacts.map((artifact) => artifact.id));
+  }, [artifacts]);
 
   useEffect(() => () => {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
@@ -153,6 +161,26 @@ export const App: React.FC = () => {
     }
   }, [refreshAdminOverview, showNotice]);
 
+  const ensureArtifact = useCallback(async (artifactId: string): Promise<ArtifactManifest | null> => {
+    if (artifactIdsRef.current.has(artifactId)) return null;
+    const cached = artifactCacheRef.current.get(artifactId);
+    if (cached) return cached;
+    let pending = artifactFetchRef.current.get(artifactId);
+    if (!pending) {
+      pending = apiClient.getArtifact(artifactId)
+        .then((artifact) => {
+          artifactCacheRef.current.set(artifactId, artifact);
+          return artifact;
+        })
+        .catch(() => null)
+        .finally(() => {
+          artifactFetchRef.current.delete(artifactId);
+        });
+      artifactFetchRef.current.set(artifactId, pending);
+    }
+    return pending;
+  }, []);
+
   const loadRunDetails = useCallback(async (runId: string) => {
     const seq = ++runLoadSeq.current;
     try {
@@ -170,7 +198,23 @@ export const App: React.FC = () => {
           runReport = null;
         }
       }
+      // Сервер мог создать артефакт уже после загрузки страницы (наблюдение за
+      // коммитом). Догружаем только его, чтобы источник запуска не зависел от reload.
+      let runArtifact: ArtifactManifest | null = null;
+      if (runInfo.artifact_id) {
+        runArtifact = await ensureArtifact(runInfo.artifact_id);
+      }
       if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
+      if (runArtifact) {
+        const freshArtifact = runArtifact;
+        artifactIdsRef.current.add(freshArtifact.id);
+        artifactCacheRef.current.delete(freshArtifact.id);
+        setArtifacts((prev) => (
+          prev.some((artifact) => artifact.id === freshArtifact.id)
+            ? prev
+            : [freshArtifact, ...prev]
+        ));
+      }
 
       setCurrentRun(runInfo);
       setNodeRuns(nodes);
@@ -188,7 +232,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Не удалось загрузить запуск');
       }
     }
-  }, [refreshRuns, showNotice]);
+  }, [ensureArtifact, refreshRuns, showNotice]);
 
   const connectSSE = useCallback((runId: string) => {
     closeSSE();
@@ -549,6 +593,7 @@ export const App: React.FC = () => {
   }, [session?.role, refreshAdminOverview]);
 
   const handleArtifactLoaded = (manifest: ArtifactManifest) => {
+    artifactIdsRef.current.add(manifest.id);
     setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
     setCurrentArtifactId(manifest.id);
     handleDraftChange({
@@ -559,8 +604,15 @@ export const App: React.FC = () => {
           : node,
       ),
     });
-    if (session?.role !== 'admin') resetRunSelection();
-    showNotice('ok', `Артефакт выбран: ${manifest.filename}`);
+    // Новый проект выбран: старый результат относился к другому артефакту.
+    resetRunSelection();
+    const repository = manifest.repository;
+    showNotice(
+      'ok',
+      repository
+        ? `Репозиторий импортирован: ${artifactLabel(manifest)} · ${repository.branch} · ${shortCommit(repository.commit_sha)}`
+        : `Проект выбран: ${artifactLabel(manifest)}`,
+    );
   };
 
   const handleSelectArtifact = (artifactId: string) => {
@@ -697,7 +749,7 @@ export const App: React.FC = () => {
                 onClick={() => setIsUploadOpen(true)}
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
               >
-                Загрузить ZIP
+                ZIP или репозиторий
               </button>
               <button
                 onClick={() => void handleTriggerRun()}
@@ -750,12 +802,18 @@ export const App: React.FC = () => {
       case 'schedule':
         return (
           <div className="flex h-full items-start justify-center overflow-y-auto bg-slate-950 p-4">
-            <div className="w-full max-w-xl">
+            <div className="w-full max-w-2xl">
               <ScheduleModal
                 workflowId={workflowId}
                 artifactId={currentArtifactId}
                 isOpen={true}
                 onClose={() => setAdminSection('overview')}
+                adminAllowed={isAdmin}
+                onOpenRun={(runId) => {
+                  if (!runId) return;
+                  handleSelectRun(runId);
+                  setAdminSection('live');
+                }}
                 embedded
               />
             </div>

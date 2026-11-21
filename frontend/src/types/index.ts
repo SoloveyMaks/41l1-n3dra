@@ -212,6 +212,15 @@ export interface AdminOverview {
   };
 }
 
+export type RepositoryProvider = 'github' | 'gitlab';
+
+export interface RepositorySource {
+  url: string;
+  provider: RepositoryProvider;
+  branch: string;
+  commit_sha: string;
+}
+
 export interface ArtifactManifest {
   id: string;
   filename: string;
@@ -222,6 +231,31 @@ export interface ArtifactManifest {
   kotlin_file_count: number;
   gradle_file_count: number;
   created_at: string;
+  source_ref?: string;
+  repository?: RepositorySource | null;
+}
+
+export interface RepositoryWatch {
+  id: string;
+  workflow_id: string;
+  url: string;
+  provider: RepositoryProvider;
+  branch: string;
+  cron_or_interval: string;
+  enabled?: boolean | number | string;
+  next_check_at?: string | null;
+  last_checked_at?: string | null;
+  last_seen_commit?: string | null;
+  last_run_id?: string | null;
+  last_error?: string | null;
+  created_at?: string | null;
+}
+
+export interface RepositoryCheckResult {
+  status: 'unchanged' | 'started' | 'busy' | 'error';
+  runId?: string;
+  commitSha?: string;
+  detail?: string;
 }
 
 export interface RunSummary {
