@@ -261,6 +261,17 @@ def _workflow_name(db: DatabaseRepository, workflow_id: Any) -> str:
     return str((workflow or {}).get("name") or "")
 
 
+def _frozen_findings(official: Dict[str, Any]) -> Optional[List[Any]]:
+    """The saved report's finding list, only when it really is one.
+
+    A list — including an intentionally empty one — freezes the finding set.
+    A missing, null, string or object value is malformed legacy data and must
+    fall back to runtime rows, exactly as the bundle loader does.
+    """
+    source = official.get("findings")
+    return source if isinstance(source, list) else None
+
+
 def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
     run = db.get_run(run_id)
     if not run:
@@ -268,8 +279,8 @@ def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
     report = db.get_report(run_id)
     official = _official(report)
     # A saved report freezes its finding set, including an intentionally empty list.
-    source = official.get("findings")
-    if not isinstance(source, list):
+    source = _frozen_findings(official)
+    if source is None:
         source = db.get_findings(run_id)
     findings = [_safe_finding(item) for item in source]
     findings.sort(key=lambda item: (
@@ -364,8 +375,9 @@ def build_markdown(bundle: ExportBundle) -> str:
     policy = PolicyResult.model_validate({**bundle.policy, "verdict": verdict})
     analysis = bundle.official.get("aiAnalysis") or {}
     items = [
-        item["ai_enrichment"] for item in bundle.official.get("findings", [])
-        if isinstance(item.get("ai_enrichment"), dict)
+        item["ai_enrichment"]
+        for item in (_frozen_findings(bundle.official) or [])
+        if isinstance(item, dict) and isinstance(item.get("ai_enrichment"), dict)
     ]
     explanation = ExplainResult(
         status=analysis.get("status") or "disabled",

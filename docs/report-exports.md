@@ -56,10 +56,13 @@ returns `503 REPORT_EXPORT_UNAVAILABLE`; JSONC remains available.
 
 When a saved report exists, its official `findings` and `securityPassport` win:
 a report freezes its finding set, including an intentionally empty list. A
-legacy report without those keys falls back to `runtime.findings` and the
-stored passport. AI enrichment never edits, adds or removes a deterministic
-finding: `ai_enrichment` stays in its official slot and the Markdown AI section
-reads `aiHypotheses`/`ai_scan` separately.
+legacy report without those keys, or with a `findings` value that is not a
+list (`null`, a string, an object), falls back to `runtime.findings` and the
+stored passport. Markdown takes AI enrichment only from that same validated
+list, so a malformed field cannot crash one format while the others render;
+AI enrichment never edits, adds or removes a deterministic finding:
+`ai_enrichment` stays in its official slot and the Markdown AI section reads
+`aiHypotheses`/`ai_scan` separately.
 
 No scanner, importer, AI provider or LLM is called during export. Findings are
 sorted by severity descending: critical, high, medium, low, info; ties by rule
