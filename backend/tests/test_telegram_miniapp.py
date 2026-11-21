@@ -143,7 +143,7 @@ class InitDataTests(unittest.TestCase):
 
 def _sign_claims(claims: Dict[str, Any], secret: bytes = FAKE_SECRET) -> str:
     body = _b64(json.dumps(claims, separators=(",", ":")).encode())
-    signed = f"v1.{body}"
+    signed = f"v2.{body}"
     sig = _b64(hmac.new(secret, signed.encode(), hashlib.sha256).digest())
     return f"{signed}.{sig}"
 
@@ -171,7 +171,7 @@ class TokenTests(unittest.TestCase):
     def test_admin_role_and_overlong_ttl_are_rejected(self) -> None:
         now = 1_700_000_000
         base = {
-            "v": 1, "cid": 1, "uid": str(uuid.uuid4()), "wid": str(uuid.uuid4()),
+            "v": 2, "cid": 1, "uid": str(uuid.uuid4()), "wid": str(uuid.uuid4()),
             "ep": 1, "iat": now, "exp": now + 900,
         }
         with self.assertRaises(MiniTokenError):
@@ -200,7 +200,7 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
         os.environ["DATABASE_URL"] = TEST_DSN
         os.environ["TELEGRAM_BOT_TOKEN"] = FAKE_BOT_TOKEN
         os.environ["TELEGRAM_MINIAPP_TOKEN_SECRET"] = FAKE_SECRET.decode()
-        os.environ["TELEGRAM_ENABLED"] = "0"
+        os.environ["TELEGRAM_ENABLED"] = "1"
         os.environ["CG_SESSION_SECRET"] = "miniapp-test-session-secret"
         os.environ["CG_DATA_DIR"] = tempfile.mkdtemp(prefix="nedra-miniapp-test-")
         os.environ["CG_RATE_MINI_AUTH"] = "1000"
