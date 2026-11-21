@@ -296,6 +296,31 @@ class WorkflowExecutor:
             "info": policy_result.info_count if policy_result else 0
         }
 
+        # A policy PASS is not a full security verdict: canonical coverage must
+        # also be complete and expected scopes verified. Scanner-runtime
+        # coverage alone cannot prove the skipped/runtime scopes.
+        if final_verdict == SecurityVerdict.PASS:
+            # Defense only: the policy gate already applies canonical evidence.
+            canonical = self._canonical_coverage_facts(run_id)
+            if not canonical["verified"]:
+                final_verdict = SecurityVerdict.INCONCLUSIVE
+                if policy_result is not None:
+                    policy_result = policy_result.model_copy(update={
+                        "verdict": final_verdict,
+                        "reasons": [
+                            *(r for r in policy_result.reasons if not r.startswith("Все проверки пройдены")),
+                            canonical["reason"],
+                        ],
+                        "details": {
+                            **policy_result.details,
+                            "canonicalCoverage": canonical["details"],
+                        },
+                    })
+                if findings_bundle is not None:
+                    self._rewrite_report_verdict(
+                        run_id, workflow_name, findings_bundle, policy_result, explain_result
+                    )
+
         finished_iso = datetime.now(timezone.utc).isoformat()
         # Publish before exposing final status: once the UI sees "succeeded/failed",
         # the published canonical record (or an honest publication=false) already exists.
@@ -565,16 +590,23 @@ class WorkflowExecutor:
             if gap_diags:
                 coverage_gaps.append(f"{len(gap_diags)} анализаторов без покрытия")
 
+            canonical = self._canonical_coverage_facts(run_id)
             if verdict != SecurityVerdict.FAIL:
+                # strictCoverageRequired controls runtime requirements only;
+                # canonical evidence is required for every non-fail verdict.
+                if not canonical["verified"]:
+                    verdict = SecurityVerdict.INCONCLUSIVE
+                    reasons.append(canonical["reason"])
                 if strict_cov and coverage_gaps:
                     verdict = SecurityVerdict.INCONCLUSIVE
                     reasons.append("Неполное покрытие: " + "; ".join(coverage_gaps))
-                elif not reasons:
+                if not reasons:
                     reasons.append("Все проверки пройдены: критических находок нет")
 
             pol_res = PolicyResult(
                 verdict=verdict,
                 reasons=reasons,
+                details={"canonicalCoverage": canonical["details"]},
                 critical_count=crit_count,
                 high_count=high_count,
                 medium_count=med_count,
@@ -795,6 +827,81 @@ class WorkflowExecutor:
 
         else:
             raise ValueError(f"Неизвестный тип ноды для исполнения: {kind}")
+
+    def _canonical_coverage_facts(self, run_id: str) -> Dict[str, Any]:
+        """Canonical evidence for a non-fail verdict; never manufactures completeness."""
+        machine: Dict[str, Any] = {
+            "coverageStatus": "unavailable",
+            "expectedScopesVerified": False,
+            "skippedScopes": [],
+            "bundleHash": None,
+            "parserHash": None,
+            "rulesHash": None,
+            "artifactHash": None,
+        }
+        try:
+            payload = CodeFactsStore().load_run(workspace_id(), run_uuid(run_id))
+        except Exception as exc:  # noqa: BLE001 - missing canonical facts are not a pass
+            logger.warning("Canonical coverage read failed for %s: %s", run_id, exc)
+            return {"verified": False, "details": machine,
+                    "reason": "Полная проверка не подтверждена: данные покрытия недоступны"}
+        if not payload:
+            return {"verified": False, "details": machine,
+                    "reason": "Полная проверка не подтверждена: данные покрытия отсутствуют"}
+        analysis = payload.get("analysisBundle") or {}
+        coverage = ((analysis.get("codeFacts") or {}).get("coverage") or {})
+        provenance = analysis.get("provenance") or {}
+        signature = analysis.get("signature") or {}
+        status = coverage.get("status")
+        if status not in {"complete", "partial", "unavailable"}:
+            status = "unavailable"
+        expected = provenance.get("expectedScopesVerified") is True
+        machine.update({
+            "coverageStatus": status,
+            "expectedScopesVerified": expected,
+            "skippedScopes": list(coverage.get("skippedScopes") or []),
+            "bundleHash": (payload.get("map") or {}).get("bundleHash"),
+            "parserHash": signature.get("parserHash"),
+            "rulesHash": signature.get("rulesHash"),
+            "artifactHash": (payload.get("identity") or {}).get("artifactHash"),
+        })
+        if status == "complete" and expected:
+            return {"verified": True, "details": machine, "reason": ""}
+        bits = ["покрытие частичное" if status == "partial" else "покрытие недоступно"]
+        if not expected:
+            bits.append("обязательные scopes не верифицированы")
+        if machine["skippedScopes"]:
+            bits.append("пропущены: " + ", ".join(machine["skippedScopes"]))
+        return {"verified": False, "details": machine,
+                "reason": "Полная проверка не подтверждена: " + "; ".join(bits)}
+
+    def _rewrite_report_verdict(self, run_id: str, workflow_name: str, bundle: FindingsBundle,
+                                policy: Optional[PolicyResult],
+                                explain: Optional[ExplainResult]) -> None:
+        """Keep the stored report consistent with the final security verdict."""
+        if policy is None or not self.db.get_report(run_id):
+            return
+        run_row = self.db.get_run(run_id) or {}
+        passport = self.report_builder.build_security_passport(bundle.coverage, policy, bundle.findings)
+        readable = self.report_builder.build_readable_markdown(
+            run_id, workflow_name, passport, policy, bundle.findings, explain,
+        )
+        official = self.report_builder.build_official_json(
+            run_id,
+            str(run_row.get("workflow_id") or "workflow-unknown"),
+            str(run_row.get("revision_id") or "revision-unknown"),
+            passport, policy, bundle.findings, explain,
+        )
+        self.db.save_report(
+            run_id=run_id,
+            verdict=policy.verdict.value,
+            passport=passport.model_dump(),
+            ai_summary=explain.summary if explain else "",
+            ai_items=[item.model_dump() for item in explain.items] if explain else [],
+            ai_status=explain.status if explain else "disabled",
+            readable_markdown=readable,
+            official_json=official,
+        )
 
     def _publish_canonical(self, run_id: str, workflow_id: str, revision_id: str,
                           final_status: Optional[str] = None,
