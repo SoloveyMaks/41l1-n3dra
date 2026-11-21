@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import uuid
 
 from backend.app.contracts.schemas import WorkflowDraft
@@ -57,7 +57,7 @@ class WorkflowScheduler:
                 # Trigger schedule!
                 wf = self.db.get_workflow(sched["workflow_id"])
                 if wf and "draft" in wf:
-                    run_id = f"run_sched_{uuid.uuid4().hex[:8]}"
+                    run_id = str(uuid.uuid4())
                     self.db.create_run(
                         run_id=run_id,
                         workflow_id=sched["workflow_id"],

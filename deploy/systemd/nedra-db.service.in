@@ -1,0 +1,18 @@
+[Unit]
+Description=nedra PostgreSQL 16 + pgvector (rootless Podman)
+Documentation=file:@REPO@/docs/DEPLOYMENT.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@REPO@
+Environment=HOME=%h
+ExecStart=/bin/bash @REPO@/scripts/nedra-up.sh --db-only
+ExecStop=/bin/bash @REPO@/scripts/nedra-stop.sh --db
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

@@ -119,6 +119,21 @@ class Diagnostic(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RuleObservation(BaseModel):
+    """Per-file outcome of one actually instrumented analyzer rule.
+
+    Only rules present here were observed. A missing rule must not be treated
+    as checked; `not_applicable`, `skipped` and `error` are not negative proof.
+    """
+    rule_id: str
+    rule_version: str = "1.0.0"
+    path: str
+    status: str = "not_applicable"  # checked | not_applicable | skipped | error
+    invocations: int = 0
+    findings: int = 0
+    reason: str = ""
+
+
 class Coverage(BaseModel):
     files_scanned: int = 0
     files_skipped: int = 0
@@ -126,6 +141,7 @@ class Coverage(BaseModel):
     rules_executed: List[str] = Field(default_factory=list)
     parser_errors: int = 0
     unresolved_dependencies: int = 0
+    rule_observations: List[RuleObservation] = Field(default_factory=list)
 
 
 class ScanResult(BaseModel):
@@ -162,13 +178,70 @@ class AiItem(BaseModel):
     suggestedFixedVersion: Optional[str] = None
 
 
+class AiProvenance(BaseModel):
+    """Where an explanation actually came from. Never contains credentials."""
+    provider: str = "none"
+    model: str = ""
+    endpoint: str = ""
+    request_id: Optional[str] = None
+    latency_ms: float = 0.0
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    finish_reason: Optional[str] = None
+    response_sha256: Optional[str] = None
+    fallback_reason: Optional[str] = None
+
+
+class AiBatchProvenance(BaseModel):
+    """One bounded provider request and its validation outcome."""
+    batchIndex: int
+    findingIds: List[str] = Field(default_factory=list)
+    status: str = "succeeded"  # "succeeded" | "fallback"
+    itemCount: int = 0
+    error: Optional[str] = None
+    provenance: Optional[AiProvenance] = None
+
+
+class SimilarFix(BaseModel):
+    """One vetted remediation example returned by exact pgvector retrieval."""
+    findingId: Optional[str] = None
+    exampleId: str
+    sourceRef: str
+    verificationBasis: str
+    limitations: List[str] = Field(default_factory=list)
+    redactedFix: str
+    distance: float
+    metric: str
+    embeddingSpecId: str
+
+
+class RetrievalInfo(BaseModel):
+    """Typed result of the optional exact-retrieval step.
+
+    status: disabled | unavailable | ready | ok | partial
+    A failed or unavailable retrieval must never fail the main analysis.
+    """
+    status: str = "disabled"
+    reason: str = ""
+    embeddingModel: str = ""
+    embeddingVersion: str = ""
+    dimension: Optional[int] = None
+    metric: str = ""
+    embeddingSpecId: Optional[str] = None
+
+
 class ExplainResult(BaseModel):
     status: str = "succeeded"  # "succeeded" | "failed" | "fallback"
-    model: str = "gemini-3.8-flash"
+    model: str = "deterministic-expert-v1"
     summary: str = ""
     items: List[AiItem] = Field(default_factory=list)
     validation_errors: List[str] = Field(default_factory=list)
     raw_secrets_checked: bool = True
+    provenance: Optional[AiProvenance] = None
+    batch_provenance: List[AiBatchProvenance] = Field(default_factory=list)
+    retrieval: Optional[RetrievalInfo] = None
+    similar_fixes: List[SimilarFix] = Field(default_factory=list)
 
 
 class SecurityPassport(BaseModel):

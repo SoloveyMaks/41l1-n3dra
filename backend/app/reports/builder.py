@@ -87,6 +87,26 @@ class ReportBuilder:
             md.append("## 3. Заключение AI-ассистента")
             status_text = "✅ Успешно проверено валидатором" if ai_result.status == "succeeded" else f"⚠️ Режим fallback ({ai_result.status})"
             md.append(f"**Статус интеграции:** {status_text} (модель: `{ai_result.model}`)\n")
+            if ai_result.provenance:
+                prov = ai_result.provenance
+                fallback = f"; fallback: {prov.fallback_reason}" if prov.fallback_reason else ""
+                md.append(
+                    f"**Провайдер:** `{prov.provider}/{prov.model}`; endpoint: `{prov.endpoint or '—'}`; "
+                    f"request: `{prov.request_id or '—'}`; {prov.latency_ms:.0f} ms{fallback}\n"
+                )
+            if ai_result.batch_provenance:
+                batches = ", ".join(
+                    f"{batch.batchIndex}:{batch.status} ({batch.itemCount} items)"
+                    for batch in ai_result.batch_provenance
+                )
+                md.append(f"**AI batches:** {batches}\n")
+            if ai_result.retrieval and ai_result.retrieval.status != "disabled":
+                retrieval = ai_result.retrieval
+                md.append(
+                    f"**Exact retrieval:** `{retrieval.status}`"
+                    + (f" — {retrieval.reason}" if retrieval.reason else "")
+                    + "\n"
+                )
             md.append(f"> {ai_result.summary}\n")
 
         md.append(f"## 4. Обнаруженные дефекты ({len(findings)})")
@@ -153,7 +173,18 @@ class ReportBuilder:
                 "status": ai_result.status if ai_result else "disabled",
                 "model": ai_result.model if ai_result else "none",
                 "summary": ai_result.summary if ai_result else "",
-                "validationErrors": ai_result.validation_errors if ai_result else []
+                "validationErrors": ai_result.validation_errors if ai_result else [],
+                "provenance": (
+                    ai_result.provenance.model_dump() if ai_result and ai_result.provenance else None
+                ),
+                "batchProvenance": (
+                    [batch.model_dump() for batch in ai_result.batch_provenance]
+                    if ai_result else []
+                ),
+                "retrieval": (
+                    ai_result.retrieval.model_dump() if ai_result and ai_result.retrieval else None
+                ),
+                "similarFixesCount": len(ai_result.similar_fixes) if ai_result else 0
             },
             "findingsCount": len(findings),
             "findings": findings_json

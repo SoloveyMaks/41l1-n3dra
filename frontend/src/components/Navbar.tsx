@@ -1,13 +1,13 @@
 import React from 'react';
 import {
   ShieldCheck, Play, Upload, Clock, FileText, Bug,
-  Sparkles, CheckCircle2, AlertTriangle, Layers
+  Sparkles, CheckCircle2, AlertTriangle, Layers, Network, GitCompare
 } from 'lucide-react';
-import { SecurityVerdict } from '../types';
+import { AppTab, SecurityVerdict } from '../types';
 
 interface NavbarProps {
-  activeTab: 'editor' | 'live' | 'findings' | 'report' | 'schedule';
-  setActiveTab: (tab: 'editor' | 'live' | 'findings' | 'report' | 'schedule') => void;
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
   onOpenUpload: () => void;
   onTriggerRun: () => void;
   onOpenAiTest: () => void;
@@ -95,6 +95,18 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         <button
+          onClick={() => setActiveTab('map')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+            activeTab === 'map'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <Network size={14} />
+          <span>Карта безопасности</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('report')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
             activeTab === 'report'
@@ -103,7 +115,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           }`}
         >
           <FileText size={14} />
-          <span>Карта безопасности</span>
+          <span>Отчёт</span>
           {latestVerdict && (
             <span
               className={`ml-1 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
@@ -117,6 +129,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               {latestVerdict}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab('comparison')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+            activeTab === 'comparison'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <GitCompare size={14} />
+          <span>Сравнение</span>
         </button>
 
         <button

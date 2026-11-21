@@ -64,7 +64,7 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
             kind=NodeKind.AI_EXPLAIN,
             title="AI Explain & Fix",
             position={"x": 1420, "y": 150},
-            config={"model": "gemini-3.8-flash", "strictValidation": True}
+            config={"model": "deepseek-v4.1-flash-1017", "strictValidation": True}
         ),
         WorkflowNode(
             id="node_report",
@@ -78,7 +78,7 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
             kind=NodeKind.NOTIFY,
             title="Notify (Webhook)",
             position={"x": 1900, "y": 250},
-            config={"webhookUrl": "http://127.0.0.1:8000/api/webhook-test", "sendOnFailOnly": False}
+            config={"enabled": False, "webhookUrl": "", "sendOnFailOnly": True}
         )
     ]
 
@@ -101,7 +101,7 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
     return WorkflowDraft(
         schemaVersion=1,
         name="Банковский аудит Kotlin/Spring Boot (Secure PR Gate)",
-        description="Комплексный сквозной анализ: поиск секретов, проверка зависимостей SCA, taint-анализ SAST, AI-обоснование и отправка уведомления",
+        description="Комплексный сквозной анализ: поиск секретов, проверка зависимостей SCA, taint-анализ SAST, AI-обоснование и опциональное уведомление (по умолчанию выключено)",
         nodes=nodes,
         edges=edges
     )

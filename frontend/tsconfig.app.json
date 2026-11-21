@@ -10,6 +10,14 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "paths": {
+      "@xyflow/react": ["./node_modules/@xyflow/react"],
+      "react": ["./node_modules/@types/react"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"],
+      "react/jsx-dev-runtime": ["./node_modules/@types/react/jsx-dev-runtime"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/client": ["./node_modules/@types/react-dom/client"]
+    },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": false,
     "moduleDetection": "force",

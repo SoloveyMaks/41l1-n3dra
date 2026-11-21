@@ -1,0 +1,18 @@
+[Unit]
+Description=nedra FastAPI backend (rootless Podman)
+Documentation=file:@REPO@/docs/DEPLOYMENT.md
+Wants=nedra-db.service
+After=nedra-db.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@REPO@
+Environment=HOME=%h
+ExecStart=/bin/bash @REPO@/scripts/nedra-up.sh --app-only
+ExecStop=/bin/bash @REPO@/scripts/nedra-stop.sh --app
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

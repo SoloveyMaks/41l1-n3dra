@@ -1,0 +1,21 @@
+{
+  "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+  "id": "485559c2-926e-80f7-85c3-3ee0b02ea536",
+  "baselineRunId": "3c94b638-2cca-578c-83f6-33876ceff174",
+  "baselineSnapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+  "currentRunId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
+  "currentSnapshotId": "61d4debb-611e-876f-975d-030f61196220",
+  "comparable": true,
+  "reasons": [],
+  "items": [
+    {
+      "id": "4ed25380-5144-86ad-b628-4a7c2281a1ec",
+      "baselineFindingId": "79d57e0d-192a-5ac4-83a9-c13c78168584",
+      "currentFindingId": null,
+      "status": "resolved",
+      "matchingBasis": "unique_anchor",
+      "reason": "Файл сохранился; оба file/rule scope полностью checked, текущий паттерн отсутствует"
+    }
+  ],
+  "deletedFiles": []
+}
