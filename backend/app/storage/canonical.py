@@ -311,17 +311,26 @@ def _validate_coverage(
         if category is not None:
             _require(row["category"] == category, f"{scope_field}: category differs from scanner")
         scopes.append(row)
+    gaps = []
     if status == "complete":
-        _require(
-            all(scope["status"] == "checked" for scope in scopes),
-            f"{field}: complete coverage has non-checked scopes",
-        )
-        _require(not skipped, f"{field}: complete coverage has skipped scopes")
-        _require(not parser_errors, f"{field}: complete coverage has parser errors")
-        _require(not unresolved, f"{field}: complete coverage has unresolved symbols")
-        _require(not limits, f"{field}: complete coverage has reached limits")
-        if require_scopes and files_total > 0:
-            _require(scopes, f"{field}: complete coverage on non-empty input has no scopes")
+        if not all(scope["status"] == "checked" for scope in scopes):
+            gaps.append("non-checked scopes")
+        if skipped:
+            gaps.append("skipped scopes")
+        if parser_errors:
+            gaps.append("parser errors")
+        if unresolved:
+            gaps.append("unresolved symbols")
+        if limits:
+            gaps.append("limits reached")
+        if require_scopes and files_total > 0 and not scopes:
+            gaps.append("no scopes on non-empty input")
+    if gaps:
+        # Не отказываем всему анализу: сохраняем честный partial с причиной,
+        # вместо ложного complete.
+        status = "partial"
+        note = "coverage downgraded to partial: " + ", ".join(gaps)
+        limits = list(dict.fromkeys([*limits, note]))
     return {
         "status": status,
         "filesTotal": files_total,
@@ -416,8 +425,9 @@ def validate_bundle(
         coverage = _validate_coverage(
             scan.get("coverage"), f"{name}.coverage", set(evidence), diagnostics, category, True
         )
-        if status == "complete":
-            _require(coverage["status"] == "complete", f"{name}: complete scanner has incomplete coverage")
+        if status == "complete" and coverage["status"] != "complete":
+            # Coverage уже понижен до честного partial.
+            status = "partial"
         for row in coverage["scopes"]:
             coverage_rows.append(dict(row))
         scan_outcomes.append({
@@ -669,6 +679,45 @@ def validate_bundle(
     }
 
 
+def _lock(conn, *parts: Any) -> None:
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_key("canonical", *parts),))
+
+
+def _advisory_key(*parts: Any) -> int:
+    raw = "|".join(str(part) for part in parts).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big", signed=True)
+
+
+def _downgrade_unverified(data: Dict[str, Any], reason: str) -> None:
+    """Complete coverage without verified expected scopes becomes honest partial."""
+    for outcome in data["scan_outcomes"]:
+        coverage = outcome["coverage"]
+        if coverage["status"] == "complete":
+            coverage["status"] = "partial"
+            coverage["limitsReached"] = list(dict.fromkeys([*coverage["limitsReached"], reason]))
+        if outcome["status"] == "complete":
+            outcome["status"] = "partial"
+    graph = data["graph_coverage"]
+    if graph["status"] == "complete":
+        graph["status"] = "partial"
+        graph["limitsReached"] = list(dict.fromkeys([*graph["limitsReached"], reason]))
+
+
+def _canonical_bundle(envelope: Mapping[str, Any], normalized: Mapping[str, Any]) -> Dict[str, Any]:
+    """Copy B's envelope and apply exactly the coverage/status stored in SQL.
+
+    This is explicit, not a silent substitution: the source envelope and its
+    document hash stay immutable in bundle_envelopes.source_envelope, while the
+    returned/canonical copy carries the honest partial coverage.
+    """
+    canonical = json.loads(json.dumps(envelope))
+    for index, outcome in enumerate(normalized["scan_outcomes"]):
+        canonical["scanResults"][index]["status"] = outcome["status"]
+        canonical["scanResults"][index]["coverage"] = outcome["coverage"]
+    canonical["codeFacts"]["coverage"] = normalized["graph_coverage"]
+    return canonical
+
+
 def _jsonb(value: Any) -> Any:
     try:
         from psycopg.types.json import Jsonb
@@ -713,11 +762,18 @@ class CanonicalPublisher:
             raise CanonicalPublishError("document_hash: does not match trusted manifest + envelope")
 
         prov = self._validate_provenance(provenance)
+        if not prov["expectedScopesVerified"]:
+            _downgrade_unverified(
+                normalized,
+                "expected scopes were not verified (expectedScopesVerified=false)",
+            )
         artifact_row = self._validate_artifact(artifact, identity)
         workflow_row = self._validate_workflow(workflow, identity)
         run_row = self._validate_run(run, identity)
 
         with get_pool().connection() as conn:
+            # Serialize concurrent publish attempts for the same immutable identity.
+            _lock(conn, "run", self.workspace_id, identity["runId"], identity["snapshotId"])
             existing = self._select_existing(conn, identity)
             if existing is not None:
                 if existing["document_hash"] != document_hash:
@@ -750,23 +806,25 @@ class CanonicalPublisher:
                     expected_hash, _jsonb(normalized["counts"]),
                 ),
             )
-            envelope_hash = conn.execute(
+            canonical_envelope = _canonical_bundle(envelope, normalized)
+            hashes = conn.execute(
                 """
                 INSERT INTO data_contract.bundle_envelopes (
-                    workspace_id, run_id, snapshot_id, envelope, document_hash,
+                    workspace_id, run_id, snapshot_id,
+                    source_envelope, canonical_envelope, document_hash,
                     manifest_hash, normalization_version, origin,
                     expected_scopes_verified, domain_policy_applicability
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING envelope_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING envelope_hash, canonical_hash
                 """,
                 (
                     self.workspace_id, identity["runId"], identity["snapshotId"],
-                    _jsonb(envelope), document_hash,
+                    _jsonb(envelope), _jsonb(canonical_envelope), document_hash,
                     identity["snapshotManifestHash"], prov["normalizationVersion"],
                     prov["origin"], prov["expectedScopesVerified"],
                     prov["domainPolicyApplicability"],
                 ),
-            ).fetchone()["envelope_hash"]
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE data_contract.runs
@@ -790,7 +848,8 @@ class CanonicalPublisher:
                 "snapshotId": identity["snapshotId"],
                 "bundleHash": row["bundle_hash"],
                 "publishedAt": row["published_at"].isoformat(),
-                "envelopeHash": envelope_hash,
+                "envelopeHash": hashes["envelope_hash"],
+                "canonicalHash": hashes["canonical_hash"],
                 "documentHash": document_hash,
                 "idempotent": False,
                 "counts": normalized["counts"],
@@ -803,7 +862,8 @@ class CanonicalPublisher:
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
-                SELECT be.envelope, be.envelope_hash, be.manifest_hash,
+                SELECT be.canonical_envelope, be.envelope_hash, be.canonical_hash,
+                       be.document_hash, be.manifest_hash,
                        be.normalization_version, be.origin,
                        be.expected_scopes_verified, be.domain_policy_applicability,
                        ab.bundle_hash, ab.published_at
@@ -827,7 +887,7 @@ class CanonicalPublisher:
                 (self.workspace_id, snapshot_uuid),
             ).fetchall()
         return {
-            "bundle": row["envelope"],
+            "bundle": row["canonical_envelope"],
             "manifest": {
                 "complete": True,
                 "workspaceId": self.workspace_id,
@@ -852,6 +912,37 @@ class CanonicalPublisher:
                 "domainPolicyApplicability": row["domain_policy_applicability"],
             },
             "envelopeHash": row["envelope_hash"],
+            "canonicalHash": row["canonical_hash"],
+            "documentHash": row["document_hash"],
+            "publishedAt": row["published_at"].isoformat(),
+        }
+
+    def get_source_envelope(self, run_id: str, snapshot_id: str) -> Optional[Dict[str, Any]]:
+        """Raw immutable B envelope plus its hashes, separate from canonical coverage."""
+        run_uuid = _uuid(str(run_id), "runId")
+        snapshot_uuid = _uuid(str(snapshot_id), "snapshotId")
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                SELECT be.source_envelope, be.envelope_hash, be.canonical_hash,
+                       be.document_hash, be.manifest_hash, ab.bundle_hash, ab.published_at
+                  FROM data_contract.analysis_bundles ab
+                  JOIN data_contract.bundle_envelopes be
+                    USING (workspace_id, run_id, snapshot_id)
+                 WHERE ab.workspace_id = %s AND ab.run_id = %s AND ab.snapshot_id = %s
+                   AND ab.published_at IS NOT NULL
+                """,
+                (self.workspace_id, run_uuid, snapshot_uuid),
+            ).fetchone()
+            if row is None:
+                return None
+        return {
+            "bundle": row["source_envelope"],
+            "manifestHash": row["manifest_hash"],
+            "documentHash": row["document_hash"],
+            "envelopeHash": row["envelope_hash"],
+            "canonicalHash": row["canonical_hash"],
+            "bundleHash": row["bundle_hash"],
             "publishedAt": row["published_at"].isoformat(),
         }
 
@@ -861,7 +952,7 @@ class CanonicalPublisher:
             rows = conn.execute(
                 """
                 SELECT ab.run_id, ab.snapshot_id, ab.bundle_hash, ab.published_at,
-                       be.envelope_hash, be.envelope->'identity'->>'workflowRevisionId' AS workflow_revision_id
+                       be.envelope_hash, be.canonical_hash, be.canonical_envelope->'identity'->>'workflowRevisionId' AS workflow_revision_id
                   FROM data_contract.analysis_bundles ab
                   JOIN data_contract.bundle_envelopes be
                     USING (workspace_id, run_id, snapshot_id)
@@ -878,6 +969,7 @@ class CanonicalPublisher:
                 "bundleHash": row["bundle_hash"],
                 "publishedAt": row["published_at"].isoformat(),
                 "envelopeHash": row["envelope_hash"],
+                "canonicalHash": row["canonical_hash"],
                 "workflowRevisionId": row["workflow_revision_id"],
             }
             for row in rows
@@ -957,7 +1049,7 @@ class CanonicalPublisher:
     def _select_existing(self, conn, identity: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         return conn.execute(
             """
-            SELECT ab.bundle_hash, ab.published_at, be.document_hash, be.envelope_hash
+            SELECT ab.bundle_hash, ab.published_at, be.document_hash, be.envelope_hash, be.canonical_hash
               FROM data_contract.analysis_bundles ab
               LEFT JOIN data_contract.bundle_envelopes be
                 USING (workspace_id, run_id, snapshot_id)
@@ -975,6 +1067,7 @@ class CanonicalPublisher:
         )
 
     def _ensure_artifact(self, conn, artifact: Mapping[str, Any], identity: Mapping[str, Any]) -> None:
+        _lock(conn, "artifact", self.workspace_id, artifact["artifactId"])
         created_at = _as_text(artifact["createdAt"], "artifact.createdAt") if artifact["createdAt"] else None
         expires_at = _as_text(artifact["expiresAt"], "artifact.expiresAt")
         conn.execute(
@@ -1005,6 +1098,7 @@ class CanonicalPublisher:
     def _ensure_snapshot(self, conn, files: Sequence[Mapping[str, Any]],
                          identity: Mapping[str, Any], artifact_id: str) -> None:
         snapshot_id = identity["snapshotId"]
+        _lock(conn, "snapshot", self.workspace_id, snapshot_id)
         row = conn.execute(
             "SELECT artifact_id, artifact_hash, manifest_hash, sealed_at "
             "FROM data_contract.snapshots WHERE workspace_id = %s AND snapshot_id = %s",
@@ -1016,12 +1110,22 @@ class CanonicalPublisher:
                 INSERT INTO data_contract.snapshots (
                     workspace_id, snapshot_id, artifact_id, artifact_hash
                 ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (workspace_id, snapshot_id) DO NOTHING
                 """,
                 (self.workspace_id, snapshot_id, artifact_id, identity["artifactHash"]),
             )
-            sealed = False
+            row = conn.execute(
+                "SELECT artifact_id, artifact_hash, manifest_hash, sealed_at "
+                "FROM data_contract.snapshots WHERE workspace_id = %s AND snapshot_id = %s",
+                (self.workspace_id, snapshot_id),
+            ).fetchone()
+            if row is None:  # pragma: no cover
+                raise CanonicalPublishError("snapshot: insert was not persisted")
+            if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
+                raise CanonicalConflictError("snapshot: exists with a different artifact identity")
+            sealed = row["sealed_at"] is not None
         else:
-            if row["artifact_id"] != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
+            if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
                 raise CanonicalConflictError("snapshot: exists with a different artifact identity")
             sealed = row["sealed_at"] is not None
         if not sealed:
@@ -1068,6 +1172,7 @@ class CanonicalPublisher:
             )
 
     def _ensure_workflow(self, conn, workflow: Mapping[str, Any], identity: Mapping[str, Any]) -> None:
+        _lock(conn, "workflow", self.workspace_id, workflow["workflowId"])
         conn.execute(
             """
             INSERT INTO data_contract.workflows (
@@ -1104,6 +1209,7 @@ class CanonicalPublisher:
 
     def _insert_policies(self, conn, policies: Sequence[Mapping[str, Any]]) -> None:
         for policy in policies:
+            _lock(conn, "policy", self.workspace_id, policy["id"])
             conn.execute(
                 """
                 INSERT INTO data_contract.domain_policy_revisions (
@@ -1314,6 +1420,7 @@ class CanonicalPublisher:
             "bundleHash": existing["bundle_hash"],
             "publishedAt": existing["published_at"].isoformat(),
             "envelopeHash": existing["envelope_hash"],
+            "canonicalHash": existing["canonical_hash"],
             "documentHash": existing["document_hash"],
             "idempotent": idempotent,
             "counts": counts,

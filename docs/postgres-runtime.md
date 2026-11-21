@@ -18,12 +18,26 @@ API пока не принимает workspace в запросах: процес
 
 1. Применяет миграции C через ledger `public.schema_migrations` (filename + sha256,
    advisory lock); повторный запуск их не повторяет, изменённый файл — ошибка.
-2. Заводит identity-строку workspace в `data_contract.workspaces`
+2. Если `DB_ENABLE_VECTOR=1` и на сервере есть pgvector, применяет
+   `db/optional/003_exact_vector.up.sql` через тот же ledger и проверяет
+   `pg_available_extensions`. Без флага optional не применяется; повторный старт
+   SQL не повторяет. Registry остаётся `pending`, fake vectors не создаются.
+3. Заводит identity-строку workspace в `data_contract.workspaces`
    (`runtime:<uuid>`), если её нет. Других записей в C-схему runtime не делает.
-3. Проверяет `runtime.schema_meta` и приводит runtime schema к версии 3:
+4. Проверяет `runtime.schema_meta` и приводит runtime schema к версии 3:
    старая схема без workspace-колонок обновляется с сохранением строк,
    версия 2 дополняется immutability-триггерами.
-4. Создаёт свежую schema `runtime` версии 3, если база пустая.
+5. Создаёт свежую schema `runtime` версии 3, если база пустая.
+
+## Optional pgvector
+
+`DB_ENABLE_VECTOR=1` — единственный способ включить `db/optional/003_exact_vector.up.sql`.
+Без флага файл не применяется и в ledger не попадает. Если флаг включён, а
+`pg_available_extensions` не содержит `vector`, старт падает с понятной ошибкой.
+Повторный старт с флагом видит запись в ledger и SQL не повторяет. Схема создаёт
+`example_embeddings` и `exact_similar_fixes`, но не выбирает provider/model/
+dimension: `embedding_specs` остаётся пустым/pending, fake vectors запрещены.
+API embeddings не появляется.
 
 ## Границы runtime-слоя
 
@@ -81,9 +95,10 @@ result = publisher.publish(
 - evidence path/sourceHash/byteLength внутри доверенного manifest, диапазон
   bytes не выходит за файл; raw source не принимается и не хранится;
 - coverage: `complete` только когда все scopes `checked` и нет
-  skipped/parserErrors/unresolvedSymbols/limitsReached; пустой `complete` на
-  непустом input отклоняется; scanner `complete` невозможен без `complete`
-  coverage;
+  skipped/parserErrors/unresolvedSymbols/limitsReached; иначе покрытие честно
+  понижается до `partial` с причиной в `limitsReached` (анализ не отклоняется);
+  пустой `complete` на непустом input тоже даёт `partial`; scanner `complete`
+  понижается вместе с покрытием;
 - `fp/v1` пересчитывается, SECRET требует `secretHmac`, остальные его не несут;
 - graph endpoints и evidence, policy approval, policyId/version/hash из
   signature;
@@ -94,9 +109,18 @@ result = publisher.publish(
 Публикация одной транзакцией: artifact (только opaque `storage_ref`, без исходников)
 → open+seal snapshot → run в `queued/pending` → draft `analysis_bundles` → все
 `scan_outcomes/coverage/graph_coverage/evidence/findings/code_nodes/code_edges/
-*_evidence/finding_nodes/diagnostics/domain_policy_revisions` → expected counts из проверенного входа (до INSERT) → `bundle_document_hash` → `publish_bundle(...)` → immutable
-raw envelope в `data_contract.bundle_envelopes` (ledger migration `004`) → run
-status. `published_at`/`bundle_hash` выставляет только SQL.
+*_evidence/finding_nodes/diagnostics/domain_policy_revisions` → expected counts из проверенного входа (до INSERT) → `bundle_document_hash` → `publish_bundle(...)` → immutable envelopes в `data_contract.bundle_envelopes` (ledger migrations `004`+`005`) → run status. `published_at`/`bundle_hash` выставляет только SQL.
+
+Две явные копии, без расхождения правды:
+
+- `source_envelope` — ровно то, что отдал B; immutable для аудита. `document_hash`
+  считается по нему + manifest (`compute_document_hash`), `envelope_hash` — SQL
+  hash его jsonb.
+- `canonical_envelope` — тот же envelope с coverage/status, которые реально
+  сохранены в SQL после честного downgrade (expectedScopesVerified=false или
+  complete-with-holes). `canonical_hash` — SQL hash этой копии. `get_published_envelope`
+  отдаёт именно canonical, поэтому UI/comparison не видят «complete», которого нет
+  в facts. `get_source_envelope` отдаёт исходник и оба hash отдельно.
 
 Идемпотентность: тот же identity + `document_hash` возвращает существующий
 `bundleHash` (`idempotent=true`); другой payload для уже published identity —
@@ -106,30 +130,81 @@ status. `published_at`/`bundle_hash` выставляет только SQL.
 
 ```python
 publisher.get_published_envelope(run_id, snapshot_id)
-# {bundle, manifest: {complete, workspaceId, snapshotId, hash, files},
-#  provenance: {published, bundleHash, normalizationVersion, origin,
-#               expectedScopesVerified, domainPolicyApplicability}}
+# {bundle: <canonical AnalysisBundle>, manifest: {...},
+#  provenance: {...}, envelopeHash, canonicalHash, documentHash, publishedAt}
+publisher.get_source_envelope(run_id, snapshot_id)
+# {bundle: <source AnalysisBundle>, documentHash, envelopeHash, canonicalHash,
+#  manifestHash, bundleHash, publishedAt}
 publisher.list_published_runs(limit=50)
 ```
 
-`expectedScopesVerified=false` сохраняется как есть: bridge не повышает partial до
-complete и не подменяет aggregate на checked; comparison получает этот флаг в
-provenance. `artifact.expiresAt` обязателен (C schema: NOT NULL, expires_at >
-created_at), `workflow.draftVersion` — целое > 0.
+`expectedScopesVerified=false`: все `complete` coverage/outcomes понижаются до
+`partial` с причиной, bridge не подменяет aggregate на checked; comparison
+получает флаг в provenance и возвращает inconclusive.
+
+`artifact.expiresAt` обязателен (C schema: NOT NULL, expires_at > created_at),
+`workflow.draftVersion` — целое > 0.
 
 Stable UUID mapping: `canonical_uuid(kind, local_id, workspace_id)` =
 `uuid5(NAMESPACE_URL, f"cg-{kind}:{workspace}:{local_id}")`; identity из envelope
 не переписывается. Runtime text id не превращается в UUID молча: новый run id
 должен быть UUID, legacy — только явный mapping.
 
+Concurrency: publish берёт транзакционный advisory lock на identity
+`workspace/run/snapshot` (и отдельные lock-и на artifact/snapshot/workflow/policy).
+Два параллельных publish одного identity дают один `idempotent=false` и один
+`idempotent=true` с тем же `bundleHash`, без дублей строк. Один `snapshotId` с
+другим artifact archive (даже при том же manifest) и один `artifactId` с другими
+bytes отклоняются как immutable identity conflict.
+
+## Comparison storage
+
+`backend/app/storage/comparisons.py` — сохранение результата comparison engine:
+`ComparisonStore.save(dto)` берёт advisory lock на comparison id, вставляет draft
+`comparisons` + `comparison_items`, затем публикует header; `guard_comparison`
+проверяет published bundles, совместимость signature, fingerprints и coverage.
+Повторный save сверяет **всю header identity** (baseline/current run+snapshot,
+comparable, reasons) и items: совпадение идемпотентно, любое отличие — conflict;
+параллельные save одного id сериализуются. `get(comparison_id)` возвращает DTO с
+`items` и вычисленными `deletedFiles` по двум sealed manifest. Pseudo-publish нет.
+
+## Remediation examples
+
+`backend/app/storage/remediation.py` — `RemediationStore.save/get/list` для
+`data_contract.remediation_examples`. `vetted` — узкий автоматический допуск, не
+произвольный текст: published source и **обязательный** published fixed bundle,
+оба с `origin='scanner'` и `expected_scopes_verified=true`, совместимые
+`static_signature`, checked coverage выбранного `category/path/rule` в обоих
+run-ах и отсутствие того же fingerprint в fixed run. Только тогда плюс
+`verificationBasis`, `reviewedBy`, `reviewedAt`, `limitations`. Synthetic
+`contract_scenario`/`manual_fixture` не может стать vetted; 0 findings после regex
+без checked coverage — тоже. Content hash и source/verification identity
+фиксируются, повтор exampleId с другой identity — conflict.
+
+Подготовлены 3 remediation examples, все **draft**: SQL before/after с живым
+`SastAnalyzer` (before `KOTLIN-SQL-INJECTION`, after 0 findings) и два варианта
+фикса без перепроверки. Envelope-ы — synthetic adapter probe
+(`contract_scenario`), поэтому автоматический vetted-допуск их отклоняет; vetted
+появится только после настоящего scanner publish от adapter. Fake vetted с
+synthetic provenance проверен отрицательным probe: `RemediationValidationError`,
+строка не создаётся.
+
 ## Локальная проверка
 
 ```bash
 # временная БД (пример; креды — локальные, в репозиторий не попадают)
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/runtime_check
-python -m backend.app.storage.migrate     # применить миграции C + 004
+python -m backend.app.storage.migrate     # применить миграции C + 004/005 (+003 при DB_ENABLE_VECTOR=1)
 python -c "from backend.app.storage.database import DatabaseRepository as R; R()"
 ```
+
+Проверочные canonical bundles в этой ветке — **synthetic handcrafted envelopes с
+`origin=contract_scenario`**, а не настоящий scanner run: два настоящих scanner
+run появятся только после adapter от backend author. Comparison по ним честно
+несёт reason «contract scenario, not scanner output». Отдельно live `SastAnalyzer`
+прогонялся на before/after Kotlin fixtures: before даёт `KOTLIN-SQL-INJECTION`,
+after — 0 findings; это основание только для одного vetted remediation example
+(автоматическая проверка, не human review — записано в limitations).
 
 Прогон без временной БД: `backend/test_e2e.py` проверяет полный путь
 artifact → run → findings → report. Проверка изоляции: заведите строку в другом
@@ -149,6 +224,19 @@ workspace и убедитесь, что `get_run`/`get_artifact` по её id в
 
 `runtime_legacy_v1` после обновления остаётся бэкапом; удалить вручную, когда
 убедились, что данные читаются. Данные в нём не теряются и не переписываются.
+
+`005_canonical_envelope.up.sql` отделяет source envelope от canonical и для
+старых pre-005 строк **восстанавливает** `canonical_envelope` из уже сохранённых
+`scan_outcomes.coverage_summary` и `graph_coverage.coverage`: те же status/scopes/
+limits, что в SQL. Source, `document_hash` и `envelope_hash` не меняются, republish
+не нужен. Если fact-строка отсутствует, соответствующее coverage консервативно
+помечается `partial` с reason `reconstructed: missing ...`, а не выдаётся за
+complete. Новые публикации сразу пишут обе копии и оба hash.
+
+`provenance.bundleHash` — авторитетный SQL `analysis_bundles.bundle_hash`; его
+нельзя пересчитать из canonical/source envelope и нельзя подменять
+`canonicalHash` (это hash jsonb-копии). UI/validator должны валидировать только
+форму hash и брать значение из storage, а не recompute из coverage.
 
 ## Секреты в ошибках
 

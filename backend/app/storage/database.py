@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from backend.app.storage.migrate import ensure_contract_schema
+from backend.app.storage.migrate import ensure_contract_schema, ensure_optional_schema
 
 logger = logging.getLogger("RuntimeSchema")
 
@@ -250,6 +250,7 @@ def init_db(workspace_id: uuid.UUID) -> None:
     """Применить C-миграции и создать/обновить runtime schema."""
     pool = get_pool()
     ensure_contract_schema(_dsn())
+    ensure_optional_schema(_dsn())
     with pool.connection() as conn:
         # Идентичность workspace живёт в C-схеме; runtime пишет только эту строку.
         conn.execute(
