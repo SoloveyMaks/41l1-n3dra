@@ -140,6 +140,10 @@ report; deterministic findings may be empty and are still exported honestly.
 - Finding and AI detail headings set `keep_with_next` through ID, rule and
   location, so a heading is not stranded at the bottom of a page; long bodies
   may still continue on the next page.
+- A short trace (up to four bullets) keeps its heading and bullets together;
+  longer traces keep only the heading/first bullet together. The AI section no
+  longer has a forced page break, so it fills the current page instead of
+  creating a blank page with one orphan trace bullet.
 - Display headings use «ИИ», while machine JSON fields remain `aiHypotheses`,
   `aiScan`, `aiAnalysis` and `provenance`.
 - AI hypotheses are labeled unverified and excluded from counts/verdict.
@@ -173,13 +177,13 @@ test target; deployment pins it in `deploy/requirements.txt`.
 
 ### 15 deterministic findings
 
-- DB `report_live_368c07f8`; run `2866a75c-11f6-4e08-b077-6fe2b6f20a74`;
+- DB `report_live_5ec7d41d`; run `e09bfa17-db6b-438f-a284-f8af09c03369`;
   workflow `report-live`; `executionStatus=succeeded`,
   `securityVerdict=fail`.
 - JSONC 200: 15 findings — 8 critical, 6 high, 1 medium; IDs match the stored
   Markdown and DOCX table exactly.
-- DOCX 200: 44,020 bytes, opens with python-docx; 176 paragraphs, 4 tables.
-- Empty run 200: `reportAvailable=false`, 0 findings; DOCX 39,369 bytes and
+- DOCX 200: 44,050 bytes, opens with python-docx; 176 paragraphs, 4 tables.
+- Empty run 200: `reportAvailable=false`, 0 findings; DOCX 39,365 bytes and
   opens.
 - Missing run 404; foreign-workspace run 404 `RUN_NOT_FOUND`.
 - Redaction: no raw sample secrets in JSONC, Markdown or DOCX.
@@ -189,8 +193,8 @@ test target; deployment pins it in `deploy/requirements.txt`.
 - Markdown checks: no FAIL/PASS icons, no `endpoint:`/`request:`, all 15 IDs
   present.
 - JSONC validated by `python -m json.tool`.
-- DOCX rendered with the documents skill `render_docx.py` (LibreOffice) to a
-  9-page US Letter PDF and PNGs. `pdftotext -layout` shows the findings table and details without
+- DOCX rendered with the documents skill `render_docx.py` (LibreOffice) to an
+  8-page US Letter PDF and PNGs. `pdftotext -layout` shows the findings table and details without
   clipping; a vision channel was unavailable for pixel-level review.
 
 ### AI hypothesis run
