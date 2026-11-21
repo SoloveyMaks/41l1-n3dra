@@ -366,7 +366,9 @@ class WorkflowExecutor:
             }, None
 
         elif kind == NodeKind.PROJECT_INPUT:
-            art_id = config.get("artifactId") or default_artifact_id
+            # The run-selected artifact is authoritative for every node. The
+            # draft artifactId is only a fallback when no run artifact is set.
+            art_id = default_artifact_id or config.get("artifactId")
             if not art_id:
                 raise ValueError("Project Input: ID артефакта проекта не указан")
             artifact = self.db.get_artifact(art_id)

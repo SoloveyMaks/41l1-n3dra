@@ -366,10 +366,17 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
 
     artifact_id = payload.get("artifactId")
     if not artifact_id:
-        for node in draft.nodes:
-            if node.kind.value == "project_input" and node.config.get("artifactId"):
-                artifact_id = node.config.get("artifactId")
-                break
+        configured = {
+            str(node.config.get("artifactId"))
+            for node in draft.nodes
+            if node.kind.value == "project_input" and node.config.get("artifactId")
+        }
+        if len(configured) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Project Input nodes ссылаются на разные artifactId: выберите artifactId в запуске",
+            )
+        artifact_id = next(iter(configured), None)
 
     if not artifact_id:
         arts = db_repo.list_artifacts()
