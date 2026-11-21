@@ -11,6 +11,21 @@
 - Исправлены реальные UX/state-баги: 403 от dev-прокси, 0 событий SSE из-за named events, 404 отчёта во время running, гонки при переключении запусков/валидации, stale evidence, stale `gemini-*`, перекрывающая fixed-кнопка logout, отсутствие обновления live-статуса при молчащем SSE.
 - Backend worker отдельно исправил валидацию cron и добавил `PATCH /schedules/{id}` для pause/resume. UI уже связан с этим контрактом (`enabled` нормализуется из `0/1`), но локальный контейнер в этой проверке ещё старый: PATCH отвечает 405. После пересборки/деплоя backend нужно повторить pause/resume вживую.
 
+## Матрица checked / fixed / unverified
+
+| Область | Checked | Fixed | Unverified |
+|---|---|---|---|
+| Auth | wrong/right code, logout, re-login | logout overlap, человеческие ошибки | истечение сессии |
+| Upload | реальный ZIP, sample-артефакты, training без env | training error, селект артефакта | training с настроенным `CG_TRAINING_PROJECT` |
+| Editor | workflows, artifact, save, reset, add/delete node, validation error | stale model, reset label, validation race | создание нового connection drag |
+| Run/live | trigger, 30–39 SSE, polling, terminal verdict | named SSE, polling, history race, report 404 | «В очереди» вживую (run стартовал сразу) |
+| Findings/report | filters, evidence, JSON/MD 200 | stale selected finding, failed/queued report state | failed run без отчёта вживую |
+| Comparison | same-run, swap, pair result, SQL pattern | guards, reset result, refresh | — |
+| Schedule | create, invalid input, refresh, pause button | pause/resume UI, enabled 0/1, cron format | успешный PATCH на текущем stale image |
+| AI Trust | synthetic validator | error state, `errors || []` | новые дорогие AI-прогоны не повторялись |
+| Responsive | 390×844 и 1280×900: editor/live/findings/report/comparison | responsive classes | визуальная проверка скриншотов моделью недоступна |
+| Console | чистый reload | 0 app errors | исторические 401/400 от намеренных negative-проверок |
+
 ## Живые проверки
 
 | Сценарий | Что проверено | Результат |
