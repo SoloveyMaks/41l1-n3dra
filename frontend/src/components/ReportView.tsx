@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { AiScanResult, ReportData, SecurityVerdict, ExecutionStatus, NodeRunRecord } from '../types';
 import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage';
-import { apiClient, ApiError, AuthRequiredError } from '../api/client';
+import { API_BASE, apiClient, ApiError, AuthRequiredError } from '../api/client';
 import { AiHypothesesPanel } from './AiHypothesesPanel';
 
 interface ReportViewProps {
@@ -31,6 +31,9 @@ const exportErrorText = (error: unknown): string => {
   }
   return error instanceof Error ? error.message : 'Не удалось скачать отчёт';
 };
+
+const markdownExportUrl = (runId: string): string =>
+  `${API_BASE}/runs/${encodeURIComponent(runId)}/report/export.md`;
 
 const ExportButtons: React.FC<{
   downloading: 'docx' | 'jsonc' | null;
@@ -120,10 +123,20 @@ export const ReportView: React.FC<ReportViewProps> = ({
         {runId && (
           <div className="mt-5 w-full max-w-md space-y-2 rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-left">
             <p className="text-[11px] leading-relaxed text-slate-400">
-              Экспорт — снимок уже сохранённых строк, без нового сканирования. Если отчёт не создан,
-              JSONC/DOCX честно содержат <span className="font-mono text-slate-300">reportAvailable=false</span>.
+              Можно скачать сохранённые результаты и статус запуска. Если отчёт ещё не готов,
+              в файле будет явно указано, что проверка не завершена.
             </p>
-            <ExportButtons downloading={downloading} onDownload={(format) => void downloadExport(format)} />
+            <div className="flex flex-wrap items-center gap-2">
+              <ExportButtons downloading={downloading} onDownload={(format) => void downloadExport(format)} />
+              <a
+                href={markdownExportUrl(runId)}
+                download
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700"
+              >
+                <ArrowDownToLine size={14} />
+                <span>Скачать Markdown</span>
+              </a>
+            </div>
             {downloadError && (
               <p role="alert" className="rounded border border-rose-900 bg-rose-950/60 px-2 py-1.5 text-[11px] text-rose-200">
                 {downloadError}
@@ -191,7 +204,7 @@ export const ReportView: React.FC<ReportViewProps> = ({
           </a>
 
           <a
-            href={apiClient.getReadableMarkdownUrl(runId)}
+            href={markdownExportUrl(runId)}
             download
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
           >

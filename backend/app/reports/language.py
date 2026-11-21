@@ -52,3 +52,20 @@ def naturalize(text: str) -> str:
         position = match.end()
     parts.append(_replace_prose(value[position:]))
     return "".join(parts)
+
+
+def completeness_label(completeness_known: bool, coverage_status: str) -> str:
+    """One wording for the coverage verdict in Markdown and DOCX."""
+    if completeness_known:
+        return "подтверждена"
+    if coverage_status in ("partial", "complete"):
+        return "не установлена"
+    if coverage_status == "unavailable":
+        return "недоступна"
+    return "неизвестна"
+
+
+def evidence_markdown(value: str) -> str:
+    longest = max((len(match[0]) for match in re.finditer(r"`+", value)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"\n{fence}text\n{value}\n{fence}\n"
