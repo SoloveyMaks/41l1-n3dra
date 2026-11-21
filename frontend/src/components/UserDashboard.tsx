@@ -4,12 +4,13 @@ import {
   ShieldAlert, ShieldCheck, Upload, AlertTriangle, RefreshCw, Loader2,
 } from 'lucide-react';
 import {
-  ArtifactManifest, Finding, ReportData, RunSummary, SecurityVerdict,
+  ArtifactManifest, Finding, NodeRunRecord, ReportData, RunSummary, SecurityVerdict,
 } from '../types';
 import { FindingsView } from './FindingsView';
 import { ReportView } from './ReportView';
 import { SecurityMapScreen } from './SecurityMapScreen';
 import { ComparisonView } from './ComparisonView';
+import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage';
 
 type UserSection = 'check' | 'problems' | 'map' | 'report' | 'comparison';
 
@@ -17,10 +18,12 @@ interface UserDashboardProps {
   artifacts: ArtifactManifest[];
   currentArtifactId: string;
   runs: RunSummary[];
+  workflows: Array<{ id: string; name?: string }>;
   currentRun: RunSummary | null;
   currentRunId: string | null;
   findings: Finding[];
   report: ReportData | null;
+  nodeRuns: NodeRunRecord[];
   failureReason?: string;
   isRunning: boolean;
   runsLoading: boolean;
@@ -75,10 +78,12 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
   artifacts,
   currentArtifactId,
   runs,
+  workflows,
   currentRun,
   currentRunId,
   findings,
   report,
+  nodeRuns,
   failureReason,
   isRunning,
   runsLoading,
@@ -101,7 +106,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
     visibleArtifacts.unshift(selectedArtifact);
   }
   const selectedProjectName = selectedArtifact?.filename || 'Проект не выбран';
-  const coverage = report?.passport.completeness_score;
+  const coverage = getCanonicalCoverage(nodeRuns);
   const recentRuns = runs
     .filter((run) => run.workflow_id === 'wf_secure_pr_gate' && run.trigger_type !== 'schedule')
     .slice(0, 8);
@@ -252,6 +257,8 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                   <>
                     <div className="text-base font-bold">{verdictLabel(currentRun.security_verdict, currentRun.total_findings)}</div>
                     <div className="mt-1 text-xs opacity-80">{executionLabel(currentRun)}</div>
+                    <div className="mt-1 text-xs opacity-80">Проект проверки: {projectName(currentRun.artifact_id, artifacts)}</div>
+                    <div className="mt-2 text-[11px] opacity-80">{coverageReason(coverage)}</div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg bg-black/20 p-2">
                         <div className="opacity-60">Проблемы</div>
@@ -260,7 +267,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                       <div className="rounded-lg bg-black/20 p-2">
                         <div className="opacity-60">Покрытие</div>
                         <div className="text-lg font-bold">
-                          {coverage !== undefined ? `${Math.round(coverage * 100)}%` : '—'}
+                          {coverageLabel(coverage)}
                         </div>
                       </div>
                     </div>
@@ -358,6 +365,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
             runId={currentRunId}
             runStatus={currentRun?.execution_status}
             failureReason={failureReason}
+            nodeRuns={nodeRuns}
           />
         )}
 
@@ -366,7 +374,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
             <button onClick={() => setSection('check')} className="mb-3 text-xs text-indigo-300 hover:text-indigo-200">
               ← Назад к проверке
             </button>
-            <ComparisonView runs={runs} onRefreshRuns={onRefreshRuns} />
+            <ComparisonView runs={runs} artifacts={artifacts} workflows={workflows} onRefreshRuns={onRefreshRuns} />
           </div>
         )}
       </main>

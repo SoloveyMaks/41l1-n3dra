@@ -4,7 +4,8 @@ import {
   CheckCircle2, AlertTriangle, HelpCircle, Layers, ArrowDownToLine,
   FileCode2, KeyRound, PackageSearch
 } from 'lucide-react';
-import { ReportData, SecurityVerdict, ExecutionStatus } from '../types';
+import { ReportData, SecurityVerdict, ExecutionStatus, NodeRunRecord } from '../types';
+import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage';
 import { apiClient } from '../api/client';
 
 interface ReportViewProps {
@@ -12,10 +13,12 @@ interface ReportViewProps {
   runId: string | null;
   runStatus?: ExecutionStatus;
   failureReason?: string;
+  nodeRuns?: NodeRunRecord[];
 }
 
-export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus, failureReason }) => {
+export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus, failureReason, nodeRuns = [] }) => {
   const [activeSubTab, setActiveSubTab] = useState<'passport' | 'ai' | 'markdown'>('passport');
+  const canonicalCoverage = getCanonicalCoverage(nodeRuns);
 
   if (!report || !runId) {
     const failed = runStatus === 'failed';
@@ -74,8 +77,11 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
               <span className="text-xs font-mono text-slate-500">Запуск #{runId}</span>
             </div>
             <p className="text-xs text-slate-400">
-              Полнота проверки: <strong className="text-indigo-400">{Math.round(p.completeness_score * 100)}%</strong> • Подтверждено находок: <strong className="text-rose-400">{p.confirmed_findings}</strong>
+              Покрытие: <strong className="text-indigo-400">{coverageLabel(canonicalCoverage)}</strong> • Подтверждено находок: <strong className="text-rose-400">{p.confirmed_findings}</strong>
             </p>
+            {coverageLabel(canonicalCoverage) !== 'Полное' && (
+              <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-amber-300">{coverageReason(canonicalCoverage)}</p>
+            )}
           </div>
         </div>
 
@@ -167,12 +173,12 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
                 </div>
 
                 <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                  <div className="text-[11px] text-slate-400">Индекс полноты</div>
+                  <div className="text-[11px] text-slate-400">Покрытие</div>
                   <div className="text-xl font-bold font-mono text-emerald-400">
-                    {Math.round(p.completeness_score * 100)}%
+                    {coverageLabel(canonicalCoverage)}
                   </div>
                   <div className="text-[10px] text-slate-500">
-                    Ошибок парсера: {p.parser_errors}
+                    Ошибок парсера: {p.parser_errors} · {coverageReason(canonicalCoverage)}
                   </div>
                 </div>
               </div>

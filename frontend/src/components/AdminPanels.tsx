@@ -1,6 +1,7 @@
 import React from 'react';
 import { Activity, AlertTriangle, Bot, Database, FolderKanban, Gauge, KeyRound, ShieldCheck } from 'lucide-react';
 import { AdminOverview, ArtifactManifest, Finding, NodeRunRecord, ReportData, RunSummary, SessionState } from '../types';
+import { coverageLabel, coverageReason, getCanonicalCoverage, scopeLabel } from '../coverage';
 import { AdminSection } from './AdminShell';
 
 const dateLabel = (value?: string): string => {
@@ -31,7 +32,10 @@ export const AdminOverviewPanel: React.FC<{
   findings: Finding[];
   currentRun: RunSummary | null;
   report: ReportData | null;
-}> = ({ overview, artifacts, runs, findings, currentRun, report }) => (
+  nodeRuns: NodeRunRecord[];
+}> = ({ overview, artifacts, runs, findings, currentRun, report, nodeRuns }) => {
+  const latestRun = runs[0] || null;
+  return (
   <div className="overflow-y-auto p-5">
     <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
       <div>
@@ -41,21 +45,26 @@ export const AdminOverviewPanel: React.FC<{
       <span className="rounded-full border border-slate-700 px-2 py-1 text-[10px] text-slate-400">админ-режим</span>
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Stat label="Проекты" value={overview?.counts?.projects ?? artifacts.length} />
-      <Stat label="Проверки" value={overview?.counts?.runs ?? runs.length} />
-      <Stat label="Проблемы" value={findings.length} tone={findings.some((f) => f.severity === 'critical') ? 'text-rose-300' : 'text-slate-100'} />
-      <Stat label="Покрытие" value={report ? `${Math.round(report.passport.completeness_score * 100)}%` : '—'} />
+      <Stat label="Проекты (workspace)" value={overview?.counts?.projects ?? artifacts.length} />
+      <Stat label="Проверки (workspace)" value={overview?.counts?.runs ?? runs.length} />
+      <Stat label="Проблемы (выбранная)" value={findings.length} tone={findings.some((f) => f.severity === 'critical') ? 'text-rose-300' : 'text-slate-100'} />
+      <Stat label="Покрытие (canonical)" value={coverageLabel(getCanonicalCoverage(nodeRuns))} />
     </div>
     <div className="mt-4 grid gap-4 lg:grid-cols-2">
       <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Последняя проверка</h2>
-        {currentRun ? (
+        {latestRun ? (
           <div className="space-y-1 text-sm">
-            <div className="font-semibold text-slate-100">{verdictLabel(currentRun)}</div>
+            <div className="font-semibold text-slate-100">{verdictLabel(latestRun)}</div>
             <div className="text-xs text-slate-400">
-              {artifacts.find((a) => a.id === currentRun.artifact_id)?.filename || 'Проект не указан'} · {dateLabel(currentRun.created_at)}
+              {artifacts.find((a) => a.id === latestRun.artifact_id)?.filename || 'Проект не указан'} · {dateLabel(latestRun.created_at)}
             </div>
-            <div className="text-xs text-slate-400">Проблем: {currentRun.total_findings} · критичных: {currentRun.critical_count} · высоких: {currentRun.high_count}</div>
+            <div className="text-xs text-slate-400">Проблем: {latestRun.total_findings} · критичных: {latestRun.critical_count} · высоких: {latestRun.high_count}</div>
+            {currentRun && currentRun.id !== latestRun.id && (
+              <div className="mt-2 border-t border-slate-800 pt-2 text-[11px] text-amber-300">
+                Сейчас выбрана другая проверка: {artifacts.find((a) => a.id === currentRun.artifact_id)?.filename || 'проект не указан'} · {dateLabel(currentRun.created_at)}
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-xs text-slate-500">Проверок ещё нет.</p>
@@ -76,7 +85,8 @@ export const AdminOverviewPanel: React.FC<{
       </section>
     </div>
   </div>
-);
+  );
+};
 
 export const AdminProjectsPanel: React.FC<{
   artifacts: ArtifactManifest[];
@@ -147,13 +157,14 @@ export const AdminAnalyzersPanel: React.FC<{ report: ReportData | null; nodeRuns
         <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Покрытие</h2>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-            <dt className="text-slate-500">Файлов проверено</dt><dd>{report.passport.files_scanned}</dd>
-            <dt className="text-slate-500">Файлов пропущено</dt><dd>{report.passport.files_skipped}</dd>
+            <dt className="text-slate-500">Статус покрытия</dt><dd>{coverageLabel(getCanonicalCoverage(nodeRuns))}</dd>
+            <dt className="text-slate-500">Файлов проверено</dt><dd>{report.passport.files_scanned} из {report.passport.files_scanned + report.passport.files_skipped} <span className="text-slate-500">(не полнота правил)</span></dd>
+            <dt className="text-slate-500">Пропущенные области</dt><dd title={getCanonicalCoverage(nodeRuns)?.skippedScopes.join(', ')}>{getCanonicalCoverage(nodeRuns)?.skippedScopes.length ? getCanonicalCoverage(nodeRuns)?.skippedScopes.map(scopeLabel).join(', ') : '—'}</dd>
+            <dt className="text-slate-500">Почему</dt><dd>{coverageReason(getCanonicalCoverage(nodeRuns))}</dd>
             <dt className="text-slate-500">Строк кода</dt><dd>{report.passport.lines_of_code}</dd>
             <dt className="text-slate-500">Ошибок парсера</dt><dd>{report.passport.parser_errors}</dd>
             <dt className="text-slate-500">Неразрешённых зависимостей</dt><dd>{report.passport.unresolved_dependencies}</dd>
-            <dt className="text-slate-500">Полнота</dt><dd>{Math.round(report.passport.completeness_score * 100)}%</dd>
-          </dl>
+                      </dl>
         </section>
         <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Правила</h2>
