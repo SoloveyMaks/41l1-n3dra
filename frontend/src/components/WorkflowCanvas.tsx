@@ -16,6 +16,8 @@ import '@xyflow/react/dist/style.css';
 import { CustomNode } from './CustomNode';
 import { WorkflowDraft, WorkflowEdge, NodeRunStatus } from '../types';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save } from 'lucide-react';
+import { RepositorySourceView } from './RepositorySourceView';
+import { artifactRepository } from '../repository';
 
 interface WorkflowCanvasProps {
   draft: WorkflowDraft;
@@ -55,6 +57,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onSelectArtifact,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
+  const selectedArtifact = artifacts.find((artifact) => artifact.id === currentArtifactId);
+  const selectedRepository = artifactRepository(selectedArtifact);
 
   // Map our domain WorkflowNode to ReactFlow Node
   const initialRfNodes: Node[] = useMemo(() => {
@@ -195,6 +199,11 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               ))}
             </select>
           </label>
+          {selectedRepository && (
+            <div className="pointer-events-auto min-w-0 rounded-lg border border-indigo-900/70 bg-indigo-950/40 px-2 py-1">
+              <RepositorySourceView repository={selectedRepository} showProvider={false} />
+            </div>
+          )}
           <span className="hidden sm:inline text-slate-600">•</span>
           <span className="hidden sm:inline text-slate-400 font-mono">{draft.nodes.length} блоков</span>
           <span className="hidden sm:inline text-slate-600">•</span>

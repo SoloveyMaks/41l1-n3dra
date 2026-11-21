@@ -11,7 +11,7 @@ import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
 import { AccessGate } from './components/AccessGate';
 import { ComparisonView } from './components/ComparisonView';
-import { UserWorkspace, UserSection } from './components/UserWorkspace';
+import { Navbar } from './components/Navbar';
 import { ScenarioCreateModal } from './components/ScenarioCreateModal';
 import { AdminShell, AdminSection } from './components/AdminShell';
 import {
@@ -24,6 +24,7 @@ import {
 
 import {
   AdminOverview,
+  AppTab,
   ArtifactManifest,
   Finding,
   NodeKind,
@@ -84,7 +85,7 @@ export const App: React.FC = () => {
   const [scenarioName, setScenarioName] = useState('');
   const [scenarioBusy, setScenarioBusy] = useState(false);
   const [scenarioError, setScenarioError] = useState<string | null>(null);
-  const [userSection, setUserSection] = useState<UserSection>('editor');
+  const [activeTab, setActiveTab] = useState<AppTab>('editor');
 
   // Workflow state
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -410,7 +411,7 @@ export const App: React.FC = () => {
       setSession(state);
       await loadInitialData();
       setAdminSection('overview');
-      setUserSection('editor');
+      setActiveTab('editor');
     } catch (e: any) {
       setAuthError(e?.message || 'Не удалось войти');
     } finally {
@@ -543,7 +544,7 @@ export const App: React.FC = () => {
       resetRunSelection();
       setIsScenarioOpen(false);
       if (session?.role === 'admin') setAdminSection('editor');
-      else setUserSection('editor');
+      else setActiveTab('editor');
       await validateDraft(created.id, nextDraft);
       if (seq !== createScenarioSeq.current) return;
       showNotice('ok', `Сценарий создан: ${name}`);
@@ -633,7 +634,7 @@ export const App: React.FC = () => {
     if (hasErrors) {
       if (navigate) {
         if (session?.role === 'admin') setAdminSection('editor');
-        else setUserSection('editor');
+        else setActiveTab('editor');
       }
       showNotice('error', 'Сценарий проверки пока не готов к запуску');
       return;
@@ -653,7 +654,7 @@ export const App: React.FC = () => {
       setSelectedNodeId(null);
       if (navigate) {
         if (session?.role === 'admin') setAdminSection('live');
-        else setUserSection('live');
+        else setActiveTab('live');
       }
       connectSSE(result.runId);
       await loadRunDetails(result.runId);
@@ -762,46 +763,106 @@ export const App: React.FC = () => {
   }
 
   if (!isAdmin) {
+    const userRuns = runs.filter((run) => run.workflow_id === workflowId);
     return (
-      <div className="h-screen w-screen overflow-hidden bg-slate-950">
-        <UserWorkspace
-          workflows={workflows}
-          workflowId={workflowId}
-          draft={draft}
-          selectedNode={selectedNode}
-          selectedNodeId={selectedNodeId}
-          artifacts={artifacts}
-          currentArtifactId={currentArtifactId}
-          runs={runs}
-          currentRun={currentRun}
-          currentRunId={currentRunId}
-          findings={findings}
-          report={report}
-          nodeRuns={nodeRuns}
-          events={events}
-          failureReason={failureReason}
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
+        <Navbar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onOpenUpload={() => setIsUploadOpen(true)}
+          onTriggerRun={() => void handleTriggerRun(false, true)}
+          onOpenAiTest={() => setIsAiTestOpen(true)}
           isRunning={isRunning}
+          latestVerdict={currentRun?.security_verdict}
+          findingsCount={findings.length}
+          runs={userRuns}
+          currentRunId={currentRunId}
           runsLoading={runsLoading}
-          isSavingDraft={isSavingDraft}
-          validationIssues={validationIssues}
-          section={userSection}
-          onSection={setUserSection}
-          onDraftChange={handleDraftChange}
-          onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
-          onCreateWorkflow={openScenarioModal}
-          onUpload={() => setIsUploadOpen(true)}
-          onSelectArtifact={handleUserSelectArtifact}
-          onRun={() => void handleTriggerRun(false, true)}
-          onSaveDraft={() => void handleSaveDraft()}
-          onResetDraft={() => void handleResetToTemplate()}
-          onAddNode={handleAddNode}
-          onUpdateNodeConfig={handleUpdateNodeConfig}
-          onDeleteNode={handleDeleteNode}
-          onSelectNode={setSelectedNodeId}
           onSelectRun={handleSelectRun}
           onRefreshRuns={() => void refreshRuns()}
           onLogout={() => void handleLogout()}
+          isAdmin={false}
         />
+
+        <main className="relative flex flex-1 overflow-hidden">
+          {activeTab === 'editor' && (
+            <div className="flex h-full flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
+              <NodePalette onAddNode={handleAddNode} />
+              <WorkflowCanvas
+                draft={draft}
+                onDraftChange={handleDraftChange}
+                selectedNodeId={selectedNodeId}
+                onSelectNode={setSelectedNodeId}
+                nodeStatuses={nodeStatusMap}
+                validationIssues={validationIssues}
+                onSaveDraft={() => void handleSaveDraft()}
+                onResetToTemplate={() => void handleResetToTemplate()}
+                isSaving={isSavingDraft}
+                workflows={workflows}
+                workflowId={workflowId}
+                onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
+                onCreateWorkflow={openScenarioModal}
+                artifacts={artifacts}
+                currentArtifactId={currentArtifactId}
+                onSelectArtifact={handleUserSelectArtifact}
+              />
+              {selectedNode && (
+                <div className="fixed inset-x-0 bottom-0 z-30 max-h-[45vh] overflow-hidden shadow-2xl md:static md:z-auto md:max-h-none md:shrink-0">
+                  <InspectorPanel
+                    node={selectedNode}
+                    artifacts={artifacts}
+                    onUpdateConfig={handleUpdateNodeConfig}
+                    onDeleteNode={handleDeleteNode}
+                    onClose={() => setSelectedNodeId(null)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'live' && (
+            <LiveRunView
+              currentRun={currentRun}
+              nodeRuns={nodeRuns}
+              events={events}
+              onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
+              onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+            />
+          )}
+
+          {activeTab === 'findings' && (
+            <FindingsView
+              findings={findings}
+              aiItems={report?.run_id === currentRunId ? report.ai_items : []}
+              aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
+              onOpenReport={() => setActiveTab('report')}
+            />
+          )}
+
+          {activeTab === 'map' && (
+            <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
+          )}
+
+          {activeTab === 'report' && (
+            <ReportView
+              report={report}
+              runId={currentRunId}
+              runStatus={currentRun?.execution_status}
+              failureReason={failureReason}
+              nodeRuns={nodeRuns}
+            />
+          )}
+
+          {activeTab === 'comparison' && (
+            <ComparisonView
+              runs={runs}
+              artifacts={artifacts}
+              workflows={workflows}
+              onRefreshRuns={() => void refreshRuns()}
+            />
+          )}
+        </main>
+
         <UploadModal
           isOpen={isUploadOpen}
           onClose={() => setIsUploadOpen(false)}
