@@ -33,6 +33,7 @@ REQUEST_TIMEOUT_SECONDS = 4.0
 ENRICHMENT_DEADLINE_SECONDS = 9.0
 CACHE_TTL_SECONDS = 15 * 60
 CACHE_ERROR_TTL_SECONDS = 90
+PROVIDER_COOLDOWN_SECONDS = 60
 MAX_CACHE_ENTRIES = 256
 MAX_PRS = 3
 MAX_PRS_WITH_REVIEWS = 2
@@ -44,6 +45,7 @@ _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _GITLAB_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _CACHE: Dict[str, Tuple[float, HistoryInfo]] = {}
+_COOLDOWN: Dict[str, float] = {}
 
 
 def _cache_get(key: str) -> Optional[HistoryInfo]:
@@ -485,6 +487,12 @@ async def _fetch_file_history(repository: Any, path: str) -> HistoryInfo:
     cached = _cache_get(cache_key)
     if cached:
         return cached
+    if _COOLDOWN.get(provider, 0.0) > time.monotonic():
+        return _unavailable(
+            "rate_limited",
+            "Provider в cooldown после 429; запросы временно не повторяются.",
+            provider,
+        )
 
     if provider == "github":
         owner, repo = project.split("/", 1)
@@ -496,6 +504,8 @@ async def _fetch_file_history(repository: Any, path: str) -> HistoryInfo:
 
     async with _client() as client:
         kind, payload, reason = await _fetch_json(client, url, params)
+    if kind == "rate_limited":
+        _COOLDOWN[provider] = time.monotonic() + PROVIDER_COOLDOWN_SECONDS
     if kind != "ok":
         result = _unavailable(kind, reason, provider)
     else:
@@ -560,6 +570,8 @@ async def _fetch_file_history(repository: Any, path: str) -> HistoryInfo:
         pull_requests, pr_status, pr_reason, truncated = await _fetch_pull_requests(
             provider, project, association_sha
         )
+        if pr_status == "rate_limited":
+            _COOLDOWN[provider] = time.monotonic() + PROVIDER_COOLDOWN_SECONDS
         result = result.model_copy(
             update={
                 "associationCommitSha": association_sha,

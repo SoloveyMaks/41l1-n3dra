@@ -42,7 +42,7 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
             "commitSha": "...", "path": "src/..."},
   "findingId": "...", "analyzer": "secret", "ruleId": "SECRET-API-KEY",
   "suggestedRole": {"role": "...", "basis": "analyzer/rule/path...", "confidence": "high"},
-  "codeowners": {"status": "available|absent|unavailable", "file": ".github/CODEOWNERS",
+  "codeowners": {"status": "available|absent|unavailable|incomplete", "file": ".github/CODEOWNERS",
                  "matchedPattern": "...", "line": 2, "owners": ["@team"], "basis": "...", "limitations": []},
   "history": {"status": "available|unavailable|rate_limited|failed|unsupported",
               "provider": "github", "reason": "...", "evidenceKind": "last_file_commit",
@@ -89,9 +89,17 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 - Ищется только `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS` в том же
   immutable snapshot.
 - Файл перечитывается из artifact root, SHA-256 сверяется с manifest snapshot;
-  путь проверяется на traversal. Лимит 128 KiB.
-- Семантика: последнее совпавшее правило, `@team`/email owners, `*`/`**`/`?`,
-  каталоги с `/`. Отсутствие файла — `absent`, а не «нет владельцев».
+  путь проверяется на traversal. Лимит 128 KiB, 400 правил, pattern 256,
+  path 1024.
+- Matcher — bounded polynomial wildcard DP (`*`, `**`, `**/`, `?`, каталоги),
+  без regex: `*`/`**` backtracking и ReDoS исключены. Unsupported syntax
+  (`[]{}()\|!`) даёт `unavailable`, а не угаданного owner.
+- Семантика: последнее совпавшее правило; `*` не зависит от глубины,
+  `/src/` и `src/` root-relative и не матчат `nested/src/A.kt`, `**/A.kt`
+  матчит и root `A.kt`; ownerless-правило отменяет fallback; inline `#comment`
+  не owner.
+- Больше 400 правил → `incomplete`, более поздние правила не применяются и
+  owner не выдаётся. Отсутствие файла — `absent`, а не «нет владельцев».
 
 ## История: last file commit, не blame
 
@@ -106,10 +114,10 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 - Возвращаются commit SHA, author и committer раздельно (display name/login,
   без email), date/link/message. `evidenceKind=last_file_commit`, `notBlame=true`;
   в UI явно: автор/коммиттер ≠ автор уязвимости.
-- Связанные PR берутся только для exact frozen commit:
-  `GET /repos/{owner}/{repo}/commits/{frozenSHA}/pulls`, не для текущего head
-  ветки. Список bounded (первые 3), `pullRequestsTruncated` честно показывает,
-  что PR больше.
+- Связанные PR берутся для `associationCommitSha` = последний коммит файла,
+  `GET /repos/{owner}/{repo}/commits/{associationSHA}/pulls`; frozen snapshot
+  SHA хранится отдельно. Список bounded (первые 3), `pullRequestsTruncated`
+  честно показывает, что PR больше.
 - PR: number/title/url/author/mergedBy/mergedAt/headSha. Reviews/approvals
   запрашиваются только для первых двух PR, `per_page=100`, список reviewers
   bounded.
@@ -134,10 +142,15 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   уязвимости и не определение виновного.
 - GitLab PR/MR list поддержан; исторические reviews/approvals без токена
   помечаются `reviewsStatus=unsupported`, а не выдаются за подтверждённые.
-- `429`/GitHub rate-limit → `rate_limited`; `404`/`401/403` → `unavailable`;
-  timeout/5xx/redirect → `failed`; всё это 200 DTO для commit/PR-части, анализ
-  не ломается. PR lookup failure отдельный `pullRequestsStatus`, commit history
-  при этом остаётся доступной, если provider её отдал.
+- `429`/GitHub rate-limit → `rate_limited` и provider cooldown 60 s; `404`/
+  `401/403` → `unavailable`; timeout/5xx/redirect → `failed`; всё это 200 DTO
+  для commit/PR-части, анализ не ломается. PR lookup failure отдельный
+  `pullRequestsStatus`, commit history при этом остаётся доступной, если
+  provider её отдал.
+- DB/store/CODEOWNERS читаются в `asyncio.to_thread` с сохранённым ContextVar;
+  build ответственности ограничен semaphore (4 active), одинаковые
+  run/finding запросы дедуплицируются in-flight; deadline 10 s, отмена не
+  оставляет бесконечных задач.
 - ZIP без repository/commit_sha → `unavailable` с причиной «история не входит в
   snapshot». Роль и CODEOWNERS всё равно считаются, если snapshot доступен.
 - Line blame отсутствует: `lineBlame.status=unsupported`; file history не
@@ -195,7 +208,7 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
   applies true; incomplete/full-page 100 reviews → все approvals
   `appliesToMerge=false`, truncated truthful; bad external href → null; GitLab
   `author_name` → displayName without fake login.
-- `npm run build`: `index-dSxABP2i.js` / `index-D9Z-CuvZ.css`.
+- `npm run build`: `index-CYqb29Vq.js` / `index-D9Z-CuvZ.css`.
 
 ## Ограничения
 
@@ -214,3 +227,8 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
   PR association/reviews не доказывают внесение уязвимости и не определяют
   виновного.
 - ZIP-артефакт никогда не получает историю репозитория.
+- Sol-сценарии: malicious CODEOWNERS intake + matcher уложился в микросекунды,
+  `/src/` не матчит nested, ownerless `/src/` снял fallback, `**/A.kt` матчит
+  root, inline comment не owner, 401-е правило дало `incomplete`; pool/gate
+  test показал tick gap 0.011 s, dedupe 5 запросов → 1 чтение БД; deadline
+  cancellation очистил in-flight без задач.
