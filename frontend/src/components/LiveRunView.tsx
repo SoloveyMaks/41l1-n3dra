@@ -5,7 +5,7 @@ import {
   PackageSearch, FileCode2, GitMerge, ShieldAlert, GitFork, Sparkles,
   FileText, Send, Network,
 } from 'lucide-react';
-import { NodeKind, NodeRunRecord, RunSummary, WorkflowNode } from '../types';
+import { NodeKind, NodeRunRecord, RunMapLoadState, RunSummary, WorkflowNode } from '../types';
 import type { NodeTelemetry, RunTelemetry } from '../execution/runTelemetry';
 
 type LiveEvent = {
@@ -28,6 +28,8 @@ interface LiveRunViewProps {
   // queued stages may be invented from a mutable draft.
   planKnown?: boolean;
   graphMismatch?: boolean;
+  // Actual GET /security-map state reported by SecurityMapScreen for this run.
+  runMapState?: RunMapLoadState | null;
   onSelectNode: (nodeId: string) => void;
   onRefresh?: () => void;
   onOpenMap?: () => void;
@@ -65,10 +67,12 @@ type Stage = StageCopy & {
   live?: boolean;
 };
 
-type MapRequestState = 'waiting' | 'ready' | 'blocked';
+type MapRequestState = 'unknown' | 'waiting' | 'loading' | 'ready' | 'partial' | 'empty' | 'blocked';
+type MapRequestSource = 'actual' | 'precondition';
 
 type MapRequest = {
   state: MapRequestState;
+  source: MapRequestSource;
   short: string;
   detail?: string;
   actionLabel?: string;
@@ -158,8 +162,12 @@ const CHIP_TONE: Record<NonNullable<Chip['tone']>, string> = {
 };
 
 const MAP_STATE_META: Record<MapRequestState, { label: string; chip: string }> = {
+  unknown: { label: 'Не открывалась', chip: 'bg-slate-900 text-slate-400 border-slate-700' },
   waiting: { label: 'Ждёт факты кода', chip: 'bg-amber-950 text-amber-300 border-amber-800' },
-  ready: { label: 'По запросу', chip: 'bg-indigo-950 text-indigo-300 border-indigo-800' },
+  loading: { label: 'Загружается', chip: 'bg-indigo-950 text-indigo-300 border-indigo-800' },
+  ready: { label: 'Готова', chip: 'bg-emerald-950 text-emerald-300 border-emerald-800' },
+  partial: { label: 'Частичная', chip: 'bg-amber-950 text-amber-300 border-amber-800' },
+  empty: { label: 'Пусто', chip: 'bg-slate-900 text-slate-400 border-slate-700' },
   blocked: { label: 'Недоступна', chip: 'bg-rose-950 text-rose-300 border-rose-800' },
 };
 
@@ -481,19 +489,80 @@ function describeStage(nodeRun: NodeRunRecord): StageCopy {
 }
 
 // The access map is assembled by GET /runs/{id}/security-map, so no SSE event
-// ever says "map built". This state only reports whether the facts stage
-// produced map source; it never fakes a build.
-function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): MapRequest {
+// ever says "map built". When SecurityMapScreen has requested it, its actual
+// state wins; otherwise only a precondition hint is allowed, never "ready".
+function describeMapRequest(
+  nodeRuns: NodeRunRecord[],
+  runIsActive: boolean,
+  runMapState: RunMapLoadState | null,
+  runId: string | undefined,
+): MapRequest {
+  const actual = runId && runMapState?.runId === runId ? runMapState : null;
+  if (actual) {
+    if (actual.status === 'loading') {
+      return {
+        state: 'loading',
+        source: 'actual',
+        short: 'Карта запрашивается у сервера.',
+        detail: 'Карточка обновится ответом GET /security-map; до него карта не считается готовой.',
+        actionLabel: 'Открыть карту',
+      };
+    }
+    if (actual.status === 'ready') {
+      return {
+        state: 'ready',
+        source: 'actual',
+        short: 'Карта построена по снимку запуска.',
+        detail: 'Сервер вернул полное покрытие фактов для этого запуска.',
+        actionLabel: 'Открыть карту',
+      };
+    }
+    if (actual.status === 'partial') {
+      return {
+        state: 'partial',
+        source: 'actual',
+        short: 'Карта построена частично: покрытие неполное.',
+        detail: 'Часть областей пропущена или недоступна — это фактический ответ endpoint, не оценка пайплайна.',
+        actionLabel: 'Открыть карту',
+      };
+    }
+    if (actual.status === 'empty') {
+      return {
+        state: 'empty',
+        source: 'actual',
+        short: 'Карта пуста: узлов, связей и ссылок на находки нет.',
+        detail: 'Сервер ответил без содержимого; это факт карты, а не ошибка загрузки.',
+        actionLabel: 'Открыть карту',
+      };
+    }
+    const sourceUnavailable = actual.errorCode === 'source_unavailable';
+    return {
+      state: 'blocked',
+      source: 'actual',
+      short: sourceUnavailable
+        ? 'Карта недоступна: снимок проекта не найден.'
+        : 'Карта недоступна: сервер не отдал карту.',
+      detail: sourceUnavailable
+        ? 'GET /security-map вернул source_unavailable; без исходников карта не строится.'
+        : actual.errorCode
+          ? `Код ответа: ${actual.errorCode}.`
+          : 'GET /security-map завершился ошибкой; причина и код видны на экране карты.',
+      actionLabel: 'Открыть карту',
+    };
+  }
+
   const facts = [...nodeRuns].reverse().find((nodeRun) => nodeRun.kind === 'merge_findings');
   if (!facts) {
     return runIsActive
       ? {
           state: 'waiting',
+          source: 'precondition',
           short: 'Карта станет доступна после сбора фактов кода.',
           detail: 'Этап «Факты кода» ещё не завершён; отдельного события построения карты нет.',
         }
       : {
           state: 'blocked',
+          source: 'precondition',
           short: 'В этом запуске нет записанного этапа фактов кода.',
           detail: 'Карта доступа отдаётся только при наличии опубликованных фактов.',
         };
@@ -502,6 +571,7 @@ function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): Ma
   if (unavailable) {
     return {
       state: 'blocked',
+      source: 'precondition',
       short: 'Карта недоступна: ошибка фактов кода.',
       detail: unavailable,
     };
@@ -509,6 +579,7 @@ function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): Ma
   if (facts.status === 'failed') {
     return {
       state: 'blocked',
+      source: 'precondition',
       short: 'Факты кода не собраны: этап завершился ошибкой.',
       detail: facts.error_message || 'Карту строить не из чего.',
     };
@@ -516,6 +587,7 @@ function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): Ma
   if (facts.status === 'skipped') {
     return {
       state: 'blocked',
+      source: 'precondition',
       short: 'Этап фактов кода пропущен.',
       detail: 'В этом запуске не было активных входных данных для карты.',
     };
@@ -523,6 +595,7 @@ function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): Ma
   if (facts.status !== 'succeeded') {
     return {
       state: 'waiting',
+      source: 'precondition',
       short: 'Идёт сбор фактов кода; карта станет доступна после этапа.',
       detail: 'Статус построения карты не приходит отдельным SSE-событием.',
     };
@@ -530,16 +603,17 @@ function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): Ma
   if (runIsActive) {
     return {
       state: 'waiting',
+      source: 'precondition',
       short: 'Факты кода собраны; карта станет доступна после завершения запуска.',
       detail: 'Канонический набор публикуется в конце запуска, а карта собирается по запросу при открытии.',
     };
   }
   return {
-    state: 'ready',
-    short: 'Карта строится сервером в момент открытия.',
-    detail:
-      'Отдельного SSE-события построения карты нет: endpoint собирает карту по запросу из опубликованных фактов.',
-    actionLabel: 'Открыть карту (построится сейчас)',
+    state: 'unknown',
+    source: 'precondition',
+    short: 'Состояние карты неизвестно: откройте карту, чтобы запросить её.',
+    detail: 'Пайплайн не подтверждает готовность карты; фактический статус появится из ответа endpoint.',
+    actionLabel: 'Открыть карту (запросится сейчас)',
   };
 }
 
@@ -750,6 +824,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   plannedNodes = [],
   planKnown = true,
   graphMismatch = false,
+  runMapState = null,
   onSelectNode,
   onRefresh,
   onOpenMap,
@@ -810,8 +885,8 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   );
 
   const mapRequest = useMemo(
-    () => describeMapRequest(nodeRuns, runIsActive),
-    [nodeRuns, runIsActive],
+    () => describeMapRequest(nodeRuns, runIsActive, runMapState, currentRun?.id),
+    [nodeRuns, runIsActive, runMapState, currentRun?.id],
   );
 
   const groupedStages = useMemo(
@@ -922,13 +997,15 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
 
   const mapMeta = MAP_STATE_META[mapRequest.state];
   const mapCard = (
-    <section className="space-y-2" data-map-state={mapRequest.state}>
+    <section className="space-y-2" data-map-state={mapRequest.state} data-map-source={mapRequest.source}>
       <div className="flex items-center gap-2 px-1">
         <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
         <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
           Карта доступа
         </h3>
-        <span className="text-[10px] text-slate-600">request-time</span>
+        <span className="text-[10px] text-slate-600">
+          {mapRequest.source === 'actual' ? 'фактический статус' : 'до открытия карты'}
+        </span>
       </div>
       <div className="rounded-xl border border-slate-800 bg-slate-900/80">
         <div className="flex items-start gap-2.5 p-3">
@@ -941,7 +1018,9 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
               <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${mapMeta.chip}`}>
                 {mapMeta.label}
               </span>
-              <span className="text-[10px] font-mono text-slate-500">без SSE-события</span>
+              <span className="text-[10px] font-mono text-slate-500">
+                {mapRequest.source === 'actual' ? 'GET /security-map' : 'карта не запрашивалась'}
+              </span>
             </div>
             <p className="mt-1 text-[11px] leading-snug text-slate-300">{mapRequest.short}</p>
             {mapRequest.detail && (

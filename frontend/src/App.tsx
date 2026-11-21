@@ -37,6 +37,8 @@ import {
   ProfileData,
   ReportData,
   RunHistoryItem,
+  RunMapLoadState,
+  RunMapLoadStatus,
   RunRevisionResponse,
   RunSummary,
   SessionRole,
@@ -105,6 +107,15 @@ const sameRunGraph = (revisionDraft: WorkflowDraft | null, currentDraft: Workflo
 
 const EMPTY_RUN_TELEMETRY: RunTelemetry = { nodes: {}, edges: {}, lastSeq: 0, live: false };
 
+// The map owner exposes `onLoadStateChange(status)` from SecurityMapScreen in
+// its own commit. This typed seam binds App to that agreed contract so the
+// merge does not have to touch the map component again.
+const SecurityMapScreenWithLoadState = SecurityMapScreen as React.FC<
+  React.ComponentProps<typeof SecurityMapScreen> & {
+    onLoadStateChange?: (status: RunMapLoadStatus) => void;
+  }
+>;
+
 export const App: React.FC = () => {
   const [adminSection, setAdminSection] = useState<AdminSection>('overview');
   const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
@@ -149,6 +160,9 @@ export const App: React.FC = () => {
   const [currentRun, setCurrentRun] = useState<RunSummary | null>(null);
   // Immutable graph the selected run was created from. null = unknown plan.
   const [runRevision, setRunRevision] = useState<RunRevisionResponse | null>(null);
+  // Actual state of the security-map request for the selected run, reported by
+  // SecurityMapScreen. Absent means the map was not opened in this session.
+  const [mapLoadState, setMapLoadState] = useState<RunMapLoadState | null>(null);
   const [nodeRuns, setNodeRuns] = useState<NodeRunRecord[]>([]);
   const [events, setEvents] = useState<Array<{ seq: number; timestamp: string; type: string; nodeId?: string; payload: any }>>([]);
   // Edge seq present when the current SSE subscription opened; anything above
@@ -339,6 +353,14 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const handleMapLoadStateChange = useCallback((runId: string, status: RunMapLoadStatus) => {
+    // The callback carries no runId, so App tags it with the run being
+    // rendered. This keeps a late callback from repainting another run's card
+    // even if the map screen's own abort guard is ever bypassed.
+    if (runId !== selectedRunRef.current) return;
+    setMapLoadState({ runId, status });
+  }, []);
+
   const connectSSE = useCallback((runId: string, baselineSeq: number | null) => {
     closeSSE();
     const generation = sseGenerationRef.current;
@@ -456,6 +478,7 @@ export const App: React.FC = () => {
     setCurrentRunId(null);
     setCurrentRun(null);
     setRunRevision(null);
+    setMapLoadState(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -653,6 +676,7 @@ export const App: React.FC = () => {
     setCurrentRunId(null);
     setCurrentRun(null);
     setRunRevision(null);
+    setMapLoadState(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -676,6 +700,7 @@ export const App: React.FC = () => {
     setCurrentRunId(runId);
     setCurrentRun(null);
     setRunRevision(null);
+    setMapLoadState(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -881,6 +906,7 @@ export const App: React.FC = () => {
       setCurrentRunId(result.runId);
       setCurrentRun(null);
       setRunRevision(null);
+      setMapLoadState(null);
       setNodeRuns([]);
       setFindings([]);
       setAiScan(null);
@@ -1102,6 +1128,7 @@ export const App: React.FC = () => {
               plannedNodes={runRevisionDraft?.nodes ?? []}
               planKnown={runPlanKnown}
               graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
+              runMapState={mapLoadState}
               onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
               onRefresh={currentRunId ? () => {
                 void loadRunDetails(currentRunId);
@@ -1125,7 +1152,15 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'map' && (
-            <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
+            <SecurityMapScreenWithLoadState
+              key={currentRunId ?? 'no-run'}
+              runId={currentRunId}
+              onLoadStateChange={
+                currentRunId
+                  ? (status) => handleMapLoadStateChange(currentRunId, status)
+                  : undefined
+              }
+            />
           )}
 
           {activeTab === 'report' && (
@@ -1312,9 +1347,15 @@ export const App: React.FC = () => {
             nodeRuns={nodeRuns}
             events={events}
             telemetry={runTelemetry}
-            plannedNodes={draft.nodes}
+            plannedNodes={runRevisionDraft?.nodes ?? []}
+            planKnown={runPlanKnown}
+            graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
+            runMapState={mapLoadState}
             onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
-            onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+            onRefresh={currentRunId ? () => {
+              void loadRunDetails(currentRunId);
+              void loadRunRevision(currentRunId);
+            } : undefined}
             onOpenMap={() => setAdminSection('map')}
             onOpenFindings={() => setAdminSection('problems')}
             onOpenReport={() => setAdminSection('report')}
@@ -1332,7 +1373,17 @@ export const App: React.FC = () => {
           />
         );
       case 'map':
-        return <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />;
+        return (
+          <SecurityMapScreenWithLoadState
+            key={currentRunId ?? 'no-run'}
+            runId={currentRunId}
+            onLoadStateChange={
+              currentRunId
+                ? (status) => handleMapLoadStateChange(currentRunId, status)
+                : undefined
+            }
+          />
+        );
       case 'report':
         return (
           <ReportView
