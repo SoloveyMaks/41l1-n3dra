@@ -106,9 +106,13 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 - Используется только `artifact.repository.commit_sha` + `primaryLocation.path`
   finding. URL, branch и path от клиента не принимаются.
 - Допустимы только `github.com`/`gitlab.com` из artifact meta; redirects
-  отключены, response streamed с ceiling 256 KiB на decompressed bytes, timeout
-  4 s (connect 2 s), общий enrichment deadline 9 s, кэш 15 минут. Запросы
-  concurrent bounded (не более двух PR detail/review одновременно).
+  отключены. Response читается `aiter_raw` с hard ceiling 256 KiB на compressed
+  и 256 KiB на decompressed bytes; gzip/deflate декодируются инкрементально
+  через `zlib.decompressobj(max_length)`, `Content-Length` не доверяем.
+  `Accept-Encoding: identity`; unsupported/повреждённый content-encoding —
+  `failed`, без чтения всего body. Request hard deadline 4 s (connect 2 s),
+  общий enrichment deadline 9 s, кэш 15 минут. Запросы concurrent bounded
+  (не более двух PR detail/review одновременно).
 - GitHub: `GET https://api.github.com/repos/{owner}/{repo}/commits?sha={frozenSHA}&path={path}&per_page=1`.
 - GitLab: `GET https://gitlab.com/api/v4/projects/{project}/repository/commits?ref_name={frozenSHA}&path={path}&per_page=1`.
 - Возвращаются commit SHA, author и committer раздельно (display name/login,
@@ -239,3 +243,6 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
   503, 12 timeout 503; после caller timeout новые ключи не подняли peak выше 4;
   в конце active=0, queue=0, inflight=0. Same-key test: отмена одного caller,
   второй получил результат, БД прочитана 1 раз; exception без task warning.
+- Stream ceiling test через Unix local HTTP transport: plain exact 262144 → ok;
+  plain 2 MiB → failed без полного body; gzip 16 MiB при 8 KiB wire chunks →
+  failed, tracemalloc peak ~0.5 MiB (не 22 MiB).
