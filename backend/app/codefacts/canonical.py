@@ -544,6 +544,78 @@ class CanonicalMapBuilder:
                 parser_errors.append(diag_id)
         return diagnostics, parser_errors
 
+    @staticmethod
+    def _obs_value(item: Any, name: str, default: Any = None) -> Any:
+        if isinstance(item, dict):
+            return item.get(name, default)
+        return getattr(item, name, default)
+
+    def _observation_scopes(self, scan: Any, category: str,
+                            diagnostics: List[Dict[str, Any]],
+                            parser_errors: List[str]) -> Optional[Tuple[List[Dict[str, Any]], List[str]]]:
+        raw_coverage = getattr(scan, "coverage", None)
+        observations = None
+        if isinstance(raw_coverage, dict):
+            observations = raw_coverage.get("rule_observations")
+        elif raw_coverage is not None:
+            observations = getattr(raw_coverage, "rule_observations", None)
+        if not observations:
+            return None
+        scopes: List[Dict[str, Any]] = []
+        skipped: List[str] = []
+        seen: set[tuple[str, str, str]] = set()
+        for index, item in enumerate(observations):
+            rule_id = str(self._obs_value(item, "rule_id", "") or "")
+            rule_version = str(self._obs_value(item, "rule_version", "") or "")
+            path = str(self._obs_value(item, "path", "") or "")
+            raw_status = str(self._obs_value(item, "status", "skipped") or "skipped")
+            invocations = int(self._obs_value(item, "invocations", 0) or 0)
+            findings_count = int(self._obs_value(item, "findings", 0) or 0)
+            reason = str(self._obs_value(item, "reason", "") or "")
+            if not rule_id or not path:
+                continue
+            status_map = {
+                "checked": "checked",
+                "not_applicable": "skipped",
+                "skipped": "skipped",
+                "error": "error",
+            }
+            status = status_map.get(raw_status, "skipped")
+            detail = (
+                f"{reason}; rule={rule_id}@{rule_version or '?'}; "
+                f"invocations={invocations}; findings={findings_count}"
+            ).strip("; ")
+            key = (category, path, rule_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            scopes.append({
+                "path": path,
+                "ruleId": rule_id,
+                "category": category,
+                "status": status,
+                "reason": detail,
+            })
+            if status != "checked":
+                skipped.append(f"{path} · {rule_id}: {status} — {reason or 'not verified'}")
+            if status == "error":
+                diag_id = diagnostic_uuid(
+                    self.workspace_id, self.run_id,
+                    f"observation:{rule_id}:{path}", len(diagnostics) + index + 1,
+                )
+                diagnostics.append({
+                    "workspaceId": self.workspace_id,
+                    "runId": self.run_id,
+                    "snapshotId": self.snapshot_id,
+                    "id": diag_id,
+                    "category": category,
+                    "code": "RULE-OBSERVATION-ERROR",
+                    "message": detail,
+                    "evidenceId": None,
+                })
+                parser_errors.append(diag_id)
+        return (scopes, skipped) if scopes else None
+
     def _build_analysis_bundle(self, identity: Dict[str, Any], signature: Dict[str, Any],
                                findings: List[Dict[str, Any]],
                                coverage: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -569,21 +641,27 @@ class CanonicalMapBuilder:
                         refs.append(evidence_id)
             evidence = [self.evidence[evidence_id] for evidence_id in refs if evidence_id in self.evidence]
             diagnostics, parser_errors = self._scan_diagnostics(scan, category)
-            scope_paths = sorted({item["location"]["path"] for item in evidence})
-            scopes = [
-                {
-                    "path": path,
-                    "ruleId": f"{getattr(scan, 'analyzer', 'scanner')}-aggregate",
-                    "category": category,
-                    "status": "partial",
-                    "reason": "Агрегированное покрытие сканера; per-rule scope не доказан.",
-                }
-                for path in scope_paths
-            ]
             raw_coverage = getattr(scan, "coverage", None)
+            observed = self._observation_scopes(scan, category, diagnostics, parser_errors)
+            scope_paths = sorted({item["location"]["path"] for item in evidence})
+            skipped_scopes: List[str] = []
+            if observed is not None:
+                scopes, skipped_scopes = observed
+            else:
+                scopes = [
+                    {
+                        "path": path,
+                        "ruleId": f"{getattr(scan, 'analyzer', 'scanner')}-aggregate",
+                        "category": category,
+                        "status": "partial",
+                        "reason": "Агрегированное покрытие сканера; per-rule scope не доказан.",
+                    }
+                    for path in scope_paths
+                ]
             visited = int(getattr(raw_coverage, "files_scanned", 0) or 0) if raw_coverage else 0
-            visited = min(max(visited, 0), total)
+            visited = min(max(visited, len({scope["path"] for scope in scopes})), total)
             rules = list(getattr(raw_coverage, "rules_executed", []) or []) if raw_coverage else []
+            rules = sorted(set(rules) | {scope["ruleId"] for scope in scopes})
             producer = f"{getattr(scan, 'analyzer', 'scanner')}/1.0.0"
             if any(str(finding.get("ruleId", "")).startswith("CF-") for finding in category_findings):
                 producer = f"{getattr(scan, 'analyzer', 'scanner')}+codefacts/1.0.0"
@@ -604,7 +682,9 @@ class CanonicalMapBuilder:
                     "filesVisited": visited,
                     "rulesApplied": rules,
                     "scopes": scopes,
-                    "skippedScopes": ["scanner-scope-only"] if visited < total else [],
+                    "skippedScopes": skipped_scopes + (
+                        ["scanner-scope-only"] if visited < total and not skipped_scopes else []
+                    ),
                     "parserErrors": parser_errors,
                     "unresolvedSymbols": [],
                     "limitsReached": [],

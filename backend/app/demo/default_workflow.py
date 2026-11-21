@@ -64,7 +64,7 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
             kind=NodeKind.AI_EXPLAIN,
             title="AI Explain & Fix",
             position={"x": 1420, "y": 150},
-            config={"model": "gemini-3.8-flash", "strictValidation": True}
+            config={"model": "deepseek-v4.1-flash-1017", "strictValidation": True}
         ),
         WorkflowNode(
             id="node_report",

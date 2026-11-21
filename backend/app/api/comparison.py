@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from backend.app.codefacts.identity import run_uuid
-from backend.app.codefacts.publish import get_published_envelope
+from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope
 from backend.app.codefacts.store import CodeFactsStore
 
 
@@ -57,7 +57,10 @@ def _published_envelope(workspace: str, run_id: str, run_row: Dict[str, Any],
     snapshot_id = _snapshot_id_for_run(workspace=workspace, run_id=run_id, run_row=run_row, store=store)
     if not snapshot_id:
         raise ComparisonError(409, "SNAPSHOT_UNKNOWN", f"Не найден snapshot для run {run_id}")
-    published = get_published_envelope(workspace, run_uuid(run_id), snapshot_id)
+    try:
+        published = get_published_envelope(workspace, run_uuid(run_id), snapshot_id)
+    except PublishedHashMissing as exc:
+        raise ComparisonError(409, "PUBLISHED_HASH_MISSING", str(exc)) from exc
     if not published:
         raise ComparisonError(
             409,
@@ -133,4 +136,16 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     }
     if not isinstance(result, dict) or not required.issubset(result):
         raise ComparisonError(502, "COMPARISON_BAD_OUTPUT", "compare-cli вернул неполный ComparisonDto")
-    return result
+    try:
+        from backend.app.storage.comparisons import ComparisonConflictError, ComparisonStore  # type: ignore
+    except ModuleNotFoundError:
+        # Feature-ветка без PG storage: вычисленный DTO честно не выдаётся за persisted.
+        return result
+    except Exception as exc:  # noqa: BLE001
+        raise ComparisonError(503, "COMPARISON_STORE_UNAVAILABLE", f"ComparisonStore недоступен: {exc}") from exc
+    try:
+        return ComparisonStore(workspace).save(result)
+    except ComparisonConflictError as exc:
+        raise ComparisonError(409, "COMPARISON_CONFLICT", str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise ComparisonError(503, "COMPARISON_STORE_UNAVAILABLE", f"ComparisonStore save failed: {exc}") from exc

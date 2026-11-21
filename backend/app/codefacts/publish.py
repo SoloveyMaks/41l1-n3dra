@@ -24,6 +24,10 @@ from backend.app.codefacts.identity import (
 from backend.app.codefacts.identity import bundle_hash as content_hash
 
 
+class PublishedHashMissing(RuntimeError):
+    """Storage returned a published bundle without authoritative SQL bundleHash."""
+
+
 def _sorted_manifest(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows = []
     for item in files:
@@ -164,9 +168,15 @@ def publish_run_artifact(*, workspace: str, run_artifact: Dict[str, Any],
         envelope_hash = getattr(result, "envelopeHash", None)
         idempotent = getattr(result, "idempotent", None)
         counts = getattr(result, "counts", None)
+    if not bundle_hash:
+        return {
+            "published": False,
+            "reason": "publish returned no bundleHash",
+            "documentHash": str(returned_signature or kwargs["document_hash"]),
+        }
     return {
         "published": True,
-        "bundleHash": str(bundle_hash) if bundle_hash else None,
+        "bundleHash": str(bundle_hash),
         "documentHash": str(returned_signature or kwargs["document_hash"]),
         "envelopeHash": str(envelope_hash) if envelope_hash else None,
         "idempotent": idempotent,
@@ -198,7 +208,7 @@ def get_published_envelope(workspace: str, run_id: str, snapshot_id: str) -> Opt
         return None
     bundle_hash = provenance.get("bundleHash") or provenance.get("bundle_hash")
     if not bundle_hash:
-        bundle_hash = content_hash(bundle)
+        raise PublishedHashMissing("published envelope has no provenance.bundleHash")
     return {
         "bundle": bundle,
         "manifest": result.get("manifest"),
@@ -207,14 +217,13 @@ def get_published_envelope(workspace: str, run_id: str, snapshot_id: str) -> Opt
     }
 
 
-def map_from_analysis_bundle(bundle: Dict[str, Any], published_hash: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def map_from_analysis_bundle(bundle: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Build SecurityMapDto from canonical coverage.
 
     `bundleHash` inside map is our internal content hash
     sha256(canonical_json(map_without_bundleHash, sort_keys=True)), not the SQL
     published bundle hash and not canonicalHash. The published hash stays in
-    `publication` metadata; `published_hash` is accepted only for compatibility
-    and never written into map.
+    `publication` metadata; SQL bundleHash is never written into map.
     """
     try:
         code_facts = bundle["codeFacts"]
