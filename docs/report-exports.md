@@ -121,7 +121,8 @@ report; deterministic findings may be empty and are still exported honestly.
 ## 5. DOCX contract
 
 - US Letter portrait, 0.75–0.85" margins, Calibri 10.5 pt body, black title and
-  headings, no title borders.
+  headings, no title borders (`w:pBdr` explicitly removed from the Title style
+  and title paragraph).
 - Russian headings and natural prose; no FAIL/PASS badges, emoji, mixed
   English/Russian headings, provider endpoint or request id in the main text.
 - Sections: title and short scope; metadata; summary counts and coverage;
@@ -130,9 +131,17 @@ report; deterministic findings may be empty and are still exported honestly.
   separate AI hypotheses section; Appendix A technical provenance.
 - Findings table columns: №, уровень, правило, где (path + lines), ID. The
   appendix may contain provider/model/request metadata; the main text does not.
+  Every table has an explicit `w:tblGrid`, fixed layout and total width 9792
+  twips (6.8"). Findings widths: 0.35/0.8/1.4/2.45/1.8 in; the № column is not
+  allowed to grow to 20%.
 - Every finding and AI hypothesis includes its ID and location. Tables use light
   gray borders, dark header fill with white text, alternating pale body rows,
   deliberate column widths and repeated header rows.
+- Finding and AI detail headings set `keep_with_next` through ID, rule and
+  location, so a heading is not stranded at the bottom of a page; long bodies
+  may still continue on the next page.
+- Display headings use «ИИ», while machine JSON fields remain `aiHypotheses`,
+  `aiScan`, `aiAnalysis` and `provenance`.
 - AI hypotheses are labeled unverified and excluded from counts/verdict.
 - The document opens with `python-docx`, LibreOffice converts it to PDF and
   `pdftotext -layout`/page PNGs are available for layout review. Word was not
@@ -146,7 +155,11 @@ report; deterministic findings may be empty and are still exported honestly.
 - headings `Основные показатели`, `Почему такой итог`, `Находки`,
   `Пояснения к находкам`, `Что осталось за пределами проверки`;
 - Russian severity/confidence/status labels; IDs and locations unchanged;
+- `naturalize` protects URLs, CVE/GHSA/KOTLIN/SECRET/SCA/CF IDs, `fnd_*`/
+  `aiobs_*` IDs and backticked code from prose replacements;
 - no provider endpoint, request id, batch/retrieval jargon in the main text;
+- intro is scope + verdict (`Проверен сценарий «…». Итог: …`) rather than a
+  technical note about repeated scans/LLM calls;
 - model explanations remain a separate short section.
 
 The official machine JSON (`build_official_json`) is unchanged and keeps
@@ -160,16 +173,19 @@ test target; deployment pins it in `deploy/requirements.txt`.
 
 ### 15 deterministic findings
 
-- DB `report_live_18065497`; run `b8653da2-4565-498b-a4f7-a6d65488a753`;
+- DB `report_live_368c07f8`; run `2866a75c-11f6-4e08-b077-6fe2b6f20a74`;
   workflow `report-live`; `executionStatus=succeeded`,
   `securityVerdict=fail`.
 - JSONC 200: 15 findings — 8 critical, 6 high, 1 medium; IDs match the stored
   Markdown and DOCX table exactly.
-- DOCX 200: 44,004 bytes, opens with python-docx; 176 paragraphs, 4 tables.
-- Empty run 200: `reportAvailable=false`, 0 findings; DOCX 39,351 bytes and
+- DOCX 200: 44,020 bytes, opens with python-docx; 176 paragraphs, 4 tables.
+- Empty run 200: `reportAvailable=false`, 0 findings; DOCX 39,369 bytes and
   opens.
 - Missing run 404; foreign-workspace run 404 `RUN_NOT_FOUND`.
 - Redaction: no raw sample secrets in JSONC, Markdown or DOCX.
+- Source URL parity: `https://github.com/advisories/...` and
+  `https://osv.dev/vulnerability/...` remain byte-identical in JSONC/Markdown/DOCX;
+  prose normalization protects them from `advisories`/`scopes` replacements.
 - Markdown checks: no FAIL/PASS icons, no `endpoint:`/`request:`, all 15 IDs
   present.
 - JSONC validated by `python -m json.tool`.
