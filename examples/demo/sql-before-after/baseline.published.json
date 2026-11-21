@@ -1,0 +1,612 @@
+{
+  "bundle": {
+    "schemaVersion": "0.1",
+    "identity": {
+      "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+      "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+      "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+      "artifactHash": "f84680849cbdd79070ef207c42a73a93ccf814ae888fac500b8351f15966448e",
+      "snapshotManifestHash": "41487371e704c787d8070c42796ac311c9d7ffc14512b273e5d938248476a22f",
+      "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+    },
+    "signature": {
+      "parserVersion": "cg-codefacts/1.0.0",
+      "rulesVersion": "cf-rules/1",
+      "advisoryVersion": "cg-advisories/1",
+      "configVersion": "cg-config/1",
+      "hmacKeyVersion": "cg-anchor-hmac/v1",
+      "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+      "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
+      "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
+      "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
+      "domainPolicyRevisionId": null,
+      "domainPolicyVersion": null,
+      "domainPolicyHash": null
+    },
+    "scanResults": [
+      {
+        "schemaVersion": "0.1",
+        "identity": {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "artifactHash": "f84680849cbdd79070ef207c42a73a93ccf814ae888fac500b8351f15966448e",
+          "snapshotManifestHash": "41487371e704c787d8070c42796ac311c9d7ffc14512b273e5d938248476a22f",
+          "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        },
+        "signature": {
+          "parserVersion": "cg-codefacts/1.0.0",
+          "rulesVersion": "cf-rules/1",
+          "advisoryVersion": "cg-advisories/1",
+          "configVersion": "cg-config/1",
+          "hmacKeyVersion": "cg-anchor-hmac/v1",
+          "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+          "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
+          "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
+          "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
+          "domainPolicyRevisionId": null,
+          "domainPolicyVersion": null,
+          "domainPolicyHash": null
+        },
+        "category": "SECRET",
+        "status": "partial",
+        "findings": [],
+        "evidence": [],
+        "coverage": {
+          "status": "partial",
+          "filesTotal": 2,
+          "filesVisited": 2,
+          "rulesApplied": [
+            "SECRET-API-KEY",
+            "SECRET-PASSWORD-LITERAL",
+            "SECRET-PRIVATE-KEY",
+            "SECRET-URI-CREDENTIALS",
+            "SECRET-BEARER-TOKEN",
+            "SECRET-ENV-DEFAULT"
+          ],
+          "scopes": [],
+          "skippedScopes": [
+            "not-instrumented-in-sql-demo"
+          ],
+          "parserErrors": [],
+          "unresolvedSymbols": [],
+          "limitsReached": []
+        },
+        "diagnostics": []
+      },
+      {
+        "schemaVersion": "0.1",
+        "identity": {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "artifactHash": "f84680849cbdd79070ef207c42a73a93ccf814ae888fac500b8351f15966448e",
+          "snapshotManifestHash": "41487371e704c787d8070c42796ac311c9d7ffc14512b273e5d938248476a22f",
+          "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        },
+        "signature": {
+          "parserVersion": "cg-codefacts/1.0.0",
+          "rulesVersion": "cf-rules/1",
+          "advisoryVersion": "cg-advisories/1",
+          "configVersion": "cg-config/1",
+          "hmacKeyVersion": "cg-anchor-hmac/v1",
+          "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+          "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
+          "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
+          "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
+          "domainPolicyRevisionId": null,
+          "domainPolicyVersion": null,
+          "domainPolicyHash": null
+        },
+        "category": "SCA",
+        "status": "partial",
+        "findings": [],
+        "evidence": [],
+        "coverage": {
+          "status": "partial",
+          "filesTotal": 2,
+          "filesVisited": 0,
+          "rulesApplied": [
+            "SCA-VULNERABLE-DEPENDENCY"
+          ],
+          "scopes": [],
+          "skippedScopes": [
+            "not-instrumented-in-sql-demo"
+          ],
+          "parserErrors": [],
+          "unresolvedSymbols": [],
+          "limitsReached": []
+        },
+        "diagnostics": []
+      },
+      {
+        "schemaVersion": "0.1",
+        "identity": {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "artifactHash": "f84680849cbdd79070ef207c42a73a93ccf814ae888fac500b8351f15966448e",
+          "snapshotManifestHash": "41487371e704c787d8070c42796ac311c9d7ffc14512b273e5d938248476a22f",
+          "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        },
+        "signature": {
+          "parserVersion": "cg-codefacts/1.0.0",
+          "rulesVersion": "cf-rules/1",
+          "advisoryVersion": "cg-advisories/1",
+          "configVersion": "cg-config/1",
+          "hmacKeyVersion": "cg-anchor-hmac/v1",
+          "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+          "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
+          "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
+          "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
+          "domainPolicyRevisionId": null,
+          "domainPolicyVersion": null,
+          "domainPolicyHash": null
+        },
+        "category": "SAST",
+        "status": "complete",
+        "findings": [
+          {
+            "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+            "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+            "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+            "id": "79d57e0d-192a-5ac4-83a9-c13c78168584",
+            "fingerprint": "e214ff02732e35a7ccb71e5801646eccfcc2561f2013410cc505d00cd9e881f8",
+            "fingerprintVersion": "fp/v1",
+            "category": "SAST",
+            "ruleId": "KOTLIN-SQL-INJECTION",
+            "ruleVersion": "1.0.0",
+            "ruleFamily": "sql-injection",
+            "severity": "critical",
+            "severityBasis": "Пользовательский параметр конкатенируется или интерполируется напрямую в SQL-запрос",
+            "confidence": "high",
+            "confidenceBasis": "Полноценный Taint-путь от входного параметра контроллера до вызова SQL sink",
+            "status": "confirmed",
+            "primaryLocation": {
+              "path": "src/main/kotlin/demo/RepairLookupController.kt",
+              "line": 12,
+              "column": 1,
+              "endLine": 12,
+              "endColumn": 66,
+              "byteStart": 379,
+              "byteEnd": 444
+            },
+            "primaryEvidenceId": "9d886c89-3323-5695-a309-2daaaf07b2af",
+            "relatedEvidenceIds": [
+              "07280379-112b-5b09-a8d5-bab937d1d02b"
+            ],
+            "traceEvidenceIds": [
+              "07280379-112b-5b09-a8d5-bab937d1d02b",
+              "9d886c89-3323-5695-a309-2daaaf07b2af"
+            ],
+            "graphNodeIds": [
+              "3408c6f2-5741-5682-8ebd-065045a902cf",
+              "e6137c31-4c81-5beb-b64a-917bae165304"
+            ],
+            "anchor": {
+              "normalizedPath": "src/main/kotlin/demo/RepairLookupController.kt",
+              "symbolKey": "function:demo.RepairLookupController.findByFrameTag",
+              "normalizedContextHash": "16fdd26426c437dfaf4d04695449e5d8ad632b6f72870ccf561666a6d9fb1c5b",
+              "role": "sql_sink",
+              "secretHmac": null
+            },
+            "advisoryIds": [],
+            "coverageWarnings": []
+          }
+        ],
+        "evidence": [
+          {
+            "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+            "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+            "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+            "id": "07280379-112b-5b09-a8d5-bab937d1d02b",
+            "location": {
+              "path": "src/main/kotlin/demo/RepairLookupController.kt",
+              "line": 12,
+              "column": 38,
+              "endLine": 12,
+              "endColumn": 46,
+              "byteStart": 416,
+              "byteEnd": 424
+            },
+            "kind": "source",
+            "redactedSnippet": "    fun findByFrameTag(@RequestParam frameTag: String): List<String> {",
+            "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+            "producerVersion": "sast/1.0.0"
+          },
+          {
+            "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+            "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+            "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+            "id": "9d886c89-3323-5695-a309-2daaaf07b2af",
+            "location": {
+              "path": "src/main/kotlin/demo/RepairLookupController.kt",
+              "line": 12,
+              "column": 1,
+              "endLine": 12,
+              "endColumn": 66,
+              "byteStart": 379,
+              "byteEnd": 444
+            },
+            "kind": "source",
+            "redactedSnippet": "    fun findByFrameTag(@RequestParam frameTag: String): List<String> {",
+            "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+            "producerVersion": "sast/1.0.0"
+          }
+        ],
+        "coverage": {
+          "status": "complete",
+          "filesTotal": 2,
+          "filesVisited": 2,
+          "rulesApplied": [
+            "KOTLIN-SQL-INJECTION",
+            "KOTLIN-PATH-TRAVERSAL",
+            "KOTLIN-COMMAND-INJECTION",
+            "KOTLIN-INSECURE-ENDPOINT",
+            "KOTLIN-IDOR"
+          ],
+          "scopes": [
+            {
+              "path": "src/main/kotlin/demo/RepairLookupController.kt",
+              "ruleId": "KOTLIN-SQL-INJECTION",
+              "category": "SAST",
+              "status": "checked",
+              "reason": "Observed real SastAnalyzer._check_sql_injection invocation; findings=1"
+            }
+          ],
+          "skippedScopes": [],
+          "parserErrors": [],
+          "unresolvedSymbols": [],
+          "limitsReached": []
+        },
+        "diagnostics": []
+      }
+    ],
+    "codeFacts": {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+        "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+        "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+        "artifactHash": "f84680849cbdd79070ef207c42a73a93ccf814ae888fac500b8351f15966448e",
+        "snapshotManifestHash": "41487371e704c787d8070c42796ac311c9d7ffc14512b273e5d938248476a22f",
+        "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+      },
+      "signature": {
+        "parserVersion": "cg-codefacts/1.0.0",
+        "rulesVersion": "cf-rules/1",
+        "advisoryVersion": "cg-advisories/1",
+        "configVersion": "cg-config/1",
+        "hmacKeyVersion": "cg-anchor-hmac/v1",
+        "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+        "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
+        "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
+        "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
+        "domainPolicyRevisionId": null,
+        "domainPolicyVersion": null,
+        "domainPolicyHash": null
+      },
+      "nodes": [
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "feb396ac-fd9e-54c8-b1bd-bc1e00ddf2b6",
+          "kind": "actor",
+          "symbolKey": "actor:role:STAFF",
+          "label": "Роль STAFF",
+          "evidenceRefs": [
+            "44aac5d5-160a-5bfa-9d66-736ef101b6e9"
+          ],
+          "producerVersion": "cg-codefacts/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "3408c6f2-5741-5682-8ebd-065045a902cf",
+          "kind": "function",
+          "symbolKey": "function:demo.RepairLookupController.findByFrameTag",
+          "label": "findByFrameTag",
+          "evidenceRefs": [
+            "ac8966f4-52e3-5c2b-bcde-7d3a73d3c7dd",
+            "b1df929a-13ca-56e8-8e1a-684e8af518e4"
+          ],
+          "producerVersion": "cg-codefacts/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "0868cd3d-085d-5f5a-9339-aaa462cd65c7",
+          "kind": "guard",
+          "symbolKey": "guard:role:STAFF:/api/customer/search/frame",
+          "label": "Требуется роль STAFF",
+          "evidenceRefs": [
+            "44aac5d5-160a-5bfa-9d66-736ef101b6e9"
+          ],
+          "producerVersion": "cg-codefacts/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "d04d4a43-1080-5c2d-87c7-29fc4fbac6b0",
+          "kind": "matcher",
+          "symbolKey": "matcher:ANY:/api/customer/search/frame",
+          "label": "/api/customer/search/frame",
+          "evidenceRefs": [
+            "44aac5d5-160a-5bfa-9d66-736ef101b6e9"
+          ],
+          "producerVersion": "cg-codefacts/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "e6137c31-4c81-5beb-b64a-917bae165304",
+          "kind": "route",
+          "symbolKey": "route:GET:/api/customer/search/frame",
+          "label": "GET /api/customer/search/frame",
+          "evidenceRefs": [
+            "b1df929a-13ca-56e8-8e1a-684e8af518e4"
+          ],
+          "producerVersion": "cg-codefacts/1.0.0"
+        }
+      ],
+      "edges": [
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "e923cbb0-74cd-530f-8f95-a4e0fb54a861",
+          "fromId": "e6137c31-4c81-5beb-b64a-917bae165304",
+          "toId": "3408c6f2-5741-5682-8ebd-065045a902cf",
+          "kind": "routes_to",
+          "evidenceRefs": [
+            "b1df929a-13ca-56e8-8e1a-684e8af518e4",
+            "ac8966f4-52e3-5c2b-bcde-7d3a73d3c7dd"
+          ],
+          "resolution": "resolved",
+          "resolutionReason": "Spring mapping непосредственно связан с этой функцией-обработчиком.",
+          "producerVersion": "cg-codefacts/1.0.0",
+          "basis": "source",
+          "policyRef": null
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "b952778c-06a8-532b-9cfa-f1cb0b6c69c8",
+          "fromId": "feb396ac-fd9e-54c8-b1bd-bc1e00ddf2b6",
+          "toId": "d04d4a43-1080-5c2d-87c7-29fc4fbac6b0",
+          "kind": "matches",
+          "evidenceRefs": [
+            "44aac5d5-160a-5bfa-9d66-736ef101b6e9"
+          ],
+          "resolution": "resolved",
+          "resolutionReason": "Клиент проходит matcher по методу и пути.",
+          "producerVersion": "cg-codefacts/1.0.0",
+          "basis": "source",
+          "policyRef": null
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "4468d2ce-d467-55d1-b539-4644bca75506",
+          "fromId": "d04d4a43-1080-5c2d-87c7-29fc4fbac6b0",
+          "toId": "0868cd3d-085d-5f5a-9339-aaa462cd65c7",
+          "kind": "requires",
+          "evidenceRefs": [
+            "44aac5d5-160a-5bfa-9d66-736ef101b6e9"
+          ],
+          "resolution": "resolved",
+          "resolutionReason": "Правило hasRole применяется к ANY /api/customer/search/frame.",
+          "producerVersion": "cg-codefacts/1.0.0",
+          "basis": "source",
+          "policyRef": null
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "b4014584-e652-5f73-8e79-38c16ac0d32f",
+          "fromId": "0868cd3d-085d-5f5a-9339-aaa462cd65c7",
+          "toId": "e6137c31-4c81-5beb-b64a-917bae165304",
+          "kind": "requires",
+          "evidenceRefs": [
+            "44aac5d5-160a-5bfa-9d66-736ef101b6e9",
+            "b1df929a-13ca-56e8-8e1a-684e8af518e4"
+          ],
+          "resolution": "resolved",
+          "resolutionReason": "Первое применимое правило filter chain для этого маршрута.",
+          "producerVersion": "cg-codefacts/1.0.0",
+          "basis": "source",
+          "policyRef": null
+        }
+      ],
+      "evidence": [
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "07280379-112b-5b09-a8d5-bab937d1d02b",
+          "location": {
+            "path": "src/main/kotlin/demo/RepairLookupController.kt",
+            "line": 12,
+            "column": 38,
+            "endLine": 12,
+            "endColumn": 46,
+            "byteStart": 416,
+            "byteEnd": 424
+          },
+          "kind": "source",
+          "redactedSnippet": "    fun findByFrameTag(@RequestParam frameTag: String): List<String> {",
+          "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+          "producerVersion": "sast/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "44aac5d5-160a-5bfa-9d66-736ef101b6e9",
+          "location": {
+            "path": "src/main/kotlin/demo/SecurityConfig.kt",
+            "line": 14,
+            "column": 1,
+            "endLine": 14,
+            "endColumn": 80,
+            "byteStart": 423,
+            "byteEnd": 502
+          },
+          "kind": "dsl",
+          "redactedSnippet": "            auth.requestMatchers(\"/api/customer/search/frame\").hasRole(\"STAFF\")",
+          "sourceHash": "d87cf487214f686d1d256fd5e1befbec0b1704025a411bd36f9e0fa12e8c7b17",
+          "producerVersion": "cg-codefacts/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "9d886c89-3323-5695-a309-2daaaf07b2af",
+          "location": {
+            "path": "src/main/kotlin/demo/RepairLookupController.kt",
+            "line": 12,
+            "column": 1,
+            "endLine": 12,
+            "endColumn": 66,
+            "byteStart": 379,
+            "byteEnd": 444
+          },
+          "kind": "source",
+          "redactedSnippet": "    fun findByFrameTag(@RequestParam frameTag: String): List<String> {",
+          "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+          "producerVersion": "sast/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "ac8966f4-52e3-5c2b-bcde-7d3a73d3c7dd",
+          "location": {
+            "path": "src/main/kotlin/demo/RepairLookupController.kt",
+            "line": 12,
+            "column": 1,
+            "endLine": 14,
+            "endColumn": 68,
+            "byteStart": 379,
+            "byteEnd": 612
+          },
+          "kind": "ast",
+          "redactedSnippet": "    fun findByFrameTag(@RequestParam frameTag: String): List<String> {\n        val sql = \"SELECT ticket_code FROM repair_ticket WHERE frame_tag = '\" + frameTag + \"'\"\n        return jdbcTemplate.query(sql) { rs, _ -> rs.getString(1) }",
+          "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+          "producerVersion": "cg-codefacts/1.0.0"
+        },
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "b1df929a-13ca-56e8-8e1a-684e8af518e4",
+          "location": {
+            "path": "src/main/kotlin/demo/RepairLookupController.kt",
+            "line": 11,
+            "column": 1,
+            "endLine": 12,
+            "endColumn": 71,
+            "byteStart": 333,
+            "byteEnd": 449
+          },
+          "kind": "ast",
+          "redactedSnippet": "    @GetMapping(\"/api/customer/search/frame\")\n    fun findByFrameTag(@RequestParam frameTag: String): List<String> {",
+          "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+          "producerVersion": "cg-codefacts/1.0.0"
+        }
+      ],
+      "coverage": {
+        "status": "complete",
+        "filesTotal": 2,
+        "filesVisited": 2,
+        "rulesApplied": [
+          "CF-ROUTE-UNAUTH-PII",
+          "CF-SQL-PARAM-INTERPOLATION",
+          "CF-OWNER-CHECK-UNPROVEN"
+        ],
+        "scopes": [
+          {
+            "path": "src/main/kotlin/demo/RepairLookupController.kt",
+            "ruleId": "CF-SPRING-STATIC",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Source graph read; runtime scopes are outside this demo boundary."
+          },
+          {
+            "path": "src/main/kotlin/demo/SecurityConfig.kt",
+            "ruleId": "CF-SPRING-STATIC",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Source graph read; runtime scopes are outside this demo boundary."
+          }
+        ],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [],
+        "limitsReached": []
+      },
+      "policyInputs": [],
+      "diagnostics": [
+        {
+          "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+          "runId": "3c94b638-2cca-578c-83f6-33876ceff174",
+          "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+          "id": "b1213c39-fe85-5827-ad65-0017e935cce2",
+          "category": "SAST",
+          "code": "CF-STATIC-ONLY",
+          "message": "Статический анализ исходников: код не исполнялся, runtime-конфигурация и внешние фильтры не проверялись.",
+          "evidenceId": null
+        }
+      ],
+      "findingRefs": [
+        "79d57e0d-192a-5ac4-83a9-c13c78168584"
+      ],
+      "findingNodeLinks": [
+        {
+          "findingId": "79d57e0d-192a-5ac4-83a9-c13c78168584",
+          "nodeId": "3408c6f2-5741-5682-8ebd-065045a902cf"
+        },
+        {
+          "findingId": "79d57e0d-192a-5ac4-83a9-c13c78168584",
+          "nodeId": "e6137c31-4c81-5beb-b64a-917bae165304"
+        }
+      ]
+    }
+  },
+  "manifest": {
+    "complete": true,
+    "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
+    "snapshotId": "d051ad1a-5bf4-85cb-8aac-15d15a81fde0",
+    "hash": "41487371e704c787d8070c42796ac311c9d7ffc14512b273e5d938248476a22f",
+    "files": [
+      {
+        "path": "src/main/kotlin/demo/RepairLookupController.kt",
+        "sourceHash": "20b2c294617930917bf951de75b3ac06d67c459d44bbd9ae84165fcbbe169c5a",
+        "byteLength": 621,
+        "mediaType": "text/x-kotlin"
+      },
+      {
+        "path": "src/main/kotlin/demo/SecurityConfig.kt",
+        "sourceHash": "d87cf487214f686d1d256fd5e1befbec0b1704025a411bd36f9e0fa12e8c7b17",
+        "byteLength": 549,
+        "mediaType": "text/x-kotlin"
+      }
+    ]
+  },
+  "provenance": {
+    "published": true,
+    "bundleHash": "7bead13fe461d996d5c695ef7dfef426b186f843dfe6a028713857730e5bfc8e",
+    "normalizationVersion": "sql-before-after/harness/1",
+    "origin": "scanner",
+    "expectedScopesVerified": true,
+    "domainPolicyApplicability": "not_applicable"
+  }
+}
