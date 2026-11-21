@@ -51,14 +51,17 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
                          "author": {"displayName": "...", "login": "..."},
                          "committer": {"displayName": "...", "login": "..."},
                          "date": "...", "url": "...", "message": "..."},
+              "associationCommitSha": "...", "frozenCommitSha": "...",
               "pullRequests": [{"number": 160301, "title": "...", "url": "...",
                                 "author": {"login": "..."}, "mergedBy": {"login": "..."},
                                 "mergedAt": "...", "headSha": "...",
                                 "reviews": [{"reviewer": {"login": "..."},
-                                             "state": "APPROVED|CHANGES_REQUESTED|COMMENTED|DISMISSED",
-                                             "submittedAt": "...", "appliesToMerge": false,
-                                             "limitation": "..."}],
-                                "reviewsStatus": "available|...", "reviewsTruncated": false}],
+                                             "state": "APPROVED|CHANGES_REQUESTED|DISMISSED|NONE",
+                                             "opinionState": "COMMENTED|APPROVED|...",
+                                             "submittedAt": "...", "decisionAt": "...",
+                                             "appliesToMerge": false, "limitation": "..."}],
+                                "reviewsStatus": "available|incomplete|...",
+                                "reviewsTruncated": false, "reviewsIncomplete": false}],
               "pullRequestsStatus": "available|none|unavailable|rate_limited|failed|unsupported",
               "pullRequestsTruncated": false,
               "lineBlame": {"status": "unsupported", "reason": "..."}, "limitations": []},
@@ -95,7 +98,9 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 - Используется только `artifact.repository.commit_sha` + `primaryLocation.path`
   finding. URL, branch и path от клиента не принимаются.
 - Допустимы только `github.com`/`gitlab.com` из artifact meta; redirects
-  отключены, ответ ограничен 256 KiB, timeout 4 s (connect 2 s), кэш 15 минут.
+  отключены, response streamed с ceiling 256 KiB на decompressed bytes, timeout
+  4 s (connect 2 s), общий enrichment deadline 9 s, кэш 15 минут. Запросы
+  concurrent bounded (не более двух PR detail/review одновременно).
 - GitHub: `GET https://api.github.com/repos/{owner}/{repo}/commits?sha={frozenSHA}&path={path}&per_page=1`.
 - GitLab: `GET https://gitlab.com/api/v4/projects/{project}/repository/commits?ref_name={frozenSHA}&path={path}&per_page=1`.
 - Возвращаются commit SHA, author и committer раздельно (display name/login,
@@ -113,6 +118,18 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   `CHANGES_REQUESTED`/`COMMENTED`/`DISMISSED`. `appliesToMerge=true` только когда
   review commit совпал с merged head SHA и submittedAt ≤ mergedAt; иначе
   `appliesToMerge=false` и явное ограничение «историческое/не доказано к merge».
+- PR association выполняется для `associationCommitSha` = последний коммит
+  файла из file history, а не для текущего head ветки; frozen snapshot SHA
+  хранится отдельно в `frozenCommitSha`/`scope.commitSha`. PR, связанный с
+  другим head, не приписывается автору изменения файла.
+- Reviews pagination: если есть `Link: rel="next"` или страница заполнена до
+  `per_page=100`, массив помечается incomplete; такие approvals не считаются
+  действующими (`appliesToMerge=false`), даже если в первой странице был
+  APPROVED. Полностью загруженный список ограничен 20 reviewers, что честно
+  показывается как truncated.
+- Review state reconstructs separately: `opinionState` — последний отзыв,
+  `state` — решение (APPROVED/CHANGES_REQUESTED/DISMISSED/NONE). COMMENTED после
+  APPROVED не отменяет approval; CHANGES_REQUESTED/DISMISSED меняют решение.
 - PR association и reviews — факты провайдера, не доказательство внесения
   уязвимости и не определение виновного.
 - GitLab PR/MR list поддержан; исторические reviews/approvals без токена
@@ -141,9 +158,13 @@ empty/retry. Пока root не смонтировал router, панель по
 
 ## Живая проверка
 
-Merged backend, test PostgreSQL, account A/B, router mounted только в тестовой
-обёртке (root mount остаётся за интегратором).
+Merged backend, test PostgreSQL, account A/B. Router смонтирован в текущем dev;
+отдельная тестовая обёртка использовалась только для раннего прогона.
 
+- Root-mounted endpoint on current dev: training repo artifact
+  `art_4471bc181f46`, run `9c4979cd…` → 200; commit author/committer
+  `Bagirov Teimur / @TBagirov` раздельно, `pullRequestsStatus=none`; account B
+  on same run/finding → `404`.
 - Public training repo `https://github.com/TBagirov/training`, artifact
   `art_d3b87fdfe8ef`, commit `fe1fcbe212669783480666b9b60147c8a8c6eef4`:
   finding `SECRET-API-KEY` → history `available`, author `Bagirov Teimur`,
@@ -169,7 +190,12 @@ Merged backend, test PostgreSQL, account A/B, router mounted только в т�
   `scrollWidth=390`, «История изменения» and PR block readable, console errors 0.
   PR/review UI rendered from the real provider DTO; live endpoint direct provider
   call produced that DTO.
-- `npm run build`: `index-DvUuBd_W.js` / `index-D9Z-CuvZ.css`.
+- Local streamed oversized response >256 KiB → `failed` ceiling, не чтение
+  всего body; COMMENTED после APPROVED → decision APPROVED, opinion COMMENTED,
+  applies true; incomplete/full-page 100 reviews → все approvals
+  `appliesToMerge=false`, truncated truthful; bad external href → null; GitLab
+  `author_name` → displayName without fake login.
+- `npm run build`: `index-dSxABP2i.js` / `index-D9Z-CuvZ.css`.
 
 ## Ограничения
 
@@ -177,6 +203,10 @@ Merged backend, test PostgreSQL, account A/B, router mounted только в т�
   гарантирует актуального человека.
 - GitHub/GitLab file history — только публичный API и только последний коммит
   файла на frozen SHA. Line blame не поддержан.
+- GitLab commit `author_name`/`committer_name` не выдаются за login:
+  `displayName` заполняется, `login` остаётся null, если API не дал username.
+- Внешние commit/PR ссылки принимаются только `https` + `github.com`/`gitlab.com`
+  (provider-matched); иной href отбрасывается.
 - PR association bounded (3 PR, reviews для первых 2); если PR больше,
   `pullRequestsTruncated=true`; отсутствие PR/429/ZIP явно в DTO.
 - GitHub reviews реализованы с last-decision-before-merge и head-commit
