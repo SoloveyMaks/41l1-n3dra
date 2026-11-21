@@ -37,18 +37,29 @@ _URL_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 _TELEGRAM_URL_RE = re.compile(r"https?://[^\s\"']*api\.telegram\.org[^\s\"']*")
 
 
+def _redact_log_text(value: str) -> str:
+    value = _URL_TOKEN_RE.sub("bot***", value)
+    return _TELEGRAM_URL_RE.sub("https://api.telegram.org/***", value)
+
+
 class _TelegramLogFilter(logging.Filter):
-    """Keep httpx's request-line logs from exposing a bot token."""
+    """Keep httpx's request-line logs from exposing a bot token.
+
+    httpx passes an ``httpx.URL`` object in ``record.args``; filtering only raw
+    string arguments let the renderer print the full tokenised URL. Render the
+    record first, redact, and drop the arguments when anything changed.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
-            if isinstance(record.msg, str):
-                record.msg = _URL_TOKEN_RE.sub("bot***", record.msg)
-            if record.args:
-                record.args = tuple(
-                    _URL_TOKEN_RE.sub("bot***", item) if isinstance(item, str) else item
-                    for item in record.args
-                )
+            if isinstance(record.msg, str) and not record.args:
+                record.msg = _redact_log_text(record.msg)
+                return True
+            message = record.getMessage()
+            redacted = _redact_log_text(message)
+            if redacted != message:
+                record.msg = redacted
+                record.args = ()
         except Exception:  # noqa: BLE001 - logging must never fail the request
             pass
         return True
@@ -258,17 +269,18 @@ class TelegramBotAPI:
                     f"telegram proxy socket unavailable: {socket_path} is not a socket"
                 )
             try:
-                port = await bridge.start()
-            except OSError as exc:
-                raise TelegramUnavailable(
-                    f"telegram proxy socket unavailable: {exc.strerror or 'connect failed'}"
-                ) from None
-            try:
-                self._client = self._make_client(f"http://127.0.0.1:{port}")
-            except Exception:
+                try:
+                    port = await bridge.start()
+                except OSError as exc:
+                    raise TelegramUnavailable(
+                        f"telegram proxy socket unavailable: {exc.strerror or 'connect failed'}"
+                    ) from None
+                client = self._make_client(f"http://127.0.0.1:{port}")
+                self._client = client
+                self._bridge = bridge
+            except BaseException:
                 await bridge.close()
                 raise
-            self._bridge = bridge
             return self._client
 
     def __repr__(self) -> str:
@@ -300,13 +312,16 @@ class TelegramBotAPI:
         return cls(load_bot_settings())
 
     async def close(self) -> None:
-        self._closed = True
-        client, self._client = self._client, None
-        bridge, self._bridge = self._bridge, None
-        if client is not None:
-            await client.aclose()
-        if bridge is not None:
-            await bridge.close()
+        async with self._client_lock:
+            self._closed = True
+            client, self._client = self._client, None
+            bridge, self._bridge = self._bridge, None
+        try:
+            if client is not None:
+                await client.aclose()
+        finally:
+            if bridge is not None:
+                await bridge.close()
 
     async def _call(
         self,

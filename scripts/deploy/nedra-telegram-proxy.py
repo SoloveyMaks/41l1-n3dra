@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Scoped host relay: UNIX socket -> one loopback HTTP proxy upstream.
+"""Scoped host relay: UNIX socket -> fixed loopback HTTP proxy upstream.
 
 The nedra app container cannot reach the host's ``127.0.0.1:14600`` proxy. This
-service exposes *only that one upstream* on a UNIX socket that root mounts into
-the app container. It is not a general proxy: there is no per-connection
-target selection and the upstream must be a loopback address.
+service exposes *only that one upstream* on a UNIX socket that root mounts as a
+directory into the app container.
+
+Scope, precisely: the upstream address and port are compiled in; there is no
+CLI to point the relay at another host port. It still speaks the ordinary HTTP
+proxy protocol, so a client that can open the socket can issue CONNECT for any
+target the upstream proxy allows. Target filtering is intentionally not
+claimed here; the boundary is the single upstream plus UNIX socket permissions.
 
 Usage:
-    nedra-telegram-proxy.py --socket /run/user/1000/nedra/telegram-proxy.sock \
-        --upstream 127.0.0.1:14600
+    nedra-telegram-proxy.py --socket /run/user/1000/nedra/telegram-proxy/proxy.sock
 
-The socket is created 0660 in a 0700 directory; the container joins the owner's
+The socket is created 0660 in a 0750 directory; the container joins the owner's
 host group with ``--group-add keep-groups``.
 """
 
@@ -25,30 +29,23 @@ import socket
 import stat
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 CHUNK = 65536
-LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+UPSTREAM_HOST = "127.0.0.1"
+UPSTREAM_PORT = 14600
 
 
 def log(message: str) -> None:
     print(f"[nedra-telegram-proxy] {message}", file=sys.stderr, flush=True)
 
 
-def parse_upstream(value: str) -> Tuple[str, int]:
-    host, sep, port_text = value.rpartition(":")
-    if not sep or not host or not port_text.isdigit():
-        raise argparse.ArgumentTypeError("upstream must be HOST:PORT")
-    if host.strip("[]") not in LOOPBACK_HOSTS:
-        raise argparse.ArgumentTypeError("upstream must be a loopback address")
-    port = int(port_text)
-    if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError("upstream port out of range")
-    return host.strip("[]"), port
-
-
 def prepare_socket(path: Path, mode: int) -> socket.socket:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # The container mounts this directory, never the socket inode: the relay
+    # unlinks and recreates the socket on every restart, and a file bind mount
+    # would keep pointing at the dead inode.
+    path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o750)
     with contextlib.suppress(FileNotFoundError):
         info = path.lstat()
         if not stat.S_ISSOCK(info.st_mode):
@@ -89,7 +86,7 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> No
                 writer.write_eof()
 
 
-def build_handler(upstream_host: str, upstream_port: int, active: set):
+def build_handler(active: set):
     async def handle(
         unix_reader: asyncio.StreamReader,
         unix_writer: asyncio.StreamWriter,
@@ -97,7 +94,7 @@ def build_handler(upstream_host: str, upstream_port: int, active: set):
         active.add(unix_writer)
         try:
             tcp_reader, tcp_writer = await asyncio.open_connection(
-                upstream_host, upstream_port,
+                UPSTREAM_HOST, UPSTREAM_PORT,
             )
         except OSError:
             log("upstream proxy is unavailable")
@@ -126,14 +123,14 @@ async def serve(args: argparse.Namespace) -> int:
     server_socket = prepare_socket(path, args.mode)
     active: set = set()
     server = await asyncio.start_unix_server(
-        build_handler(*args.upstream, active), sock=server_socket,
+        build_handler(active), sock=server_socket,
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop.set)
-    log(f"listening {path} -> {args.upstream[0]}:{args.upstream[1]}")
+    log(f"listening {path} -> {UPSTREAM_HOST}:{UPSTREAM_PORT}")
     try:
         await stop.wait()
     finally:
@@ -151,10 +148,6 @@ async def serve(args: argparse.Namespace) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", required=True, help="UNIX socket path")
-    parser.add_argument(
-        "--upstream", required=True, type=parse_upstream,
-        help="loopback HTTP proxy HOST:PORT (default deployment: 127.0.0.1:14600)",
-    )
     parser.add_argument(
         "--mode", type=lambda value: int(value, 8), default=0o660,
         help="socket mode in octal (default 660)",

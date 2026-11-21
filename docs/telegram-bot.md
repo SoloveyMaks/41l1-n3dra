@@ -89,7 +89,8 @@ Token files must be mode 0600; broader permissions fail closed. The token is
 never put in argv, git, logs, exceptions, API responses or the DB. `repr` is
 `TelegramBotAPI(<redacted>)`; HTTP/URL errors are redacted before logging.
 `TELEGRAM_API_BASE` must be HTTPS; `TELEGRAM_BOT_KEY` is only a logical cursor
-key.
+key. httpx INFO records are rendered before filtering, so a token inside an
+`httpx.URL` argument is redacted as well, not only plain string arguments.
 
 External check in this environment: direct `getMe` failed, while the host proxy
 `127.0.0.1:14600` reached Telegram. That proxy listens on host loopback only and

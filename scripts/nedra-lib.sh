@@ -37,8 +37,10 @@ app_health_ok() {
 }
 
 # Builds NEDRA_TELEGRAM_APP_ARGS for `podman run` from the optional Telegram
-# socket settings. Only the socket file is mounted; no other host path and no
-# published port is added.
+# socket settings. Only the socket's own directory is mounted (never the whole
+# runtime dir, never the socket inode); no other host path and no published port
+# is added. Mounting the directory keeps working after the relay restarts and
+# replaces the socket inode.
 telegram_app_mount_args() {
   NEDRA_TELEGRAM_APP_ARGS=()
   [ -n "${TELEGRAM_PROXY_SOCKET:-}" ] || return 0
@@ -46,11 +48,17 @@ telegram_app_mount_args() {
     /*) ;;
     *) die "TELEGRAM_PROXY_SOCKET должен быть абсолютным путём внутри контейнера" ;;
   esac
-  local socket_host="${TELEGRAM_PROXY_SOCKET_HOST:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/nedra/telegram-proxy.sock}"
+  local socket_host="${TELEGRAM_PROXY_SOCKET_HOST:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/nedra/telegram-proxy/proxy.sock}"
   case "$socket_host" in
     /*) ;;
     *) die "TELEGRAM_PROXY_SOCKET_HOST должен быть абсолютным путём на хосте" ;;
   esac
+  local host_dir container_dir
+  host_dir=$(dirname -- "$socket_host")
+  container_dir=$(dirname -- "$TELEGRAM_PROXY_SOCKET")
+  [ "$container_dir" != "/" ] || die "TELEGRAM_PROXY_SOCKET не может указывать в корень контейнера"
+  [ "$(basename -- "$socket_host")" = "$(basename -- "$TELEGRAM_PROXY_SOCKET")" ] \
+    || die "имена host- и container-сокета должны совпадать"
   # A missing source would make podman create a directory named like the
   # socket, so the relay must already be up.
   local waited=0
@@ -61,13 +69,13 @@ telegram_app_mount_args() {
     sleep 0.5
     waited=$((waited + 1))
   done
-  NEDRA_TELEGRAM_APP_ARGS+=(--volume "${socket_host}:${TELEGRAM_PROXY_SOCKET}:ro")
+  NEDRA_TELEGRAM_APP_ARGS+=(--volume "${host_dir}:${container_dir}:ro")
   # The socket is 0660 owner:owner; rootless containers keep the host user's
   # groups only with keep-groups.
   if [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || printf false)" = "true" ]; then
     NEDRA_TELEGRAM_APP_ARGS+=(--group-add keep-groups)
   fi
-  say "Telegram proxy socket: ${socket_host} -> ${TELEGRAM_PROXY_SOCKET}"
+  say "Telegram proxy socket dir: ${host_dir} -> ${container_dir} (${TELEGRAM_PROXY_SOCKET})"
 }
 
 runtime_env_mode() {

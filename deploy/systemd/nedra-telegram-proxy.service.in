@@ -1,5 +1,5 @@
 [Unit]
-Description=nedra Telegram Bot API relay (UNIX socket -> 127.0.0.1 proxy)
+Description=nedra Telegram Bot API relay (UNIX socket -> fixed 127.0.0.1:14600)
 Documentation=file:@REPO@/docs/telegram-deployment.md
 After=network-online.target zen-proxy.service
 
@@ -7,7 +7,7 @@ After=network-online.target zen-proxy.service
 Type=simple
 WorkingDirectory=@REPO@
 Environment=HOME=%h
-ExecStart=/usr/bin/python3 @REPO@/scripts/deploy/nedra-telegram-proxy.py --socket %t/nedra/telegram-proxy.sock --upstream 127.0.0.1:14600
+ExecStart=/usr/bin/python3 @REPO@/scripts/deploy/nedra-telegram-proxy.py --socket %t/nedra/telegram-proxy/proxy.sock
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes

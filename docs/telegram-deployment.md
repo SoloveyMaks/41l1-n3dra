@@ -18,9 +18,11 @@ read-only: контейнеры, env, сеть, firewall, общий proxy не 
    host loopback и из контейнера недоступен.
 
 Готовый минимальный route: **host-релей на UNIX-сокете → один upstream
-`127.0.0.1:14600`; сокет монтируется в app-контейнер; приложение поднимает
-loopback TCP→UNIX bridge внутри своего netns.** Ни host network, ни публичного
-порта, ни изменения `zen-proxy` и firewall не требуется.
+`127.0.0.1:14600`; каталог с сокетом монтируется в app-контейнер; приложение
+поднимает loopback TCP→UNIX bridge внутри своего netns.** Каталог, а не inode
+сокета: релей при рестарте удаляет и создаёт сокет заново, и mount файла
+навсегда прибивал бы мёртвый inode. Ни host network, ни публичного порта, ни
+изменения `zen-proxy` и firewall не требуется.
 
 ## Измеренные факты
 
@@ -68,15 +70,44 @@ runtime proxyMode: socket botUsername: chilli_nedra_bot
 blocked: telegram proxy socket unavailable: /run/nedra/missing.sock
 ```
 
+## Исправления после ревью
+
+- **Гонка `_require_client`/`close`.** `close()` теперь берёт тот же
+  `_client_lock`, выставляет `_closed` и забирает client/bridge под локом.
+  Живой прогон 400 гонок в production-образе: 200× `acquired+closed`,
+  200× `closed+TelegramUnavailable`, после каждого раунда `_client`/`_bridge`
+  `None`, все 200 поднятых listener'ов закрыты (connect refused), повторный
+  `_require_client` после close даёт `TelegramUnavailable`. Отмена задачи во
+  время `bridge.start()` тоже закрывает listener (`CancelledError`,
+  `listener_closed True`).
+- **Bind mount inode.** Монтируется каталог
+  `/run/user/1000/nedra/telegram-proxy` → `/run/nedra/telegram-proxy:ro`.
+  Живой прогон: `FIRST_OK` через релей (2.7s), релей остановлен и запущен
+  заново (inode `236146` → `236170`), тот же API/bridge в контейнере uid 10001 +
+  `keep-groups` дал `SECOND_OK` (0.6s) без перезапуска приложения.
+- **Строгий upstream.** У релея больше нет `--upstream`: host и порт
+  зашиты (`127.0.0.1:14600`); `--upstream 127.0.0.1:14601` отклоняется
+  argparse с exit 2. Другие host-порты сконфигурировать нельзя.
+- **Токен в httpx INFO.** Фильтр сначала рендерит запись, затем редактит
+  `record.msg` и сбрасывает `record.args`. Живая проверка с фейковым токеном и
+  `httpx.URL` в args: `token_leaked: False`,
+  строка `HTTP Request: GET https://api.telegram.org/*** "HTTP/1.1" 200 OK`;
+  обычные `%d`-записи форматируются как раньше.
+
+Важно про scope: релей — обычный HTTP proxy hop, а не фильтр целей. Клиент с
+доступом к сокету может отправить CONNECT на любой хост, который разрешает
+upstream. Граница — один upstream `127.0.0.1:14600` плюс права UNIX-сокета;
+target allowlist здесь не заявлен и не реализован.
+
 ## Что реализовано
 
 | Файл | Назначение |
 | --- | --- |
-| `scripts/deploy/nedra-telegram-proxy.py` | host-релей: UNIX-сокет → ровно один loopback-upstream; не общий proxy |
-| `deploy/systemd/nedra-telegram-proxy.service.in` | user unit, сокет `%t/nedra/telegram-proxy.sock`, upstream `127.0.0.1:14600` |
+| `scripts/deploy/nedra-telegram-proxy.py` | host-релей: UNIX-сокет → зашитый loopback `127.0.0.1:14600`; upstream не настраивается |
+| `deploy/systemd/nedra-telegram-proxy.service.in` | user unit, каталог `%t/nedra/telegram-proxy/`, сокет `proxy.sock` |
 | `backend/app/telegram/proxy_bridge.py` | в контейнере: `127.0.0.1:<ephemeral>` → смонтированный UNIX-сокет, splice байтов |
-| `backend/app/telegram/bot_api.py` | `TELEGRAM_PROXY_SOCKET`, ленивый httpx-клиент, понятная ошибка при отсутствии сокета |
-| `scripts/nedra-up.sh` | preflight сокета, mount только сокета, `--group-add keep-groups` в rootless |
+| `backend/app/telegram/bot_api.py` | `TELEGRAM_PROXY_SOCKET`, ленивый httpx-клиент, lock-fenced close, redaction rendered logs |
+| `scripts/nedra-up.sh` | preflight сокета, mount каталога сокета, `--group-add keep-groups` в rootless |
 | `deploy/systemd/nedra-app.service.in` | app unit поднимает релей (`Wants/After`) |
 | `scripts/nedra-systemd-install.sh` | рендерит и (при `--enable`) включает unit релея |
 
@@ -86,10 +117,11 @@ blocked: telegram proxy socket unavailable: /run/nedra/missing.sock
   заданные — `TelegramConfigError`, runtime не стартует.
 - `TELEGRAM_PROXY_SOCKET` — абсолютный путь **внутри контейнера**.
 - `TELEGRAM_PROXY_SOCKET_HOST` — абсолютный путь сокета на хосте; по умолчанию
-  `${XDG_RUNTIME_DIR}/nedra/telegram-proxy.sock`.
-- Сокет: режим `0660`, каталог `0700`; контейнер получает группу владельца
-  через `--group-add keep-groups` (только rootless). Другие host-пути не
-  монтируются, host-порты не публикуются.
+  `${XDG_RUNTIME_DIR}/nedra/telegram-proxy/proxy.sock`. Монтируется только его
+  каталог; имена файла host/container обязаны совпадать.
+- Сокет: режим `0660`, выделенный каталог `0750`; контейнер получает группу
+  владельца через `--group-add keep-groups` (только rootless). Другие
+  host-пути не монтируются, host-порты не публикуются.
 
 ## План root (после одобрения)
 
@@ -98,15 +130,15 @@ blocked: telegram proxy socket unavailable: /run/nedra/missing.sock
    ```bash
    scripts/nedra-systemd-install.sh
    systemctl --user enable --now nedra-telegram-proxy.service
-   ls -l "${XDG_RUNTIME_DIR}/nedra/telegram-proxy.sock"   # srw-rw----
+   ls -l "${XDG_RUNTIME_DIR}/nedra/telegram-proxy/proxy.sock"   # srw-rw----
    ```
 
 2. В `~/.config/nedra/runtime.env` (0600) добавить, не трогая токен:
 
    ```dotenv
    TELEGRAM_ENABLED=1
-   TELEGRAM_PROXY_SOCKET=/run/nedra/telegram-proxy.sock
-   TELEGRAM_PROXY_SOCKET_HOST=/run/user/1000/nedra/telegram-proxy.sock
+   TELEGRAM_PROXY_SOCKET=/run/nedra/telegram-proxy/proxy.sock
+   TELEGRAM_PROXY_SOCKET_HOST=/run/user/1000/nedra/telegram-proxy/proxy.sock
    ```
 
    `TELEGRAM_PROXY_URL` убрать, если он появился: два маршрута одновременно
@@ -154,6 +186,9 @@ scripts/nedra-up.sh --app-only --recreate-app
 
 - `zen-proxy` крутит upstream-выходы; доступность Telegram зависит от него.
   Runtime честно уходит в `blocked` и ретраит, но не подменяет ошибку успехом.
+- Релей не фильтрует цели CONNECT: это обычный HTTP proxy hop к
+  `127.0.0.1:14600`. Клиент с доступом к сокету может ходить на любой хост,
+  который разрешает upstream; allowlist целей не реализован.
 - Верификация делала только `getMe`/`getWebhookInfo`; реальные `sendMessage`/
   `sendDocument` и `getUpdates` не запускались, чтобы не съесть сообщения.
 - Старый код привязки мог истечь за время простоя; это UX-случай, не баг
