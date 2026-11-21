@@ -30,7 +30,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   };
 
   return (
-    <div className="w-80 bg-slate-900/95 border-l border-slate-800 flex flex-col h-full overflow-hidden shadow-2xl">
+    <div className="w-full md:w-80 max-h-[55vh] md:max-h-none bg-slate-900/95 border-t md:border-t-0 md:border-l border-slate-800 flex flex-col md:h-full overflow-hidden shadow-2xl shrink-0">
       {/* Header */}
       <div className="p-3.5 border-b border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -210,15 +210,12 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             <div className="space-y-3">
               <div>
                 <label className="block text-[10px] text-slate-400 mb-1">Модель LLM:</label>
-                <select
-                  value={config.model || 'gemini-3.8-flash'}
-                  onChange={(e) => handleFieldChange('model', e.target.value)}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-200"
-                >
-                  <option value="gemini-3.8-flash">Google Gemini 3.8 Flash</option>
-                  <option value="gemini-2.5-pro">Google Gemini Pro</option>
-                  <option value="ollama-local">Ollama / vLLM (Local)</option>
-                </select>
+                <div className="w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-200">
+                  reformboss · deepseek-v4.1-flash-1017
+                </div>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Модель и ключ задаются сервером через AI_MODEL/REFORMBOSS_API_KEY.
+                </p>
               </div>
 
               <label className="flex items-center gap-2 cursor-pointer">
@@ -235,14 +232,36 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 
           {node.kind === 'notify' && (
             <div className="space-y-3">
+              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-700 text-[10px] text-slate-400 leading-relaxed">
+                Уведомления по умолчанию выключены. Внешняя отправка не включена; для демо доступен только локальный mock-приёмник.
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.enabled === true}
+                  onChange={(e) => handleFieldChange('enabled', e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-sky-500 focus:ring-0"
+                />
+                <span>Включить отправку уведомления</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.allowLocal === true}
+                  onChange={(e) => handleFieldChange('allowLocal', e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-sky-500 focus:ring-0"
+                />
+                <span>Разрешить локальный mock (127.0.0.1)</span>
+              </label>
               <div>
-                <label className="block text-[10px] text-slate-400 mb-1">URL Webhook:</label>
+                <label className="block text-[10px] text-slate-400 mb-1">URL локального mock:</label>
                 <input
                   type="url"
-                  value={config.webhookUrl || 'http://127.0.0.1:8000/api/webhook-test'}
+                  value={config.webhookUrl || 'http://127.0.0.1:18080/api/webhook-test'}
                   onChange={(e) => handleFieldChange('webhookUrl', e.target.value)}
                   className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1 font-mono text-xs text-sky-300"
                 />
+                <p className="mt-1 text-[10px] text-slate-500">Только loopback при allowLocal; внешние https-адреса этим UI не разрешаются.</p>
               </div>
 
               <div>

@@ -11,17 +11,19 @@ interface AiTrustModalProps {
 export const AiTrustModal: React.FC<AiTrustModalProps> = ({ runId, isOpen, onClose }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const handleRunTest = async () => {
     setIsRunning(true);
     setResult(null);
+    setError(null);
     try {
       const data = await apiClient.runAiSyntheticTest(runId);
       setResult(data);
     } catch (e: any) {
-      console.error(e);
+      setError(e?.message || 'Синтетический тест недоступен');
     } finally {
       setIsRunning(false);
     }
@@ -60,6 +62,12 @@ export const AiTrustModal: React.FC<AiTrustModalProps> = ({ runId, isOpen, onClo
             <span>Запустить стресс-тест валидатора</span>
           </button>
 
+          {error && (
+            <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-3 text-xs text-rose-200">
+              Тест AI Trust Layer не выполнен: {error}
+            </div>
+          )}
+
           {result && (
             <div className="space-y-4 pt-2">
               {/* Verdict */}
@@ -77,7 +85,7 @@ export const AiTrustModal: React.FC<AiTrustModalProps> = ({ runId, isOpen, onClo
                   </span>
                 </div>
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-black/40 border border-rose-700">
-                  {result.errors.length} нарушений зафиксировано
+                  {(result.errors || []).length} нарушений зафиксировано
                 </span>
               </div>
 
@@ -87,7 +95,7 @@ export const AiTrustModal: React.FC<AiTrustModalProps> = ({ runId, isOpen, onClo
                   Ошибки, заблокированные валидатором:
                 </div>
                 <div className="space-y-1.5">
-                  {result.errors.map((err: string, idx: number) => (
+                  {(result.errors || []).map((err: string, idx: number) => (
                     <div
                       key={idx}
                       className="p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/60 text-[11px] font-mono text-rose-300 flex items-start gap-2"
