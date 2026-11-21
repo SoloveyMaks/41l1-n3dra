@@ -10,7 +10,7 @@ import tree_sitter_kotlin
 from backend.app.analyzers.base import BaseAnalyzer
 from backend.app.contracts.schemas import (
     Confidence, Coverage, Diagnostic, Finding, FindingStatus,
-    Location, ScanResult, Severity, TraceStep
+    Location, RuleObservation, ScanResult, Severity, TraceStep
 )
 
 
@@ -47,6 +47,8 @@ class SastAnalyzer(BaseAnalyzer):
                 duration_ms=0.0
             )
 
+        rule_observations: List[RuleObservation] = []
+
         for root, _, files in os.walk(root_path):
             for file_name in files:
                 if not file_name.endswith(".kt"):
@@ -55,6 +57,15 @@ class SastAnalyzer(BaseAnalyzer):
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
                 files_scanned += 1
+                sql_observation: Dict[str, Any] = {
+                    "rule_id": "KOTLIN-SQL-INJECTION",
+                    "rule_version": "1.0.0",
+                    "path": rel_path,
+                    "status": "not_applicable",
+                    "invocations": 0,
+                    "findings": 0,
+                    "reason": "Правило не вызывалось: в файле нет пользовательского источника для SQL-правила.",
+                }
 
                 try:
                     raw_bytes = file_path.read_bytes()
@@ -71,11 +82,23 @@ class SastAnalyzer(BaseAnalyzer):
                             source="SastAnalyzer",
                             details={"path": rel_path}
                         ))
+                        sql_observation["status"] = "skipped"
+                        sql_observation["reason"] = (
+                            "AST содержит синтаксические ошибки; правило не считается checked."
+                        )
 
                     # Run our taint-analysis and AST rules
-                    self._check_file_ast(rel_path, raw_bytes, lines, tree.root_node, findings)
+                    self._check_file_ast(
+                        rel_path, raw_bytes, lines, tree.root_node, findings,
+                        sql_observation=sql_observation,
+                    )
 
                 except Exception as e:
+                    if sql_observation["status"] != "error":
+                        sql_observation["status"] = "skipped"
+                        sql_observation["reason"] = (
+                            f"Файл не прочитан или анализ прерван: {type(e).__name__}"
+                        )
                     parser_errors += 1
                     diagnostics.append(Diagnostic(
                         level="error",
@@ -83,7 +106,10 @@ class SastAnalyzer(BaseAnalyzer):
                         source="SastAnalyzer",
                         details={"path": rel_path, "error": str(e)}
                     ))
+                finally:
+                    rule_observations.append(RuleObservation(**sql_observation))
 
+        rule_observations.sort(key=lambda item: item.path)
         duration_ms = (time.time() - start_time) * 1000
         coverage = Coverage(
             files_scanned=files_scanned,
@@ -91,7 +117,8 @@ class SastAnalyzer(BaseAnalyzer):
             lines_of_code=lines_of_code,
             rules_executed=rules_executed,
             parser_errors=parser_errors,
-            unresolved_dependencies=0
+            unresolved_dependencies=0,
+            rule_observations=rule_observations,
         )
 
         return ScanResult(
@@ -103,7 +130,8 @@ class SastAnalyzer(BaseAnalyzer):
         )
 
     def _check_file_ast(self, rel_path: str, raw_bytes: bytes, lines: List[str],
-                        root_node: Any, findings: List[Finding]) -> None:
+                        root_node: Any, findings: List[Finding],
+                        sql_observation: Optional[Dict[str, Any]] = None) -> None:
         """
         Scans AST for sources, sinks, and taint paths.
         """
@@ -116,10 +144,14 @@ class SastAnalyzer(BaseAnalyzer):
 
         # For each function, check parameter sources and taint flows
         for fn in func_nodes:
-            self._analyze_function(rel_path, raw_bytes, lines, fn, findings)
+            self._analyze_function(
+                rel_path, raw_bytes, lines, fn, findings,
+                sql_observation=sql_observation,
+            )
 
     def _analyze_function(self, rel_path: str, raw_bytes: bytes, lines: List[str],
-                          fn_node: Any, findings: List[Finding]) -> None:
+                          fn_node: Any, findings: List[Finding],
+                          sql_observation: Optional[Dict[str, Any]] = None) -> None:
         fn_bytes = raw_bytes[fn_node.start_byte:fn_node.end_byte]
         fn_text = fn_bytes.decode("utf-8", errors="replace")
 
@@ -136,7 +168,10 @@ class SastAnalyzer(BaseAnalyzer):
             return
 
         # 1. SQL Injection check
-        self._check_sql_injection(rel_path, lines, fn_node, fn_text, user_params, findings)
+        self._check_sql_injection(
+            rel_path, lines, fn_node, fn_text, user_params, findings,
+            observation=sql_observation,
+        )
 
         # 2. Path Traversal check
         self._check_path_traversal(rel_path, lines, fn_node, fn_text, user_params, findings)
@@ -190,7 +225,37 @@ class SastAnalyzer(BaseAnalyzer):
 
     def _check_sql_injection(self, rel_path: str, lines: List[str], fn_node: Any,
                              fn_text: str, user_params: List[Tuple[str, int, int]],
-                             findings: List[Finding]) -> None:
+                             findings: List[Finding],
+                             observation: Optional[Dict[str, Any]] = None) -> None:
+        """Run KOTLIN-SQL-INJECTION and record its real completion per file."""
+        before = len(findings)
+        if observation is not None:
+            observation["invocations"] += 1
+        try:
+            self._check_sql_injection_rules(
+                rel_path, lines, fn_node, fn_text, user_params, findings,
+            )
+        except Exception as exc:
+            if observation is not None:
+                observation["status"] = "error"
+                observation["reason"] = (
+                    f"Ошибка правила KOTLIN-SQL-INJECTION: {type(exc).__name__}"
+                )
+            raise
+        else:
+            if observation is not None and observation["status"] != "skipped":
+                observation["status"] = "checked"
+                observation["reason"] = (
+                    "Правило вызвано и завершилось без ошибки; "
+                    f"findings={len(findings) - before}."
+                )
+        finally:
+            if observation is not None:
+                observation["findings"] += len(findings) - before
+
+    def _check_sql_injection_rules(self, rel_path: str, lines: List[str], fn_node: Any,
+                                   fn_text: str, user_params: List[Tuple[str, int, int]],
+                                   findings: List[Finding]) -> None:
         sql_sinks = ["jdbcTemplate.query", "jdbcTemplate.execute", "jdbcTemplate.update",
                      "createNativeQuery", "executeQuery", "executeUpdate"]
 

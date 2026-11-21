@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import uuid
@@ -38,21 +39,6 @@ from backend.app.codefacts.identity import revision_uuid  # noqa: E402
 CATEGORY = {"sast": "SAST", "secret": "SECRET", "sca": "SCA"}
 WORKSPACE_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "sql-before-after/workspace"))
 WORKFLOW_REVISION_ID = revision_uuid("sql-before-after/rev")
-
-
-class ObservedSastAnalyzer(SastAnalyzer):
-    """Real analyzer plus a per-file observation of the SQL rule call."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.sql_rule_observed: Dict[str, Dict[str, int]] = {}
-
-    def _check_sql_injection(self, rel_path, lines, fn_node, fn_text, user_params, findings):
-        before = len(findings)
-        super()._check_sql_injection(rel_path, lines, fn_node, fn_text, user_params, findings)
-        entry = self.sql_rule_observed.setdefault(rel_path, {"invoked": 0, "findings": 0})
-        entry["invoked"] += 1
-        entry["findings"] += len(findings) - before
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -96,8 +82,7 @@ def build_side(side: str) -> Dict[str, Any]:
         sources, _ = load_snapshot_sources(root, snapshot)
         facts = extract_facts(sources, len(snapshot["files"]))
 
-        sast = ObservedSastAnalyzer()
-        sast_result = sast.analyze(str(root))
+        sast_result = SastAnalyzer().analyze(str(root))
         secret_result = SecretAnalyzer().analyze(str(root))
         sca_result = ScaAnalyzer().analyze(str(root))
 
@@ -172,27 +157,30 @@ def build_side(side: str) -> Dict[str, Any]:
         path for path, source in sources.items()
         if any(token in source.text for token in ("@RequestParam", "@PathVariable", "@RequestBody"))
     )
-    observed_sql_paths = sorted(sast.sql_rule_observed)
+    sql_observations = [
+        observation.model_dump()
+        for observation in sast_result.coverage.rule_observations
+        if observation.rule_id == "KOTLIN-SQL-INJECTION"
+    ]
+    checked_sql = [item for item in sql_observations if item["status"] == "checked"]
+    observed_sql_paths = sorted({item["path"] for item in checked_sql})
     sast_parser_ok = sast_result.coverage.parser_errors == 0
     expected_sql_verified = (
         expected_sql_paths == observed_sql_paths
         and sast_parser_ok
         and "KOTLIN-SQL-INJECTION" in sast_result.coverage.rules_executed
-        and sum(item["findings"] for item in sast.sql_rule_observed.values()) == len(sast_result.findings)
+        and sum(item["findings"] for item in checked_sql) == len(sast_result.findings)
         and sast_result.coverage.files_scanned == sum(1 for path in snapshot["files"] if path["path"].endswith(".kt"))
     )
     sast_scopes = [
         {
-            "path": path,
+            "path": item["path"],
             "ruleId": "KOTLIN-SQL-INJECTION",
             "category": "SAST",
             "status": "checked",
-            "reason": (
-                "Observed real SastAnalyzer._check_sql_injection invocation; "
-                f"findings={sast.sql_rule_observed[path]['findings']}"
-            ),
+            "reason": item["reason"],
         }
-        for path in observed_sql_paths
+        for item in checked_sql
     ]
 
     def scan_part(analyzer, scan_result, status: str, coverage: Dict[str, Any]) -> Dict[str, Any]:
@@ -268,9 +256,17 @@ def build_side(side: str) -> Dict[str, Any]:
         "scanResults": scan_results,
         "codeFacts": code_facts,
         "observations": {
-            "sastSqlRule": sast.sql_rule_observed,
+            "sastRuleObservations": sql_observations,
             "expectedSqlPaths": expected_sql_paths,
             "observedSqlPaths": observed_sql_paths,
+            "sastSkipped": [
+                item for item in sql_observations
+                if item["status"] in ("skipped", "error")
+            ],
+            "sastNotApplicable": [
+                item for item in sql_observations
+                if item["status"] == "not_applicable"
+            ],
             "sastFindings": len(sast_result.findings),
             "sastParserErrors": sast_result.coverage.parser_errors,
             "sastFilesScanned": sast_result.coverage.files_scanned,
@@ -282,6 +278,80 @@ def build_side(side: str) -> Dict[str, Any]:
         },
         "expectedScopesVerified": bool(expected_sql_verified and graph_complete),
     }
+
+
+def _sql_observation(result, rel_path: str):
+    for observation in result.coverage.rule_observations:
+        if observation.rule_id == "KOTLIN-SQL-INJECTION" and observation.path == rel_path:
+            return observation.model_dump()
+    return None
+
+
+def run_observation_negatives() -> None:
+    """Prove parser-error, unreadable and not-applicable are not checked."""
+    cases = []
+    with tempfile.TemporaryDirectory(prefix="sql-observation-parser-") as temp:
+        root = Path(temp)
+        (root / "Broken.kt").write_text(
+            "package demo\n\nclass Broken {\n    fun broken( {\n}\n",
+            encoding="utf-8",
+        )
+        result = SastAnalyzer().analyze(str(root))
+        cases.append({
+            "case": "parser-error",
+            "parserErrors": result.coverage.parser_errors,
+            "observation": _sql_observation(result, "Broken.kt"),
+        })
+
+    with tempfile.TemporaryDirectory(prefix="sql-observation-unreadable-") as temp:
+        root = Path(temp)
+        path = root / "Unreadable.kt"
+        path.write_text(
+            "package demo\n\nclass Unreadable {\n"
+            "    fun find(@RequestParam name: String): String = name\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        os.chmod(path, 0o000)
+        try:
+            result = SastAnalyzer().analyze(str(root))
+            cases.append({
+                "case": "unreadable-file",
+                "parserErrors": result.coverage.parser_errors,
+                "observation": _sql_observation(result, "Unreadable.kt"),
+            })
+        finally:
+            os.chmod(path, 0o600)
+
+    with tempfile.TemporaryDirectory(prefix="sql-observation-not-applicable-") as temp:
+        root = Path(temp)
+        (root / "Plain.kt").write_text(
+            "package demo\n\nclass Plain {\n    fun ping(): String = \"pong\"\n}\n",
+            encoding="utf-8",
+        )
+        result = SastAnalyzer().analyze(str(root))
+        cases.append({
+            "case": "not-applicable",
+            "parserErrors": result.coverage.parser_errors,
+            "observation": _sql_observation(result, "Plain.kt"),
+        })
+
+    for case in cases:
+        observation = case["observation"]
+        case["checked"] = bool(observation and observation["status"] == "checked")
+    (ROOT / "sast-observation-probes.json").write_text(
+        json.dumps(cases, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    for case in cases:
+        observation = case["observation"] or {}
+        print(
+            f"observation {case['case']}: status={observation.get('status')} "
+            f"parserErrors={case['parserErrors']} checked={case['checked']}"
+        )
+    assert cases[0]["observation"]["status"] == "skipped" and not cases[0]["checked"]
+    assert cases[1]["observation"]["status"] == "skipped" and not cases[1]["checked"]
+    assert cases[2]["observation"]["status"] == "not_applicable" and not cases[2]["checked"]
 
 
 def main() -> None:
@@ -297,6 +367,7 @@ def main() -> None:
             f"secret={obs['secretFindings']} sca={obs['scaFindings']} "
             f"expectedScopesVerified={raw['expectedScopesVerified']}"
         )
+    run_observation_negatives()
 
 
 if __name__ == "__main__":

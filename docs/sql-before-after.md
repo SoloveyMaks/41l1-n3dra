@@ -25,6 +25,7 @@ examples/demo/sql-before-after/
   baseline.published.json / current.published.json
   comparison.json
   negative-probes.json
+  sast-observation-probes.json
 ```
 
 `SecurityConfig.kt` даёт маршруту статическое `hasRole("STAFF")`, чтобы
@@ -82,25 +83,38 @@ Before finding: `src/main/kotlin/demo/RepairLookupController.kt:12`,
 
 ## Откуда взялся checked scope
 
-Реальный `SastAnalyzer` возвращает только агрегированный `Coverage`
-(`files_scanned`, `rules_executed`, `parser_errors`), без per-file/per-rule
-отрицательного outcome. Поэтому `run_real_scan.py` использует локальную
-обёртку `ObservedSastAnalyzer`: она вызывает настоящий
-`SastAnalyzer._check_sql_injection` и записывает, для какого файла правило
-реально исполнялось и сколько findings оно дало. Это даёт настоящий
-`checked` scope:
+`SastAnalyzer` теперь сам пишет typed наблюдения в
+`Coverage.rule_observations`; demo больше не использует subclass. Для
+`KOTLIN-SQL-INJECTION` на каждый `.kt` файл создаётся одна запись:
 
-- before: `KOTLIN-SQL-INJECTION`, controller, `checked`, findings=1;
-- after: `KOTLIN-SQL-INJECTION`, controller, `checked`, findings=0.
+| Поле | Смысл |
+| --- | --- |
+| `rule_id` | `KOTLIN-SQL-INJECTION` |
+| `path` | файл внутри snapshot |
+| `status` | `checked`, `not_applicable`, `skipped` или `error` |
+| `invocations` | сколько раз реально вызван `_check_sql_injection` |
+| `findings` | сколько новых findings дало правило |
+| `reason` | причина статуса |
 
-Без этой обёртки после-сторона не имеет подтверждённого checked-отрицательного
-результата: comparison вернул бы `inconclusive: нет checked для ... / KOTLIN-SQL-INJECTION`.
-Это и есть минимальный будущий scope для B: per-file `SAST / path /
-KOTLIN-SQL-INJECTION / checked` с явным `findings=0` (или типизированный
-inspected-sink outcome). Просто `files_scanned=1` и пустой findings массив
-таким доказательством не являются.
+`checked` ставится только после фактического вызова и успешного завершения
+правила. `findings=0` при `checked` — проверенный отрицательный scope.
 
-Обёртка — demo adapter в `examples/`, backend-файлы не изменены.
+Реальные наблюдения на демо:
+
+- before: controller — `checked`, `invocations=1`, `findings=1`;
+- after: controller — `checked`, `invocations=1`, `findings=0`;
+- `SecurityConfig.kt` в обоих — `not_applicable`, `invocations=0`.
+
+`not_applicable`, `skipped` и `error` не являются checked. Parser error,
+непрочитанный файл и exception внутри правила дают `skipped`/`error`, а не
+отрицательный результат. Неинструментированные rules не получают запись и не
+считаются checked. Состояние наблюдений локально для каждого `analyze`, без
+class-level mutable state; одна запись на файл, поэтому размер ограничен
+количеством `.kt` файлов.
+
+`run_real_scan.py` просто читает `sast_result.coverage.rule_observations` и
+строит SAST scope только из `checked` записей. Наблюдение живёт в обычном
+`SastAnalyzer`; отдельного subclass или demo-обёртки больше нет.
 
 ## Code facts coverage: граница примера
 
@@ -112,28 +126,32 @@ nodes/edges. Для demo coverage считается complete только дл�
 - у каждого edge `resolution=resolved`;
 - scopes построены по реально прочитанным source paths.
 
-Production `CanonicalMapBuilder._build_coverage` добавляет в `skippedScopes`
-`runtime-configuration`, `runtime-guards`, `binaries-and-archives`, поэтому
-production bundle с этим coverage даст `inconclusive` по graph completeness,
-даже если SQL scope checked. В примере эти runtime scopes явно вынесены за
-границу source-graph proof, а не объявлены проверенными. Для production
-нужен один из вариантов:
+Остаётся отдельная граница adapter/А: `CanonicalMapBuilder._build_coverage`
+добавляет в `skippedScopes` `runtime-configuration`, `runtime-guards` и
+`binaries-and-archives`. Если публиковать это как полный graph coverage,
+comparison обязан остаться `inconclusive` по graph completeness, даже когда
+SQL scope checked. Demo явно ограничивает codeFacts coverage source graph и не
+объявляет runtime scopes проверенными. Adapter backend (`ctx_1848d3d60de4`)
+должен либо согласовать source-graph-only applicability, либо сохранить
+runtime gaps видимыми и блокировать только зависимые выводы. Это не влияет на
+сам факт per-file SQL observation.
 
-1. B/A подтверждают source-graph-only coverage и applicability для
-   comparison, не смешивая runtime scopes с SQL disappearance; либо
-2. comparison получает явную category/rule applicability map; либо
-3. B выдаёт дополнительный typed inspected-sink outcome, а graph gap остаётся
-   видимым и блокирует только зависимые выводы.
-
-До этого production comparison для SQL-паттерна обязан оставаться
-`inconclusive`, а не `resolved`.
-
-`expectedScopesVerified=true` в envelope — attestation этого demo-адаптера:
-ожидаемый SQL scope (файл с `@RequestParam`) совпал с фактически
-наблюдённым вызовом правила, manifest прочитан полностью. В production это
-должно проверять доверенное A/B, а не self-asserted JSON.
+`expectedScopesVerified=true` в envelope — attestation demo-сборки: ожидаемый
+SQL scope (файл с `@RequestParam`) совпал с `checked` наблюдением, manifest
+прочитан полностью. В production это проверяет доверенное A/B, а не
+self-asserted JSON. Наблюдение уже приходит из обычного `SastAnalyzer`, поэтому
+adapter может использовать его напрямую.
 
 ## Отрицательные проверки
+
+`sast-observation-probes.json` — реальные одноразовые прогоны обычного
+`SastAnalyzer`:
+
+| Probe | Наблюдение |
+| --- | --- |
+| Синтаксическая ошибка в `.kt` | `skipped`, `checked=false`, parserErrors=1 |
+| Нечитаемый `.kt` | `skipped`, `checked=false`, parserErrors=1 |
+| Файл без user source | `not_applicable`, `checked=false` |
 
 `negative-probes.json`:
 

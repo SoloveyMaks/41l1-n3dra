@@ -1,0 +1,44 @@
+[
+  {
+    "case": "parser-error",
+    "parserErrors": 1,
+    "observation": {
+      "rule_id": "KOTLIN-SQL-INJECTION",
+      "rule_version": "1.0.0",
+      "path": "Broken.kt",
+      "status": "skipped",
+      "invocations": 0,
+      "findings": 0,
+      "reason": "AST содержит синтаксические ошибки; правило не считается checked."
+    },
+    "checked": false
+  },
+  {
+    "case": "unreadable-file",
+    "parserErrors": 1,
+    "observation": {
+      "rule_id": "KOTLIN-SQL-INJECTION",
+      "rule_version": "1.0.0",
+      "path": "Unreadable.kt",
+      "status": "skipped",
+      "invocations": 0,
+      "findings": 0,
+      "reason": "Файл не прочитан или анализ прерван: PermissionError"
+    },
+    "checked": false
+  },
+  {
+    "case": "not-applicable",
+    "parserErrors": 0,
+    "observation": {
+      "rule_id": "KOTLIN-SQL-INJECTION",
+      "rule_version": "1.0.0",
+      "path": "Plain.kt",
+      "status": "not_applicable",
+      "invocations": 0,
+      "findings": 0,
+      "reason": "Правило не вызывалось: в файле нет пользовательского источника для SQL-правила."
+    },
+    "checked": false
+  }
+]
