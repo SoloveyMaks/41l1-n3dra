@@ -82,6 +82,15 @@ map-worker. Backend в этом worktree не менялся.
 - `artifacts/ui-admin-schedule-2026-11-21.png` — admin schedule.
 - UI commits: `c09f887`, `1587294`; merge latest dev: `c96e606`, `a9c7495`.
 
+## Admin overview freshness
+
+`GET /api/admin/overview` is fetched only for an admin session: on role entry,
+after a manual run-history refresh, and after a new run reaches terminal state
+(including polling fallback). Node-level SSE events do not refresh it. Responses
+are sequence-guarded; logout/role changes invalidate them, and a failed refresh
+clears stale counters instead of showing them as current. Refreshing workspace
+counts never changes the selected run.
+
 ## Ограничения
 
 - Нет выдуманных пользователей/CRUD: админка показывает только реальные

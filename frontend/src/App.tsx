@@ -91,6 +91,7 @@ export const App: React.FC = () => {
   const runLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
+  const adminOverviewSeq = useRef(0);
   const noticeTimer = useRef<number | null>(null);
 
   const showNotice = useCallback((kind: Notice['kind'], text: string) => {
@@ -110,11 +111,27 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const refreshAdminOverview = useCallback(async (): Promise<void> => {
+    if (session?.role !== 'admin') return;
+    const seq = ++adminOverviewSeq.current;
+    try {
+      const value = await apiClient.getAdminOverview();
+      if (seq !== adminOverviewSeq.current || session?.role !== 'admin') return;
+      setAdminOverview(value);
+    } catch {
+      // Never keep stale counters looking current after a failed refresh.
+      if (seq === adminOverviewSeq.current && session?.role === 'admin') setAdminOverview(null);
+    }
+  }, [session?.role]);
+
   const refreshRuns = useCallback(async (): Promise<RunSummary[]> => {
     setRunsLoading(true);
     try {
       const list = await apiClient.listRuns();
       setRuns(list);
+      // Overview counters must reflect a completed run and a manual refresh.
+      // This is a no-op for user sessions; node-level SSE does not call it.
+      void refreshAdminOverview();
       return list;
     } catch (e: any) {
       if (e instanceof AuthRequiredError) {
@@ -126,7 +143,7 @@ export const App: React.FC = () => {
     } finally {
       setRunsLoading(false);
     }
-  }, [showNotice]);
+  }, [refreshAdminOverview, showNotice]);
 
   const loadRunDetails = useCallback(async (runId: string) => {
     const seq = ++runLoadSeq.current;
@@ -307,6 +324,8 @@ export const App: React.FC = () => {
         setAuthError('Этот код не даёт доступ к админ-панели');
         return;
       }
+      setAdminOverview(null);
+      adminOverviewSeq.current += 1;
       setSession(state);
       await loadInitialData();
       setAdminSection('overview');
@@ -327,6 +346,8 @@ export const App: React.FC = () => {
     selectedRunRef.current = null;
     runLoadSeq.current += 1;
     workflowSelectSeq.current += 1;
+    adminOverviewSeq.current += 1;
+    setAdminOverview(null);
     setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
     setCurrentRunId(null);
     setCurrentRun(null);
@@ -505,13 +526,13 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (session?.role !== 'admin') return;
-    let cancelled = false;
-    apiClient.getAdminOverview()
-      .then((value) => { if (!cancelled) setAdminOverview(value); })
-      .catch(() => { if (!cancelled) setAdminOverview(null); });
-    return () => { cancelled = true; };
-  }, [session?.role]);
+    if (session?.role !== 'admin') {
+      adminOverviewSeq.current += 1;
+      setAdminOverview(null);
+      return;
+    }
+    void refreshAdminOverview();
+  }, [session?.role, refreshAdminOverview]);
 
   const handleArtifactLoaded = (manifest: ArtifactManifest) => {
     setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
