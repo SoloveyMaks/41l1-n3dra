@@ -28,6 +28,7 @@ logger = logging.getLogger("RepositoryHooks")
 
 MAX_BODY_BYTES = 1024 * 1024
 MAX_CONCURRENCY = 4
+REQUEST_TIMEOUT_SECONDS = 15
 _WATCH_ID_RE = re.compile(r"^rw_[A-Za-z0-9]{1,40}$")
 _DELIVERY_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
 _UUID_RE = re.compile(
@@ -98,14 +99,20 @@ def _delivery_id(provider: str, request: Request, body: bytes) -> Optional[str]:
 
 def _authenticate(provider: str, secret: str, request: Request,
                   body: bytes) -> bool:
+    # compare_digest на str падает TypeError на non-ASCII. Сравниваем байты,
+    # поэтому мусорный заголовок получает честный 401, а не 500.
     if provider == "github":
         received = request.headers.get("x-hub-signature-256", "").strip()
         expected = "sha256=" + hmac.new(
             secret.encode("utf-8"), body, hashlib.sha256
         ).hexdigest()
-        return bool(received) and hmac.compare_digest(received, expected)
+        return bool(received) and hmac.compare_digest(
+            received.encode("utf-8", "ignore"), expected.encode("ascii")
+        )
     received = request.headers.get("x-gitlab-token", "").strip()
-    return bool(received) and hmac.compare_digest(received, secret)
+    return bool(received) and hmac.compare_digest(
+        received.encode("utf-8", "ignore"), secret.encode("utf-8")
+    )
 
 
 async def _read_body(request: Request) -> bytes:
@@ -174,6 +181,103 @@ def _parse_push(provider: str, payload: Any, watch: Dict[str, Any]
     return after, ref, canonical
 
 
+async def _handle_hook(db: Any, workspace: str, watch_id: str,
+                       request: Request) -> JSONResponse:
+    body = await _read_body(request)
+    try:
+        watch = await asyncio.to_thread(db.get_repository_watch, watch_id)
+    except Exception as exc:  # noqa: BLE001 - DSN/текст драйвера не наружу
+        logger.warning("Repository hook lookup failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Хранилище недоступно") from None
+    if not watch:
+        raise HTTPException(status_code=404, detail="Вебхук не найден")
+    if watch.get("trigger_mode") != "webhook" or not watch.get("webhook_nonce"):
+        raise HTTPException(status_code=409, detail="Вебхук для расписания не настроен")
+    if not webhook_key_available():
+        raise HTTPException(status_code=503, detail="Серверный ключ вебхуков не задан")
+    provider = watch.get("provider")
+    if provider not in ("github", "gitlab"):
+        raise HTTPException(status_code=409, detail="Провайдер расписания не поддержан")
+    secret = derive_webhook_secret(workspace, watch_id, watch["webhook_nonce"])
+
+    if not _authenticate(provider, secret, request, body):
+        raise HTTPException(status_code=401, detail="Неверный credential вебхука")
+
+    event = request.headers.get(
+        "x-github-event" if provider == "github" else "x-gitlab-event", ""
+    ).strip().lower()
+    if provider == "github":
+        if event == "ping":
+            return _ignored("Проверка подключения (ping)", provider)
+        if event != "push":
+            return _ignored("Событие не является push", provider)
+    elif event and event != "push hook":
+        return _ignored("Событие не является push", provider)
+
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        raise _bad_payload("Тело вебхука не является JSON") from None
+    if provider == "gitlab" and isinstance(payload, dict):
+        if payload.get("object_kind") != "push":
+            return _ignored("Событие не является push", provider)
+
+    if not watch.get("enabled"):
+        return _ignored("Отслеживание приостановлено", provider)
+
+    delivery_id = _delivery_id(provider, request, body)
+    if delivery_id is None:
+        raise _bad_payload("Некорректный идентификатор доставки")
+    try:
+        commit_sha, ref, _ = _parse_push(provider, payload, watch)
+    except _HookIgnored as exc:
+        return _ignored(exc.detail, provider, delivery_id)
+    except HTTPException:
+        raise
+
+    workflow = await asyncio.to_thread(db.get_workflow, watch["workflow_id"])
+    revision_id = (workflow or {}).get("latest_revision_id")
+    if not workflow or not revision_id or not workflow.get("draft"):
+        raise HTTPException(status_code=409, detail="У сценария нет сохранённой ревизии")
+
+    now = datetime.now(timezone.utc).isoformat()
+    row_id = f"whd_{uuid.uuid4().hex[:16]}"
+    try:
+        inserted = await asyncio.to_thread(
+            db.enqueue_repository_hook_delivery,
+            row_id, watch_id, provider, delivery_id, commit_sha, ref,
+            revision_id, now,
+        )
+        if not inserted:
+            ledger = await asyncio.to_thread(
+                db.get_repository_watch_commit, watch_id, commit_sha
+            )
+            await asyncio.to_thread(
+                db.mark_repository_watch_delivery, watch_id, "duplicate"
+            )
+            response: Dict[str, Any] = {
+                "status": "duplicate", "provider": provider,
+                "deliveryId": delivery_id,
+            }
+            if ledger and ledger.get("run_id"):
+                response["runId"] = ledger["run_id"]
+            return JSONResponse(
+                response, status_code=202,
+                headers={"Cache-Control": "no-store"},
+            )
+        await asyncio.to_thread(
+            db.mark_repository_watch_delivery, watch_id, "accepted"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Repository hook enqueue failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Не удалось сохранить событие") from None
+    return JSONResponse(
+        {"status": "accepted", "provider": provider, "deliveryId": delivery_id},
+        status_code=202,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def create_repository_hook_router(db: Any) -> APIRouter:
     router = APIRouter()
     workspace = str(getattr(db, "workspace_id", ""))
@@ -182,105 +286,16 @@ def create_repository_hook_router(db: Any) -> APIRouter:
     async def receive_repository_hook(watch_id: str, request: Request) -> JSONResponse:
         if not _WATCH_ID_RE.fullmatch(watch_id):
             raise HTTPException(status_code=404, detail="Вебхук не найден")
-        body = await _read_body(request)
         try:
-            watch = await asyncio.to_thread(db.get_repository_watch, watch_id)
-        except Exception as exc:  # noqa: BLE001 - DSN/текст драйвера не наружу
-            logger.warning("Repository hook lookup failed: %s", type(exc).__name__)
-            raise HTTPException(status_code=503, detail="Хранилище недоступно") from None
-        if not watch:
-            raise HTTPException(status_code=404, detail="Вебхук не найден")
-        if watch.get("trigger_mode") != "webhook" or not watch.get("webhook_nonce"):
-            raise HTTPException(status_code=409, detail="Вебхук для расписания не настроен")
-        if not webhook_key_available():
+            # Слот берём до чтения тела и DB: неаутентифицированный поток не
+            # может раздувать память/соединения сверх MAX_CONCURRENCY.
+            async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
+                async with _HOOK_SEM:
+                    return await _handle_hook(db, workspace, watch_id, request)
+        except TimeoutError:
+            logger.warning("Repository hook timed out")
             raise HTTPException(
-                status_code=503, detail="Серверный ключ вебхуков не задан"
-            )
-        provider = watch.get("provider")
-        if provider not in ("github", "gitlab"):
-            raise HTTPException(status_code=409, detail="Провайдер расписания не поддержан")
-        secret = derive_webhook_secret(workspace, watch_id, watch["webhook_nonce"])
-
-        async with _HOOK_SEM:
-            if not _authenticate(provider, secret, request, body):
-                raise HTTPException(status_code=401, detail="Неверный credential вебхука")
-
-            event = request.headers.get(
-                "x-github-event" if provider == "github" else "x-gitlab-event", ""
-            ).strip().lower()
-            if provider == "github":
-                if event == "ping":
-                    return _ignored("Проверка подключения (ping)", provider)
-                if event != "push":
-                    return _ignored("Событие не является push", provider)
-            elif event and event != "push hook":
-                return _ignored("Событие не является push", provider)
-
-            try:
-                payload = json.loads(body)
-            except (TypeError, ValueError):
-                raise _bad_payload("Тело вебхука не является JSON") from None
-            if provider == "gitlab" and isinstance(payload, dict):
-                if payload.get("object_kind") != "push":
-                    return _ignored("Событие не является push", provider)
-
-            if not watch.get("enabled"):
-                return _ignored("Отслеживание приостановлено", provider)
-
-            delivery_id = _delivery_id(provider, request, body)
-            if delivery_id is None:
-                raise _bad_payload("Некорректный идентификатор доставки")
-            try:
-                commit_sha, ref, _ = _parse_push(provider, payload, watch)
-            except _HookIgnored as exc:
-                return _ignored(exc.detail, provider, delivery_id)
-            except HTTPException:
-                raise
-
-            workflow = await asyncio.to_thread(db.get_workflow, watch["workflow_id"])
-            revision_id = (workflow or {}).get("latest_revision_id")
-            if not workflow or not revision_id or not workflow.get("draft"):
-                raise HTTPException(
-                    status_code=409, detail="У сценария нет сохранённой ревизии"
-                )
-
-            now = datetime.now(timezone.utc).isoformat()
-            row_id = f"whd_{uuid.uuid4().hex[:16]}"
-            try:
-                inserted = await asyncio.to_thread(
-                    db.enqueue_repository_hook_delivery,
-                    row_id, watch_id, provider, delivery_id, commit_sha, ref,
-                    revision_id, now,
-                )
-                if not inserted:
-                    ledger = await asyncio.to_thread(
-                        db.get_repository_watch_commit, watch_id, commit_sha
-                    )
-                    await asyncio.to_thread(
-                        db.mark_repository_watch_delivery, watch_id, "duplicate"
-                    )
-                    response: Dict[str, Any] = {
-                        "status": "duplicate", "provider": provider,
-                        "deliveryId": delivery_id,
-                    }
-                    if ledger and ledger.get("run_id"):
-                        response["runId"] = ledger["run_id"]
-                    return JSONResponse(
-                        response, status_code=202,
-                        headers={"Cache-Control": "no-store"},
-                    )
-                await asyncio.to_thread(
-                    db.mark_repository_watch_delivery, watch_id, "accepted"
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Repository hook enqueue failed: %s", type(exc).__name__)
-                raise HTTPException(
-                    status_code=503, detail="Не удалось сохранить событие"
-                ) from None
-            return JSONResponse(
-                {"status": "accepted", "provider": provider, "deliveryId": delivery_id},
-                status_code=202,
-                headers={"Cache-Control": "no-store"},
-            )
+                status_code=408, detail="Превышено время обработки вебхука"
+            ) from None
 
     return router
