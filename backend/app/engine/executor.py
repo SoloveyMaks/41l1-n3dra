@@ -82,12 +82,16 @@ class WorkflowExecutor:
                            trigger_type: str = "manual", workflow_id: Optional[str] = None,
                            revision_id: Optional[str] = None) -> None:
         start_time_iso = datetime.now(timezone.utc).isoformat()
+        if not self.db.claim_run_start(run_id, start_time_iso):
+            # A second dispatcher may hold the same run through a stale watch
+            # lease: only the caller that promoted queued->running executes it.
+            logger.info("Run %s is not queued anymore; skipping duplicate start", run_id)
+            return
         run_row = self.db.get_run(run_id) or {}
         workflow_id = workflow_id or str(run_row.get("workflow_id") or "workflow-unknown")
         revision_id = revision_id or str(run_row.get("revision_id") or "revision-unknown")
         workflow = self.db.get_workflow(workflow_id) or {}
         workflow_name = str(workflow.get("name") or "Security Scan")
-        self.db.update_run_status(run_id, execution_status="running", started_at=start_time_iso)
         await self.sse.emit_event(run_id, "run_status", {"status": "running", "trigger": trigger_type})
 
         # Pre-validate draft
