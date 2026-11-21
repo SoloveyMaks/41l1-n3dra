@@ -43,15 +43,16 @@ def build_zip_from_directory(source: Path) -> bytes:
             rel = target.relative_to(root).as_posix()
             if not rel or rel.startswith("/") or ".." in PurePosixPath(rel).parts:
                 raise SafeIntakeError("Недопустимый путь в sample-источнике")
-            raw = target.read_bytes()
+            if len(files) >= MAX_SAMPLE_FILES:
+                raise SafeIntakeError("В sample-источнике слишком много файлов")
+            with target.open("rb") as source_file:
+                raw = source_file.read(min(5 * 1024 * 1024, MAX_SAMPLE_BYTES - total) + 1)
             if len(raw) > 5 * 1024 * 1024:
                 raise SafeIntakeError(f"Файл sample-источника слишком большой: {rel}")
             total += len(raw)
             if total > MAX_SAMPLE_BYTES:
                 raise SafeIntakeError("Sample-источник слишком большой")
             files.append((rel, raw))
-            if len(files) > MAX_SAMPLE_FILES:
-                raise SafeIntakeError("В sample-источнике слишком много файлов")
 
     if not files:
         raise SafeIntakeError("Sample-источник пуст")

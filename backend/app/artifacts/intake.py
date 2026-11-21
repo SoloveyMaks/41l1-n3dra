@@ -203,6 +203,7 @@ def build_snapshot_from_directory(root: Path, workspace: str) -> Dict[str, Any]:
     if not root.is_dir():
         raise SafeIntakeError("Каталог артефакта не найден")
     files: List[Dict[str, Any]] = []
+    total = 0
     for current, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d.casefold() not in _SKIP_DIR_NAMES)
         current_path = Path(current)
@@ -215,12 +216,16 @@ def build_snapshot_from_directory(root: Path, workspace: str) -> Dict[str, Any]:
                 raise SafeIntakeError("Символические ссылки в артефакте запрещены")
             if not target.is_file():
                 continue
-            rel = target.relative_to(root).as_posix()
-            if not rel or rel.startswith("/") or ".." in PurePosixPath(rel).parts:
-                raise SafeIntakeError("Недопустимый путь в артефакте")
-            raw = target.read_bytes()
+            rel = _normalize_entry_name(target.relative_to(root).as_posix())
+            if len(files) >= MAX_FILE_COUNT:
+                raise SafeIntakeError("В артефакте слишком много файлов")
+            with target.open("rb") as source:
+                raw = source.read(min(MAX_FILE_BYTES, MAX_UNCOMPRESSED_BYTES - total) + 1)
             if len(raw) > MAX_FILE_BYTES:
                 raise SafeIntakeError("Файл артефакта слишком большой")
+            total += len(raw)
+            if total > MAX_UNCOMPRESSED_BYTES:
+                raise SafeIntakeError("Артефакт превышает лимит распакованного размера")
             files.append({"path": rel, "sizeBytes": len(raw), "sha256": sha256_hex(raw)})
     if not files:
         raise SafeIntakeError("В артефакте нет файлов")
