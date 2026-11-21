@@ -1,97 +1,61 @@
-# Release handoff — 41l1-n3dra / nedra
+# Release handoff — NEDRA
 
-Единая текущая сводка. Публичный стенд обновлён и проверен; это проверенный
-прототип для показа с явными границами, не полный security-аудит.
+Публичный адрес: https://nedra.soloveyka.bond. Опубликованный код `bde900c`,
+image `dd25e853d46938c79093b034503210bd86e8b49c747c0d219175068214c1d784`,
+frontend `index-DabRgDEM.js`. Последующие изменения документации не меняют
+код опубликованного приложения. PR №3 переносит обновление из dev в main.
 
-## Публичный стенд
+## Изменения
 
-- **URL:** https://nedra.soloveyka.bond — health 200, HTML `no-cache`.
-- Exact public revision: `63ca8c129181e76a93d0000928db5f98b800f7c1`; image
-  `d9507494f8c7`; asset `index-DA9FQkXU.js`.
-- Public smoke прошёл: user/admin roles, login/403, immutable asset, missing
-  asset 404, sample run, карта, SSE, JSON/Markdown, published comparison.
-- `main` синхронизирован через PR после публичной проверки. Изменения после публичной ревизии затрагивают только документацию.
-- Review `18082` остаётся healthy на `b6abde4` и не тронут.
+- Прежняя панель пользователя: редактор, палитра, инспектор, вкладки и история.
+- Создание именованного сценария, сохранение и запуск актуальной ревизии.
+- ZIP и импорт публичного GitHub/GitLab на точном SHA.
+- Административный опрос обновлений репозитория: baseline, interval/cron,
+  дедупликация коммита, пауза и последний запуск.
+- Исправлены потеря queued-запуска, повторное исполнение после lease,
+  malformed URL500, отсутствующий источник фонового запуска, мобильное
+  обрезание настроек и подстановка чужого результата после reload.
+- Системные настройки остаются в отдельной админке; workspace общий.
 
-## Как показать
+## Проверка
 
-1. Открыть https://nedra.soloveyka.bond и войти по пользовательскому коду.
-2. Выбрать ZIP или «Попробовать пример» (Kotlin/Spring Boot).
-3. Нажать «Запустить проверку» — используется сохранённый сценарий, без
-   редактора и `PUT draft`.
-4. Смотреть «Проблемы» → фрагмент → «Карта доступа» → «Сравнить проверки» →
-   «Отчёт».
+[Независимое PG/ASGI ревью](reviews/sol-repositories.md) и
+[независимое живое ревью редактора](reviews/sol-user-editor.md) приняты.
+Build/typecheck и git diff --check проходят.
 
-Админка — отдельный вход по `CG_ADMIN_ACCESS_CODE`: «Обзор», «Проекты и
-проверки», «Сценарий», «Результаты», «Система». Пароли/коды не публикуются.
+Публичный API-путь: импорт GitLab200 → пользовательский сценарий → сохранение
+rev2 → запуск `ca6a4beb-c12a-48da-a77d-7a077db7bb0d` на
+`art_11b1e2a00b58` → succeeded/inconclusive → report200. Привязка к workflow,
+revision и artifact проверена. Проверочное наблюдение запомнило baseline,
+check-now вернул unchanged без запуска; наблюдение оставлено paused.
+User/admin login200, аноним401, admin API для user403, malformed watchURL400.
+Это не полный security-аудит.
 
-## Что проверено на public
+## Выкладка и восстановление
 
-- `user` login → `role:user`, admin overview 403; `admin` login →
-  `role:admin`, overview 200.
-- Immutable asset отдаётся, missing asset — 404.
-- Sample run `0f9613c4-a83f-423b-90b2-fc05d9f02778`: 13 findings; map
-  10 nodes / 9 edges / 26 evidence; SSE с корректным run ID.
-- `official.json` 200; `readable.md` 200 без `100%`, с «Полнота проверки не
-  установлена» и русскими причинами пропущенных scopes.
-- Published comparison: general `comparable=false`, SQL
-  `pattern_disappeared`.
-- Root лично подтвердил public HTTPS/health 200, asset `index-DA9FQkXU.js` и
-  `no-cache` HTML.
+- Runtime v3→v4 применён обычным startup; контрактные миграции не изменены.
+- БД не сбрасывалась, persistent volumes сохранены; production API healthy.
+- Перед выкладкой `/tmp/nedra-db-pre-bde900c.sql` (159417716 bytes, mode600).
+- Предыдущий образ сохранён как `localhost/nedra-app:rollback-pre-repository`
+  (`d9507494f8c7`, код63ca8c1). Для отката учитывать новую runtime version4:
+  старый backend нельзя запускать против v4 без проверки совместимости;
+  восстановление БД требует отдельного решения, без потери новых данных.
+- На остановке старый процесс не завершился за10 секунд и был SIGKILL;
+  уже начатые прогоны могут остаться running. Автоматический replay running
+  не обещается. Новые публичные проверки завершились штатно.
+- Review18082 и Cloudflare/DNS не менялись. Хост — локальный ПК, Linger=no;
+  после reboot нужен login.
 
-## Миграции и deploy
+## Для защиты
 
-- `007_snapshot_origin_guards.up.sql` применена обычным backend startup; ledger
-  содержит 6 миграций.
-- Историческая `006` осталась неизменной: checksum и `applied_at` прежние;
-  ledger/история не переписывались.
-- DB backup mode 600; volumes `nedra-db-data`/`nedra-app-data` не тронуты;
-  удалений и сброса не было.
-- Forward-миграция: [forward-snapshot-migration](forward-snapshot-migration.md).
-- История прошлой неудачной попытки сохранена в
-  [deployment-final](deployment-final.md) и здесь не дублируется.
+[Понимание кейса и сильные фичи](mentor-defense.md),
+[путь показа](JURY-WALKTHROUGH.md),
+[репозиторий и наблюдение](repository-import.md),
+[структура интерфейса](interface-structure.md).
 
-## Reviews
+## Ограничения
 
-| Review | Итог |
-| --- | --- |
-| [Sol logic](reviews/sol-logic.md) | принят AFTER85: artifact A/B и failed-report закрыты |
-| [Sol visual](reviews/sol-visual.md) | принят AFTER85: основные мобильные блокеры закрыты |
-| [Sol structure](reviews/sol-structure.md) | принят FINAL: оба остатка AFTER85 закрыты |
-| [Sol migration](reviews/sol-migration.md) | e3e259: фактический PostgreSQL 16 PASS, 007/alias проверены |
-
-Все шесть исходных структурных препятствий закрыты в проверенных путях. Это не
-полный аудит и не release-wide approval всех функций.
-
-## Принятые решения
-
-- `pass` — нет блокирующих проблем по политике при данном покрытии; не ноль
-  проблем и не полная проверка.
-- `executionStatus` отчёта — фактическое выполнение, отдельно от verdict.
-- Полнота отчёта — canonical completeness; `100%` только при `complete` и
-  подтверждённых scopes; parser ratio отдельно.
-- Сравнение: synthetic origin не даёт `comparable=true`; общее сравнение
-  остаётся `inconclusive`, SQL-проверка узкая.
-- AI-объяснения отдельно от фактов; политика предметной области не подключена.
-- Общий workspace без аккаунтов; роли `user`/`admin` ограничивают операторские
-  действия.
-
-## Доставка изменений
-
-1. PR №1 слит в `main` после публичной проверки. Новые изменения проходят review и PR.
-2. После merge не менять public revision без отдельного deploy/smoke.
-3. Публичный smoke уже выполнен; полный UI/security-аудит не заявляется.
-
-## Оставшиеся ограничения
-
-- Shared workspace, без приватных аккаунтов и multi-tenant.
-- Хост — локальный ПК; `Linger=no`, после reboot нужен login.
-- Покрытие частичное; полный security-аудит и отсутствие уязвимостей не
-  заявляются.
-- Embeddings 403/disabled; retrieval выключен; vetted-примеров 0.
-- Общее сравнение `inconclusive`; SQL proof узкий.
-- Политика предметной области не подключена; допущения видны как допущения.
-- Неблокирующие visual-остатки: короткие edge labels, часть comparison-текста
-  на 390; конструктор на 390 не перепроверялся.
-- Production readiness, независимый VPS и «все функции проверены» не
-  заявляются.
+Общий workspace, публичные github.com/gitlab.com, периодический опрос без
+webhook, неполное покрытие и общий inconclusive, узкое SQL-сравнение,
+выключенные embeddings/retrieval и 0 vetted-примеров. Private repo auth,
+полный CI/CD status и промышленные гарантии не заявляются.
