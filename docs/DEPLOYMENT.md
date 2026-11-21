@@ -27,10 +27,14 @@ backend.
    `docs` (карте нужны production-исходники и контрактные типы), `npm run build`.
 2. `python-wheels`: закреплённый Python 3.12 image, wheel-кэш по
    `deploy/requirements.txt`.
-3. `runtime`: установка только из локальных wheel, копирование `backend`, `db`
-   (миграции ledger), `docs` (canonical `contracts.schema.json`), `packages/comparison`,
+3. `runtime`: установка только из локальных wheel, копирование `backend`,
+   `analyzers` (пакет B, без внешних Python-зависимостей), `db` (миграции
+   ledger), `docs` (canonical `contracts.schema.json`), `packages/comparison`,
    healthcheck, `frontend/dist`; non-root `nedra` (uid 10001), read-only rootfs,
-   writable `/app/data` и tmpfs `/tmp`.
+   writable `/app/data` и tmpfs `/tmp`. Пакет `analyzers` копируется рядом с
+   `backend` для будущего optional `config.engine=team_b`; default engine не
+   меняется, adapter не считается активным, пока это не подтверждено отдельной
+   сборкой.
 
 ### Node 22 для comparison
 
@@ -241,6 +245,7 @@ PC-хост должен быть включён. `Linger=no`: после reboot
   хранится только в `runtime.env` и никогда не печатается.
 - Optional 003 — зона PG worker; deploy не выполняет его SQL.
 - Публичный образ `c322a7f6d1e3` (HEAD c01c96d) содержит Node и comparison;
-  новые remote analyzers add-only из `dev66fec77` в runtime не включены и cg26
-  не заявляется.
+  пакет `analyzers` добавлен в Dockerfile для следующей сборки, но в этом образе
+  его нет. Optional `config.engine=team_b` не включён по умолчанию, adapter не
+  заявляется активным до проверки на final dev SHA.
 - Volumes удаляются только вручную и осознанно; скрипты этого не делают.
