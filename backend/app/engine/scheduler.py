@@ -16,6 +16,19 @@ from backend.app.storage.database import ArtifactImmutableError, DatabaseReposit
 logger = logging.getLogger("WorkflowScheduler")
 
 
+def _discard_and_log(task: asyncio.Task, tasks: set[asyncio.Task], label: str) -> None:
+    """Drop a finished task and surface an exception nobody awaited."""
+    tasks.discard(task)
+    if task.cancelled():
+        return
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        logger.warning("%s failed: %s", label, type(exc).__name__)
+
+
 MAX_INTERVAL_SECONDS = 365 * 24 * 60 * 60
 
 MIN_WATCH_INTERVAL_SECONDS = 60
@@ -544,7 +557,7 @@ class RepositoryWatchService:
                 self.process_delivery(row, token, workspace_id)
             )
             self._hook_tasks.add(task)
-            task.add_done_callback(self._hook_tasks.discard)
+            task.add_done_callback(self._hook_done)
 
     async def process_delivery(self, row: Dict[str, Any], token: str,
                                workspace_id: Optional[str] = None) -> None:
@@ -710,7 +723,7 @@ class RepositoryWatchService:
         except RuntimeError:
             return  # нет running loop: recovery подхватит queued-строку
         self._dispatch_tasks.add(task)
-        task.add_done_callback(self._dispatch_tasks.discard)
+        task.add_done_callback(self._dispatch_done)
 
     async def _dispatch_run(self, run_id: str) -> None:
         token = f"wrun_{uuid.uuid4().hex}"
@@ -793,6 +806,16 @@ class RepositoryWatchService:
             if run_id:
                 self._schedule_dispatch(run_id, row.get("workspace_id"))
 
+    def _dispatch_done(self, task: asyncio.Task) -> None:
+        _discard_and_log(task, self._dispatch_tasks, "Repository dispatch")
+
+    def _hook_done(self, task: asyncio.Task) -> None:
+        _discard_and_log(task, self._hook_tasks, "Repository hook delivery")
+
+    def pending_tasks(self) -> list[asyncio.Task]:
+        """Snapshot tasks so shutdown can await them after cancelling."""
+        return [*self._dispatch_tasks, *self._hook_tasks]
+
     def close(self) -> None:
         for task in list(self._dispatch_tasks):
             task.cancel()
@@ -800,6 +823,12 @@ class RepositoryWatchService:
         for task in list(self._hook_tasks):
             task.cancel()
         self._hook_tasks.clear()
+
+    async def aclose(self) -> None:
+        tasks = self.pending_tasks()
+        self.close()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class WorkflowScheduler:
@@ -815,6 +844,12 @@ class WorkflowScheduler:
         self._schedule_tasks: set[asyncio.Task] = set()
         self._active_runs: set[str] = set()
 
+    def _watch_check_done(self, task: asyncio.Task) -> None:
+        _discard_and_log(task, self._active_watch_checks, "Repository watch check")
+
+    def _schedule_done(self, task: asyncio.Task) -> None:
+        _discard_and_log(task, self._schedule_tasks, "Scheduled run")
+
     def start(self) -> None:
         if not self._running:
             self._running = True
@@ -822,6 +857,7 @@ class WorkflowScheduler:
             self._watch_task = asyncio.create_task(self._watch_loop())
 
     def stop(self) -> None:
+        """Signal shutdown without awaiting; ``aclose`` performs the wait."""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -834,6 +870,22 @@ class WorkflowScheduler:
             task.cancel()
         self._schedule_tasks.clear()
         self.watches.close()
+
+    async def aclose(self) -> None:
+        """Cancel loops and wait for their tasks before the event loop closes."""
+        tasks = [task for task in (self._task, self._watch_task) if task is not None]
+        tasks.extend(self._active_watch_checks)
+        tasks.extend(self._schedule_tasks)
+        tasks.extend(self.watches.pending_tasks())
+        self.stop()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._task = None
+        self._watch_task = None
+        self._active_watch_checks.clear()
+        self._schedule_tasks.clear()
+        self._active_schedules.clear()
+        self._active_runs.clear()
 
     async def _scheduler_loop(self) -> None:
         while self._running:
@@ -880,7 +932,7 @@ class WorkflowScheduler:
                             self._run_claimed_watch(watch, token, workspace_id)
                         )
                         self._active_watch_checks.add(task)
-                        task.add_done_callback(self._active_watch_checks.discard)
+                        task.add_done_callback(self._watch_check_done)
                 if time.monotonic() - last_recovery >= WATCH_RECOVERY_SECONDS:
                     await self.watches.recover_queued_runs()
                     last_recovery = time.monotonic()
@@ -905,13 +957,17 @@ class WorkflowScheduler:
             if not workspace_id:
                 continue
             key = (str(workspace_id), str(sched.get("id")))
-            if key in self._active_schedules or len(self._active_schedules) >= MAX_ACTIVE_SCHEDULE_RUNS:
+            if (
+                key in self._active_schedules
+                or len(self._active_schedules) >= MAX_ACTIVE_SCHEDULE_RUNS
+                or len(self._active_runs) >= MAX_ACTIVE_SCHEDULE_RUNS
+            ):
                 await self._advance_schedule(sched)
                 continue
             self._active_schedules.add(key)
             task = asyncio.create_task(self._run_schedule_claim(sched, key))
             self._schedule_tasks.add(task)
-            task.add_done_callback(self._schedule_tasks.discard)
+            task.add_done_callback(self._schedule_done)
 
     async def _run_schedule_claim(self, sched: Dict[str, Any],
                                   key: tuple[str, str]) -> None:
@@ -967,12 +1023,14 @@ class WorkflowScheduler:
         )
         if not created:
             return
-        self._dispatch_scheduled_run(
+        task = self._dispatch_scheduled_run(
             run_id,
             workflow["draft"],
             sched["artifact_id"],
             str(sched["workspace_id"]),
         )
+        if task is not None:
+            await task
 
     async def _advance_schedule(self, sched: Dict[str, Any]) -> None:
         """Release a lease without creating a run (overlap, busy, bad workflow)."""
@@ -999,7 +1057,7 @@ class WorkflowScheduler:
                 pass
 
     def _dispatch_scheduled_run(self, run_id: str, draft_payload: Dict[str, Any],
-                                artifact_id: str, workspace_id: str) -> None:
+                                artifact_id: str, workspace_id: str) -> Optional[asyncio.Task]:
         if run_id in self._active_runs or not self.executor:
             return
         self._active_runs.add(run_id)
@@ -1022,7 +1080,8 @@ class WorkflowScheduler:
 
         task = asyncio.create_task(runner())
         self._schedule_tasks.add(task)
-        task.add_done_callback(self._schedule_tasks.discard)
+        task.add_done_callback(self._schedule_done)
+        return task
 
     async def _recover_schedule_runs(self) -> None:
         """Re-dispatch queued schedule runs after a crash; claim is in executor."""
@@ -1034,6 +1093,8 @@ class WorkflowScheduler:
             logger.error("Schedule recovery query failed: %s", type(exc).__name__)
             return
         for row in rows:
+            if len(self._active_runs) >= MAX_ACTIVE_SCHEDULE_RUNS:
+                break
             run_id = row.get("id")
             workspace_id = row.get("workspace_id")
             if not run_id or not workspace_id or run_id in self._active_runs:
@@ -1043,7 +1104,7 @@ class WorkflowScheduler:
                 self._recover_schedule_run(run_id, str(workspace_id))
             )
             self._schedule_tasks.add(task)
-            task.add_done_callback(self._schedule_tasks.discard)
+            task.add_done_callback(self._schedule_done)
 
     async def _recover_schedule_run(self, run_id: str, workspace_id: str) -> None:
         try:
