@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WorkflowCanvas } from './components/WorkflowCanvas';
 import { NodePalette } from './components/NodePalette';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -48,6 +48,19 @@ import { apiClient, ApiError, AuthRequiredError } from './api/client';
 import { artifactLabel, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
+
+const NODE_RUN_STATUSES: readonly NodeRunStatus[] = [
+  'pending',
+  'running',
+  'retrying',
+  'succeeded',
+  'failed',
+  'skipped',
+  'cancelled',
+];
+
+const isNodeRunStatus = (value: unknown): value is NodeRunStatus =>
+  typeof value === 'string' && (NODE_RUN_STATUSES as readonly string[]).includes(value);
 
 const EMPTY_DRAFT: WorkflowDraft = {
   schemaVersion: 1,
@@ -829,10 +842,33 @@ export const App: React.FC = () => {
     resetRunSelection();
   };
 
-  const nodeStatusMap: Record<string, NodeRunStatus> = {};
-  nodeRuns.forEach((nodeRun) => {
-    nodeStatusMap[nodeRun.node_id] = nodeRun.status;
-  });
+  const nodeStatusMap = useMemo(() => {
+    const map: Record<string, NodeRunStatus> = {};
+    for (const nodeRun of nodeRuns) map[nodeRun.node_id] = nodeRun.status;
+    // Live SSE wins over a slower REST snapshot: node_status is the same fact,
+    // only fresher. Events are stored in seq order, so the last one wins.
+    for (const event of events) {
+      if (event.type !== 'node_status' || !event.nodeId) continue;
+      const status = event.payload?.status;
+      if (isNodeRunStatus(status)) map[event.nodeId] = status;
+    }
+    return map;
+  }, [nodeRuns, events]);
+
+  const edgeFlows = useMemo(() => {
+    const map: Record<string, { seq: number; source?: string; target?: string }> = {};
+    for (const event of events) {
+      if (event.type !== 'edge_data') continue;
+      const edgeId = event.payload?.edgeId;
+      if (typeof edgeId !== 'string') continue;
+      map[edgeId] = {
+        seq: event.seq,
+        source: typeof event.payload?.source === 'string' ? event.payload.source : undefined,
+        target: typeof event.payload?.target === 'string' ? event.payload.target : undefined,
+      };
+    }
+    return map;
+  }, [events]);
 
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
 
@@ -913,6 +949,8 @@ export const App: React.FC = () => {
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
                 nodeStatuses={nodeStatusMap}
+                edgeFlows={edgeFlows}
+                executionActive={isRunning}
                 validationIssues={validationIssues}
                 onSaveDraft={() => void handleSaveDraft()}
                 onResetToTemplate={() => void handleResetToTemplate()}
@@ -925,6 +963,7 @@ export const App: React.FC = () => {
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleUserSelectArtifact}
+                onOpenMap={() => setActiveTab('map')}
               />
               {selectedNode && (
                 <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
@@ -1100,6 +1139,8 @@ export const App: React.FC = () => {
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
                 nodeStatuses={nodeStatusMap}
+                edgeFlows={edgeFlows}
+                executionActive={isRunning}
                 validationIssues={validationIssues}
                 onSaveDraft={handleSaveDraft}
                 onResetToTemplate={handleResetToTemplate}
@@ -1112,6 +1153,7 @@ export const App: React.FC = () => {
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleSelectArtifact}
+                onOpenMap={() => setAdminSection('map')}
               />
               {selectedNode && (
                 <InspectorPanel

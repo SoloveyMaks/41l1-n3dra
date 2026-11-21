@@ -83,30 +83,34 @@ export function buildEdgeRoutes(
         { x: tx, y: ty },
       ];
       labelPoint = { x: (sx + tx) / 2, y: laneY };
-    } else if (targetColumn < sourceColumn || targetColumn === sourceColumn) {
-      // Back edge, cycle or same-column crosslink: route below/right of cards.
-      const sameColumn = targetColumn === sourceColumn;
-      const laneX = sameColumn ? maxX + 30 + lane * 14 : null;
-      if (laneX !== null) {
-        points = [
-          { x: sx, y: sy },
-          { x: laneX, y: sy },
-          { x: laneX, y: ty },
-          { x: tx, y: ty },
-        ];
-        labelPoint = { x: laneX, y: (sy + ty) / 2 };
-      } else {
-        const laneY = maxY + 34 + lane * 14;
-        points = [
-          { x: sx, y: sy },
-          { x: sx + 14, y: sy },
-          { x: sx + 14, y: laneY },
-          { x: tx - 14, y: laneY },
-          { x: tx - 14, y: ty },
-          { x: tx, y: ty },
-        ];
-        labelPoint = { x: (sx + tx) / 2, y: laneY };
-      }
+    } else if (targetColumn === sourceColumn) {
+      // Same lane (e.g. matcher → rule, input → operation): hop through the
+      // local corridor above both cards, then enter the target from the left.
+      // A lane-wide detour to maxX would make every vertical edge cross the
+      // map and read as a loop.
+      const laneY = Math.min(source.y, target.y) - 28 - (index % 4) * 9;
+      points = [
+        { x: sx, y: sy },
+        { x: sx + 16, y: sy },
+        { x: sx + 16, y: laneY },
+        { x: tx - 18, y: laneY },
+        { x: tx - 18, y: ty },
+        { x: tx, y: ty },
+      ];
+      labelPoint = { x: (sx + tx) / 2, y: laneY };
+    } else if (targetColumn < sourceColumn) {
+      // Real backward edge (e.g. route → @PreAuthorize guard): route below
+      // the whole map so it cannot cut unrelated cards.
+      const laneY = maxY + 34 + lane * 14;
+      points = [
+        { x: sx, y: sy },
+        { x: sx + 14, y: sy },
+        { x: sx + 14, y: laneY },
+        { x: tx - 14, y: laneY },
+        { x: tx - 14, y: ty },
+        { x: tx, y: ty },
+      ];
+      labelPoint = { x: (sx + tx) / 2, y: laneY };
     } else {
       // Adjacent ranks: a short orthogonal hop through the column gap.
       const midX = (sx + tx) / 2;
