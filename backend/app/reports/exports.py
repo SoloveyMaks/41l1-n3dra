@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
-from backend.app.reports.language import naturalize
+from backend.app.reports.language import completeness_label, evidence_markdown, naturalize
 from backend.app.storage.database import DatabaseRepository
 
 EXPORT_SCHEMA_VERSION = "nedra-report-export/1"
@@ -50,6 +50,14 @@ _AI_STATUS_LABELS = {
     "confirmed": "подтверждено",
     "potential": "не подтверждено",
     "inconclusive": "не определено",
+}
+_AI_SCAN_STATUS_LABELS = {
+    "succeeded": "завершён",
+    "partial": "частичный",
+    "degraded": "ограниченный",
+    "rejected": "отклонён валидатором",
+    "failed": "завершился ошибкой",
+    "disabled": "не запускался",
 }
 
 
@@ -137,7 +145,7 @@ def _safe_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
         "severityBasis": mask_sensitive_text(naturalize(str(finding.get("severityBasis") or ""))),
         "confidence": finding.get("confidence"),
         "confidenceBasis": mask_sensitive_text(naturalize(str(finding.get("confidenceBasis") or ""))),
-        "status": finding.get("status"),
+        "status": finding.get("status") or "inconclusive",
         "primaryLocation": _safe_location(finding.get("primaryLocation")),
         "relatedLocations": [
             _safe_location(item) for item in (finding.get("relatedLocations") or [])
@@ -253,21 +261,36 @@ def _workflow_name(db: DatabaseRepository, workflow_id: Any) -> str:
     return str((workflow or {}).get("name") or "")
 
 
+def _frozen_findings(official: Dict[str, Any]) -> Optional[List[Any]]:
+    """The saved report's finding list, only when it really is one.
+
+    A list — including an intentionally empty one — freezes the finding set.
+    A missing, null, string or object value is malformed legacy data and must
+    fall back to runtime rows, exactly as the bundle loader does.
+    """
+    source = official.get("findings")
+    return source if isinstance(source, list) else None
+
+
 def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
     run = db.get_run(run_id)
     if not run:
         raise ReportNotFound("Запуск не найден в текущем workspace")
-    findings = [_safe_finding(item) for item in db.get_findings(run_id)]
+    report = db.get_report(run_id)
+    official = _official(report)
+    # A saved report freezes its finding set, including an intentionally empty list.
+    source = _frozen_findings(official)
+    if source is None:
+        source = db.get_findings(run_id)
+    findings = [_safe_finding(item) for item in source]
     findings.sort(key=lambda item: (
         _SEVERITY_ORDER.get(str(item.get("severity")), 9),
         str(item.get("ruleId") or ""),
         str(item.get("id") or ""),
     ))
-    report = db.get_report(run_id)
-    official = _official(report)
-    passport = (report or {}).get("passport")
+    passport = official.get("securityPassport")
     if not isinstance(passport, dict):
-        passport = official.get("securityPassport") if isinstance(official.get("securityPassport"), dict) else {}
+        passport = (report or {}).get("passport") or {}
     policy = official.get("policyResult") if isinstance(official.get("policyResult"), dict) else {}
 
     ai_scan: Dict[str, Any] = {}
@@ -340,6 +363,56 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
         ],
     }
     return json.dumps(document, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+
+
+def build_markdown(bundle: ExportBundle) -> str:
+    """Readable Markdown from the same saved bundle as JSONC and DOCX."""
+    from backend.app.contracts.schemas import ExplainResult, Finding, PolicyResult, SecurityPassport
+    from backend.app.reports.builder import ReportBuilder
+
+    verdict = bundle.run.get("security_verdict") or "pending"
+    passport = SecurityPassport.model_validate({**bundle.passport, "verdict": verdict})
+    policy = PolicyResult.model_validate({**bundle.policy, "verdict": verdict})
+    analysis = bundle.official.get("aiAnalysis") or {}
+    items = [
+        item["ai_enrichment"]
+        for item in (_frozen_findings(bundle.official) or [])
+        if isinstance(item, dict) and isinstance(item.get("ai_enrichment"), dict)
+    ]
+    explanation = ExplainResult(
+        status=analysis.get("status") or "disabled",
+        model=analysis.get("model") or "",
+        summary=analysis.get("summary") or "",
+        items=items,
+    ) if analysis.get("status") not in (None, "disabled") else None
+    text = ReportBuilder().build_readable_markdown(
+        str(bundle.run.get("id") or ""), bundle.workflow_name, passport, policy,
+        [Finding.model_validate(item) for item in bundle.findings], explanation,
+        execution_status=str(bundle.run.get("execution_status") or "queued"),
+    )
+    if bundle.report is None:
+        text += "\n\nСохранённый отчёт не сформирован; показаны только сохранённые результаты запуска.\n"
+    text += "\n\n## Гипотезы ИИ-сканера\n\n"
+    text += "Гипотезы не подтверждены, не входят в счётчики находок и не меняют итог проверки.\n"
+    scan_status = str(bundle.ai_scan.get("status") or "disabled")
+    text += f"\nСтатус ИИ-сканера: {_AI_SCAN_STATUS_LABELS.get(scan_status, scan_status)}.\n"
+    for item in bundle.ai_scan.get("observations") or []:
+        text += (
+            f"\n### {item.get('ruleClass')} — {_severity_label(item.get('severity'))}\n"
+            f"\n- **ID гипотезы:** `{item.get('id')}`"
+            f"\n- **Где:** `{_location_text(item.get('primaryLocation'))}`"
+            f"\n- **Почему:** {item.get('rationale') or 'без пояснения'}"
+            f"\n- **Что проверить:** {item.get('remediation') or 'без рекомендации'}\n"
+        )
+        if item.get("redactedEvidence"):
+            text += evidence_markdown(item["redactedEvidence"])
+    if not bundle.ai_scan.get("observations"):
+        text += "\nИИ-сканер не сформировал гипотез для этого запуска.\n"
+    if bundle.ai_scan.get("limitations"):
+        text += "\n**Ограничения:**\n"
+    for limitation in bundle.ai_scan.get("limitations") or []:
+        text += f"\n- {mask_sensitive_text(naturalize(str(limitation)))}"
+    return text + "\n"
 
 
 def _docx_modules():
@@ -581,8 +654,16 @@ def build_docx(bundle: ExportBundle) -> bytes:
             ["Потенциально", bundle.counts["potential"]],
             ["Не определено", bundle.counts["inconclusive"]],
             ["Проверено файлов", passport.get("files_scanned", "—")],
+            ["Пропущено файлов", passport.get("files_skipped", "—")],
+            ["Запущено правил", len(passport.get("rules_executed") or [])],
             ["Строк кода", passport.get("lines_of_code", "—")],
-            ["Полнота проверки", "подтверждена" if passport.get("completeness_known") else "не установлена"],
+            [
+                "Полнота проверки",
+                completeness_label(
+                    bool(passport.get("completeness_known")),
+                    str(passport.get("coverage_status") or "unknown"),
+                ),
+            ],
         ],
         [3.0, 3.8],
         mods,
@@ -590,6 +671,17 @@ def build_docx(bundle: ExportBundle) -> bytes:
     )
 
     reasons = bundle.policy.get("reasons") if isinstance(bundle.policy.get("reasons"), list) else []
+    doc.add_heading("Что проверено", level=1)
+    doc.add_paragraph(
+        f"Просканировано файлов: {passport.get('files_scanned', 0)}; "
+        f"пропущено: {passport.get('files_skipped', 0)}. "
+        "Результат относится только к указанным правилам и проверенным областям."
+    )
+    rules = passport.get("rules_executed") or []
+    doc.add_paragraph(
+        "Запущенные правила: " + ", ".join(str(rule) for rule in rules) + "."
+        if rules else "Список выполненных правил не сохранён; полнота набора проверок неизвестна."
+    )
     if reasons:
         heading = doc.add_heading("Почему такой итог", level=1)
         heading.paragraph_format.keep_with_next = True
@@ -601,8 +693,13 @@ def build_docx(bundle: ExportBundle) -> bytes:
         heading.paragraph_format.keep_with_next = True
         for reason in coverage_reasons:
             doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
+    coverage_warnings = passport.get("coverage_warnings") or []
+    if coverage_warnings:
+        heading = doc.add_heading("Предупреждения по покрытию", level=2)
+        heading.paragraph_format.keep_with_next = True
+        for warning in coverage_warnings:
+            doc.add_paragraph(mask_sensitive_text(naturalize(str(warning))), style="List Bullet")
 
-    doc.add_page_break()
     heading = doc.add_heading("Находки", level=1)
     heading.paragraph_format.keep_with_next = True
     if not bundle.findings:
@@ -628,7 +725,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
             doc,
             ["№", "Уровень", "Правило", "Где", "ID"],
             rows,
-            [0.35, 0.8, 1.4, 2.45, 1.8],
+            [0.35, 0.95, 1.35, 2.35, 1.8],
             mods,
             8.5,
         )
@@ -652,6 +749,9 @@ def build_docx(bundle: ExportBundle) -> bytes:
             doc.add_paragraph(f"Почему это важно: {finding.get('severityBasis') or 'без пояснения'}")
             confidence = _CONFIDENCE_LABELS.get(str(finding.get("confidence")), str(finding.get("confidence") or ""))
             doc.add_paragraph(f"Достоверность: {confidence}. {finding.get('confidenceBasis') or ''}".strip())
+            doc.add_paragraph("Статус доказательства: " + _CONFIDENCE_LABELS.get(
+                str(finding.get("status")), str(finding.get("status") or "не определено")
+            ))
             if finding.get("advisoryIds"):
                 doc.add_paragraph("Связанные записи безопасности: " + ", ".join(finding["advisoryIds"]))
             if finding.get("redactedEvidence"):
@@ -660,14 +760,23 @@ def build_docx(bundle: ExportBundle) -> bytes:
                 run_evidence = evidence.add_run(finding["redactedEvidence"])
                 run_evidence.font.name = "Courier New"
                 run_evidence.font.size = mods["Pt"](8.5)
+            doc.add_paragraph("Ограничения:")
+            finding_warnings = finding.get("coverageWarnings") or []
+            for warning in finding_warnings:
+                doc.add_paragraph(mask_sensitive_text(naturalize(str(warning))), style="List Bullet")
+            if not finding_warnings:
+                doc.add_paragraph(
+                    "Отдельные ограничения этой находки не указаны; общие ограничения покрытия сохраняются."
+                )
             trace = finding.get("trace") or []
             if trace:
                 trace_heading = doc.add_paragraph("Цепочка доказательств:")
                 trace_heading.paragraph_format.keep_with_next = True
                 trace_paragraphs = []
                 for step in trace:
+                    location = f" ({_location_text(step.get('location'))})" if step.get("location") else ""
                     trace_paragraph = doc.add_paragraph(
-                        f"{step.get('step')}. {step.get('description')}",
+                        f"{step.get('step')}. {step.get('description')}{location}",
                         style="List Bullet",
                     )
                     trace_paragraph.paragraph_format.keep_together = True
@@ -682,9 +791,11 @@ def build_docx(bundle: ExportBundle) -> bytes:
     heading = doc.add_heading("Гипотезы ИИ-сканера", level=1)
     heading.paragraph_format.keep_with_next = True
     ai_scan = bundle.ai_scan
+    scan_status = str(ai_scan.get("status") or "disabled")
     doc.add_paragraph(
         "Это гипотезы, а не подтверждённые находки. Они не меняют итог проверки и не "
-        "входят в счётчики находок. Модель видела только выбранный фрагмент проекта с удалёнными секретами."
+        "входят в счётчики находок. Модель видела только выбранный фрагмент проекта с удалёнными секретами. "
+        f"Статус ИИ-сканера: {_AI_SCAN_STATUS_LABELS.get(scan_status, scan_status)}."
     )
     observations = ai_scan.get("observations") or []
     if not observations:
