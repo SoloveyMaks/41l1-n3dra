@@ -114,7 +114,8 @@ Kotlin/YAML/properties. Kotlin/Gradle не исполняются. Runtime-ко�
 
 - 15/15 эталонных находок совпали по class/path/advisory;
 - 6 безопасных контролей не дали срабатываний;
-- добавлена 1 отдельная inconclusive `CF-OWNER-CHECK-UNPROVEN` — не дубль;
+- дополнительно показана 1 inconclusive запись `CF-OWNER-CHECK-UNPROVEN`
+  по тому же owner-check пути; это не доказанная шестнадцатая уязвимость;
 - итог: 15 подтверждённых reference + 1 unproven, вердикт `fail`;
 - explicit legacy `engine: backend` и `engine: team_b` дают те же 15 reference;
 - загруженный fake `vulnerability-database/vulnerabilities.json` проигнорирован:

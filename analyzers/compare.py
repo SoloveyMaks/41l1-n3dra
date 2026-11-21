@@ -32,10 +32,14 @@ def _overlap(left: dict, right: dict) -> bool:
 def _matches(finding: dict, truth: dict) -> bool:
     if finding.get("category") != truth.get("category"):
         return False
+    if finding.get("path") != truth.get("path"):
+        return False
     if truth.get("category") == "SCA":
         if finding.get("artifact") != truth.get("artifact"):
             return False
         if finding.get("group") != truth.get("group"):
+            return False
+        if finding.get("version") != truth.get("version"):
             return False
         advisory = finding.get("advisoryId")
         return advisory in (truth.get("advisoryIds") or [])
@@ -47,10 +51,13 @@ def _matches(finding: dict, truth: dict) -> bool:
 def _matches_control(finding: dict, control: dict) -> bool:
     if finding.get("category") != control.get("category"):
         return False
+    if finding.get("path") != control.get("path"):
+        return False
     if control.get("category") == "SCA":
         return (
             finding.get("group") == control.get("group")
             and finding.get("artifact") == control.get("artifact")
+            and (not control.get("version") or finding.get("version") == control.get("version"))
         )
     return _overlap(finding, control)
 
