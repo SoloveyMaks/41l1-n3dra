@@ -10,13 +10,21 @@ engines stays one finding while a backend-only path traversal survives.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from backend.app.analyzers.advisory_catalog import advisory_sources, expand_advisory_ids
 from backend.app.analyzers.redaction import mask_secret_text
 from backend.app.analyzers.sast_analyzer import SastAnalyzer
 from backend.app.analyzers.sca_analyzer import ScaAnalyzer
 from backend.app.analyzers.secret_analyzer import SecretAnalyzer
+from backend.app.codefacts.identity import sha256_hex, workspace_id
+from backend.app.codefacts.source import (
+    SnapshotIntegrityError,
+    is_safe_source_path,
+    load_snapshot_sources,
+)
+from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.schemas import (
     Confidence,
     Coverage,
@@ -77,6 +85,47 @@ _CONFIDENCE_RANK = {
 }
 
 
+def verify_frozen_artifact(artifact_row: Dict[str, Any], artifact_path: str) -> None:
+    """Reject bytes that no longer match the intake snapshot.
+
+    Both scanner engines read the extracted directory. They may run only after
+    every snapshot file has been re-hashed against the frozen manifest; a
+    mutated artifact is a hard integrity error, never a new snapshot identity.
+    """
+    artifact_id = str(artifact_row.get("id") or "")
+    if not artifact_id:
+        raise SnapshotIntegrityError("frozen artifact id отсутствует")
+    workspace = str(artifact_row.get("workspace_id") or workspace_id())
+    store = CodeFactsStore()
+    meta = store.load_artifact_meta(workspace, artifact_id)
+    if not meta:
+        raise SnapshotIntegrityError("frozen artifact meta отсутствует; байты не проверены")
+    expected_artifact = str(artifact_row.get("hash_sha256") or "")
+    meta_artifact = str(meta.get("artifactHash") or "")
+    if expected_artifact and meta_artifact and expected_artifact != meta_artifact:
+        raise SnapshotIntegrityError("artifactHash не совпадает с intake snapshot")
+    snapshot = store.load_snapshot(workspace, str(meta.get("snapshotId") or ""))
+    if not snapshot:
+        raise SnapshotIntegrityError("frozen snapshot отсутствует; байты не проверены")
+
+    root = Path(artifact_path).resolve()
+    sources, _ = load_snapshot_sources(root, snapshot)
+    checked = set(sources)
+    for item in snapshot.get("files", []):
+        rel = str(item.get("path") or "")
+        if rel in checked:
+            continue
+        if not is_safe_source_path(rel):
+            raise SnapshotIntegrityError(f"Недопустимый путь в snapshot: {rel!r}")
+        target = (root / rel).resolve()
+        if root != target and root not in target.parents:
+            raise SnapshotIntegrityError(f"Путь выходит за snapshot: {rel}")
+        if not target.is_file():
+            raise SnapshotIntegrityError(f"Файл snapshot отсутствует: {rel}")
+        if sha256_hex(target.read_bytes()) != str(item.get("sha256") or ""):
+            raise SnapshotIntegrityError(f"Файл snapshot изменён после приёма: {rel}")
+
+
 async def scan_category_full(
     *,
     category: str,
@@ -86,6 +135,7 @@ async def scan_category_full(
     revision_id: str,
     adapter: TeamBAdapter,
 ) -> ScanResult:
+    verify_frozen_artifact(artifact_row, artifact_path)
     analyzer_cls = CATEGORY_ANALYZERS[category]
     backend_task = asyncio.to_thread(lambda: analyzer_cls().analyze(artifact_path))
     team_b_task = asyncio.to_thread(
@@ -262,11 +312,26 @@ def _overlaps(left: Any, right: Any) -> bool:
     )
 
 
+def _byte_overlaps(left: Any, right: Any) -> Optional[bool]:
+    left_range = getattr(left, "byteRange", None)
+    right_range = getattr(right, "byteRange", None)
+    if left_range and right_range:
+        return left_range[0] < right_range[1] and right_range[0] < left_range[1]
+    return None
+
+
 def _same_vulnerability(category: str, left: Finding, right: Finding) -> bool:
+    if category == "SECRET":
+        if left.primaryLocation.path != right.primaryLocation.path:
+            return False
+        byte_overlap = _byte_overlaps(left.primaryLocation, right.primaryLocation)
+        if byte_overlap is not None:
+            # One line can hold two independent literals; only overlapping
+            # byte spans identify the same secret value.
+            return byte_overlap
+        return _overlaps(left.primaryLocation, right.primaryLocation)
     if not _overlaps(left.primaryLocation, right.primaryLocation):
         return False
-    if category == "SECRET":
-        return True
     if category == "SCA":
         return bool(set(left.advisoryIds) & set(right.advisoryIds))
     if category == "SAST":
