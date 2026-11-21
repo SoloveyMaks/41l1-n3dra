@@ -9,6 +9,7 @@ import uuid
 
 from croniter import croniter
 
+from backend.app.codefacts.identity import workspace_scope
 from backend.app.contracts.schemas import WorkflowDraft
 from backend.app.storage.database import ArtifactImmutableError, DatabaseRepository
 
@@ -29,6 +30,10 @@ WEBHOOK_BATCH = 10
 MAX_ACTIVE_WEBHOOK_PROCESSING = 2
 WEBHOOK_MAX_ATTEMPTS = 3
 WEBHOOK_RETRY_SECONDS = 5
+SCHEDULE_CLAIM_SECONDS = 60
+SCHEDULE_BATCH = 20
+MAX_ACTIVE_SCHEDULE_RUNS = 4
+SCHEDULE_RECOVERY_SECONDS = 60
 
 _STORAGE_MANIFEST_KEYS = (
     "id", "filename", "hash_sha256", "size_bytes", "uncompressed_size_bytes",
@@ -530,17 +535,25 @@ class RepositoryWatchService:
             return
         token = f"whb_{uuid.uuid4().hex}"
         rows = await self._db(
-            "claim_repository_hook_deliveries",
+            "claim_repository_hook_deliveries_server",
             min(free, WEBHOOK_BATCH), token, WEBHOOK_LEASE_SECONDS,
         )
         for row in rows:
-            task = asyncio.create_task(self.process_delivery(row, token))
+            workspace_id = row.get("workspace_id")
+            task = asyncio.create_task(
+                self.process_delivery(row, token, workspace_id)
+            )
             self._hook_tasks.add(task)
             task.add_done_callback(self._hook_tasks.discard)
 
-    async def process_delivery(self, row: Dict[str, Any], token: str) -> None:
+    async def process_delivery(self, row: Dict[str, Any], token: str,
+                               workspace_id: Optional[str] = None) -> None:
         async with self._hook_sem:
-            await self._process_delivery(row, token)
+            if workspace_id:
+                with workspace_scope(workspace_id):
+                    await self._process_delivery(row, token)
+            else:
+                await self._process_delivery(row, token)
 
     async def _process_delivery(self, row: Dict[str, Any], token: str) -> None:
         delivery_row_id = row.get("id")
@@ -684,9 +697,16 @@ class RepositoryWatchService:
             logger.warning("Failed to mark watch delivery: %s", type(exc).__name__)
 
     # --- run dispatch and recovery ---------------------------------------
-    def _schedule_dispatch(self, run_id: str) -> None:
+    def _schedule_dispatch(self, run_id: str, workspace_id: Optional[str] = None) -> None:
+        async def runner() -> None:
+            if workspace_id:
+                with workspace_scope(workspace_id):
+                    await self._dispatch_run(run_id)
+            else:
+                await self._dispatch_run(run_id)
+
         try:
-            task = asyncio.create_task(self._dispatch_run(run_id))
+            task = asyncio.create_task(runner())
         except RuntimeError:
             return  # нет running loop: recovery подхватит queued-строку
         self._dispatch_tasks.add(task)
@@ -766,12 +786,12 @@ class RepositoryWatchService:
         await self._db("finish_repository_watch_dispatch", run_id, token, final_error)
 
     async def recover_queued_runs(self) -> None:
-        await self._db("release_stale_repository_claims")
-        rows = await self._db("recover_repository_watch_dispatches", 20)
+        await self._db("release_stale_repository_claims_server")
+        rows = await self._db("recover_repository_watch_dispatches_server", 20)
         for row in rows:
             run_id = row.get("run_id")
             if run_id:
-                self._schedule_dispatch(run_id)
+                self._schedule_dispatch(run_id, row.get("workspace_id"))
 
     def close(self) -> None:
         for task in list(self._dispatch_tasks):
@@ -790,8 +810,10 @@ class WorkflowScheduler:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._watch_task: Optional[asyncio.Task] = None
-        self._active_schedules: set[str] = set()
+        self._active_schedules: set[tuple[str, str]] = set()
         self._active_watch_checks: set[asyncio.Task] = set()
+        self._schedule_tasks: set[asyncio.Task] = set()
+        self._active_runs: set[str] = set()
 
     def start(self) -> None:
         if not self._running:
@@ -808,17 +830,29 @@ class WorkflowScheduler:
         for task in list(self._active_watch_checks):
             task.cancel()
         self._active_watch_checks.clear()
+        for task in list(self._schedule_tasks):
+            task.cancel()
+        self._schedule_tasks.clear()
         self.watches.close()
 
     async def _scheduler_loop(self) -> None:
         while self._running:
             try:
                 await self._check_and_trigger_schedules()
+                await self._recover_schedule_runs()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in scheduler tick: {e}")
             await asyncio.sleep(5)  # Tick every 5 seconds
+
+    async def _run_claimed_watch(self, watch: Dict[str, Any], token: str,
+                                 workspace_id: Optional[str]) -> None:
+        if workspace_id:
+            with workspace_scope(workspace_id):
+                await self.watches.check_claimed(watch, token)
+        else:
+            await self.watches.check_claimed(watch, token)
 
     async def _watch_loop(self) -> None:
         try:
@@ -837,11 +871,14 @@ class WorkflowScheduler:
                 if free > 0:
                     token = f"wtick_{uuid.uuid4().hex}"
                     due = await asyncio.to_thread(
-                        self.db.claim_due_repository_watches,
+                        self.db.claim_due_repository_watches_server,
                         free, token, WATCH_CLAIM_SECONDS,
                     )
                     for watch in due:
-                        task = asyncio.create_task(self.watches.check_claimed(watch, token))
+                        workspace_id = watch.get("workspace_id")
+                        task = asyncio.create_task(
+                            self._run_claimed_watch(watch, token, workspace_id)
+                        )
                         self._active_watch_checks.add(task)
                         task.add_done_callback(self._active_watch_checks.discard)
                 if time.monotonic() - last_recovery >= WATCH_RECOVERY_SECONDS:
@@ -854,75 +891,189 @@ class WorkflowScheduler:
             await asyncio.sleep(WATCH_TICK_SECONDS)
 
     async def _check_and_trigger_schedules(self) -> None:
-        schedules = self.db.list_schedules()
+        """Claim due schedules from every tenant; one scope per schedule."""
+        try:
+            claimed = await asyncio.to_thread(
+                self.db.claim_due_schedules_server,
+                SCHEDULE_BATCH, SCHEDULE_CLAIM_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 - один тик не должен убивать loop
+            logger.error("Schedule claim failed: %s", type(exc).__name__)
+            return
+        for sched in claimed:
+            workspace_id = sched.get("workspace_id")
+            if not workspace_id:
+                continue
+            key = (str(workspace_id), str(sched.get("id")))
+            if key in self._active_schedules or len(self._active_schedules) >= MAX_ACTIVE_SCHEDULE_RUNS:
+                await self._advance_schedule(sched)
+                continue
+            self._active_schedules.add(key)
+            task = asyncio.create_task(self._run_schedule_claim(sched, key))
+            self._schedule_tasks.add(task)
+            task.add_done_callback(self._schedule_tasks.discard)
+
+    async def _run_schedule_claim(self, sched: Dict[str, Any],
+                                  key: tuple[str, str]) -> None:
+        try:
+            with workspace_scope(sched["workspace_id"]):
+                await self._trigger_claimed_schedule(sched)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Schedule execution failed: %s", type(exc).__name__)
+            await self._advance_schedule(sched)
+        finally:
+            self._active_schedules.discard(key)
+
+    async def _trigger_claimed_schedule(self, sched: Dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)
+        try:
+            workflow = await asyncio.to_thread(
+                self.db.get_workflow, sched["workflow_id"]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Schedule workflow read failed: %s", type(exc).__name__)
+            await self._advance_schedule(sched)
+            return
+        if (
+            not workflow
+            or not workflow.get("draft")
+            or not workflow.get("latest_revision_id")
+        ):
+            await self._advance_schedule(sched)
+            return
+        try:
+            next_dt = next_fire_at(
+                sched.get("cron_or_interval", "interval:60"), now
+            )
+        except Exception as exc:  # noqa: BLE001 - битое выражение не сеть
+            logger.warning("Schedule expression rejected for %s: %s",
+                           sched.get("id"), type(exc).__name__)
+            await asyncio.to_thread(
+                self.db.set_schedule_enabled, sched["id"], False
+            )
+            return
+        run_id = str(uuid.uuid4())
+        created = await asyncio.to_thread(
+            self.db.create_scheduled_run,
+            run_id,
+            sched["id"],
+            sched["workflow_id"],
+            workflow["latest_revision_id"],
+            sched["artifact_id"],
+            now.isoformat(),
+            next_dt.isoformat(),
+        )
+        if not created:
+            return
+        self._dispatch_scheduled_run(
+            run_id,
+            workflow["draft"],
+            sched["artifact_id"],
+            str(sched["workspace_id"]),
+        )
 
-        for sched in schedules:
-            if not sched.get("enabled"):
-                continue
-
-            next_fire = sched.get("next_fire_at")
-            if not next_fire:
-                # Initialize next fire time
-                try:
-                    next_dt = next_fire_at(sched.get("cron_or_interval", "interval:60"), now)
-                except Exception as exc:
-                    logger.warning("Пропущено расписание %s: %s", sched.get("id"), exc)
-                    continue
-                self.db.update_schedule_run_time(sched["id"], sched.get("last_run_at") or "", next_dt.isoformat())
-                continue
-
-            next_dt = datetime.fromisoformat(next_fire)
-            if now >= next_dt:
-                # Do not overlap an active run of the same schedule: advance the
-                # next window instead of accumulating queued runs.
-                if sched["id"] in self._active_schedules:
-                    try:
-                        new_next_dt = next_fire_at(sched.get("cron_or_interval", "interval:60"), now)
-                    except Exception as exc:
-                        logger.warning("Не удалось пересчитать расписание %s: %s", sched["id"], exc)
-                        continue
-                    self.db.update_schedule_run_time(
-                        sched["id"], sched.get("last_run_at") or "", new_next_dt.isoformat()
+    async def _advance_schedule(self, sched: Dict[str, Any]) -> None:
+        """Release a lease without creating a run (overlap, busy, bad workflow)."""
+        try:
+            with workspace_scope(sched["workspace_id"]):
+                now = datetime.now(timezone.utc)
+                next_dt = next_fire_at(
+                    sched.get("cron_or_interval", "interval:60"), now
+                )
+                await asyncio.to_thread(
+                    self.db.update_schedule_run_time,
+                    sched["id"],
+                    sched.get("last_run_at") or "",
+                    next_dt.isoformat(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Schedule advance failed: %s", type(exc).__name__)
+            try:
+                with workspace_scope(sched["workspace_id"]):
+                    await asyncio.to_thread(
+                        self.db.set_schedule_enabled, sched["id"], False
                     )
-                    continue
+            except Exception:
+                pass
 
-                # Trigger schedule!
-                wf = self.db.get_workflow(sched["workflow_id"])
-                if wf and "draft" in wf:
-                    run_id = str(uuid.uuid4())
-                    self.db.create_run(
+    def _dispatch_scheduled_run(self, run_id: str, draft_payload: Dict[str, Any],
+                                artifact_id: str, workspace_id: str) -> None:
+        if run_id in self._active_runs or not self.executor:
+            return
+        self._active_runs.add(run_id)
+
+        async def runner() -> None:
+            try:
+                with workspace_scope(workspace_id):
+                    await self.executor.execute_run(
                         run_id=run_id,
-                        workflow_id=sched["workflow_id"],
-                        revision_id=wf.get("latest_revision_id", "rev_1"),
-                        artifact_id=sched["artifact_id"],
-                        trigger_type="schedule"
+                        draft=WorkflowDraft(**draft_payload),
+                        artifact_id=artifact_id,
+                        trigger_type="schedule",
                     )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Scheduled run failed: %s", type(exc).__name__)
+            finally:
+                self._active_runs.discard(run_id)
 
-                    # Update next fire time
-                    try:
-                        new_next_dt = next_fire_at(sched.get("cron_or_interval", "interval:60"), now)
-                    except Exception as exc:
-                        logger.warning("Не удалось вычислить следующее срабатывание %s: %s", sched["id"], exc)
-                        continue
-                    self.db.update_schedule_run_time(sched["id"], now.isoformat(), new_next_dt.isoformat())
+        task = asyncio.create_task(runner())
+        self._schedule_tasks.add(task)
+        task.add_done_callback(self._schedule_tasks.discard)
 
-                    if self.executor:
-                        draft_obj = WorkflowDraft(**wf["draft"])
-                        self._active_schedules.add(sched["id"])
+    async def _recover_schedule_runs(self) -> None:
+        """Re-dispatch queued schedule runs after a crash; claim is in executor."""
+        try:
+            rows = await asyncio.to_thread(
+                self.db.list_queued_schedule_runs_server, 20, 5
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Schedule recovery query failed: %s", type(exc).__name__)
+            return
+        for row in rows:
+            run_id = row.get("id")
+            workspace_id = row.get("workspace_id")
+            if not run_id or not workspace_id or run_id in self._active_runs:
+                continue
+            self._active_runs.add(run_id)
+            task = asyncio.create_task(
+                self._recover_schedule_run(run_id, str(workspace_id))
+            )
+            self._schedule_tasks.add(task)
+            task.add_done_callback(self._schedule_tasks.discard)
 
-                        async def _run_scheduled(schedule_id: str = sched["id"],
-                                                 scheduled_run_id: str = run_id,
-                                                 scheduled_draft: WorkflowDraft = draft_obj,
-                                                 scheduled_artifact: str = sched["artifact_id"]) -> None:
-                            try:
-                                await self.executor.execute_run(
-                                    run_id=scheduled_run_id,
-                                    draft=scheduled_draft,
-                                    artifact_id=scheduled_artifact,
-                                    trigger_type="schedule",
-                                )
-                            finally:
-                                self._active_schedules.discard(schedule_id)
-
-                        asyncio.create_task(_run_scheduled())
+    async def _recover_schedule_run(self, run_id: str, workspace_id: str) -> None:
+        try:
+            with workspace_scope(workspace_id):
+                run = await asyncio.to_thread(self.db.get_run, run_id)
+                if not run or run.get("execution_status") != "queued":
+                    return
+                revision = await asyncio.to_thread(
+                    self.db.get_workflow_revision, run["revision_id"]
+                )
+                if not revision or not revision.get("draft"):
+                    await asyncio.to_thread(
+                        self.db.update_run_status, run_id, "failed",
+                        "inconclusive", None,
+                        datetime.now(timezone.utc).isoformat(),
+                    )
+                    return
+                if not self.executor:
+                    return
+                await self.executor.execute_run(
+                    run_id=run_id,
+                    draft=WorkflowDraft(**revision["draft"]),
+                    artifact_id=run.get("artifact_id"),
+                    trigger_type="schedule",
+                    workflow_id=run["workflow_id"],
+                    revision_id=run["revision_id"],
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Schedule recovery run failed: %s", type(exc).__name__)
+        finally:
+            self._active_runs.discard(run_id)

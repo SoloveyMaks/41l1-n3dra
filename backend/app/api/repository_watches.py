@@ -24,7 +24,7 @@ from backend.app.api.repository_hooks import (
     derive_webhook_secret,
     webhook_key_available,
 )
-from backend.app.api.session import require_admin
+from backend.app.api.session import request_workspace, require_admin
 from backend.app.engine.scheduler import (
     DEFAULT_WATCH_INTERVAL_SECONDS,
     RepositoryWatchService,
@@ -53,7 +53,6 @@ def _public_watch(row: Dict[str, Any]) -> Dict[str, Any]:
 def create_repository_watch_router(db: Any, executor: Any = None) -> APIRouter:
     router = APIRouter(prefix="/repository-watches")
     service = RepositoryWatchService(db, executor)
-    workspace = str(getattr(db, "workspace_id", ""))
 
     @router.get("")
     async def list_repository_watches(request: Request) -> List[Dict[str, Any]]:
@@ -121,7 +120,7 @@ def create_repository_watch_router(db: Any, executor: Any = None) -> APIRouter:
             )
         try:
             row = await service.setup_webhook(watch_id, rotate)
-            secret = derive_webhook_secret(workspace, watch_id, row["webhook_nonce"])
+            secret = derive_webhook_secret(request_workspace(request), watch_id, row["webhook_nonce"])
         except WatchNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except WatchValidationError as exc:
