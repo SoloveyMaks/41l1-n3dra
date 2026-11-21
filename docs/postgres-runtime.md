@@ -40,13 +40,17 @@ API пока не принимает workspace в запросах: процес
 
 ## Optional pgvector
 
-`DB_ENABLE_VECTOR=1` — единственный способ включить `db/optional/003_exact_vector.up.sql`.
-Без флага файл не применяется и в ledger не попадает. Если флаг включён, а
+`DB_ENABLE_VECTOR=1` — единственный способ включить `db/optional/*.up.sql`.
+Без флага файлы не применяются и в ledger не попадают. Если флаг включён, а
 `pg_available_extensions` не содержит `vector`, старт падает с понятной ошибкой.
-Повторный старт с флагом видит запись в ledger и SQL не повторяет. Схема создаёт
-`example_embeddings` и `exact_similar_fixes`, но не выбирает provider/model/
-dimension: `embedding_specs` остаётся пустым/pending, fake vectors запрещены.
-API embeddings не появляется.
+Мигратор берёт все optional-файлы по порядку: `003` создаёт
+`example_embeddings` и базовую функцию, `014` заменяет `exact_similar_fixes`
+на контракт с точной сверкой одного active spec и обязательными фильтрами,
+`015` создаёт отдельные demo/fixture-таблицы и `exact_demo_fixes`. Схема не
+выбирает provider/model/dimension: `embedding_specs` остаётся пустым/pending,
+fake vectors в реальные таблицы не пишутся. Demo/fixture заполняется только
+явной командой `python -m backend.app.ai.vector_demo --seed`, `draft`-only и не
+входит в реальную выдачу. API embeddings не появляется.
 
 ## Границы runtime-слоя
 

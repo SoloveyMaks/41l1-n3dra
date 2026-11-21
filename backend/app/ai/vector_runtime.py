@@ -11,13 +11,16 @@ query text, the embedding vector or the API key.
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.app.ai import vector_demo
 from backend.app.ai.provider import mask_sensitive_text, open_same_host
+from backend.app.ai.vector_result import VectorExample
 from backend.app.contracts.schemas import Finding, RetrievalInfo, SimilarFix
 
 _ALLOWED_METRICS = {"cosine", "l2", "inner_product"}
@@ -80,6 +83,7 @@ class VectorConfig:
     dsn: str = ""
     workspace_id: str = ""
     embedding_spec_id: str = ""
+    provider: str = ""
     model: str = ""
     version: str = ""
     dimension: Optional[int] = None
@@ -95,6 +99,8 @@ class VectorConfig:
     language: str = "kotlin"
     framework: str = "spring-boot"
     rule_family_map: Dict[str, str] = field(default_factory=dict)
+    status: str = "vetted"
+    demo_fixture: bool = False
 
     @property
     def missing(self) -> List[str]:
@@ -102,20 +108,30 @@ class VectorConfig:
             "VECTOR_RETRIEVAL_DSN": self.dsn,
             "VECTOR_WORKSPACE_ID": self.workspace_id,
             "VECTOR_EMBEDDING_SPEC_ID": self.embedding_spec_id,
-            "VECTOR_EMBEDDING_BASE_URL": self.embedding_base_url,
-            "VECTOR_EMBEDDING_API_KEY": self.embedding_api_key,
+            "VECTOR_EMBEDDING_PROVIDER": self.provider,
             "VECTOR_EMBEDDING_MODEL": self.model,
             "VECTOR_EMBEDDING_VERSION": self.version,
             "VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION": self.query_preparation_version,
             "VECTOR_EMBEDDING_DOCUMENT_PREPARATION_VERSION": self.document_preparation_version,
             "VECTOR_EMBEDDING_REDACTION_VERSION": self.redaction_version,
         }
+        if not self.demo_fixture:
+            required["VECTOR_EMBEDDING_BASE_URL"] = self.embedding_base_url
+            required["VECTOR_EMBEDDING_API_KEY"] = self.embedding_api_key
         missing = [name for name, value in required.items() if not value]
         if self.metric not in _ALLOWED_METRICS:
             missing.append("VECTOR_EMBEDDING_METRIC")
         if self.dimension is None or self.dimension <= 0:
             missing.append("VECTOR_EMBEDDING_DIMENSION")
-        return missing
+        if self.status not in ("vetted", "draft"):
+            missing.append("VECTOR_RETRIEVAL_STATUS")
+        elif self.demo_fixture:
+            if self.status != "draft":
+                missing.append("VECTOR_RETRIEVAL_STATUS=draft")
+            missing.extend(vector_demo.spec_mismatches(self))
+        elif self.status != "vetted":
+            missing.append("VECTOR_RETRIEVAL_STATUS=vetted")
+        return list(dict.fromkeys(missing))
 
 
 def resolve_vector_config() -> VectorConfig:
@@ -124,6 +140,7 @@ def resolve_vector_config() -> VectorConfig:
         dsn=(os.getenv("VECTOR_RETRIEVAL_DSN") or os.getenv("DATABASE_URL") or "").strip(),
         workspace_id=os.getenv("VECTOR_WORKSPACE_ID", "").strip(),
         embedding_spec_id=os.getenv("VECTOR_EMBEDDING_SPEC_ID", "").strip(),
+        provider=os.getenv("VECTOR_EMBEDDING_PROVIDER", "").strip(),
         model=os.getenv("VECTOR_EMBEDDING_MODEL", "").strip(),
         version=os.getenv("VECTOR_EMBEDDING_VERSION", "").strip(),
         dimension=_env_optional_int("VECTOR_EMBEDDING_DIMENSION", 1, 8192),
@@ -139,6 +156,8 @@ def resolve_vector_config() -> VectorConfig:
         language=os.getenv("VECTOR_RETRIEVAL_LANGUAGE", "kotlin").strip() or "kotlin",
         framework=os.getenv("VECTOR_RETRIEVAL_FRAMEWORK", "spring-boot").strip() or "spring-boot",
         rule_family_map=_env_json_map("VECTOR_RULE_FAMILY_MAP"),
+        status=os.getenv("VECTOR_RETRIEVAL_STATUS", "vetted").strip().lower() or "vetted",
+        demo_fixture=_env_bool("VECTOR_RETRIEVAL_DEMO_FIXTURE", False),
     )
 
 
@@ -174,6 +193,13 @@ class VectorRuntime:
             info.status = "unavailable"
             info.reason = "retrieval unavailable: missing or invalid " + ", ".join(missing)
             return info
+        if cfg.demo_fixture:
+            info.status = "ready"
+            info.reason = (
+                "demo fixture configured (synthetic hash vectors, draft-only, not vetted); "
+                "retrieval not executed"
+            )
+            return info
         info.status = "ready"
         info.reason = "retrieval configured (not executed)"
         return info
@@ -183,7 +209,24 @@ class VectorRuntime:
         findings: List[Finding],
         limit: Optional[int] = None,
     ) -> Tuple[RetrievalInfo, List[SimilarFix]]:
-        """Return a typed status and any similar fixes. Never raises."""
+        """Legacy DTO for existing callers. Never raises."""
+        info, examples = self._collect(findings, limit)
+        return info, [self._as_similar_fix(example) for example in examples]
+
+    def retrieve_examples_for_findings(
+        self,
+        findings: List[Finding],
+        limit: Optional[int] = None,
+    ) -> Tuple[RetrievalInfo, List[VectorExample]]:
+        """Full row: source, redacted before/fix, rule version, status, limits."""
+        return self._collect(findings, limit)
+
+    def _collect(
+        self,
+        findings: List[Finding],
+        limit: Optional[int],
+    ) -> Tuple[RetrievalInfo, List[VectorExample]]:
+        """Return a typed status and any matching examples. Never raises."""
         info = self.status()
         if info.status in ("disabled", "unavailable"):
             return info, []
@@ -197,7 +240,7 @@ class VectorRuntime:
             return info, []
 
         result_limit = limit if limit is not None else self.config.limit
-        collected: List[SimilarFix] = []
+        collected: List[VectorExample] = []
         failures: List[str] = []
         successes = 0
 
@@ -218,24 +261,42 @@ class VectorRuntime:
             return info, []
         if failures:
             info.status = "partial"
-            info.reason = "; ".join(dict.fromkeys(failures))[:600]
+            prefix = (
+                "demo fixture (synthetic vectors, draft-only, not vetted): "
+                if self.config.demo_fixture
+                else ""
+            )
+            info.reason = (prefix + "; ".join(dict.fromkeys(failures)))[:600]
         else:
             info.status = "ok"
-            info.reason = "exact retrieval completed" if collected else "no matching vetted examples"
+            if self.config.demo_fixture:
+                detail = (
+                    f"{len(collected)} matching demo examples"
+                    if collected
+                    else "no matching demo examples"
+                )
+                info.reason = (
+                    "demo fixture (synthetic vectors, draft-only, not vetted): " + detail
+                )
+            else:
+                info.reason = "exact retrieval completed" if collected else "no matching vetted examples"
         return info, collected
 
     def _retrieve_one(
         self,
         finding: Finding,
         limit: int,
-    ) -> Tuple[str, List[SimilarFix], str]:
+    ) -> Tuple[str, List[VectorExample], str]:
         cfg = self.config
         query_text = self._query_text(finding)
         if not query_text:
             return "unavailable", [], "empty query text"
 
         try:
-            vector = self._embed_query(query_text)
+            if cfg.demo_fixture:
+                vector = vector_demo.embed_text(query_text)
+            else:
+                vector = self._embed_query(query_text)
         except Exception as exc:
             return "unavailable", [], f"embedding unavailable: {_sanitize(exc)}"
 
@@ -247,35 +308,59 @@ class VectorRuntime:
             )
 
         rule_family = cfg.rule_family_map.get(finding.ruleId, finding.ruleId)
+        function = "exact_demo_fixes" if cfg.demo_fixture else "exact_similar_fixes"
         try:
-            rows = self._query_db(vector, rule_family, limit)
+            rows = self._query_db(vector, rule_family, limit, function)
         except Exception as exc:
             return "unavailable", [], f"database unavailable: {_sanitize(exc)}"
 
-        fixes: List[SimilarFix] = []
+        fixes: List[VectorExample] = []
         for row in rows:
             try:
-                limitations = row[3]
+                limitations = row[6]
                 if isinstance(limitations, str):
                     limitations = [limitations]
                 elif limitations is None:
                     limitations = []
                 fixes.append(
-                    SimilarFix(
+                    VectorExample(
                         findingId=finding.id,
                         exampleId=str(row[0]),
                         sourceRef=str(row[1]),
-                        verificationBasis=str(row[2]),
+                        redactedBefore=str(row[2]),
+                        redactedFix=str(row[3]),
+                        ruleVersion=str(row[4]),
+                        verificationBasis=str(row[5] or ""),
                         limitations=[str(x) for x in limitations],
-                        redactedFix=str(row[4]),
-                        distance=float(row[5]),
-                        metric=str(row[6]),
+                        status=str(row[7]),
+                        distance=float(row[8]),
+                        metric=str(row[9]),
                         embeddingSpecId=cfg.embedding_spec_id,
                     )
                 )
             except (TypeError, ValueError, IndexError) as exc:
                 return "unavailable", [], f"unexpected retrieval row: {_sanitize(exc)}"
         return "ok", fixes, ""
+
+    @staticmethod
+    def _as_similar_fix(example: VectorExample) -> SimilarFix:
+        """Legacy DTO mapping. Extra SQL fields pass through as kwargs so an
+        extended shared SimilarFix stores them without a second query; the
+        current schema ignores them."""
+        return SimilarFix(
+            findingId=example.findingId,
+            exampleId=example.exampleId,
+            sourceRef=example.sourceRef,
+            redactedBefore=example.redactedBefore,
+            redactedFix=example.redactedFix,
+            ruleVersion=example.ruleVersion,
+            verificationBasis=example.verificationBasis,
+            limitations=list(example.limitations),
+            status=example.status,
+            distance=example.distance,
+            metric=example.metric,
+            embeddingSpecId=example.embeddingSpecId,
+        )
 
     def _query_text(self, finding: Finding) -> str:
         evidence = mask_sensitive_text(finding.redactedEvidence or "")
@@ -313,30 +398,54 @@ class VectorRuntime:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list) or not data:
             raise RuntimeError("embedding response has no data")
+        returned_model = payload.get("model") if isinstance(payload, dict) else None
+        if returned_model and str(returned_model) != cfg.model:
+            raise RuntimeError("embedding response model does not match configured model")
         embedding = data[0].get("embedding") if isinstance(data[0], dict) else None
         if not isinstance(embedding, list) or not embedding:
             raise RuntimeError("embedding response has no vector")
-        return [float(value) for value in embedding]
+        vector = [float(value) for value in embedding]
+        if not all(math.isfinite(value) for value in vector):
+            raise RuntimeError("embedding response contains a non-finite value")
+        return vector
 
-    def _query_db(self, vector: List[float], rule_family: str, limit: int) -> List[Tuple[Any, ...]]:
+    def _query_db(
+        self,
+        vector: List[float],
+        rule_family: str,
+        limit: int,
+        function: str,
+    ) -> List[Tuple[Any, ...]]:
         cfg = self.config
+        if function not in ("exact_similar_fixes", "exact_demo_fixes"):
+            raise RuntimeError("unsupported retrieval function")
         driver = _load_pg_driver()
         if driver is None:
             raise RuntimeError("psycopg/psycopg2 is not installed")
-        vector_literal = "[" + ",".join(f"{value:.9g}" for value in vector) + "]"
+        vector_literal = "[" + ",".join(f"{value:.17g}" for value in vector) + "]"
         sql = (
-            "SELECT example_id, source_ref, verification_basis, limitations, "
-            "redacted_fix, distance, metric "
-            "FROM data_contract.exact_similar_fixes("
-            "%s, %s, %s::public.vector, %s, %s, %s, %s)"
+            "SELECT example_id, source_ref, redacted_before, redacted_fix, "
+            "rule_version, verification_basis, limitations, example_status, "
+            "distance, metric "
+            f"FROM data_contract.{function}("
+            "%s, %s, %s::public.vector, %s, %s, %s, %s, %s, %s, %s, "
+            "%s, %s, %s, %s, %s)"
         )
         params = (
             cfg.workspace_id,
             cfg.embedding_spec_id,
             vector_literal,
+            cfg.provider,
+            cfg.model,
+            cfg.version,
+            cfg.metric,
+            cfg.query_preparation_version,
+            cfg.document_preparation_version,
+            cfg.redaction_version,
             cfg.language,
             cfg.framework,
             rule_family,
+            cfg.status,
             limit,
         )
 

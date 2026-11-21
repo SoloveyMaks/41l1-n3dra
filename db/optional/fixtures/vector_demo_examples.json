@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "vector-demo/1",
+  "note": "Synthetic demo/fixture examples for exact pgvector mechanics. All rows are draft; none is vetted and none is scanner provenance. Vectors are produced by backend.app.ai.vector_demo.embed_text (16-dim token-hash cosine) and are not a semantic embedding model.",
+  "workspaceId": "887e5059-1fbe-5571-a037-601a3cd67744",
+  "spec": {
+    "embeddingSpecId": "84983e62-ec64-5d00-8636-688ab339da82",
+    "provider": "demo-fixture",
+    "model": "synthetic-hashed-tokens",
+    "modelVersion": "demo/1",
+    "dimension": 16,
+    "metric": "cosine",
+    "queryPreparationVersion": "demo/query/1",
+    "documentPreparationVersion": "demo/document/1",
+    "redactionVersion": "demo/redaction/1"
+  },
+  "examples": [
+    {
+      "exampleId": "62dcc4de-abdb-5183-8bf9-f1351f0972c6",
+      "sourceRef": "demo/fixture:sql-injection-jdbc-bind",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "ruleFamily": "sql-injection",
+      "ruleVersion": "demo/1",
+      "status": "draft",
+      "documentText": "sql-injection jdbcTemplate.queryForList(\"SELECT name FROM item WHERE name = '\" + value + \"'\") jdbcTemplate.queryForList(\"SELECT name FROM item WHERE name = ?\", String::class.java, value)",
+      "redactedBefore": "jdbcTemplate.queryForList(\"SELECT name FROM item WHERE name = '\" + value + \"'\")",
+      "redactedFix": "jdbcTemplate.queryForList(\"SELECT name FROM item WHERE name = ?\", String::class.java, value)",
+      "verificationBasis": "Synthetic demo/fixture: insecure string concatenation next to parameter binding in the self-test project. No scanner provenance and no production review.",
+      "limitations": [
+        "Does not prove the database schema or parameter types are correct.",
+        "Checked only on a synthetic demo fixture, not on production code."
+      ],
+      "embedding": [
+        0.29814239699997197,
+        -0.14907119849998599,
+        -0.14907119849998599,
+        0.0,
+        0.0,
+        0.5962847939999439,
+        0.0,
+        -0.29814239699997197,
+        0.14907119849998599,
+        0.0,
+        0.14907119849998599,
+        0.0,
+        0.0,
+        0.0,
+        -0.14907119849998599,
+        -0.5962847939999439
+      ]
+    },
+    {
+      "exampleId": "4d045e6c-6392-59a2-bab3-6bd2bdaca075",
+      "sourceRef": "demo/fixture:tls-keep-hostname-verifier",
+      "language": "kotlin",
+      "framework": "jvm",
+      "ruleFamily": "tls-verification",
+      "ruleVersion": "demo/1",
+      "status": "draft",
+      "documentText": "tls-verification connection.setHostnameVerifier { _, _ -> true } val connection = URI(\"https://service.invalid\").toURL().openConnection() as HttpsURLConnection",
+      "redactedBefore": "connection.setHostnameVerifier { _, _ -> true }",
+      "redactedFix": "val connection = URI(\"https://service.invalid\").toURL().openConnection() as HttpsURLConnection",
+      "verificationBasis": "Synthetic demo/fixture: always-true hostname verifier next to the default HTTPS client in the self-test project. No scanner provenance.",
+      "limitations": [
+        "Does not cover certificate pinning or custom trust stores.",
+        "Does not replace server-side TLS configuration review."
+      ],
+      "embedding": [
+        0.0,
+        0.0,
+        0.2,
+        0.0,
+        0.2,
+        0.2,
+        -0.8,
+        0.0,
+        -0.2,
+        0.2,
+        0.0,
+        -0.4,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "exampleId": "94cec6ae-a160-5046-ab67-3c0caa76850b",
+      "sourceRef": "demo/fixture:cors-explicit-origin",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "ruleFamily": "credentialed-cors",
+      "ruleVersion": "demo/1",
+      "status": "draft",
+      "documentText": "credentialed-cors registry.addMapping(\"/**\").allowedOrigins(\"*\").allowCredentials(true) allowedOrigins = listOf(\"https://app.example\")\nallowCredentials = true",
+      "redactedBefore": "registry.addMapping(\"/**\").allowedOrigins(\"*\").allowCredentials(true)",
+      "redactedFix": "allowedOrigins = listOf(\"https://app.example\")\nallowCredentials = true",
+      "verificationBasis": "Synthetic demo/fixture: wildcard origin with credentials next to an explicit origin in the self-test project. No scanner provenance.",
+      "limitations": [
+        "The origin list must be maintained with the deployment domains.",
+        "Does not prove every route actually requires credentials."
+      ],
+      "embedding": [
+        -0.23570226039551587,
+        0.0,
+        0.47140452079103173,
+        0.0,
+        -0.23570226039551587,
+        0.0,
+        -0.47140452079103173,
+        0.0,
+        0.0,
+        0.47140452079103173,
+        0.0,
+        -0.47140452079103173,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "exampleId": "76f8d2d4-6a63-56df-875f-8de8fd74f534",
+      "sourceRef": "demo/fixture:route-authorization-explicit-role",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "ruleFamily": "route-authorization",
+      "ruleVersion": "demo/1",
+      "status": "draft",
+      "documentText": "route-authorization http.authorizeHttpRequests { it.requestMatchers(GET, \"/api/export/**\").permitAll() } rules.requestMatchers(GET, \"/api/export/**\").hasRole(\"AUDITOR\")\nrules.anyRequest().denyAll()",
+      "redactedBefore": "http.authorizeHttpRequests { it.requestMatchers(GET, \"/api/export/**\").permitAll() }",
+      "redactedFix": "rules.requestMatchers(GET, \"/api/export/**\").hasRole(\"AUDITOR\")\nrules.anyRequest().denyAll()",
+      "verificationBasis": "Synthetic demo/fixture: permitAll on an export route next to an explicit role in the self-test project. No scanner provenance.",
+      "limitations": [
+        "The role name and permission model must match the workspace policy.",
+        "Rule order matters: a broad rule above a narrow rule overrides it."
+      ],
+      "embedding": [
+        0.0,
+        0.0,
+        0.0,
+        0.23570226039551587,
+        -0.23570226039551587,
+        0.0,
+        -0.23570226039551587,
+        0.0,
+        -0.23570226039551587,
+        0.0,
+        0.47140452079103173,
+        0.0,
+        0.0,
+        0.0,
+        -0.7071067811865476,
+        -0.23570226039551587
+      ]
+    },
+    {
+      "exampleId": "35c4a49c-9ed0-57c0-b471-7e448a13d010",
+      "sourceRef": "demo/fixture:object-authorization-owner-predicate",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "ruleFamily": "object-authorization",
+      "ruleVersion": "demo/1",
+      "status": "draft",
+      "documentText": "object-authorization jdbc.queryForObject(\"SELECT customer_id, note FROM orders WHERE order_id = ?\", rowMapper, orderId) jdbc.queryForObject(\"SELECT customer_id, note FROM orders WHERE order_id = ? AND customer_id = ?\", rowMapper, orderId, principal.customerId)",
+      "redactedBefore": "jdbc.queryForObject(\"SELECT customer_id, note FROM orders WHERE order_id = ?\", rowMapper, orderId)",
+      "redactedFix": "jdbc.queryForObject(\"SELECT customer_id, note FROM orders WHERE order_id = ? AND customer_id = ?\", rowMapper, orderId, principal.customerId)",
+      "verificationBasis": "Synthetic demo/fixture: read by object id without an owner predicate next to a read bound to the authenticated principal. No scanner provenance.",
+      "limitations": [
+        "Assumes the caller principal carries a customer id.",
+        "Does not cover administrative read paths that legitimately bypass the owner predicate."
+      ],
+      "embedding": [
+        -0.1259881576697424,
+        -0.2519763153394848,
+        0.0,
+        0.3779644730092272,
+        -0.2519763153394848,
+        0.5039526306789696,
+        0.1259881576697424,
+        -0.629940788348712,
+        0.0,
+        0.0,
+        0.0,
+        -0.1259881576697424,
+        0.0,
+        0.1259881576697424,
+        0.1259881576697424,
+        0.0
+      ]
+    }
+  ]
+}
