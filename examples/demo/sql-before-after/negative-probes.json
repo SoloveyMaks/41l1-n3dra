@@ -1,0 +1,31 @@
+[
+  {
+    "label": "coverage-loss",
+    "comparable": true,
+    "statuses": [
+      "inconclusive"
+    ],
+    "deletedFiles": [],
+    "reasons": []
+  },
+  {
+    "label": "graph-coverage-loss",
+    "comparable": true,
+    "statuses": [
+      "inconclusive"
+    ],
+    "deletedFiles": [],
+    "reasons": []
+  },
+  {
+    "label": "deleted-file",
+    "comparable": true,
+    "statuses": [
+      "file_deleted"
+    ],
+    "deletedFiles": [
+      "src/main/kotlin/demo/RepairLookupController.kt"
+    ],
+    "reasons": []
+  }
+]

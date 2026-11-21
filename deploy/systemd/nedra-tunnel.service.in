@@ -1,0 +1,16 @@
+[Unit]
+Description=nedra Cloudflare tunnel (do not enable before auth review)
+Documentation=file:@REPO@/docs/DEPLOYMENT.md
+Wants=network-online.target nedra-app.service
+After=network-online.target nedra-app.service
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+Environment=HOME=%h
+ExecStart=/bin/bash @REPO@/scripts/nedra-tunnel.sh run --yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

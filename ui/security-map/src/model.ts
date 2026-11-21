@@ -171,6 +171,42 @@ export function validateProduction(
   return null;
 }
 
+const FINDING_TITLES: Record<string, string> = {
+  "SECRET-BEARER-TOKEN": "Токен доступа в коде",
+  "SECRET-API-KEY": "API-ключ в коде",
+  "SECRET-PASSWORD-LITERAL": "Пароль в коде",
+  "CF-SQL-PARAM-INTERPOLATION": "SQL-запрос собирается из параметра",
+  "CF-ROUTE-UNAUTH-PII": "Маршрут без проверки доступа читает персональные данные",
+  "CF-OWNER-CHECK-UNPROVEN": "Не подтверждена проверка владельца",
+  "CG26-SEC-004": "Секрет как запасной вариант",
+  "CG26-SEC-001": "Пароль в исходном коде",
+  "CG26-SEC-002": "API-ключ в исходном коде",
+  "CG26-SEC-005": "Токен восстанавливается из кода",
+  "CG26-SEC-003": "Токен хранится открыто",
+  "CG26-SCA-001": "Уязвимая зависимость",
+  "CG26-SAST-003": "Cookie уходит на чужой сайт",
+  "CG26-SAST-004": "Нет роли, а данные других пользователей",
+  "CG26-SAST-002": "Отключена проверка имени хоста",
+  "CG26-SAST-001": "Параметр меняет SQL-запрос",
+};
+
+const findingTitle = (ruleId: string, confidence: string, status: string): string => {
+  if (ruleId === "CG26-SAST-005") {
+    return confidence === "high" && status === "confirmed"
+      ? "Можно запросить чужой объект"
+      : "Возможное чтение чужого объекта";
+  }
+  if (FINDING_TITLES[ruleId]) return FINDING_TITLES[ruleId];
+  if (ruleId.startsWith("SECRET-")) return "Секрет в коде";
+  if (ruleId.startsWith("CF-SQL")) return "SQL-запрос без плейсхолдера";
+  if (ruleId.startsWith("CF-ROUTE")) return "Маршрут без проверки доступа";
+  if (ruleId.startsWith("CF-OWNER")) return "Не подтверждена проверка владельца";
+  if (ruleId.startsWith("CG26-SCA")) return "Уязвимая зависимость";
+  if (ruleId.startsWith("CG26-SAST")) return "Проблема в обработке запроса";
+  if (ruleId.startsWith("CG26-SEC")) return "Секрет в коде или конфигурации";
+  return "Найденная проблема";
+};
+
 export function productionModel(
   data: SecurityMapDto,
   findings: readonly Finding[],
@@ -184,7 +220,7 @@ export function productionModel(
     evidence: data.evidence,
     findings: findings.map((f) => ({
       id: f.id,
-      label: f.ruleId,
+      label: findingTitle(f.ruleId, f.confidence, f.status),
       status: f.status,
       severity: f.severity,
       confidence: f.confidence,
@@ -217,7 +253,7 @@ export function productionModel(
     })),
     coverage: {
       status: data.coverage.status,
-      summary: `${data.coverage.filesVisited} / ${data.coverage.filesTotal} файлов; правил: ${data.coverage.rulesApplied.length}`,
+      summary: `${data.coverage.filesVisited} из ${data.coverage.filesTotal} файлов проверено; правил: ${data.coverage.rulesApplied.length}`,
       warnings: [
         ...data.coverage.skippedScopes,
         ...data.coverage.unresolvedSymbols,
