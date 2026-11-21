@@ -2,9 +2,28 @@
 
 Дата проверки: 2026-11-21. Проверял отдельной веткой после fast-forward merge локальной `dev`; исходный проверенный HEAD: `75c2f09aaa9d2fd49c3de408084be8b8688638ac` (до последующего owner fix). Использовались отдельные PostgreSQL 16/pgvector контейнер и ASGI-приложение; production-порты не трогались. Все приведённые итоговые Telegram proofs повторены с синтетическим токеном и локальным либо отключённым транспортом.
 
+## Targeted recheck: recovery fix 4e9e573
+
+Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен после merge локальной `dev` `091e7a44eb93e36b1a565a36fdd489ae2619b298` в review HEAD `dbc9a1a079aba6109c2003099223c9d68bfe7586`. Исходный дефект «нет recovery» исправлен в проверенных сценариях, но **полностью bounded recovery не принят**: найдено нарушение лимита ниже. Same-loop delivery/rebind blocker остаётся открытым; отдельного fix SHA пока не было.
+
+### Medium — exhausted jobs обрабатываются без лимита batch
+
+`backend/app/storage/telegram.py:603-621`: первый `UPDATE` в `recover_jobs` переводит все expired importing jobs с `recovery_attempts >= max` в `interrupted`, без `LIMIT` и ограниченного списка ids. `safe_limit` используется только позднее для existing-run settlement и returned candidates. Воспроизведение на новой изолированной PG: создано четыре актуальных owner/epoch job, все claimed и затем переведены в expired lease с attempts=3; один `recover_jobs(limit=1)` изменил **4** job (`RECOVERY_LIMIT1_EXHAUSTED_CHANGED 4`). Это конкретное нарушение критерия bounded recovery и неограниченная транзакция при большом backlog; фактическое зависание на большом объёме не утверждается. Нужен ограниченный claim/settlement exhausted ids за проход.
+
+### Независимый live proof recovery
+
+Использованы новая disposable PG и настоящие `TelegramRuntime`, repository, executor/importer. `api=None`; importer получал HTTP localhost URL, который настоящий URL validator отклоняет до сети. Успешный внешний импорт не подменялся фиктивным ответом: это проверка recovery/claim/error path, не доказательство успешного download/scan.
+
+* Два `Runtime.start()` без Telegram transport одновременно подхватили один queued job; реальная URL rejection произошла один раз, job стал `failed`.
+* Два конкурентных PG claim одного queued job дали ровно один lease token. Heartbeat current token работает; неверный и заменённый после retry token не проходят heartbeat/status update/lease validity.
+* Expired importing без run_id получил ровно один retry (`recovery_attempts=1`); exhausted стал `interrupted`. Фоновый recovery стартует даже при `api=None`.
+* Jobs с existing run_id и expired lease: running run → job `interrupted`, succeeded/failed run → одноимённый terminal job. `run_id` сохранён, importer для этих jobs не запускался, общее число прежних runtime runs осталось **3**, новых run нет.
+* Rebind отзывает current lease: heartbeat/lease validity false, cancelled job не claim-ится и не попадает в recovery candidates.
+* Upgrade011→012 применил ровно `012_telegram_job_recovery.up.sql`; повтор `[]`. Старый running job и run_id сохранились, attempts=0, lease null; новый `interrupted` принят SQL constraint.
+
 ## Targeted recheck: rebind fix f82cd4b
 
-Проверен owner commit `f82cd4b6ff17a2a3947d62cf7562bff9cd267a5d`, включённый в локальный `dev`/review HEAD `b53a3c7465f2930df0bad0f219eebe6e9530b75d`. Старый baseline/auth concurrency повторно не запускался. **Rebind целиком пока не принят: найден новый блокирующий дефект event loop. Restart recovery остаётся fix pending и этим recheck не принимался.**
+Проверен owner commit `f82cd4b6ff17a2a3947d62cf7562bff9cd267a5d`, включённый в локальный `dev`/review HEAD `b53a3c7465f2930df0bad0f219eebe6e9530b75d`. Старый baseline/auth concurrency повторно не запускался. **Rebind целиком пока не принят: найден новый блокирующий дефект event loop. Restart recovery проверен отдельным recheck выше; ограничение exhausted batch пока не исправлено.**
 
 ### High — синхронный rebind блокирует event loop, пока sender держит delivery_guard
 
@@ -51,4 +70,4 @@
 
 ## Ограничения проверки
 
-Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, но новый same-loop lock defect блокирует принятие этого fix; restart recovery также остаётся fix pending.
+Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, но новый same-loop lock defect блокирует принятие этого fix; recovery появился, но exhausted batch остаётся неограниченным.
