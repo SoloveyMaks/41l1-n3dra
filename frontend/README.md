@@ -1,32 +1,58 @@
-# React + TypeScript + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + Vite SPA для проверки безопасности Kotlin/Spring Boot. Главный экран —
+пользовательский, конструктор сценария и системные настройки — в отдельной
+админке.
 
-Currently, two official plugins are available:
+## Пользователь: 3 шага
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. **Выберите проект** — ZIP или «Попробовать пример». Поддерживается
+   Kotlin/Spring Boot.
+2. **Запустите проверку** — стандартный сохранённый сценарий; без редактора и без
+   `PUT /workflows/{id}/draft`.
+3. **Посмотрите результат** — проблемы, фрагмент кода, карта доступа, сравнение
+   проверок и отчёт.
 
-## React Compiler
+Пользователь не видит конструктор, расписания, AI-тест и training. Его проверка
+идёт по выбранному артефакту и уже сохранённому сценарию.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Админка
 
-## Expanding the Oxlint configuration
+Отдельный вход по `CG_ADMIN_ACCESS_CODE`; группы:
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- **Обзор** — счётчики workspace, последняя проверка, состояние БД, модели
+  и векторных представлений.
+- **Проекты и проверки** — проекты и история, переход в результаты.
+- **Сценарий** — конструктор и расписания.
+- **Результаты** — ход проверки, проблемы, карта доступа, отчёт, сравнение.
+- **Система** — анализаторы/покрытие (только чтение), AI и память исправлений
+  (без управления; поиск не изображается), доступ и состояние без секретов.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+## Честные границы
+
+- Покрытие может быть неполным. `pass` — «нет блокирующих проблем по политике»,
+  а не «ноль проблем» и не «полная проверка».
+- Workspace общий: аккаунтов, списков доступа и приватных кабинетов нет.
+  Роли `user`/`admin` ограничивают операторские действия.
+- AI-объяснения отделены от фактов и не меняют проблемы, покрытие и вердикт.
+  Векторные представления текста необязательны и сейчас недоступны (403),
+  проверенных примеров 0. Политика предметной области не подключена; допущения
+  не являются работающим ограничением.
+- Общее сравнение остаётся `inconclusive`; проверка SQL узкая. Синтетический
+  источник не даёт `comparable=true`.
+- Публичный стенд `9862e19` пока старый. Локальная `dev` (`1dfd5b2`) содержит
+  user/admin, но Sol baseline `95da50b` нашёл blockers; focused retest по UI и
+  redaction ещё не выполнен.
+
+## Сборка
+
+```bash
+npm ci
+npm run build        # production build
+npm run dev          # dev-сервер; /api проксируется на backend
+npx tsc -b           # типы
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Контракты и общий контекст — [корневой README](../README.md),
+[интерфейс](../docs/interface-structure.md),
+[словарь](../docs/PRODUCT-GLOSSARY.md).

@@ -1,37 +1,57 @@
 # 41l1-n3dra
 
-AI Security Workflow для Cyber Garden 2026: собственные SECRET/SCA/SAST проверки
-Kotlin/Spring Boot, визуальный workflow, карта доказательств и сравнение
-immutable bundles.
+Проверка безопасности Kotlin/Spring Boot: собственные SECRET/SCA/SAST,
+понятный результат, карта доступа, сравнение проверок и отчёт. Пользователь
+загружает ZIP и запускает готовый сценарий; конструктор и системные настройки
+живут в отдельной админке.
 
-**Статус:** приложение опубликовано на [nedra.soloveyka.bond](https://nedra.soloveyka.bond)
-за общим кодом доступа. Хост — локальный ПК + отдельный Cloudflare Tunnel.
-`dev` содержит интеграцию команды; PR в `main` ждёт финальную отладку.
-Публичная сборка включает оба analyzer engines и защиту от пустого экрана
-при сбое загрузки. Team B проверен на отдельном workflow: 15 findings и
-67 evidence; default engine — `backend`. Версию образа проверяйте через runbook.
+## Статус
+
+- Публичный стенд [nedra.soloveyka.bond](https://nedra.soloveyka.bond) собран из
+  `9862e19`: там ещё старый интерфейс, один общий код и нет user/admin-разделения.
+- Локальная `dev` (`1dfd5b2`) содержит user/admin, админский обзор и принятые
+  исправления: `006`/происхождение снимков, один артефакт на проверку, защита
+  канонического вердикта, фактический статус выполнения в отчёте, защита
+  синтетического сравнения.
+- **Релиз не готов.** Sol baseline `95da50b` нашёл blockers; focused retest по UI
+  и маскировке ещё не выполнен. Не заявляем «все проверки пройдены».
+- `main` — после приёмки; merge/push делает координатор, не worker.
+
+## Проверить проект за 3 шага
+
+1. **Выберите проект** — ZIP или «Попробовать пример». Поддерживается
+   Kotlin/Spring Boot.
+2. **Запустите проверку** — используется существующий сохранённый сценарий.
+   Пользователь не редактирует граф и не вызывает `PUT draft`.
+3. **Посмотрите результат** — проблемы, фрагмент кода, карта доступа, сравнение
+   проверок и отчёт.
+
+Админка открывается отдельным кодом и сгруппирована так: **Обзор**,
+**Проекты и проверки**, **Сценарий** (конструктор и расписания), **Результаты**,
+**Система** (анализаторы/покрытие, AI и память, доступ и состояние).
 
 ## Что внутри
 
-- `backend/` — FastAPI, executor workflow, собственные анализаторы, code facts,
-  canonical publish в PostgreSQL, сравнение, AI-объяснения и отчёты.
-- `frontend/` — React/Vite: workflow-конструктор, запуски, отчёты, карта.
-- `ui/security-map` — React Flow карта; `packages/comparison` — сравнение
-  published bundles.
+- `backend/` — FastAPI, executor, SECRET/SCA/SAST, code facts, каноническая
+  публикация в PostgreSQL, сравнение, AI-объяснения и отчёты.
+- `frontend/` — React/Vite: трёхшаговый пользовательский экран и отдельный
+  админский shell. Конструктор — в админке, не на главном экране.
+- `ui/security-map` — React Flow карта доступа и данных.
+- `packages/comparison` — сравнение published envelopes.
 - `db/` — PostgreSQL-миграции; `data_contract` хранит канонические факты,
-  `runtime` — API-состояние. SQLite в runtime нет.
+  `runtime` — API-состояние.
 - `deploy/`, `scripts/nedra-*.sh` — локальный контейнерный запуск.
 
 ## Начать здесь
 
+- [Интерфейс: пользователь и администратор](docs/interface-structure.md)
 - [Решения проекта](PROJECT-DECISIONS.md)
 - [Release handoff](docs/RELEASE-HANDOFF.md)
+- [Сценарий показа для жюри](docs/JURY-WALKTHROUGH.md)
+- [Словарь продукта](docs/PRODUCT-GLOSSARY.md)
+- [Sol baseline review](docs/reviews/sol-structure.md) — blockers до focused retest
 - [Контракты данных](docs/data-contracts/README.md), [SQL ↔ DTO](docs/data-contracts/mapping.md)
-- [Миграции и публикация](db/README.md), [runtime PostgreSQL](docs/postgres-runtime.md)
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
-- [SQL before/after proof](docs/sql-before-after.md), [что проверено](docs/data-contracts/verification.md)
-- [Анализаторы пакета B](analyzers/README.md) — SECRET/SCA/SAST и выгрузка `AnalysisBundle`
-- [Отчёт по анализаторам](docs/analyzers-report.md), [подключение Team B к runtime](docs/team-b-runtime.md)
 
 ## Локальный запуск (PostgreSQL)
 
@@ -40,9 +60,9 @@ PostgreSQL 16+; pgvector не обязателен. Python 3.11+ (в конте�
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r backend/requirements.txt
-cp .env.example .env                         # впиши свой DATABASE_URL
+cp .env.example .env
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/41l1_n3dra
-python -m backend.app.storage.migrate        # 001/002/004/005 (+003 при DB_ENABLE_VECTOR=1)
+python -m backend.app.storage.migrate        # 001/002/004/005/006 (+003 при DB_ENABLE_VECTOR=1)
 uvicorn backend.app.main:app --env-file .env --port 8000
 ```
 
@@ -51,82 +71,47 @@ optional `db/optional/003` только при доступном pgvector; fake
 создаются. Без `DATABASE_URL`/драйвера/доступной БД старт падает с понятной
 ошибкой, без DSN в тексте.
 
-Frontend: собранная статика отдаётся backend-ом, если есть `frontend/dist`.
+Frontend:
 
 ```bash
 cd frontend && npm ci && npm run build       # production build
 # отдельный dev-сервер: npm run dev          # /api проксируется на :8000
 ```
 
-Локальная сессия: `POST /api/session` (или GET выдаёт cookie в local-режиме).
-Режим `CG_PUBLIC_DEMO=1` требует `CG_ACCESS_CODE` и не выдаёт cookie сам.
-
-Минимальный smoke:
-
-```bash
-curl -s -c /tmp/nedra.jar http://127.0.0.1:8000/api/health
-curl -s -b /tmp/nedra.jar -c /tmp/nedra.jar -X POST http://127.0.0.1:8000/api/session
-curl -s -b /tmp/nedra.jar http://127.0.0.1:8000/api/workflows
-curl -s -b /tmp/nedra.jar -X POST http://127.0.0.1:8000/api/artifacts/sample
-```
-
-## Контейнерный запуск
-
-Локальный ПК — единственный хост. Отдельный туннель `nedra` уже опубликован;
-существующие маршруты Brigada не менялись.
-
-```bash
-scripts/nedra-bootstrap.sh --check     # read-only проверка
-scripts/nedra-bootstrap.sh --write     # ~/.config/nedra/runtime.env (600)
-scripts/nedra-build.sh
-scripts/nedra-up.sh                    # db + app; идемпотентно
-scripts/nedra-status.sh
-scripts/nedra-stop.sh                  # или nedra-down.sh
-scripts/nedra-systemd-install.sh       # user units; tunnel не включается
-scripts/nedra-tunnel.sh status         # состояние отдельного туннеля nedra
-```
-
-Секреты и shared demo access code — только в `~/.config/nedra/runtime.env`
-(`CG_ACCESS_CODE`); они не коммитятся, не печатаются скриптами и не передаются
-в argv. Подробности, owner labels и health — в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Локальная сессия: `POST /api/session` с `role: "user"` или `role: "admin"`.
+Админский вход требует отдельный `CG_ADMIN_ACCESS_CODE`; если он не задан или
+совпадает с пользовательским, `adminAvailable: false`. Публичный режим
+`CG_PUBLIC_DEMO=1` не выдаёт cookie сам.
 
 ## Инварианты
 
-- `workspaceId`, `runId`, `snapshotId` — UUID и не переписываются; snapshot
-  immutable после seal. Canonical envelope сохраняет identity.
-- Факты анализа, AI-объяснения и domain policy — разные слои; AI не меняет
-  findings/coverage.
-- Карта фактов (code facts, evidence) — не workflow-граф исполнения.
-- `provenance.bundleHash` — SQL facts; `canonicalHash`/`envelopeHash` — jsonb;
-  `SecurityMapDto.bundleHash` — отдельный internal map hash, пересчитывается по
-  своему recipe, не подменяется SQL.
-- Comparison: fingerprint/anchor + signature + coverage. Потеря покрытия,
-  неоднозначный anchor и `changed` не выдаются за fix; удалённые файлы — отдельный
-  `deletedFiles`.
-- SQL API proof — узкий per-file `source_pattern` для `KOTLIN-SQL-INJECTION`
-  по двум опубликованным scanner runs. До параметризации — 1 finding, после — 0:
-  `pattern_disappeared`; общий comparison остаётся `inconclusive`.
-  Committed demo envelopes в `docs/sql-before-after.md` — отдельный пример.
-- AI: только ReformBoss, default `deepseek-v4.1-flash-1017`. Embeddings сейчас
-  `unavailable`: `POST /v1/embeddings` вернул 403 `token_model_not_allowed`;
-  registry pending, fake vectors запрещены, vetted требует реального scanner
-  provenance и resolved comparison.
-
-## Проверка
-
-- HTTP smoke выше проверяет health/session/workflows/artifact.
-- `node packages/comparison/compare-cli.mjs <baseline.json> <current.json>` —
-  сравнение published envelopes.
-- `examples/demo/sql-before-after/` — реальный SAST/codefacts прогон и
-  negative probes; команды и границы — в [docs/sql-before-after.md](docs/sql-before-after.md).
+- Одна проверка — один явно выбранный артефакт. Если артефакт не выбран, берётся
+  артефакт из сохранённого черновика; смешивать архивы между проблемами, картой
+  и отчётом нельзя.
+- `006_snapshot_origins`: один снимок проекта может иметь несколько загрузок и
+  проверок; manifest и файлы не переписываются.
+- `pass` не означает «ноль проблем»: это отсутствие блокирующих по политике при
+  данном покрытии. Пока каноническое покрытие частичное, честный вердикт —
+  `inconclusive`.
+- `executionStatus` отчёта — фактическое выполнение, а не вердикт безопасности.
+- Общее сравнение остаётся `inconclusive`; SQL-проверка узкая
+  (`source_pattern`). Синтетический источник никогда не даёт `comparable=true`.
+- AI-объяснения — отдельный слой и не меняют проблемы, покрытие и вердикт.
+  Векторные представления текста необязательны и сейчас недоступны (403),
+  проверенных примеров 0. Политика предметной области не подключена к
+  канонической подписи; допущения не являются работающим ограничением.
+- Workspace общий: аккаунтов, списков доступа и приватных кабинетов нет.
+  Роль `user`/`admin` ограничивает операторские действия, а не изолирует данные.
 
 ## Ограничения
 
-Локальный хост должен быть включён. `Linger=no`: после перезагрузки user units
-нужен вход пользователя. Cloudflare блокирует default Python-urllib User-Agent
-кодом 1010; браузер и curl проходят. Семантика
-parser/anchor и полнота runtime graph (`runtime-configuration`,
-`runtime-guards`, `binaries-and-archives`) не доказаны — такие gaps остаются
-видимыми, а comparison может быть `inconclusive`. 3–5 подготовленных примеров
-проверяют механику хранения/сравнения, но не преимущество retrieval. Полные
-ограничения и acceptance — в [docs/RELEASE-HANDOFF.md](docs/RELEASE-HANDOFF.md).
+Публичный стенд `9862e19` старый: user/admin и принятые исправления появятся там
+только после пересборки. Sol baseline `95da50b` зафиксировал blockers: результат
+может не привязаться к новому ZIP, «100% полноты» может скрывать неполноту,
+админский обзор смешивает общие и выбранные данные, сравнение требует понятного
+выбора пары, карточка проблемы не ведёт к рекомендации, а маскировка sample
+credential была неполной. Focused retest по UI и redaction ещё не выполнен.
+
+Полные ограничения и честные статусы — в [release handoff](docs/RELEASE-HANDOFF.md)
+и [словаре](docs/PRODUCT-GLOSSARY.md). Production readiness и полное покрытие не
+заявляются.
