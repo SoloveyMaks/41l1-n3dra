@@ -20,12 +20,132 @@ from backend.app.responsibility.models import (
 
 RESPONSIBILITY_DEADLINE_SECONDS = 10.0
 _MAX_ACTIVE_RESPONSIBILITY = 4
-_ACTIVE = asyncio.Semaphore(_MAX_ACTIVE_RESPONSIBILITY)
+_MAX_QUEUED_RESPONSIBILITY = 8
 _INFLIGHT: Dict[str, asyncio.Task] = {}
+_REGISTRY_LOCK = asyncio.Lock()
 
 
 class ResponsibilityNotFound(Exception):
     pass
+
+
+class ResponsibilityBusy(Exception):
+    pass
+
+
+class _Admission:
+    """Bounded active+queue admission for real (sync) responsibility work."""
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.waiting = 0
+        self.lock = asyncio.Lock()
+        self.changed = asyncio.Condition(self.lock)
+
+    async def reserve(self) -> bool:
+        """Reserve an active slot, or a bounded queue place.
+
+        Returns True when active immediately, False when queued. Raises
+        ResponsibilityBusy without creating a task when both are full.
+        """
+        async with self.changed:
+            if self.active < _MAX_ACTIVE_RESPONSIBILITY:
+                self.active += 1
+                return True
+            if self.waiting >= _MAX_QUEUED_RESPONSIBILITY:
+                raise ResponsibilityBusy("Слишком много одновременных запросов ответственности.")
+            self.waiting += 1
+            return False
+
+    async def activate(self, deadline: float) -> None:
+        async with self.changed:
+            if self.active < _MAX_ACTIVE_RESPONSIBILITY:
+                if self.waiting > 0:
+                    self.waiting -= 1
+                self.active += 1
+                return
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                self.waiting -= 1
+                raise asyncio.TimeoutError
+            try:
+                await asyncio.wait_for(
+                    self.changed.wait_for(
+                        lambda: self.active < _MAX_ACTIVE_RESPONSIBILITY
+                    ),
+                    timeout=remaining,
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self.waiting -= 1
+                raise
+            self.waiting -= 1
+            self.active += 1
+
+    async def cancel_wait(self) -> None:
+        async with self.changed:
+            if self.waiting > 0:
+                self.waiting -= 1
+            self.changed.notify()
+
+    async def release(self) -> None:
+        async with self.changed:
+            if self.active > 0:
+                self.active -= 1
+            self.changed.notify()
+
+
+_ADMISSION = _Admission()
+
+
+class _AdmissionSlot:
+    def __init__(self) -> None:
+        self.active = False
+        self.queued = False
+        self.released = False
+        self.sync_future: Optional[asyncio.Future] = None
+        self.loop = asyncio.get_running_loop()
+
+    async def activate(self, deadline: float) -> None:
+        if self.active:
+            return
+        await _ADMISSION.activate(deadline)
+        self.queued = False
+        self.active = True
+
+    def defer_or_release(self) -> None:
+        if self.released:
+            return
+        if not self.active:
+            if self.queued:
+                self.released = True
+                self._schedule(self._cancel_wait)
+            return
+        self.released = True
+        sync_future = self.sync_future
+        if sync_future is not None and not sync_future.done():
+            # A cancelled/timed-out caller must not free a slot while the
+            # thread is still inside PG/CPU. Release only after actual end.
+            sync_future.add_done_callback(lambda _future: self._schedule_release())
+        else:
+            self._schedule_release()
+
+    def _schedule_release(self) -> None:
+        self._schedule(_ADMISSION.release)
+
+    def _schedule(self, coroutine_factory: Any) -> None:
+        def run() -> None:
+            try:
+                asyncio.create_task(coroutine_factory())
+            except RuntimeError:
+                pass  # loop is shutting down
+
+        try:
+            self.loop.call_soon_threadsafe(run)
+        except RuntimeError:
+            pass
+
+    async def _cancel_wait(self) -> None:
+        await _ADMISSION.cancel_wait()
 
 
 def _module_name(path: str) -> str:
@@ -158,8 +278,14 @@ async def _build_responsibility_impl(
     store: Any,
     run_id: str,
     finding_id: str,
+    slot: _AdmissionSlot,
 ) -> ResponsibilityResponse:
-    context = await asyncio.to_thread(_load_context, db, store, run_id, finding_id)
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, _load_context, db, store, run_id, finding_id)
+    slot.sync_future = future
+    # Shield the executor future: cancelling the HTTP waiter must not hide the
+    # fact that a real thread is still using PG/CPU.
+    context = await asyncio.shield(future)
     run = context["run"]
     finding = context["finding"]
     path = context["path"]
@@ -215,26 +341,58 @@ async def build_responsibility(
     finding_id: str,
 ) -> ResponsibilityResponse:
     key = f"{workspace_id()}:{run_id}:{finding_id}"
-    existing = _INFLIGHT.get(key)
-    if existing is not None and not existing.done():
-        return await asyncio.shield(existing)
+    deadline = asyncio.get_running_loop().time() + RESPONSIBILITY_DEADLINE_SECONDS
+    async with _REGISTRY_LOCK:
+        existing = _INFLIGHT.get(key)
+        if existing is not None and not existing.done():
+            task = existing
+        else:
+            active = await _ADMISSION.reserve()
+            slot = _AdmissionSlot()
+            slot.active = active
+            slot.queued = not active
 
-    async def run() -> ResponsibilityResponse:
-        async with _ACTIVE:
-            return await asyncio.wait_for(
-                _build_responsibility_impl(
-                    db=db, store=store, run_id=run_id, finding_id=finding_id
-                ),
-                timeout=RESPONSIBILITY_DEADLINE_SECONDS,
-            )
+            async def run() -> ResponsibilityResponse:
+                try:
+                    try:
+                        await slot.activate(deadline)
+                    except BaseException:
+                        # activate() already removed the queue place.
+                        slot.queued = False
+                        raise
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    return await asyncio.wait_for(
+                        _build_responsibility_impl(
+                            db=db,
+                            store=store,
+                            run_id=run_id,
+                            finding_id=finding_id,
+                            slot=slot,
+                        ),
+                        timeout=remaining,
+                    )
+                finally:
+                    slot.defer_or_release()
 
-    task = asyncio.create_task(run())
-    _INFLIGHT[key] = task
+            task = asyncio.create_task(run())
+            _INFLIGHT[key] = task
 
-    def cleanup(finished: asyncio.Task) -> None:
-        if _INFLIGHT.get(key) is finished:
-            _INFLIGHT.pop(key, None)
+            def cleanup(finished: asyncio.Task) -> None:
+                if _INFLIGHT.get(key) is finished:
+                    _INFLIGHT.pop(key, None)
+                if not finished.cancelled():
+                    try:
+                        finished.exception()
+                    except Exception:
+                        pass
 
-    task.add_done_callback(cleanup)
-    # A cancelled caller must not cancel the shared enrichment task for others.
-    return await asyncio.shield(task)
+            task.add_done_callback(cleanup)
+
+    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+    if remaining <= 0:
+        raise asyncio.TimeoutError
+    # Waiting on the shared task with shield: cancellation of one HTTP caller
+    # does not cancel the build for other callers or free its worker slot.
+    return await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
