@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   ShieldCheck, Play, Upload, Clock, FileText, Bug,
-  Sparkles, Layers, Network, GitCompare, RefreshCw, LogOut, User
+  Sparkles, Layers, Network, GitCompare, RefreshCw, LogOut, User, Settings
 } from 'lucide-react';
 import { AppTab, RunSummary, SecurityVerdict, SessionMode, SessionUser } from '../types';
 
@@ -33,6 +33,7 @@ const TAB_ITEMS: Array<{ id: AppTab; label: string; icon: React.ComponentType<{ 
   { id: 'map', label: 'Карта доступа', icon: Network },
   { id: 'report', label: 'Отчёт', icon: FileText },
   { id: 'comparison', label: 'Сравнение', icon: GitCompare },
+  { id: 'settings', label: 'Настройки', icon: Settings },
   { id: 'schedule', label: 'Автозапуск', icon: Clock },
 ];
 
