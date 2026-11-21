@@ -16,6 +16,8 @@ import { ScenarioCreateModal } from './components/ScenarioCreateModal';
 import { ScenarioPromptModal } from './components/ScenarioPromptModal';
 import { AccountModal } from './components/AccountModal';
 import { UserSettingsPanel } from './components/UserSettingsPanel';
+import { NotificationCenter } from './components/NotificationCenter';
+import { ReferenceChecksSection } from './components/ReferenceChecksSection';
 import { AdminShell, AdminSection } from './components/AdminShell';
 import {
   AdminAccessPanel,
@@ -51,7 +53,7 @@ import {
 import { apiClient, ApiError, AuthRequiredError } from './api/client';
 import { buildRunTelemetry } from './execution/runTelemetry';
 import type { RunTelemetry } from './execution/runTelemetry';
-import { artifactLabel, shortCommit } from './repository';
+import { artifactLabel, artifactRepository, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
 
@@ -120,15 +122,6 @@ const RUN_STATUS_RANK: Record<ExecutionStatus, number> = {
   cancelled: TERMINAL_RUN_RANK,
   interrupted: TERMINAL_RUN_RANK,
 };
-
-// The map owner exposes `onLoadStateChange(status)` from SecurityMapScreen in
-// its own commit. This typed seam binds App to that agreed contract so the
-// merge does not have to touch the map component again.
-const SecurityMapScreenWithLoadState = SecurityMapScreen as React.FC<
-  React.ComponentProps<typeof SecurityMapScreen> & {
-    onLoadStateChange?: (status: RunMapLoadStatus) => void;
-  }
->;
 
 export const App: React.FC = () => {
   const [adminSection, setAdminSection] = useState<AdminSection>('overview');
@@ -1034,6 +1027,18 @@ export const App: React.FC = () => {
 
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
 
+  // The run's own artifact, not merely the id copied into a mutable draft.
+  const currentRunArtifact = currentRun
+    ? artifacts.find((artifact) => artifact.id === currentRun.artifact_id)
+    : undefined;
+  const currentRunRepository = artifactRepository(currentRunArtifact);
+  // File graph entry is valid only when the canvas shows the artifact of the
+  // selected run. An empty or different selection gets no runId at all.
+  const canvasRunId =
+    currentRun && currentArtifactId && currentRun.artifact_id === currentArtifactId
+      ? currentRun.id
+      : null;
+
   const runTelemetry = useMemo(
     () => buildRunTelemetry({
       events,
@@ -1071,6 +1076,14 @@ export const App: React.FC = () => {
   }, [currentRun, currentRunId, liveBaselineSeq]);
 
   const isAdmin = session?.role === 'admin';
+  // A remount on account/workspace/role change drops the previous account's
+  // inbox, settings and in-flight polling instead of reusing its state.
+  const notificationKey = [
+    session?.user?.userId || session?.workspaceId || 'anon',
+    session?.role || '',
+    session?.sessionId || '',
+  ].join(':');
+
   const nodeFailureReason = nodeRuns.find((node) => node.error_message)?.error_message;
   const runFailureReason = [...events]
     .reverse()
@@ -1160,6 +1173,8 @@ export const App: React.FC = () => {
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleUserSelectArtifact}
+                runId={canvasRunId}
+                onOpenMap={() => setActiveTab('map')}
               />
               {selectedNode && (
                 <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
@@ -1185,6 +1200,7 @@ export const App: React.FC = () => {
               planKnown={runPlanKnown}
               graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
               runMapState={mapLoadState}
+              runRepository={currentRunRepository}
               onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
               onRefresh={currentRunId ? () => {
                 void loadRunDetails(currentRunId);
@@ -1208,7 +1224,7 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'map' && (
-            <SecurityMapScreenWithLoadState
+            <SecurityMapScreen
               key={currentRunId ?? 'no-run'}
               runId={currentRunId}
               onLoadStateChange={
@@ -1231,12 +1247,23 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'comparison' && (
-            <ComparisonView
-              runs={runs}
-              artifacts={artifacts}
-              workflows={workflows}
-              onRefreshRuns={() => void refreshRuns()}
-            />
+            <div className="flex h-full min-h-0 w-full flex-col bg-slate-950">
+              <div className="max-h-[50vh] shrink-0 overflow-y-auto border-b border-slate-800 px-4 py-3 sm:px-6">
+                <ReferenceChecksSection
+                  runs={runs}
+                  workspaceId={session?.workspaceId}
+                  role={session?.role}
+                />
+              </div>
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <ComparisonView
+                  runs={runs}
+                  artifacts={artifacts}
+                  workflows={workflows}
+                  onRefreshRuns={() => void refreshRuns()}
+                />
+              </div>
+            </div>
           )}
 
           {activeTab === 'settings' && (
@@ -1281,7 +1308,17 @@ export const App: React.FC = () => {
           error={accountError}
           onClose={() => setIsAccountOpen(false)}
           onLogout={() => void handleLogout()}
-          onSelectRun={handleSelectRun}
+          onSelectRun={(runId) => {
+            handleSelectRun(runId);
+            setActiveTab('live');
+          }}
+        />
+        <NotificationCenter
+          key={notificationKey}
+          onOpenRun={(runId) => {
+            handleSelectRun(runId);
+            setActiveTab('live');
+          }}
         />
         {noticeNode}
       </div>
@@ -1363,6 +1400,8 @@ export const App: React.FC = () => {
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleSelectArtifact}
+                runId={canvasRunId}
+                onOpenMap={() => setAdminSection('map')}
               />
               {selectedNode && (
                 <InspectorPanel
@@ -1407,6 +1446,7 @@ export const App: React.FC = () => {
             planKnown={runPlanKnown}
             graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
             runMapState={mapLoadState}
+            runRepository={currentRunRepository}
             onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
             onRefresh={currentRunId ? () => {
               void loadRunDetails(currentRunId);
@@ -1430,7 +1470,7 @@ export const App: React.FC = () => {
         );
       case 'map':
         return (
-          <SecurityMapScreenWithLoadState
+          <SecurityMapScreen
             key={currentRunId ?? 'no-run'}
             runId={currentRunId}
             onLoadStateChange={
@@ -1452,7 +1492,25 @@ export const App: React.FC = () => {
           />
         );
       case 'comparison':
-        return <ComparisonView runs={runs} artifacts={artifacts} workflows={workflows} onRefreshRuns={() => void refreshRuns()} />;
+        return (
+          <div className="flex h-full min-h-0 flex-col bg-slate-950">
+            <div className="max-h-[50vh] shrink-0 overflow-y-auto border-b border-slate-800 px-4 py-3 sm:px-6">
+              <ReferenceChecksSection
+                runs={runs}
+                workspaceId={session?.workspaceId}
+                role={session?.role}
+              />
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <ComparisonView
+                runs={runs}
+                artifacts={artifacts}
+                workflows={workflows}
+                onRefreshRuns={() => void refreshRuns()}
+              />
+            </div>
+          </div>
+        );
       case 'analyzers':
         return <AdminAnalyzersPanel report={report} nodeRuns={nodeRuns} />;
       case 'ai':
@@ -1497,6 +1555,13 @@ export const App: React.FC = () => {
         runId={currentRunId || undefined}
         isOpen={isAiTestOpen}
         onClose={() => setIsAiTestOpen(false)}
+      />
+      <NotificationCenter
+        key={notificationKey}
+        onOpenRun={(runId) => {
+          handleSelectRun(runId);
+          setAdminSection('live');
+        }}
       />
       {noticeNode}
     </div>

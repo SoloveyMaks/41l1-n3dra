@@ -5,8 +5,9 @@ import {
   PackageSearch, FileCode2, GitMerge, ShieldAlert, GitFork, Sparkles,
   FileText, Send, Network,
 } from 'lucide-react';
-import { NodeKind, NodeRunRecord, NodeRunStatus, RunMapLoadState, RunSummary, WorkflowNode } from '../types';
+import { NodeKind, NodeRunRecord, NodeRunStatus, RepositorySource, RunMapLoadState, RunSummary, WorkflowNode } from '../types';
 import type { NodeTelemetry, RunTelemetry } from '../execution/runTelemetry';
+import { RepositorySourceView } from './RepositorySourceView';
 
 type LiveEvent = {
   seq: number;
@@ -30,6 +31,8 @@ interface LiveRunViewProps {
   graphMismatch?: boolean;
   // Actual GET /security-map state reported by SecurityMapScreen for this run.
   runMapState?: RunMapLoadState | null;
+  /** Repository of the artifact this run actually executed, if known. */
+  runRepository?: RepositorySource | null;
   onSelectNode: (nodeId: string) => void;
   onRefresh?: () => void;
   onOpenMap?: () => void;
@@ -861,6 +864,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   planKnown = false,
   graphMismatch = false,
   runMapState = null,
+  runRepository = null,
   onSelectNode,
   onRefresh,
   onOpenMap,
@@ -1151,6 +1155,11 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                 <span>•</span>
                 <span>Событий: <strong className="text-slate-300">{events.length}</strong></span>
               </div>
+              {runRepository && (
+                <div className="mt-1 inline-flex max-w-full rounded-lg border border-indigo-900/70 bg-indigo-950/30 px-2 py-0.5">
+                  <RepositorySourceView repository={runRepository} showProvider={false} runId={currentRun.id} />
+                </div>
+              )}
             </div>
           </div>
           {onRefresh && (
