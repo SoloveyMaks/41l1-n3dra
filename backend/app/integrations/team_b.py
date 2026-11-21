@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from backend.app.analyzers.advisory_catalog import PACKAGED_ADVISORY_DB
+from backend.app.analyzers.advisory_catalog import resolve_trusted_catalog
 from backend.app.codefacts.identity import (
     revision_uuid,
     run_uuid,
@@ -38,7 +38,6 @@ from backend.app.contracts.schemas import (
 
 SCAN_ENGINE = "team_b"
 DEFAULT_ENGINE = "backend"
-_ADVISORY_MAX_BYTES = 10 * 1024 * 1024
 _BUILD_LOCK = threading.Lock()
 
 
@@ -56,50 +55,6 @@ class TeamBPayload:
     scan_results: Dict[str, ScanResult]
     raw_result: Any = None
     warnings: tuple[str, ...] = ()
-
-
-def _trusted_advisory_path() -> tuple[Optional[Path], Optional[str]]:
-    """Resolve the server-side catalog; an uploaded project never influences it.
-
-    A broken catalog configuration degrades SCA only: Secret and SAST still run
-    against the frozen snapshot. The packaged snapshot is never selected by the
-    uploaded repository.
-    """
-    raw = os.getenv("CG26_ADVISORY_DB", "").strip()
-    warning: Optional[str] = None
-    path: Optional[Path] = PACKAGED_ADVISORY_DB
-    if raw:
-        if raw.lower().startswith(("http://", "https://")):
-            warning = "CG26_ADVISORY_DB URL запрещён; используется встроенный advisory snapshot"
-        else:
-            configured = Path(raw).resolve()
-            root = os.getenv("CG26_ADVISORY_ROOT", "").strip()
-            if root:
-                trusted_root = Path(root).resolve()
-                if trusted_root != configured and trusted_root not in configured.parents:
-                    warning = (
-                        "CG26_ADVISORY_DB вне CG26_ADVISORY_ROOT; "
-                        "используется встроенный advisory snapshot"
-                    )
-                    configured = None
-            if configured is not None and configured.is_file():
-                path = configured
-            elif configured is not None:
-                warning = (
-                    "CG26_ADVISORY_DB не найден; используется встроенный доверенный "
-                    f"advisory snapshot {PACKAGED_ADVISORY_DB.name}"
-                )
-    if path is not None and path.is_file():
-        if path.stat().st_size > _ADVISORY_MAX_BYTES:
-            warning = (
-                "advisory snapshot слишком большой; SCA работает без каталога"
-            )
-            path = None
-        return path, warning
-    return None, (
-        "доверенный advisory snapshot не найден; SCA работает без каталога, "
-        "SECRET/SAST продолжают анализ"
-    )
 
 
 def _require_hmac_environment() -> None:
@@ -287,7 +242,7 @@ class TeamBAdapter:
     def _build(self, run_id: str, artifact_id: str, artifact_row: Dict[str, Any],
                revision_id: str) -> TeamBPayload:
         _require_hmac_environment()
-        advisory, advisory_warning = _trusted_advisory_path()
+        advisory, advisory_warning = resolve_trusted_catalog()
         extracted_path = artifact_row.get("extracted_path")
         if not extracted_path or not Path(extracted_path).is_dir():
             raise TeamBError("Team B: распакованный артефакт недоступен")
