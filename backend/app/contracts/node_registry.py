@@ -153,8 +153,6 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
             PortDefinition(id="explain_result", name="Explain Out", type=PortType.EXPLAIN_RESULT)
         ],
         default_config={
-            "model": "gemini-3.8-flash",
-            "maxTokens": 2048,
             "strictValidation": True
         }
     ),

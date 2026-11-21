@@ -169,6 +169,10 @@ def get_previous_system_default_draft(artifact_id: str = "") -> WorkflowDraft:
 
 
 def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
+    nodes = _base_nodes(artifact_id)
+    for node in nodes:
+        if node.kind == NodeKind.AI_EXPLAIN:
+            node.config = {"strictValidation": True}
     return WorkflowDraft(
         schemaVersion=1,
         name="Банковский аудит Kotlin/Spring Boot (Secure PR Gate)",
@@ -178,6 +182,6 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
             "замороженного кода, AI-обоснование и опциональное уведомление "
             "(по умолчанию выключено)"
         ),
-        nodes=[*_base_nodes(artifact_id), _ai_scan_node()],
+        nodes=[*nodes, _ai_scan_node()],
         edges=[*_base_edges(), *_ai_scan_edges()],
     )
