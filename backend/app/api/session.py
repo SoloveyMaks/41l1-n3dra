@@ -319,6 +319,31 @@ def require_admin(request: Request) -> Dict[str, Any]:
     return session
 
 
+def require_workspace_actor(request: Request) -> Dict[str, Any]:
+    """Verified account (user/admin) или legacy demo-admin.
+
+    Открывает только пользовательские триггеры своего workspace: schedules и
+    repository watches/settings/setup/check. Demo-user сюда не проходит, а
+    админские overview/config/secret endpoints остаются на ``require_admin``.
+    """
+    session = session_from_request(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    mode = session.get("mode")
+    role = session.get("role")
+    if mode == MODE_ACCOUNT and role in ROLES:
+        return session
+    if mode == MODE_DEMO and role == ROLE_ADMIN:
+        return session
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "ACCOUNT_OR_DEMO_ADMIN_REQUIRED",
+            "message": "Нужен подтверждённый аккаунт или legacy demo-admin",
+        },
+    )
+
+
 def set_session_cookie(response: Response, token: str, request: Request) -> None:
     forwarded_proto = request.headers.get("x-forwarded-proto") if trust_proxy_headers() else ""
     proto = (forwarded_proto or request.url.scheme or "").lower()

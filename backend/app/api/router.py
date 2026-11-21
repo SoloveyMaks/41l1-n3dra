@@ -28,6 +28,7 @@ from backend.app.api.session import (
     public_demo,
     request_workspace,
     require_admin,
+    require_workspace_actor,
     revoke_current_session,
     registration_invite_required,
     session_from_request,
@@ -876,13 +877,13 @@ async def stream_run_events(run_id: str, after: int = Query(default=0)):
 # --- Schedules ---
 @api_router.get("/schedules")
 def list_schedules(request: Request):
-    require_admin(request)
+    require_workspace_actor(request)
     return db_repo.list_schedules()
 
 
 @api_router.post("/schedules")
 def create_schedule(payload: Dict[str, Any], request: Request):
-    require_admin(request)
+    require_workspace_actor(request)
     sched_id = f"sch_{uuid.uuid4().hex[:8]}"
     wf_id = payload.get("workflowId")
     art_id = payload.get("artifactId")
@@ -903,7 +904,7 @@ def create_schedule(payload: Dict[str, Any], request: Request):
 
 @api_router.patch("/schedules/{schedule_id}")
 def update_schedule(schedule_id: str, payload: Dict[str, Any], request: Request):
-    require_admin(request)
+    require_workspace_actor(request)
     enabled = payload.get("enabled")
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled должен быть boolean")
