@@ -40,7 +40,10 @@ RUNTIME_SCHEMA_PATH = Path(__file__).with_name("runtime_schema.sql")
 RUNTIME_GUARDS_PATH = Path(__file__).with_name("runtime_guards.sql")
 RUNTIME_WATCH_SCHEMA_PATH = Path(__file__).with_name("runtime_repository_watches.sql")
 RUNTIME_HOOK_SCHEMA_PATH = Path(__file__).with_name("runtime_repository_hooks.sql")
-RUNTIME_SCHEMA_VERSION = 5
+NOTIFICATION_SCHEMA_PATH = Path(__file__).parents[1] / "notifications" / "schema.sql"
+NOTIFICATION_GUARD_PATH = NOTIFICATION_SCHEMA_PATH.with_name("dispatch_guard.sql")
+NOTIFICATION_DDL_LOCK = "nedra-completion-notifications-v1"
+RUNTIME_SCHEMA_VERSION = 6
 LEGACY_RUNTIME_SCHEMA = "runtime_legacy_v1"
 RUNTIME_DDL_LOCK_KEY = int.from_bytes(
     hashlib.sha256(b"41l1-n3dra/runtime-ddl").digest()[:8], "big", signed=True
@@ -221,6 +224,57 @@ def _create_schema_meta(conn) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS runtime.schema_meta (version integer PRIMARY KEY)")
 
 
+def _apply_notification_schema(conn, scripts: List[str]) -> None:
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (NOTIFICATION_DDL_LOCK,))
+    for script in scripts:
+        conn.execute(script)
+    ready = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_attribute
+             WHERE attrelid = to_regclass('runtime.completion_notifications')
+               AND attname = 'retry_cancelled' AND NOT attisdropped
+               AND atttypid = 'boolean'::regtype AND attnotnull
+        ) AND EXISTS (
+            SELECT 1 FROM pg_trigger
+             WHERE tgrelid = to_regclass('runtime.runs')
+               AND tgname = 'lock_run_completion_dispatch'
+               AND NOT tgisinternal AND tgenabled = 'O'
+               AND tgtype = 23
+               AND tgfoid = to_regprocedure('runtime.lock_run_completion_dispatch()')
+        ) AND EXISTS (
+            SELECT 1 FROM pg_trigger
+             WHERE tgrelid = to_regclass('runtime.runs')
+               AND tgname = 'capture_run_completion'
+               AND NOT tgisinternal AND tgenabled = 'O'
+               AND tgtype = 21
+               AND tgfoid = to_regprocedure('runtime.capture_run_completion()')
+        ) AS ready
+        """
+    ).fetchone()
+    if not ready or not ready["ready"]:
+        raise DatabaseUnavailable("Notification schema/dispatch guards не установлены; startup остановлен")
+
+
+def initialize_notification_schema(conn=None) -> None:
+    """Install the notification base schema and its forward dispatch guard.
+
+    ``conn`` is the caller's transaction (``init_db``): it is used as-is, so
+    runtime version 6 and both scripts commit or roll back together, and this
+    function never commits or closes it.  Without ``conn`` an owned pooled
+    connection runs the same statements and commits on its way out.
+    """
+    # Read both files before touching the database: an incomplete notification
+    # package must fail the startup before any transaction or lock is opened.
+    scripts = [path.read_text(encoding="utf-8") for path in
+               (NOTIFICATION_SCHEMA_PATH, NOTIFICATION_GUARD_PATH)]
+    if conn is None:
+        with get_pool().connection() as owned:
+            _apply_notification_schema(owned, scripts)
+        return
+    _apply_notification_schema(conn, scripts)
+
+
 def _install_fresh_runtime(conn) -> None:
     _exec_script(conn, RUNTIME_SCHEMA_PATH)
     _exec_script(conn, RUNTIME_GUARDS_PATH)
@@ -326,11 +380,19 @@ def init_db(workspace_id: uuid.UUID) -> None:
                 "UPDATE runtime.schema_meta SET version = %s",
                 (RUNTIME_SCHEMA_VERSION,),
             )
+        elif version == 5:
+            conn.execute(
+                "UPDATE runtime.schema_meta SET version = %s",
+                (RUNTIME_SCHEMA_VERSION,),
+            )
         elif version != RUNTIME_SCHEMA_VERSION:
             raise DatabaseUnavailable(
                 f"runtime schema version={version}, ожидается {RUNTIME_SCHEMA_VERSION}. "
                 "Нужна миграция runtime-слоя, молча работать на чужой версии нельзя."
             )
+        # Version and both notification scripts commit together. The later
+        # NotificationRuntime initializer calls the same helper without conn.
+        initialize_notification_schema(conn)
 
 
 class DatabaseRepository:
