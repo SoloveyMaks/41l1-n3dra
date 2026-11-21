@@ -167,7 +167,9 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   дедуплицируются in-flight, отмена одного caller не отменяет shared build.
 - Общий deadline 10 s включает ожидание в очереди. Слот sync worker не
   освобождается при HTTP timeout/cancel, пока `_load_context` реально не
-  завершился; shared task exception забирается в done callback без warning.
+  завершился; executor future и shared task exception забираются в done
+  callback на всех завершениях (cancelled учитывается), release ровно один,
+  без `Future exception was never retrieved`.
   Кэш истории — только публичные provider-ответы (provider/project/commit/path),
   без tenant-данных.
 - ZIP без repository/commit_sha → `unavailable` с причиной «история не входит в
