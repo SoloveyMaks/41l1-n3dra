@@ -7,6 +7,9 @@ import { Finding } from '../types';
 
 interface EvidenceCardProps {
   finding: Finding | null;
+  aiEnrichment?: { explanation: string; remediation: string; suggestedFixedVersion?: string };
+  aiStatus?: string;
+  onOpenReport?: () => void;
   onClose: () => void;
 }
 
@@ -16,8 +19,16 @@ const SEVERITY_LABEL: Record<string, string> = {
 const CONFIDENCE_LABEL: Record<string, string> = {
   confirmed: 'подтверждено', potential: 'возможно', inconclusive: 'не подтверждено',
 };
+const AI_STATUS_LABEL: Record<string, string> = {
+  succeeded: 'готово',
+  pending: 'ещё не готово',
+  failed: 'ошибка',
+  fallback: 'резервный ответ без проверки',
+  unavailable: 'недоступно',
+  disabled: 'выключено',
+};
 
-export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) => {
+export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, aiEnrichment, aiStatus, onOpenReport, onClose }) => {
   if (!finding) return null;
 
   const isCritical = finding.severity === 'critical';
@@ -148,26 +159,46 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
           </div>
         )}
 
-        {/* AI Enrichment */}
-        {finding.ai_enrichment && (
-          <div className="p-3 rounded-xl bg-fuchsia-950/30 border border-fuchsia-800/60 space-y-2">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-fuchsia-300">
-              <Sparkles size={14} />
-              <span>Рекомендация AI-ассистента</span>
-            </div>
-            <div className="text-[11px] text-slate-300 leading-relaxed">
-              {finding.ai_enrichment.explanation}
-            </div>
-            <div className="mt-2 text-[11px] font-mono p-2 rounded bg-slate-900 border border-fuchsia-800/40 text-fuchsia-200">
-              {finding.ai_enrichment.remediation}
-            </div>
-            {finding.ai_enrichment.suggestedFixedVersion && (
-              <div className="text-[10px] text-emerald-400 font-semibold">
-                Исправленная версия: {finding.ai_enrichment.suggestedFixedVersion}
-              </div>
-            )}
+        {/* AI Enrichment: presentation join from the selected run report only. */}
+        <div className="p-3 rounded-xl bg-fuchsia-950/30 border border-fuchsia-800/60 space-y-2">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-fuchsia-300">
+            <Sparkles size={14} />
+            <span>Рекомендация AI-ассистента</span>
           </div>
-        )}
+          {aiEnrichment ? (
+            <>
+              <div className="text-[11px] text-slate-300 leading-relaxed">
+                {aiEnrichment.explanation}
+              </div>
+              <div className="mt-2 text-[11px] font-mono p-2 rounded bg-slate-900 border border-fuchsia-800/40 text-fuchsia-200">
+                {aiEnrichment.remediation}
+              </div>
+              {aiEnrichment.suggestedFixedVersion && (
+                <div className="text-[10px] text-emerald-400 font-semibold">
+                  Исправленная версия: {aiEnrichment.suggestedFixedVersion}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="space-y-2 text-[11px] text-slate-400">
+              <p>
+                {aiStatus && aiStatus !== 'succeeded'
+                  ? `AI-объяснение недоступно: ${AI_STATUS_LABEL[aiStatus] || 'статус не подтверждён'}.`
+                  : aiStatus === 'succeeded'
+                    ? 'В отчёте этой проверки нет отдельной рекомендации для этой проблемы.'
+                    : 'AI-объяснение появится после завершения проверки и формирования отчёта.'}
+              </p>
+              {onOpenReport && (
+                <button
+                  onClick={onOpenReport}
+                  className="rounded border border-fuchsia-800/70 bg-slate-900 px-2 py-1 text-[11px] text-fuchsia-200 hover:bg-fuchsia-950"
+                >
+                  Открыть отчёт
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
