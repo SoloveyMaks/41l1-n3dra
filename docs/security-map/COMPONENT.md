@@ -31,7 +31,18 @@ A должен реализовать `maskedEvidence` с авторизацие
 
 ## Хост-экран и фактическое состояние загрузки
 
-`frontend/src/components/SecurityMapScreen.tsx` сам загружает карту выбранного run и отдаёт наружу необязательный `onLoadStateChange(state: LoadState)`; тип экспортируется как `SecurityMapLoadStateChange`. Семантика уровней: `loading` — запрос по выбранному run пошёл (выбор run или повтор); затем ровно один терминал — `ready` (coverage complete), `partial`, `empty` (нет узлов, связей и `findingRefs`) или `error`. Запоздалый ответ отменённого run, устаревший reload и размонтированный экран не эмитят; при `runId === null` эмиссий нет, потому что грузить нечего. Значение — уровень, а не событие: повтор того же значения (StrictMode) допустим, строить переходы на счётчике вызовов нельзя. Экран монтируется по ключу `runId`, поэтому владелец (App → LiveRunView) сбрасывает своё состояние сам при смене run.
+`frontend/src/components/SecurityMapScreen.tsx` сам загружает карту выбранного run и отдаёт наружу необязательный `onLoadStateChange(state: LoadState)`; тип экспортируется как `SecurityMapLoadStateChange`.
+
+```ts
+// frontend/src/components/SecurityMapScreen.tsx
+export type SecurityMapLoadStateChange = (state: LoadState) => void;
+export interface SecurityMapScreenProps {
+  runId: string | null;
+  onLoadStateChange?: SecurityMapLoadStateChange;
+}
+```
+
+Семантика уровней: `loading` — запрос по выбранному run пошёл (выбор run или повтор); затем ровно один терминал — `ready` (coverage complete), `partial`, `empty` (нет узлов, связей и `findingRefs`) или `error`. Запоздалый ответ отменённого run, устаревший reload и размонтированный экран не эмитят; при `runId === null` эмиссий нет, потому что грузить нечего. Значение — уровень, а не событие: повтор того же значения (StrictMode) допустим, строить переходы на счётчике вызовов нельзя. Экран монтируется по ключу `runId`, поэтому владелец (App → LiveRunView) сбрасывает своё состояние сам при смене run.
 
 ## Manual pickup preview
 
