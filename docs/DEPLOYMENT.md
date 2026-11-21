@@ -249,6 +249,15 @@ PC-хост должен быть включён. `Linger=no`: после reboot
   `resolved/unique_anchor`, `deletedFiles=[]`). Это реальный CLI-прогон, не fake
   envelope.
 
+## Cache после redeploy
+
+`backend/app/main.py` ставит `Cache-Control: no-cache, must-revalidate` на HTML
+SPA, `public, max-age=31536000, immutable` на существующие `/assets/*` и
+`no-store` на missing assets. Поэтому старый `index.html` не закрепляет
+удалённый JS после пересборки. У клиента, который уже держал старый HTML в
+кэше до этого заголовка, возможен один blank screen — нужен hard reload;
+после него браузер ревалидирует index без повторного залипания.
+
 ## Ограничения
 
 - Локальный хост должен быть включён; после reboot db/app поднимутся через
