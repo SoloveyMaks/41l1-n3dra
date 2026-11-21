@@ -117,3 +117,13 @@ Provider live traffic намеренно не запускался: oversized-bo
 ## Следующий candidate: admission b3f7240 — не принят
 
 Координатор предоставил `b3f72400bf2c76629a9278acb631e73ef40771c1` и сразу указал найденную им регрессию: `run_in_executor(None, _load_context, ...)` не переносит request ContextVar, в отличие от `asyncio.to_thread`. Этот SHA здесь не объявлен tenant-safe и не включён в доказательства 2af8c391. Для совместного targeted admission/cancellation/ContextVar acceptance ожидается точный исправленный SHA; gzip allocation и новые matcher/cooldown findings также остаются открытыми. Базовые auth/TG прогоны не нужны.
+
+## Gzip targeted recheck: bb863df4 — allocation defect закрыт
+
+Точный fix SHA `bb863df4c024a25d4a3fed24b4e974259f580086`, review merge HEAD `e4022b35fdbc25cfcb58555c9e5ca2903a69b60f`. Влит только для targeted transport proof; включённый ancestor b3f7240 **не принят** по tenant ContextVar до отдельного fix.
+
+* Исходный реальный Unix-socket HTTP proof повторён без изменения gzip16MiB payload: `_fetch_json_page` вернул `failed` на size ceiling с peak **504278 bytes** вместо **22502738 bytes** на 864273d. Первые 8192 wire bytes больше не разворачиваются целиком до проверки. Small valid gzip принят; обычный exact 262144-byte JSON остаётся `ok`, oversized plain остановлен после 270336 bytes. Тем самым исходный gzip allocation defect закрыт на этом SHA; это не обещание лимита всех allocations до 256 KiB.
+* Source-read `_read_limited_json_body`: `aiter_raw`, compressed ceiling 256 KiB, zlib `max_length` для decoded chunks, отказ от unsupported Content-Encoding; `_client` просит identity. На живом локальном drip-feed (byte каждые 0.6 s, соединение активно) запрос вернул `failed` по общему request deadline через **4.023 s**; это больше не только per-read timeout.
+* Minor boundary limitation: valid JSON ровно **262144 decoded bytes**, сжатый gzip в 290 bytes, отклонён как oversized, хотя тот же plain JSON принят. Причина — `remaining <= 0` перед `decoder.flush()`/eof даже когда decoder уже полностью завершён. Это воспроизведённая консервативная ошибка на точном верхнем пределе, не обход memory bound и сама по себе не блокирует feature acceptance.
+* Повторно подтвердились COMMENTED-preserves-decision, incomplete false, 20-reviewer cap и URL sanitizer из прежнего прямого reducer proof; новых provider calls не было. Temporary scripts/logs: `responsibility-bb-proof.log`, `responsibility-bb-boundaries.py/.log` под `/tmp/sol-accounts-review/`.
+* Общая feature acceptance всё ещё открыта: ContextVar regression b3f7240, nested PR429 cooldown и CODEOWNERS suffix false attribution требуют собственных точных fix SHA и focused recheck. До этого результаты 2af8 по scoped to_thread не переносятся автоматически на b3f/bb.
