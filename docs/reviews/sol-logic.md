@@ -142,3 +142,73 @@ Official JSON и Markdown скачались HTTP200 для четырёх со�
 Baseline `95da50b` **ещё нельзя представлять жюри как готовый достоверный путь от выбранного проекта к отчёту**. Главные блокеры: A/B смешивание, failed→succeeded в официальном отчёте, 100% «полнота» при partial analysis; отдельно надо убрать неоднозначность project/run и обновлять overview. Роли403, user no-PUT, run-scoped evidence, cautious deleted/coverage-loss comparison и узкий SQL proof реально сработали.
 
 Заявленные исправления `9143178` и `e0126f6` требуют независимого focused retest на конкретной новой ревизии. Сообщения о merge не являются проверкой исправления; этот отчёт сохраняет вывод по замороженному baseline.
+
+## AFTER — focused retest `85acb5a`, 21.11.2026
+
+**Два главных блокера исполнения закрыты живой независимой проверкой:** выбранный run artifact теперь определяет все входы анализа, а поздняя ошибка Condition отражается в итоговом официальном отчёте. Это вывод по новым запускам на `85acb5ac56dd49141e91296659e3161dabc96d01`, не по сообщению о merge. Предыдущий раздел сохраняет факты baseline `95da50b`.
+
+### Условия повтора
+
+В свой worktree смержен указанный local dev `85acb5a`, исходники не менялись. Сетевые запросы начались только после READY владельца: `http://127.0.0.1:18082/`, same DB `nedra_sol_review4`, asset `index-Bo8YLWLV.js` также подтверждён в собственной браузерной вкладке. Изменён только этот отчёт. Общие drafts/schedules не менялись; использованы сохранённые собственные fixtures, запущены новые runs. Исторические ошибочные runs не переписывались.
+
+### Повтор draft A → trigger B
+
+Сохранённый own workflow `wf_47a966df` по-прежнему содержит `project_input.config.artifactId=art_538871223025` (A). Повтор после запуска подтвердил, что draft остался A: PUT для исправления ситуации не понадобился.
+
+| Новый run | Выбор в trigger | Project Input и все 3 scanner inputs | Findings / JSON count | Execution / security verdict |
+|---|---|---|---:|---|
+| `88933cc5-34af-4687-ab36-b61a0c3ee202` | clean B `art_5c771d7b537c` | только B | 0 / 0 | succeeded / inconclusive |
+| `2c7981f7-9bf6-4b80-b4ff-caf4b2ece675` | SQL B `art_743b3fe8e5b7` | только SQL B | 1 / 1 | succeeded / fail |
+
+Оба запуска получили HTTP200 на nodes/findings/report/map/official.json/readable.md. У clean B report LOC=4, а не 12 строк A; карта содержит scope `ReviewB.kt`, snapshot `73a4a5d3-7857-5a91-9efe-4ad8ba77b23b`, как выбранный B. У SQL B единственная находка и в findings, и в official JSON находится в `src/main/kotlin/SolSql.kt`, как SQL B; карта использует snapshot `f4919ae8-6108-52cd-a709-ce1e546c81f3`.
+
+Для обоих запусков проверено: map runId совпадает с новым run; snapshotId совпадает с manifest выбранного B; map.identity.artifactHash совпадает с hash_sha256 выбранного B. Набор path/sourceHash map evidence SQL B совпал с сохранённым baseline самого SQL B, без ReviewA; clean B не содержит evidence (пустой набор честно не считался доказательством содержимого — отдельно проверены scanner inputs, LOC, scope и artifact/snapshot hash). Счётчики runtime/findings/map/official совпали 0/0/0/0 и 1/1/1/1. Исправление в `backend/app/engine/executor.py:367` подтвердилось поведением HTTP, **баг 1 закрыт для этих путей**.
+
+### Повтор late Condition после Build Report
+
+Старый собственный workflow `wf_f80e0b1e`, новый run `c42d3c10-19e6-42dc-a1ac-80fbdfe5c341`: Build Report succeeded, затем Condition с отсутствующим полем failed. Результат:
+
+- runtime `execution_status=failed`;
+- security verdict отдельно `inconclusive`;
+- report record `official_json.metadata.executionStatus=failed`;
+- скачанный официальный JSON также `executionStatus=failed`;
+- скачанный Markdown содержит «Статус выполнения: failed»;
+- SSE run_status последовательно `running`, затем `failed`.
+
+Все шесть запросов nodes/findings/report/map/JSON/Markdown вернули200; финальная перезапись отчёта в `backend/app/engine/executor.py:311` действительно выполнилась. **Баг 3 закрыт на новом run.** Исторический ошибочный run `41afc81c-e1c9-468e-afab-c4968e7d9b75` сохранил прежний JSON `succeeded`: по заданным условиям история не исправлялась задним числом и не выдаётся за новый корректный результат.
+
+### Быстрый user/403 и браузерный no-PUT
+
+User HTTP-проверки вернули403 на admin overview, schedules и PUT draft собственного workflow. В собственном изолированном профиле после logout admin выполнен user login, выбран own B и нажата кнопка запуска. Новый browser run `dd977f74-c695-4c4c-8859-755353a3dece` дошёл до «Завершена / Неполная проверка», кнопка запуска снова доступна. Записаны только method/url: `POST /api/workflows/wf_secure_pr_gate/validate`, `POST .../runs`; **PUT=0**. Access codes и cookie не выводились и не передавались в OS argv.
+
+При этом пути выбор B очистил старую карточку результата, а после завершения карточка явно назвала `sol-logic-B.zip` и показала покрытие «Неполное» с runtime-пропусками. Это полезное наблюдение данного пути; полный повтор upload/sample/reset/coverage оставлен владельцу structure, чтобы не дублировать его матрицу. Backend completeness_score сам по себе не объявляется новым достоверным процентом полного анализа.
+
+### Старые downloads, evidence, source hashes и SSE
+
+Для четырёх старых own SQL fixtures (before/fixed/deleted/coverage_loss) JSON, Markdown и map вернули200. Run/snapshot identity и все evidence sourceHash сохранились относительно записанных baseline-ответов; findingsCount и runId официального JSON не изменились. Evidence существующих before/fixed/coverage_loss вернули200, совпали scope и sourceHash, версия egress=`cg-redaction/2`. Evidence ID before под deleted run по-прежнему получил404.
+
+Historic own SSE before с `after=3172` вернул25 событий, seq строго больше3172, уникальны, отсортированы, все runId правильные. Новая маскировка SSE не сломала возобновление/идентичность. Искусственный offline/reconnect не проверялся.
+
+Для именно известного исторического sample baseline run `59c9b428-7c7c-46ea-8812-81bdb26951d7` программно проверены nodes, findings, report record, JSON download, Markdown download, map и URI evidence: все HTTP200. В перечисленных ответах URI с userinfo по-прежнему встречаются как маски, **ни одного немаскированного userinfo не обнаружено**. Sample SSE вернул39 событий, включая два URI-вхождения, немаскированных userinfo=0. Доказательство source evidence сохранило sourceHash и run scope; `storedRedactionVersion=cg-redaction/1`, выдаваемая версия=`cg-redaction/2`, `remasked=true`. Содержимое ответов sample, исходные credentials и URI-значения не печатались и не сохранялись в диагностические артефакты — только HTTP/версии/счётчики. Это проверка конкретного прежнего URI leak, не утверждение обо всех возможных видах секретов.
+
+### Comparison после изменений egress и guard
+
+Поскольку изменились presentation masking и вычисление comparable для synthetic provenance, точечно повторены те же существующие immutable scanner pairs. Все шесть API ответили200:
+
+| Pair | General | SQL narrow |
+|---|---|---|
+| before → fixed | comparable=false, item inconclusive | pattern_disappeared, source_pattern |
+| before → deleted | comparable=false, file_deleted, путь SolSql.kt отдельно в deletedFiles | file_deleted, source_pattern |
+| before → coverage_loss | comparable=false, inconclusive | inconclusive, source_pattern |
+
+Новое исполнение или маскирование не превратило partial coverage в общее исправление. SQL narrow не стал vetted fix, общий comparison по-прежнему не доказывает безопасность после правки. Отдельные synthetic contract fixtures не создавались: этот повтор проверяет guard на реальных собственных scanner runs.
+
+### Что закрыто и что осталось
+
+По своей focused-перспективе закрыты **A/B смешивание** и **failed run → succeeded official report**. Quick user403/no-PUT и затронутые старые downloads/SSE/evidence/comparison прошли без нового блокера. Исторические неверные execution status остались историей, как оговорено.
+
+UI покрытие и reset upload/sample не объявлены полностью закрытыми этим повтором: увиден корректный путь выбора B, остальная матрица у structure. Устаревшие admin overview counters из бага5 здесь не перепроверялись и не считаются исправленными; прошлые ограничения shared workspace, отключённых embeddings, vetted0, expectedScopesVerified=false и узкого SQL proof сохраняются. Полный новый аудит/проверка всех сценариев не проводились.
+
+**Вердикт AFTER:** два основных блокера достоверности исполнения устранены и независимо проверены на `85acb5a`. В пределах проверенных переходов можно показывать ограниченную честную демонстрацию выбранного проекта и отчёта; общую готовность к жюри нужно совместить с итогом structure/visual и открытым overview, без обещания полного security verdict или vetted-исправлений.
+
+Локальные безопасные свидетельства: `/tmp/sol-logic-after-summary.json`, `/tmp/sol-logic-after.json` (только own fixture payloads), `/tmp/sol-logic-after-historical.json`, `/tmp/sol-logic-after-terminal.json`; скрипты `/tmp/sol-logic-after.py`, `/tmp/sol-logic-after-historical.py`. Во всех sample-проверках сохранялись только счётчики/статусы, не сами payloads с credential material.
