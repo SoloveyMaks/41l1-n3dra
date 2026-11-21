@@ -46,15 +46,41 @@ npm run build --prefix frontend
 Все три команды прошли. `npm run lint --prefix frontend` — только
 существующие warnings других компонентов, без errors.
 
-## Скриншоты
+## Initial focus и узкий экран
 
-Временные browser screenshots (не входят в git):
-`/tmp/security-map-shots/security-map-desktop-1440-final.png`,
-`security-map-850-final.png`, `security-map-390-final.png`;
-`/tmp/security-map-shots-3/security-map-default-1440.png`,
-`security-map-teamb-1440.png`;
-`/tmp/security-map-shots-3/app-map-1440.png`, `app-map-850.png`,
-`app-map-390.png`.
+Поверх UI-коммита `19a34d2`:
+
+- `initialFocusNodeIds()` выбирает preferred finding по severity/status,
+  берёт sink/data/function seed и строит реальный путь от actor (или route,
+  если actor нет) до sink. Никаких hardcoded synthetic node.
+- `focusViewport()` после измерения нод ставит meaningful subset в левый верх
+  canvas, а не `DEFAULT_VIEWPORT`. Reset снова применяет этот focus.
+- Layout получил barycenter-проход: слой выравнивается по строкам входящих
+  рёбер, поэтому actor/route/handler не разъезжаются по вертикали.
+- «Вся карта» делает fit всех нод; «Показать путь» центрирует выбранный
+  узел/связь/находку или initial focus; unknown-связи не скрываются.
+- На узком (<700px canvas) focus показывает route → function → sink,
+  а MiniMap скрыт по умолчанию; кнопка «Мини» включает его вручную.
+- Тексты заменены: «жёлтый пунктир», «источник анализа»,
+  «Загружаем фрагмент», «Расположение блоков можно менять»,
+  «КАРТА ДОСТУПА / СТАТИЧЕСКИЙ АНАЛИЗ»; технические поля — в details.
+
+Live default 33 на 1440: actor внутри canvas на 24px, route не обрезан,
+правый край focus `1026 < 1050`, scale≈0.422. На 390: route/function/sink
+видны, MiniMap скрыт, scroll `390×850`, scale≈0.40. TeamB 43: overlap `0`,
+actor в графе отсутствует — focus корректно падает на route.
+
+## Скриншоты (после focus-правки)
+
+`/tmp/security-map-shots-5/default-33-initial-1440.png`
+sha256 `35cc7d101802b2c4f884966c592bc6bda097cc8d90ceb2975d8538841b1a39ad`;
+`/tmp/security-map-shots-5/default-33-initial-390.png`
+sha256 `8bc0b9d13dfd6109f86171036c3cdfa0bc462e65ee4f746819b434d76a1b8bea`;
+`/tmp/security-map-shots-5/teamb-43-initial-1440.png`
+sha256 `a4759902231eaa4623e7d0fd5353ef48c3ddbc4e945eeb20de5f8d0d9e2b2ace`.
+
+Ранние скриншоты: `/tmp/security-map-shots/`, `/tmp/security-map-shots-3/`,
+`/tmp/security-map-shots-4/`.
 
 ## Что осталось интеграции
 

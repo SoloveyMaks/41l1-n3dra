@@ -147,26 +147,148 @@ export function computeMapLayout(
     );
   }
 
-  const maxRows = Math.max(
-    1,
-    ...[...byRank.values()].map((list) =>
-      list.reduce((sum, index) => sum + componentNodes[index].length, 0),
-    ),
+  const predecessors = new Map<number, Set<number>>(
+    components.map((_, index) => [index, new Set<number>()]),
   );
+  for (const [from, targets] of dag) {
+    for (const to of targets) predecessors.get(to)?.add(from);
+  }
+
+  // Barycenter pass: align a layer next to the rows of its incoming edges.
+  // This keeps a real route actor → matcher → guard → route → handler → sink
+  // visually horizontal instead of scattering it across centered columns.
+  const rowOf = new Map<number, number>();
+  for (const [column, list] of [...byRank.entries()].sort((a, b) => a[0] - b[0])) {
+    const scored = list.map((index, order) => {
+      const rows = [...(predecessors.get(index) ?? [])]
+        .map((parent) => rowOf.get(parent))
+        .filter((value): value is number => value !== undefined);
+      const score = rows.length
+        ? rows.reduce((sum, value) => sum + value, 0) / rows.length
+        : order;
+      return { index, score, order };
+    });
+    scored.sort(
+      (a, b) => a.score - b.score ||
+        componentBase[a.index] - componentBase[b.index] ||
+        a.order - b.order,
+    );
+    let row = 0;
+    for (const item of scored) {
+      rowOf.set(item.index, row);
+      row += componentNodes[item.index].length;
+    }
+  }
+
   const positions: Record<string, Position> = {};
   for (const [column, list] of [...byRank.entries()].sort((a, b) => a[0] - b[0])) {
-    const rows = list.reduce((sum, index) => sum + componentNodes[index].length, 0);
-    const offset = ((maxRows - rows) * (NODE_HEIGHT + V_GAP)) / 2;
-    let row = 0;
     for (const index of list) {
-      for (const node of componentNodes[index]) {
+      const start = rowOf.get(index) ?? 0;
+      componentNodes[index].forEach((node, offset) => {
         positions[node.id] = {
           x: column * (NODE_WIDTH + H_GAP),
-          y: offset + row * (NODE_HEIGHT + V_GAP),
+          y: (start + offset) * (NODE_HEIGHT + V_GAP),
         };
-        row += 1;
-      }
+      });
     }
   }
   return positions;
+}
+const SEVERITY_ORDER: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+export function initialFocusNodeIds(
+  nodes: readonly ViewNode[],
+  edges: readonly ViewEdge[],
+  findings: readonly { nodeIds: string[]; severity: string; status: string }[],
+): string[] {
+  if (!nodes.length) return [];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const adjacency = new Map<string, Set<string>>(nodes.map((node) => [node.id, new Set()]));
+  for (const edge of edges) {
+    if (!byId.has(edge.fromId) || !byId.has(edge.toId)) continue;
+    adjacency.get(edge.fromId)?.add(edge.toId);
+    adjacency.get(edge.toId)?.add(edge.fromId);
+  }
+
+  const actorIds = nodes.filter((node) => node.kind === "actor").map((node) => node.id);
+  const routeIds = nodes.filter((node) => node.kind === "route").map((node) => node.id);
+  const starts = actorIds.length ? actorIds : (routeIds.length ? routeIds : nodes.slice(0, 1).map((node) => node.id));
+
+  const shortestPath = (target: string): string[] => {
+    const queue: string[] = [];
+    const parent = new Map<string, string | null>();
+    for (const start of starts) {
+      parent.set(start, null);
+      queue.push(start);
+    }
+    while (queue.length) {
+      const current = queue.shift()!;
+      if (current === target) {
+        const path: string[] = [];
+        let cursor: string | null = current;
+        while (cursor) {
+          path.unshift(cursor);
+          cursor = parent.get(cursor) ?? null;
+        }
+        return path;
+      }
+      for (const next of adjacency.get(current) ?? []) {
+        if (parent.has(next)) continue;
+        parent.set(next, current);
+        queue.push(next);
+      }
+    }
+    return [target];
+  };
+
+  const focus = new Set<string>();
+  const preferred = [...findings]
+    .filter((finding) => finding.nodeIds.some((id) => byId.has(id)))
+    .sort((a, b) =>
+      (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9) ||
+      a.status.localeCompare(b.status) ||
+      a.nodeIds.join("|").localeCompare(b.nodeIds.join("|")),
+    )[0];
+
+  const seedPriority: Record<string, number> = {
+    sink: 0,
+    data: 1,
+    function: 2,
+    route: 3,
+    guard: 4,
+    source: 5,
+    actor: 6,
+  };
+  const preferredSeeds = preferred
+    ? preferred.nodeIds
+        .filter((id) => byId.has(id))
+        .sort((a, b) =>
+          (seedPriority[byId.get(a)?.kind ?? ""] ?? 9) -
+          (seedPriority[byId.get(b)?.kind ?? ""] ?? 9),
+        )
+    : [];
+  const seeds = preferredSeeds.length
+    ? preferredSeeds.slice(0, 1)
+    : (routeIds.length ? routeIds.slice(0, 1) : starts);
+
+  for (const seed of seeds) {
+    for (const id of shortestPath(seed)) focus.add(id);
+    for (const next of adjacency.get(seed) ?? []) {
+      const kind = byId.get(next)?.kind;
+      if (kind === "sink" || kind === "data" || kind === "source") focus.add(next);
+    }
+  }
+
+  if (!focus.size) {
+    const [first] = nodes;
+    focus.add(first.id);
+    for (const next of adjacency.get(first.id) ?? []) focus.add(next);
+  }
+  return [...focus].slice(0, 16);
 }
