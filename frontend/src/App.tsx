@@ -568,7 +568,14 @@ export const App: React.FC = () => {
           <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
         )}
 
-        {activeTab === 'report' && <ReportView report={report} runId={currentRunId} />}
+        {activeTab === 'report' && (
+          <ReportView
+            report={report}
+            runId={currentRunId}
+            runStatus={currentRun?.execution_status}
+            failureReason={nodeRuns.find((node) => node.error_message)?.error_message}
+          />
+        )}
 
         {activeTab === 'comparison' && (
           <ComparisonView runs={runs} onRefreshRuns={() => void refreshRuns()} />
