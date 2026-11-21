@@ -533,7 +533,12 @@ export const App: React.FC = () => {
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
 
   const isAdmin = session?.role === 'admin';
-  const failureReason = nodeRuns.find((node) => node.error_message)?.error_message;
+  const nodeFailureReason = nodeRuns.find((node) => node.error_message)?.error_message;
+  const runFailureReason = [...events]
+    .reverse()
+    .find((event) => event.type === 'run_status' && Array.isArray(event.payload?.errors) && event.payload.errors.length > 0)
+    ?.payload.errors.join('; ');
+  const failureReason = nodeFailureReason || runFailureReason;
 
   const noticeNode = notice && (
     <div

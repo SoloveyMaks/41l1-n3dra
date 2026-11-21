@@ -33,8 +33,12 @@ interface UserDashboardProps {
   onLogout: () => void;
 }
 
-const verdictLabel = (verdict?: SecurityVerdict): string => {
-  if (verdict === 'pass') return 'Проблем не выявлено в проверенной части';
+const verdictLabel = (verdict?: SecurityVerdict, findingsCount = 0): string => {
+  if (verdict === 'pass') {
+    return findingsCount > 0
+      ? 'Нет блокирующих проблем по действующей политике'
+      : 'Проблем не выявлено в проверенной части';
+  }
   if (verdict === 'fail') return 'Найдены проблемы';
   if (verdict === 'inconclusive') return 'Неполная проверка';
   return 'Проверка идёт';
@@ -246,7 +250,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                 </div>
                 {currentRun ? (
                   <>
-                    <div className="text-base font-bold">{verdictLabel(currentRun.security_verdict)}</div>
+                    <div className="text-base font-bold">{verdictLabel(currentRun.security_verdict, currentRun.total_findings)}</div>
                     <div className="mt-1 text-xs opacity-80">{executionLabel(currentRun)}</div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg bg-black/20 p-2">
@@ -319,7 +323,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                       </span>
                       <span className="flex items-center gap-2 text-[11px]">
                         <span className={run.security_verdict === 'fail' ? 'text-rose-300' : run.security_verdict === 'pass' ? 'text-emerald-300' : 'text-amber-300'}>
-                          {verdictLabel(run.security_verdict)}
+                          {verdictLabel(run.security_verdict, run.total_findings)}
                         </span>
                         <span className="text-slate-500">{run.total_findings} проблем</span>
                         <ArrowRight size={13} className="text-slate-500" />
