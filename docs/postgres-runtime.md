@@ -225,11 +225,18 @@ workspace и убедитесь, что `get_run`/`get_artifact` по её id в
 `runtime_legacy_v1` после обновления остаётся бэкапом; удалить вручную, когда
 убедились, что данные читаются. Данные в нём не теряются и не переписываются.
 
-`005_canonical_envelope.up.sql` отделяет source envelope от canonical и
-бэкфиллит старые строки `canonical_envelope = source_envelope` (у них ещё не было
-downgrade-копии). Если старая строка публиковалась с downgrade, её canonical
-coverage совпадает с source только формально; для честного canonical её нужно
-перепубликовать. Новые публикации сразу пишут обе копии и оба hash.
+`005_canonical_envelope.up.sql` отделяет source envelope от canonical и для
+старых pre-005 строк **восстанавливает** `canonical_envelope` из уже сохранённых
+`scan_outcomes.coverage_summary` и `graph_coverage.coverage`: те же status/scopes/
+limits, что в SQL. Source, `document_hash` и `envelope_hash` не меняются, republish
+не нужен. Если fact-строка отсутствует, соответствующее coverage консервативно
+помечается `partial` с reason `reconstructed: missing ...`, а не выдаётся за
+complete. Новые публикации сразу пишут обе копии и оба hash.
+
+`provenance.bundleHash` — авторитетный SQL `analysis_bundles.bundle_hash`; его
+нельзя пересчитать из canonical/source envelope и нельзя подменять
+`canonicalHash` (это hash jsonb-копии). UI/validator должны валидировать только
+форму hash и брать значение из storage, а не recompute из coverage.
 
 ## Секреты в ошибках
 
