@@ -22,7 +22,7 @@ import type {
   SourceState,
 } from "./types";
 import { sameScope } from "./model";
-import { NODE_WIDTH, computeMapLayout } from "./layout";
+import { NODE_WIDTH, computeMapLayout, initialFocusNodeIds } from "./layout";
 import { NodeIcon, nodeMeta, toneColor } from "./NodeIcon";
 import { SecurityNode, type SecurityNodeData } from "./SecurityNode";
 import "@xyflow/react/dist/style.css";
@@ -149,6 +149,40 @@ export function MapView(props: MapViewProps) {
   );
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState(layout?.viewport ?? DEFAULT_VIEWPORT);
+  const [miniMapOpen, setMiniMapOpen] = useState(
+    () => typeof window !== "undefined" && window.innerWidth >= 900,
+  );
+  const miniMapTouched = useRef(false);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const sync = () => {
+      if (!miniMapTouched.current) setMiniMapOpen(!media.matches);
+    };
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  const toggleMiniMap = () => {
+    miniMapTouched.current = true;
+    setMiniMapOpen((value) => !value);
+  };
+  const focusIds = useMemo(
+    () => initialFocusNodeIds(model.nodes, model.edges, model.findings),
+    [model.nodes, model.edges, model.findings],
+  );
+  const compactFocusIds = useMemo(() => {
+    const byId = new Map(model.nodes.map((node) => [node.id, node]));
+    const routePath = focusIds.filter((id) =>
+      ["route", "function", "sink"].includes(byId.get(id)?.kind ?? ""),
+    );
+    if (routePath.length >= 2) return routePath;
+    const dataPath = focusIds.filter((id) =>
+      ["function", "sink", "data"].includes(byId.get(id)?.kind ?? ""),
+    );
+    return dataPath.length >= 2 ? dataPath : focusIds.filter((id) => byId.get(id)?.kind !== "actor");
+  }, [focusIds, model.nodes]);
+  const nodesMeasured =
+    mapNodes.length > 0 &&
+    mapNodes.every((node) => Boolean(node.measured?.width && node.measured?.height));
   const nodeTypes = useMemo(() => ({ securityNode: SecurityNode }), []);
   const canvasKey = `${Math.round(canvasSize.width / 50)}x${Math.round(canvasSize.height / 50)}`;
   const [localSelection, setLocalSelection] = useState<Selection | null>(null);
@@ -269,7 +303,7 @@ export function MapView(props: MapViewProps) {
               {item.location.path}:{item.location.line}–{item.location.endLine}
             </span>
             <small>
-              evidence {item.id.slice(0, 8)} · {item.producerVersion}
+              evidence {item.id.slice(0, 8)}
             </small>
           </button>
         ) : null;
@@ -404,9 +438,67 @@ export function MapView(props: MapViewProps) {
     }
   };
 
-  const fit = () => {
-    void flow?.fitView({ padding: 0.16, minZoom: 0.12 });
+  const focusViewport = (
+    ids: string[],
+    minZoom = 0.34,
+    maxZoom = 0.9,
+  ) => {
+    if (!flow || !ids.length) return;
+    const selected = mapNodes.filter((node) => ids.includes(node.id));
+    if (!selected.length) return;
+    const pad = 24;
+    const minX = Math.min(...selected.map((node) => node.position.x));
+    const minY = Math.min(...selected.map((node) => node.position.y));
+    const maxX = Math.max(
+      ...selected.map((node) => node.position.x + (node.measured?.width ?? NODE_WIDTH)),
+    );
+    const maxY = Math.max(
+      ...selected.map((node) => node.position.y + (node.measured?.height ?? 232)),
+    );
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+    const canvasWidth = canvasSize.width || canvasRef.current?.clientWidth || 0;
+    const canvasHeight = canvasSize.height || canvasRef.current?.clientHeight || 0;
+    if (!canvasWidth || !canvasHeight) return;
+    const zoom = Math.max(
+      minZoom,
+      Math.min(
+        maxZoom,
+        Math.min((canvasWidth - 2 * pad) / width, (canvasHeight - 2 * pad) / height),
+      ),
+    );
+    void flow.setViewport({
+      x: pad - minX * zoom,
+      y: pad - minY * zoom,
+      zoom,
+    });
   };
+
+  const fitAll = () => {
+    void flow?.fitView({ padding: 0.1, minZoom: 0.06, maxZoom: 1.2, duration: 260 });
+  };
+
+  const focusSelection = () => {
+    const ids = new Set(selectedNodeIds);
+    if (edge) {
+      ids.add(edge.fromId);
+      ids.add(edge.toId);
+    }
+    if (finding) finding.nodeIds.forEach((id) => ids.add(id));
+    if (ids.size) {
+      focusViewport([...ids], 0.55, 1.15);
+    } else {
+      focusViewport(focusIds);
+    }
+  };
+
+  useEffect(() => {
+    if (!flow || !nodesMeasured || !focusIds.length) return;
+    const compact = canvasSize.width > 0 && canvasSize.width < 700;
+    const ids = compact && compactFocusIds.length ? compactFocusIds : focusIds;
+    const timer = window.setTimeout(() => focusViewport(ids), 60);
+    return () => window.clearTimeout(timer);
+  }, [flow, nodesMeasured, model.revision, focusIds.join("|"), compactFocusIds.join("|"), canvasKey, canvasSize.width, canvasSize.height]);
 
   const reset = () => {
     const nextPositions = computeMapLayout(model.nodes, model.edges);
@@ -420,7 +512,8 @@ export function MapView(props: MapViewProps) {
       nodePositions: nextPositions,
     });
     requestAnimationFrame(() => {
-      void flow?.setViewport(DEFAULT_VIEWPORT);
+      const compact = canvasSize.width > 0 && canvasSize.width < 700;
+      focusViewport(compact && compactFocusIds.length ? compactFocusIds : focusIds);
     });
   };
 
@@ -435,7 +528,7 @@ export function MapView(props: MapViewProps) {
             <NodeIcon kind="route" size={19} />
           </span>
           <div>
-            <span className="sm-eyebrow">SECURITY MAP / SOURCE PATTERN</span>
+            <span className="sm-eyebrow">КАРТА ДОСТУПА / СТАТИЧЕСКИЙ АНАЛИЗ</span>
             <h1>Карта доступа и данных</h1>
           </div>
         </div>
@@ -462,10 +555,20 @@ export function MapView(props: MapViewProps) {
           >
             ◫ <span>Путь</span>
           </button>
-          <button className="sm-tool" onClick={fit} title="Вписать карту">
-            ⛶
+          <button className="sm-tool" onClick={fitAll} title="Вся карта">
+            ⛶ <span>Вся карта</span>
           </button>
-          <button className="sm-tool" onClick={reset} title="Сбросить layout">
+          <button className="sm-tool" onClick={focusSelection} title="Показать путь">
+            ◎ <span>Показать путь</span>
+          </button>
+          <button
+            className={`sm-tool ${miniMapOpen ? "is-active" : ""}`}
+            onClick={toggleMiniMap}
+            title="Мини-карта"
+          >
+            ▣ <span>Мини</span>
+          </button>
+          <button className="sm-tool" onClick={reset} title="Сбросить расположение">
             ↺
           </button>
           <button className="sm-tool" onClick={onRetry} title="Обновить карту">
@@ -480,7 +583,7 @@ export function MapView(props: MapViewProps) {
           onClick={() => choose({ kind: "edge", id: unknownEdges[0].id })}
         >
           <span>Неизвестные или частичные связи: {unknownEdges.length}</span>
-          <small>Пунктир и amber — это пробел анализа, а не безопасное состояние. Открыть первую связь →</small>
+          <small>Жёлтый пунктир — это пробел анализа, а не безопасное состояние. Открыть первую связь →</small>
         </button>
       )}
 
@@ -598,16 +701,18 @@ export function MapView(props: MapViewProps) {
                   color="#334155"
                 />
                 <Controls className="sm-controls" showInteractive={false} />
-                <MiniMap
-                  className="sm-minimap"
-                  nodeColor={(item) => {
-                    const data = item.data as unknown as SecurityNodeData;
-                    return toneColor[data.tone] ?? "#64748b";
-                  }}
-                  maskColor="rgba(2, 6, 23, 0.82)"
-                  pannable
-                  zoomable
-                />
+                {miniMapOpen && (
+                  <MiniMap
+                    className="sm-minimap"
+                    nodeColor={(item) => {
+                      const data = item.data as unknown as SecurityNodeData;
+                      return toneColor[data.tone] ?? "#64748b";
+                    }}
+                    maskColor="rgba(2, 6, 23, 0.82)"
+                    pannable
+                    zoomable
+                  />
+                )}
               </ReactFlow>
             )}
           </div>
@@ -615,7 +720,7 @@ export function MapView(props: MapViewProps) {
 
         <aside ref={detailsRef} className="sm-details" aria-label="Детали выбранного элемента">
           <div className="sm-details-head">
-            <span className="sm-eyebrow">DETAIL / EVIDENCE</span>
+            <span className="sm-eyebrow">ДЕТАЛИ / ДОКАЗАТЕЛЬСТВА</span>
             <span className="sm-details-count">
               {model.evidence.length} evidence · {model.findings.length} findings
             </span>
@@ -632,7 +737,7 @@ export function MapView(props: MapViewProps) {
           {!selection && (
             <p className="sm-muted">
               Слева — фактический маршрут. Нажмите узел или стрелку: здесь появятся
-              основание, producer и evidence. Layout меняет только расположение.
+              основание, источник анализа и evidence. Расположение блоков можно менять.
             </p>
           )}
           {edge && (
@@ -648,7 +753,7 @@ export function MapView(props: MapViewProps) {
               <details className="sm-tech">
                 <summary>Технические данные</summary>
                 <dl>
-                  <dt>Producer</dt><dd>{edge.producerVersion}</dd>
+                  <dt>Источник анализа</dt><dd>{edge.producerVersion}</dd>
                   <dt>Resolution</dt><dd>{edge.resolution}</dd>
                   <dt>Policy</dt><dd>{edge.policyRef ?? "не используется"}</dd>
                   <dt>Edge ID</dt><dd className="sm-mono">{edge.id}</dd>
@@ -676,7 +781,7 @@ export function MapView(props: MapViewProps) {
                 <summary>Технические данные</summary>
                 <dl>
                   <dt>Kind</dt><dd>{node.kind}</dd>
-                  <dt>Producer</dt><dd>{node.producerVersion}</dd>
+                  <dt>Источник анализа</dt><dd>{node.producerVersion}</dd>
                   <dt>Node ID</dt><dd className="sm-mono">{node.id}</dd>
                 </dl>
               </details>
@@ -743,8 +848,8 @@ export function MapView(props: MapViewProps) {
               ) : (
                 <p role="status">
                   {activeSource?.status === "loading"
-                    ? "Загрузка маскированного фрагмента…"
-                    : "Ожидаем scoped masked-source от A…"}
+                    ? "Загружаем фрагмент…"
+                    : "Загружаем фрагмент исходника…"}
                 </p>
               )}
               <details className="sm-tech">
@@ -752,7 +857,7 @@ export function MapView(props: MapViewProps) {
                 <dl>
                   <dt>Source hash</dt><dd className="sm-mono">{evidence.sourceHash}</dd>
                   <dt>Bytes</dt><dd className="sm-mono">{evidence.location.byteStart}–{evidence.location.byteEnd}</dd>
-                  <dt>Producer</dt><dd>{evidence.producerVersion}</dd>
+                  <dt>Источник анализа</dt><dd>{evidence.producerVersion}</dd>
                   <dt>Evidence ID</dt><dd className="sm-mono">{evidence.id}</dd>
                 </dl>
               </details>
