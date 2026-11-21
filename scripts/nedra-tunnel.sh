@@ -71,7 +71,7 @@ write_config() {
   mkdir -p "$NEDRA_RUNTIME_DIR"
   chmod 700 "$NEDRA_RUNTIME_DIR"
   tmp=$(mktemp "$NEDRA_RUNTIME_DIR/.cloudflared-nedra.XXXXXX")
-  trap 'rm -f "$tmp"' EXIT
+  trap 'rm -- "$tmp" 2>/dev/null || true' EXIT
   sed \
     -e "s|__TUNNEL_ID__|${tunnel_id}|g" \
     -e "s|__CREDENTIALS_FILE__|${credentials}|g" \

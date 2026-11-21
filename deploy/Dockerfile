@@ -24,6 +24,7 @@ FROM ${PYTHON_IMAGE} AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
+    CG_DATA_DIR=/app/data \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
@@ -36,14 +37,17 @@ COPY --from=python-wheels /wheels /wheels
 RUN python -m pip install --no-index --find-links=/wheels -r /tmp/requirements.txt \
     && rm -rf /wheels /tmp/requirements.txt
 COPY backend ./backend
+COPY db ./db
+COPY docs ./docs
+COPY deploy/healthcheck.py /usr/local/bin/nedra-healthcheck.py
 COPY --from=frontend-build /src/frontend/dist ./frontend/dist
 
 RUN install -d -o nedra -g nedra /app/data
 USER nedra
 EXPOSE 18080
 
-HEALTHCHECK --interval=30s --timeout=4s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/api/runs', timeout=3)"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "/usr/local/bin/nedra-healthcheck.py"]
 
 # Bind all interfaces inside the container; the host publishes only 127.0.0.1:18080.
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "18080", "--no-access-log"]

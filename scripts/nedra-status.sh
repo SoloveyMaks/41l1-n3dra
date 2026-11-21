@@ -11,13 +11,17 @@ say "контейнеры nedra:"
 podman ps -a --filter 'name=^nedra-' --format '  {{.Names}}  {{.Image}}  {{.Status}}  {{.Ports}}' || true
 
 if container_running "$NEDRA_APP_CONTAINER"; then
-  code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/runs" 2>/dev/null || true)
+  code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/health" 2>/dev/null || true)
   if [ "$code" = "200" ]; then
-    say "backend /api/runs: HTTP 200"
+    say "backend /api/health: HTTP 200"
   else
-    warn "backend /api/runs: HTTP ${code:-нет ответа}"
+    warn "backend /api/health: HTTP ${code:-нет ответа}; fallback отключён"
     fail=1
   fi
+  for env_name in CG_DATA_DIR CG_PUBLIC_DEMO VECTOR_RETRIEVAL_ENABLED AI_MODEL; do
+    value=$(podman inspect -f "{{range .Config.Env}}{{println .}}{{end}}" "$NEDRA_APP_CONTAINER" 2>/dev/null | sed -n "s/^${env_name}=//p" | tail -n 1)
+    if [ -n "$value" ]; then say "$env_name=$value"; fi
+  done
   health=$(podman inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NEDRA_APP_CONTAINER" 2>/dev/null || printf missing)
   say "backend healthcheck: $health"
 else
@@ -42,6 +46,10 @@ else
 fi
 
 host_ports=$(podman port "$NEDRA_DB_CONTAINER" 2>/dev/null || true)
+if container_exists "$NEDRA_APP_CONTAINER" && ! owns_container "$NEDRA_APP_CONTAINER"; then
+  warn "backend без owner label; скрипты не будут его трогать"
+  fail=1
+fi
 if [ -n "$host_ports" ]; then
   warn "БД опубликована наружу: $host_ports"
   fail=1
