@@ -7,7 +7,10 @@
 
 | ID | Влияние | Дефект | Где |
 |---|---|---|---|
-| P1-1 | высокое | Повторная загрузка того же архива даёт тот же `snapshotId`, но новый `artifactId`; canonical publish падает с конфликтом и остаётся `published=false` | `backend/app/storage/canonical.py:1125`, `1129`; `backend/app/codefacts/identity.py:98`, `113`; `backend/app/artifacts/intake.py:118`, `303` |
+| P1-1 | высокое (исправлен) | До `113bfeff` повторная загрузка того же архива давала тот же `snapshotId`, но новый `artifactId`, и canonical publish падал с конфликтом. После `006_snapshot_origins` второй artifact/run принимается; остаточные DB-gaps S-1/S-2 ниже | `backend/app/storage/canonical.py` (fix `113bfeff`); `db/migrations/006_snapshot_origins.up.sql`; старый конфликт — pre-fix `canonical.py:1125` |
+| S-1 | среднее | `snapshot_content_hashes` принимает произвольный hash без artifact; `runs` затем ссылается на него | `db/migrations/006_snapshot_origins.up.sql:7-14`; проверено temp DB |
+| S-2 | низкое | `TRUNCATE snapshot_origins` проходит: provenance intake можно стереть | `db/migrations/006_snapshot_origins.up.sql:62-69`; проверено temp DB |
+| S-3 | среднее | В `migrate.py MARKERS` нет 006: ручное применение через psql + старт backend = повторный `CREATE TABLE` и падение | `backend/app/storage/migrate.py:23-32`; воспроизведено на temp DB |
 | P1-2 | высокое | Runtime показывает PASS как итог, хотя canonical bundle остаётся `partial` и может быть не опубликован; API/отчёт не отдают `publication`/coverage рядом с вердиктом. `expectedScopesVerified=false` — принятое честное ограничение, его нельзя поднимать в `true` без доказанных scopes | `backend/app/engine/executor.py:528-575`; `backend/app/storage/database.py:468-500`; `backend/app/api/router.py:420-433`, `601-609`; `backend/app/reports/builder.py:44-46` |
 | P2-0 | среднее (продукт) | Сравнения и `vetted` недостижимы, пока `expectedScopesVerified=false`: comparison всегда `comparable=false`, `RemediationStore` требует `expected_scopes_verified=true`. Это известная незавершённость, не подделка данных; UI/API должны называть причину явно | `backend/app/codefacts/publish.py:96`; `packages/comparison/index.mjs:369-374`; `backend/app/storage/remediation.py:215-223` |
 | P1-3 | высокое | `/security-map` и `/evidence` не различают published canonical envelope и локальный mutable fallback; `publication.reason` теряется | `backend/app/api/router.py:456-476`, `480-511`, `512-548` |
@@ -26,13 +29,14 @@
 
 ## 2. Методика и границы
 
-Проверки выполнены в отдельном временном PostgreSQL-контейнере (`pgvector/pgvector:pg16`, tmpfs, порт только `127.0.0.1`). Production и общая БД не трогались, секреты не читались и не печатались. В контейнер применены:
+Проверки выполнены в отдельных временных PostgreSQL-контейнерах (`pgvector/pgvector:pg16`, tmpfs, порт только `127.0.0.1`): один для базовых инвариантов, второй — pre-006 база для проверки backfill миграции `006_snapshot_origins` (в него сначала применены 001/002/004/005 и legacy fixture, затем 006). Production и общая БД не трогались, секреты не читались и не печатались. В контейнер применены:
 
 ```text
 db/migrations/001_core.up.sql
 db/migrations/002_integrity_publish.up.sql
 db/migrations/004_bundle_envelopes.up.sql
 db/migrations/005_canonical_envelope.up.sql
+db/migrations/006_snapshot_origins.up.sql
 db/optional/003_exact_vector.up.sql
 backend/app/storage/runtime_schema.sql
 backend/app/storage/runtime_guards.sql
@@ -71,12 +75,12 @@ SQL probes выполнялись с `ON_ERROR_STOP=1`, каждый негат�
 
 ## 4. Дефекты по влиянию
 
-### P1-1. Повторный publish одинакового snapshot невозможен
+### P1-1. Повторный publish одинакового snapshot (исправлен `113bfeff`)
 
-`snapshotId` — `uuid5` от хэша manifest (`identity.py:98`), а `artifactId` — `uuid5` от случайного runtime id (`identity.py:113`; id создаётся в `intake.py:118`, `303`). Повторная загрузка того же архива даёт тот же `snapshotId` и новый `artifactId`. `CanonicalPublisher._ensure_snapshot` находит существующий sealed snapshot и сравнивает `artifact_id`/`artifact_hash`:
+До фикса `113bfeff`: `snapshotId` — `uuid5` от хэша manifest (`identity.py:98`), а `artifactId` — `uuid5` от случайного runtime id (`identity.py:113`; id создаётся в `intake.py:118`, `303`). Повторная загрузка того же архива давала тот же `snapshotId` и новый `artifactId`. `CanonicalPublisher._ensure_snapshot` сравнивал новый artifact со старой строкой snapshot:
 
 ```python
-# backend/app/storage/canonical.py:1119-1129
+# pre-fix backend/app/storage/canonical.py:1119-1129
 if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
     raise CanonicalConflictError("snapshot: exists with a different artifact identity")
 ```
@@ -90,7 +94,7 @@ if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["a
 
 Проверено pure-функциями: одинаковый manifest hash → одинаковый `snapshot_id`; два случайных artifact id → разные `artifact_scope_id`. Полный API-прогон не выполнялся (нет `psycopg`), но конфликт — прямое следствие сравнения в коде.
 
-Точный reproduction (без правки исходников):
+Точный reproduction для pre-fix состояния (без правки исходников):
 
 ```text
 1. POST /api/artifacts с одним и тем же zip дважды.
@@ -103,9 +107,25 @@ if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["a
 
 Ожидаемый контракт: одинаковые bytes проекта должны либо переиспользовать одну artifact identity (content-addressed по archive hash), либо давать детерминированный конфликт до запуска с явным `publication.status=conflict`; молчаливый `published=false` при успешном run недопустим. Snapshot с тем же manifest не должен становиться непубликуемым из-за случайного id загрузки.
 
-Направление фикса: сделать artifact identity content-addressed (по archive hash) либо разрешить переиздание snapshot с тем же manifest и новым artifact, сохраняя immutable привязку явно; добавить regression на «загрузить тот же zip дважды».
+**Статус после `113bfeff`:** фикс принят в локальный dev и смержен в ветку аудита (`63fe303`). `snapshots` остаётся immutable content snapshot; `snapshot_content_hashes` хранит все artifact hashes, `snapshot_origins` — все intake `(artifact_id, artifact_hash)`, `runs` ссылается на content hash. Независимая проверка на temp PostgreSQL:
+
+- migration 006 на pre-006 данных: backfill 1 run → 1 content hash + 1 origin, старый run сохранён, FK `runs` заменён на `runs_snapshot_content_hash_fkey`;
+- второй artifact на тот же snapshot + новый run с тем же content hash — принят;
+- run с неизвестным content hash — отклонён FK;
+- origin с artifact hash, не совпадающим с `artifacts`, — отклонён FK;
+- sealed snapshot/files по-прежнему нельзя менять; UPDATE/DELETE origin/content hash — отклонены.
+
+**Остаточные DB-gaps (S-1/S-2):**
+
+- **S-1 (среднее):** `INSERT INTO snapshot_content_hashes` принимает произвольный `artifact_hash` без artifact/origin; после этого `runs` с этим hash принимается FK. Приложение так не пишет, но DB-инвариант «hash принадлежит реальному artifact» ослаблен. Нужен trigger/CHECK, требующий существующий `snapshot_origins` (или artifact) для content hash.
+- **S-2 (низкое):** `TRUNCATE snapshot_origins` проходит (нет `forbid_truncate` для новых таблиц), provenance intake можно стереть; `TRUNCATE snapshot_content_hashes` без CASCADE блокируется FK, с CASCADE — `runs is immutable (TRUNCATE forbidden)`. Добавить `forbid_truncate` на `snapshot_origins` (и content hashes для симметрии).
+- **S-3 (среднее, миграционный путь):** `backend/app/storage/migrate.py:23-32` не содержит marker для `006_snapshot_origins.up.sql`. `db/README.md` разрешает manual `psql`; после такого применения ledger пуст, marker не найден, следующий старт backend выполняет 006 повторно и падает на `relation "snapshot_content_hashes" already exists` (воспроизведено на temp DB). Нужен marker `to_regclass('data_contract.snapshot_content_hashes') IS NOT NULL` и обновление списка миграций в `db/README.md`.
+
+Направление фикса (оставшееся): content-addressed artifact identity уже есть; закрыть S-1/S-2 и добавить regression «тот же zip дважды» в прикладной путь.
 
 ### P1-2. PASS в runtime при partial/unpublished canonical
+
+**Статус:** follow-up `e5ad672` НЕ принят координатором: coverage guard должен стоять до condition/report/notify, иначе webhook может уйти с pass раньше финального inconclusive. В текущем dev поведение ниже сохраняется; фикс в работе.
 
 `expectedScopesVerified=false` в `publish.py:96` — принятое честное ограничение: сканеры пока не доказали expected scopes, и поднимать флаг в `true` без доказательств нельзя. Из-за него canonical coverage понижается до `partial` (`_downgrade_unverified`, `canonical.py:691-704`), SQL `guard_run` не пропускает `pass` (`002_integrity_publish.up.sql:71-77`), и это ожидаемо.
 
@@ -118,10 +138,6 @@ if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["a
 - отчёт показывает PASS и completeness score, не отражая canonical partial.
 
 Направление фикса: оставить `expectedScopesVerified=false`; в API/UI рядом с вердиктом отдавать `publication.status`, `coverage.status`, `expectedScopesVerified` и причину; не называть PASS доказанным, если canonical partial/unpublished. Полноту expected scopes доказывают A/B, а не аудит.
-
-### P2-0. Сравнения и vetted недостижимы по принятой причине
-
-Пока `expectedScopesVerified=false`, comparison engine всегда ставит `comparable=false` (`packages/comparison/index.mjs:369-374`), а `RemediationStore._require_vetted_evidence` требует `expected_scopes_verified=true` (`storage/remediation.py:215-223`). Это продуктовая незавершённость, а не подделка данных: превращать её в `comparable=true` нельзя. Проблема в том, что API/UI не всегда называют причину явно: `/comparisons` отдаёт `comparable=false` с текстом, а `security-map`/отчёт вообще не показывают `expectedScopesVerified`. До появления доказанных scopes сравнение должно быть явно помечено «недоступно: expected scopes не подтверждены», а не выглядеть как пустой/сломанный результат.
 
 ### P1-3. Published и локальный fallback неразличимы в API
 
@@ -138,6 +154,10 @@ if not payload:
 Локальный файл (`CodeFactsStore.save_run`) перезаписывается на каждом этапе и содержит `publication` с `published=false`, но ответ API собирается только из `identity/map/findings`; поле `publication` не возвращается. То же для `/evidence` (`router.py:512-548`). Клиент не может отличить immutable published bundle от mutable локальной карты; `map.bundleHash` — внутренний content hash, не SQL `bundleHash`.
 
 Направление фикса: добавить в ответ `publication: {status, bundleHash, publishedAt, reason, expectedScopesVerified}` и не выдавать fallback за published.
+
+### P2-0. Сравнения и vetted недостижимы по принятой причине
+
+Пока `expectedScopesVerified=false`, comparison engine всегда ставит `comparable=false` (`packages/comparison/index.mjs:369-374`), а `RemediationStore._require_vetted_evidence` требует `expected_scopes_verified=true` (`storage/remediation.py:215-223`). Это продуктовая незавершённость, а не подделка данных: превращать её в `comparable=true` нельзя. Проблема в том, что API/UI не всегда называют причину явно: `/comparisons` отдаёт `comparable=false` с текстом, а `security-map`/отчёт вообще не показывают `expectedScopesVerified`. До появления доказанных scopes сравнение должно быть явно помечено «недоступно: expected scopes не подтверждены», а не выглядеть как пустой/сломанный результат.
 
 ### P2-1. Runtime-слой не связан с фактами
 
@@ -274,7 +294,7 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 
 ## 7. Рекомендации перед разделением user/admin
 
-1. Починить identity artifact/snapshot (P1-1) и добавить regression «тот же архив дважды».
+1. P1-1 закрыт в `113bfeff`; осталось закрыть S-1/S-2/S-3 (content hash без artifact, TRUNCATE origins, marker 006) и добавить regression «тот же архив дважды» в прикладной путь.
 2. Не поднимать `expectedScopesVerified` вручную. Пока scopes не доказаны, отдавать рядом с вердиктом `publication.status`/`coverage.status`/`expectedScopesVerified` и не называть PASS доказанным итогом (P1-2, P2-0).
 3. Возвращать `publication` в `/security-map` и `/evidence`, не маскировать fallback под published (P1-3).
 4. Закрыть runtime FK/immutability или перевести пользовательские чтения на `published_*` (P2-1).
@@ -290,7 +310,7 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 
 ## 8. Что не подтверждено
 
-- Нет полного API e2e: в системном Python нет `psycopg`/`fastapi`, backend не поднимался; P1-1 проверен кодом и чистыми функциями, admin/roles — ядро live с заглушкой, HTTP-матрица 401/403/200 не прогонялась.
+- Нет полного API e2e: в системном Python нет `psycopg`/`fastapi`, backend не поднимался; P1-1 проверен кодом + миграцией 006 на temp PostgreSQL, admin/roles — ядро live с заглушкой, HTTP-матрица 401/403/200 не прогонялась.
 - Нет реального scanner run на Kotlin-проекте и реального AI/embedding provider; выводы о PASS/partial — по коду и SQL guard, не по живому прогону с секретами.
 - Не проверялись production RLS/роли, удаление артефактов по TTL, вебхуки наружу, производительность и конкурентные гонки под нагрузкой; live auth не прогонялся.
 - SQL-инварианты проверены на синтетическом fixture; часть негативных сценариев (например, `introduced` при partial baseline) выведена из кода guard, а не воспроизведена отдельным run.
