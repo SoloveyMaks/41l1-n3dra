@@ -18,6 +18,7 @@ import type { Severity } from '../../types';
 import type { RepositoryFileGraphData } from './types';
 import { SEVERITY_DOT, baseName, folderName } from './fileMeta';
 import { FileKindIcon, SeverityDot } from './FileIcons';
+import { fileMatchesQuery } from './tree';
 
 const FILE_NODE_WIDTH = 212;
 const FILE_NODE_HEIGHT = 64;
@@ -34,6 +35,7 @@ interface FileNodeData extends Record<string, unknown> {
   selected: boolean;
   dimmed: boolean;
   searchMatch: boolean;
+  searchDimmed: boolean;
 }
 
 type FileFlowNode = Node<FileNodeData, 'file'>;
@@ -44,7 +46,9 @@ const FileNodeCard = memo(({ data }: NodeProps) => {
     <div
       className={`rg-file-node${node.selected ? ' is-selected' : ''}${
         node.dimmed ? ' is-dimmed' : ''
-      }${node.searchMatch ? ' is-search-match' : ''}`}
+      }${node.searchMatch ? ' is-search-match' : ''}${
+        node.searchDimmed ? ' is-search-dimmed' : ''
+      }`}
       title={node.path}
     >
       <Handle type="target" position={Position.Left} id="in" className="rg-handle" isConnectable={false} />
@@ -107,7 +111,7 @@ export const FileGraphView: React.FC<FileGraphViewProps> = ({
   onSelectFile,
 }) => {
   const columns = data.files.length <= 4 ? 2 : data.files.length <= 10 ? 3 : 4;
-  const needle = query.trim().toLocaleLowerCase();
+  const searchActive = Boolean(query.trim());
   const neighbours = useMemo(() => {
     const ids = new Set<string>();
     if (!selectedPath) return ids;
@@ -122,7 +126,7 @@ export const FileGraphView: React.FC<FileGraphViewProps> = ({
   const nodes = useMemo<FileFlowNode[]>(
     () =>
       data.files.map((file, index) => {
-        const searchMatch = !needle || file.path.toLocaleLowerCase().includes(needle);
+        const searchMatch = fileMatchesQuery(file, query);
         return {
           id: `file:${file.path}`,
           type: 'file',
@@ -143,10 +147,11 @@ export const FileGraphView: React.FC<FileGraphViewProps> = ({
             dimmed:
               Boolean(selectedPath) && !neighbours.has(file.path) && file.path !== selectedPath,
             searchMatch,
+            searchDimmed: searchActive && !searchMatch,
           },
         };
       }),
-    [columns, data.files, needle, neighbours, selectedPath],
+    [columns, data.files, neighbours, query, searchActive, selectedPath],
   );
 
   const edges = useMemo<Edge[]>(

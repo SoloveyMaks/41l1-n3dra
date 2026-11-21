@@ -46,7 +46,8 @@ export type FileLinkKind =
 
 /**
  * Межфайловая связь. Появляется только из доказанного ребра фактов:
- * у ребра есть evidenceRefs, basis=source и resolution != unknown.
+ * у ребра есть существующие evidenceRefs, basis=source, resolution != unknown,
+ * и доказательства ребра покрывают оба файла именно этой пары.
  * Иерархия папок сюда не попадает.
  */
 export interface RepositoryFileLink {
@@ -70,8 +71,12 @@ export interface RepositoryFileGraphData {
   files: RepositoryFileFact[];
   links: RepositoryFileLink[];
   coverage: FileGraphCoverage;
-  /** Рёбра, которые не стали связью файлов: нет доказательств, unknown или связь внутри файла. */
+  /**
+   * Рёбра, которые не стали связью файлов: нет существующих доказательств,
+   * unknown, policy-предположение или доказательства не покрывают эту пару.
+   */
   linksOmitted: number;
+  /** Рёбра, у которых оба конца в одном файле. */
   linksInsideFiles: number;
 }
 

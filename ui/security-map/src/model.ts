@@ -1,4 +1,5 @@
 import type {
+  EvidenceRef,
   Finding,
   Location,
   RunScope,
@@ -23,6 +24,30 @@ const sameLocation = (a: Location, b: Location) =>
 const hash = (s: string) => /^[a-f0-9]{64}$/.test(s);
 const uuid = (s: string) =>
   /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s);
+
+/**
+ * Gate for one evidence fragment. Shared by the production map and the file
+ * graph so a ready fragment is only shown when it belongs to the same scope,
+ * points at the saved evidence row, and repeats its hash, full coordinates and
+ * a nonempty masking marker.
+ */
+export function validateSourceContent(
+  scope: RunScope,
+  evidence: EvidenceRef | undefined,
+  source: SourceState,
+): string | null {
+  if (source.status === "idle") return null;
+  if (!sameScope(scope, source.request)) return "SOURCE_SCOPE_MISMATCH";
+  if (!evidence) return "SOURCE_REFERENCE_MISMATCH";
+  if (
+    source.status === "ready" &&
+    (source.sourceHash !== evidence.sourceHash ||
+      !sameLocation(source.location, evidence.location) ||
+      !source.redactionVersion)
+  )
+    return "SOURCE_CONTENT_MISMATCH";
+  return null;
+}
 
 /** A still validates JSON Schema and authorization; this gate prevents mixed response scopes and broken refs. */
 export function validateProduction(
@@ -156,17 +181,12 @@ export function validateProduction(
   )
     return "POLICY_SIGNATURE_MISMATCH";
   if (source && source.status !== "idle") {
-    const evidence = data.evidence.find(
-      (e) => e.id === source.request.evidenceId,
+    const issue = validateSourceContent(
+      scope,
+      data.evidence.find((e) => e.id === source.request.evidenceId),
+      source,
     );
-    if (!evidence) return "SOURCE_REFERENCE_MISMATCH";
-    if (
-      source.status === "ready" &&
-      (source.sourceHash !== evidence.sourceHash ||
-        !sameLocation(source.location, evidence.location) ||
-        !source.redactionVersion)
-    )
-      return "SOURCE_CONTENT_MISMATCH";
+    if (issue) return issue;
   }
   return null;
 }

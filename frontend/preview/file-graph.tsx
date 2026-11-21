@@ -159,7 +159,14 @@ const realBundle = published as unknown as {
     scanResults: Array<{ findings: unknown[] }>;
   };
 };
-const realMap = realBundle.bundle.codeFacts;
+// The published demo artifact is a historical CodeFactsBundle, not a full
+// SecurityMapDto. Complete it with the canonical content hash of its own map
+// document (sha256 of sorted compact JSON, as the producer computes it) so the
+// production gate validates the demo instead of rejecting a missing field.
+const realMap = {
+  ...(realBundle.bundle.codeFacts as Record<string, unknown>),
+  bundleHash: '3e2844ecf0e3cfee2fa22494d2d0cbd3fc1088fceb8359915204c200407d7ece',
+};
 const realFindings = realBundle.bundle.scanResults.flatMap((result) => result.findings);
 type RealMapFixture = { evidence?: Array<{ id: string; redactedSnippet: string }> };
 const realMapFixture = realMap as unknown as RealMapFixture;

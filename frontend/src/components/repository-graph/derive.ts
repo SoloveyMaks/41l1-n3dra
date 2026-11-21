@@ -1,4 +1,5 @@
 import type {
+  EvidenceRef,
   Finding as ContractFinding,
   SecurityMapDto,
 } from '../../../../docs/data-contracts/contracts.ts';
@@ -48,8 +49,9 @@ type MutableLink = RepositoryFileLink & { evidenceIds: Set<string> };
  * Строит файловый граф только из опубликованных фактов карты.
  *
  * Файлы появляются из evidence, coverage scopes и находок. Связи файлов —
- * только из рёбер, у которых есть evidenceRefs, basis=source и известная
- * resolution. Папки здесь не создают рёбер и не изображают вызовы.
+ * только из рёбер, у которых есть существующие evidenceRefs, basis=source,
+ * известная resolution и доказательство ровно этой пары файлов. Папки здесь
+ * не создают рёбер и не изображают вызовы.
  */
 export function deriveFileGraph(
   map: SecurityMapDto,
@@ -134,9 +136,20 @@ export function deriveFileGraph(
   for (const edge of map.edges) {
     const fromPaths = nodePaths.get(edge.fromId);
     const toPaths = nodePaths.get(edge.toId);
-    const hasEvidence = (edge.evidenceRefs?.length ?? 0) > 0;
+
+    // A missing evidence row proves nothing: the edge is not a file link.
+    const edgeEvidence: EvidenceRef[] = [];
+    for (const evidenceId of edge.evidenceRefs ?? []) {
+      const evidence = evidenceById.get(evidenceId);
+      if (!evidence) {
+        edgeEvidence.length = 0;
+        break;
+      }
+      edgeEvidence.push(evidence);
+    }
+
     if (
-      !hasEvidence ||
+      !edgeEvidence.length ||
       edge.basis !== 'source' ||
       edge.resolution === 'unknown' ||
       !fromPaths?.size ||
@@ -146,10 +159,20 @@ export function deriveFileGraph(
       continue;
     }
 
+    // Only the files that this particular relation cites can form a pair.
+    const evidencePaths = new Set<string>();
+    for (const evidence of edgeEvidence) {
+      const path = evidence.location?.path;
+      if (path) evidencePaths.add(path);
+    }
+
+    let hasCrossCandidate = false;
     let crossFile = false;
     for (const fromPath of fromPaths) {
       for (const toPath of toPaths) {
         if (fromPath === toPath) continue;
+        hasCrossCandidate = true;
+        if (!evidencePaths.has(fromPath) || !evidencePaths.has(toPath)) continue;
         crossFile = true;
         const key = `${fromPath}|${toPath}|${edge.kind}`;
         let link = links.get(key);
@@ -169,10 +192,16 @@ export function deriveFileGraph(
         if (link.resolution === 'resolved' && edge.resolution !== 'resolved') {
           link.resolution = 'partial';
         }
-        for (const evidenceId of edge.evidenceRefs) link.evidenceIds.add(evidenceId);
+        for (const evidence of edgeEvidence) {
+          const path = evidence.location?.path;
+          if (path === fromPath || path === toPath) link.evidenceIds.add(evidence.id);
+        }
       }
     }
-    if (!crossFile) linksInsideFiles += 1;
+    if (!crossFile) {
+      if (hasCrossCandidate) linksOmitted += 1;
+      else linksInsideFiles += 1;
+    }
   }
 
   const sortedFiles = [...files.values()]

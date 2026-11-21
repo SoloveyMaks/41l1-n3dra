@@ -56,6 +56,10 @@
   border-color: #22d3ee;
 }
 
+.rg-file-node.is-search-dimmed {
+  opacity: 0.35;
+}
+
 .rg-file-node.is-dimmed {
   opacity: 0.3;
 }

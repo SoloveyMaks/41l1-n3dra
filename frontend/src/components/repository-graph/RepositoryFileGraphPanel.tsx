@@ -18,7 +18,7 @@ import type {
   RepositoryFileGraphData,
 } from './types';
 import { EVIDENCE_PREVIEW_LIMIT } from './types';
-import { buildFileTree, collectFolderIds, countFiles, filterFileTree, folderIdsForPath } from './tree';
+import { buildFileTree, collectFolderIds, fileMatchesQuery, filterFileTree, folderIdsForPath } from './tree';
 import { FileTreeView } from './FileTreeView';
 import { FileGraphView } from './FileGraphView';
 import { FileDetailPanel } from './FileDetailPanel';
@@ -155,7 +155,11 @@ export const RepositoryFileGraphPanel: React.FC<RepositoryFileGraphPanelProps> =
   const expandAll = () => setExpanded(new Set(collectFolderIds(tree)));
   const collapseAll = () => setExpanded(new Set());
 
-  const visibleFiles = countFiles(filteredTree);
+  // Тот же матчер и тот же счётчик, что и подсветка в графе.
+  const visibleFiles = useMemo(
+    () => data.files.filter((file) => fileMatchesQuery(file, query)).length,
+    [data.files, query],
+  );
   const coverageWarning =
     data.coverage.status !== 'complete' ||
     (data.coverage.filesTotal > 0 && data.files.length < data.coverage.filesTotal);

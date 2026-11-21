@@ -170,13 +170,18 @@ export function folderIdsForPath(path: string): string[] {
   return ids;
 }
 
-const matches = (file: RepositoryFileFact, query: string): boolean => {
-  const needle = query.toLocaleLowerCase();
+/**
+ * Один матчер для дерева и графа: путь файла или правило его находки.
+ * Пустая строка совпадает со всем.
+ */
+export function fileMatchesQuery(file: RepositoryFileFact, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
   return (
     file.path.toLocaleLowerCase().includes(needle) ||
     file.findings.some((finding) => finding.ruleId.toLocaleLowerCase().includes(needle))
   );
-};
+}
 
 /** Оставляет только совпавшие файлы и папки-предки. Исходный depth не меняется. */
 export function filterFileTree(nodes: readonly FileTreeNode[], query: string): FileTreeNode[] {
@@ -186,7 +191,7 @@ export function filterFileTree(nodes: readonly FileTreeNode[], query: string): F
     const result: FileTreeNode[] = [];
     for (const item of items) {
       if (item.kind === 'file') {
-        if (matches(item.file, needle)) result.push(item);
+        if (fileMatchesQuery(item.file, needle)) result.push(item);
         continue;
       }
       const children = walk(item.children);

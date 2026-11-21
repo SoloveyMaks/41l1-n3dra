@@ -2,7 +2,14 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
 import type { RepositorySource } from '../../types';
-import type { RunScope } from '../../../../docs/data-contracts/contracts.ts';
+import type {
+  EvidenceRef,
+  RunScope,
+} from '../../../../docs/data-contracts/contracts.ts';
+import {
+  validateProduction,
+  validateSourceContent,
+} from '../../../../ui/security-map/src/model';
 import { getRunEvidence, getRunSecurityMap, SecurityMapApiError } from '../../api/securityMap';
 import { providerLabel, repositoryShortName } from '../../repository';
 import { deriveFileGraph } from './derive';
@@ -15,10 +22,16 @@ interface RepositoryFileGraphModalProps {
   onClose: () => void;
 }
 
+/** Проверенные факты запуска: снимок для графа и сохранённые доказательства. */
+interface GateContext {
+  identity: RunScope;
+  evidenceById: Map<string, EvidenceRef>;
+}
+
 type LoadState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; data: RepositoryFileGraphData };
+  | { status: 'ready'; data: RepositoryFileGraphData; context: GateContext };
 
 const humanEvidenceReason = (code: string): string => {
   if (code === 'source_unavailable') return 'Снимок проекта недоступен.';
@@ -26,6 +39,39 @@ const humanEvidenceReason = (code: string): string => {
   if (code === 'source_redaction_incomplete') return 'Маскирование фрагмента не завершено.';
   if (code === 'evidence_not_available') return 'Сохранённый фрагмент не найден.';
   return 'Сервер не отдал фрагмент.';
+};
+
+/**
+ * Ошибки общей проверки карты и фрагмента. Показываем причину, а не пустой
+ * граф: смешанные запуски и битые ссылки нельзя достраивать догадками.
+ */
+const humanGateReason = (code: string): string => {
+  switch (code) {
+    case 'SCOPE_MISMATCH':
+      return 'Карта смешивает запуски: данные относятся к другому workspace, run или snapshot. По смешанным фактам граф не строится.';
+    case 'BROKEN_GRAPH_REFERENCE':
+      return 'В карте есть ссылки на отсутствующие узлы или доказательства. Отсутствующая ссылка не считается доказательством.';
+    case 'BROKEN_FINDING_REFERENCE':
+      return 'Находки ссылаются на отсутствующие доказательства или узлы. Граф не строится по неполным ссылкам.';
+    case 'FINDING_LOCATION_MISMATCH':
+      return 'Локация находки не совпадает с её сохранённым доказательством.';
+    case 'FINDING_LINK_MISMATCH':
+      return 'Связи находки с узлами не совпадают с картой.';
+    case 'INVALID_PRODUCTION_IDENTITY':
+      return 'Ответ карты не прошёл проверку идентичности снимка: хеши, версии или ревизия не совпадают.';
+    case 'DUPLICATE_ID':
+      return 'В ответе карты повторяются идентификаторы.';
+    case 'POLICY_SIGNATURE_MISMATCH':
+      return 'Подпись политики не совпадает с политиками в карте.';
+    case 'SOURCE_CONTENT_MISMATCH':
+      return 'Фрагмент не совпадает с сохранённым доказательством: другой файл, хеш или координаты, либо маскирование не завершено.';
+    case 'SOURCE_SCOPE_MISMATCH':
+      return 'Фрагмент относится к другому запуску.';
+    case 'SOURCE_REFERENCE_MISMATCH':
+      return 'Сохранённое доказательство не найдено в карте запуска.';
+    default:
+      return `Ответ не прошёл проверку (${code}). Граф не строится по непроверенным фактам.`;
+  }
 };
 
 const humanMapError = (error: unknown): string => {
@@ -48,16 +94,27 @@ export const RepositoryFileGraphModal: React.FC<RepositoryFileGraphModalProps> =
   onClose,
 }) => {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
-  const [identity, setIdentity] = useState<RunScope | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const context = state.status === 'ready' ? state.context : null;
 
   useEffect(() => {
     const controller = new AbortController();
     getRunSecurityMap(runId, controller.signal)
       .then((payload) => {
         if (controller.signal.aborted) return;
-        setIdentity(payload.identity);
-        setState({ status: 'ready', data: deriveFileGraph(payload.map, payload.findings) });
+        const issue = validateProduction(payload.identity, payload.map, payload.findings);
+        if (issue) {
+          setState({ status: 'error', message: humanGateReason(issue) });
+          return;
+        }
+        setState({
+          status: 'ready',
+          data: deriveFileGraph(payload.map, payload.findings),
+          context: {
+            identity: payload.identity,
+            evidenceById: new Map(payload.map.evidence.map((item) => [item.id, item])),
+          },
+        });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -67,7 +124,6 @@ export const RepositoryFileGraphModal: React.FC<RepositoryFileGraphModalProps> =
   }, [runId, reloadKey]);
 
   const retry = useCallback(() => {
-    setIdentity(null);
     setState({ status: 'loading' });
     setReloadKey((value) => value + 1);
   }, []);
@@ -87,18 +143,21 @@ export const RepositoryFileGraphModal: React.FC<RepositoryFileGraphModalProps> =
 
   const readMasked = useCallback(
     async (request: MaskedReadRequest): Promise<MaskedReadResult> => {
-      if (!identity) return { status: 'unavailable', reason: 'Снимок ещё не загружен.' };
+      if (!context) return { status: 'unavailable', reason: 'Снимок ещё не загружен.' };
       try {
         const source = await getRunEvidence({
-          workspaceId: identity.workspaceId,
-          runId: identity.runId,
-          snapshotId: identity.snapshotId,
+          workspaceId: context.identity.workspaceId,
+          runId: context.identity.runId,
+          snapshotId: context.identity.snapshotId,
           evidenceId: request.evidenceId,
         });
         if (source.status === 'ready') {
-          if (source.location.path !== request.path) {
-            return { status: 'unavailable', reason: 'Фрагмент относится к другому файлу.' };
-          }
+          const issue = validateSourceContent(
+            context.identity,
+            context.evidenceById.get(request.evidenceId),
+            source,
+          );
+          if (issue) return { status: 'unavailable', reason: humanGateReason(issue) };
           return {
             status: 'ready',
             text: source.maskedFragment,
@@ -119,7 +178,7 @@ export const RepositoryFileGraphModal: React.FC<RepositoryFileGraphModalProps> =
         };
       }
     },
-    [identity],
+    [context],
   );
 
   const subtitle = repository
