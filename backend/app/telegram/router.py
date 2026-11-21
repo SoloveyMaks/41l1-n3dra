@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.app.storage.database import DatabaseRepository
-from backend.app.storage.telegram import TelegramRepository
+from backend.app.storage.telegram import SettingsOwnershipLost, TelegramRepository
 from backend.app.telegram.runtime import TelegramRuntime
 from backend.app.telegram.workspace import telegram_workspace_scope
 
@@ -165,9 +165,17 @@ def create_telegram_router(
         try:
             settings = repo.set_settings(
                 binding.chat_id,
+                user_id=who["userId"],
+                workspace_id=who["workspaceId"],
+                binding_epoch=binding.binding_epoch,
                 delivery_mode=payload.deliveryMode,
                 scenario=scenario,
             )
+        except SettingsOwnershipLost as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "TELEGRAM_REBOUND", "message": str(exc)},
+            ) from None
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,

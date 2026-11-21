@@ -15,7 +15,12 @@ from urllib.parse import urlsplit
 
 from backend.app.contracts.schemas import WorkflowDraft
 from backend.app.storage.database import DatabaseRepository
-from backend.app.storage.telegram import OutboxItem, TelegramRepository
+from backend.app.storage.telegram import (
+    JobOwnershipLost,
+    OutboxItem,
+    SettingsOwnershipLost,
+    TelegramRepository,
+)
 from backend.app.telegram.bot_api import (
     TelegramBotAPI,
     TelegramConfigError,
@@ -322,7 +327,16 @@ class TelegramRuntime:
 
         mode = argument.strip().lower()
         if mode in {"alerts", "jsonc", "both"}:
-            self.repo.set_settings(chat_id, delivery_mode=mode)
+            try:
+                self.repo.set_settings(
+                    chat_id, user_id=binding.user_id,
+                    workspace_id=binding.workspace_id,
+                    binding_epoch=binding.binding_epoch,
+                    delivery_mode=mode,
+                )
+            except SettingsOwnershipLost:
+                logger.info("telegram settings write ignored after rebind")
+                return
             await self._reply(chat_id, f"Режим доставки: {mode}")
             return
         if mode.startswith("scenario"):
@@ -334,7 +348,16 @@ class TelegramRuntime:
             if workflow is None:
                 await self._reply(chat_id, "Такой сценарий не найден в вашем workspace.")
                 return
-            self.repo.set_settings(chat_id, scenario=scenario)
+            try:
+                self.repo.set_settings(
+                    chat_id, user_id=binding.user_id,
+                    workspace_id=binding.workspace_id,
+                    binding_epoch=binding.binding_epoch,
+                    scenario=scenario,
+                )
+            except SettingsOwnershipLost:
+                logger.info("telegram scenario write ignored after rebind")
+                return
             await self._reply(chat_id, f"Сценарий выбран: {scenario}")
             return
         await self._reply(chat_id, "Использование: /settings alerts|jsonc|both или /settings scenario <id>")
@@ -346,7 +369,10 @@ class TelegramRuntime:
             return
         settings = self.repo.get_settings(chat_id)
         runs = await self._recent_runs(binding.workspace_id)
-        jobs = self.repo.list_jobs(chat_id, limit=3)
+        jobs = self.repo.list_jobs(
+            binding.chat_id, binding.user_id, binding.workspace_id,
+            binding.binding_epoch, limit=3,
+        )
         lines = [
             "Статус аккаунта",
             "Привязка: активна",
@@ -399,7 +425,11 @@ class TelegramRuntime:
                 workspace_id=binding.workspace_id,
                 repo_url=repo_url,
                 workflow_id=settings.scenario,
+                binding_epoch=binding.binding_epoch,
             )
+        except JobOwnershipLost:
+            logger.info("telegram job creation ignored after rebind")
+            return
         except Exception as exc:  # noqa: BLE001
             logger.warning("telegram job creation failed: %s", self._safe_error(exc))
             await self._reply(chat_id, "Не удалось создать задачу импорта.")
@@ -428,9 +458,23 @@ class TelegramRuntime:
         job = self.repo.claim_job(job_id)
         if job is None:
             return
+
+        def _lost() -> None:
+            # Keep the old job as history; the new owner must never see it.
+            self.repo.set_job_status(
+                job_id, "cancelled", error="owner changed",
+                binding_epoch=job.binding_epoch, allow_cancelled=True,
+            )
+
         try:
+            if not self.repo.job_is_current(job):
+                _lost()
+                return
             with telegram_workspace_scope(job.workspace_id):
                 manifest = await self.importer(job.repo_url)
+                if not self.repo.job_is_current(job):
+                    _lost()
+                    return
                 self.db.save_artifact(manifest)
                 workflow = self.db.get_workflow(job.workflow_id)
                 if not workflow or not workflow.get("draft"):
@@ -446,7 +490,18 @@ class TelegramRuntime:
                     artifact_id=str(manifest["id"]),
                     trigger_type="telegram",
                 )
-                self.repo.set_job_status(job_id, "running", run_id=run_id)
+                if not self.repo.job_is_current(job):
+                    _lost()
+                    return
+                updated = self.repo.set_job_status(
+                    job_id, "running", run_id=run_id,
+                    binding_epoch=job.binding_epoch,
+                )
+                if updated is None:
+                    return
+                if not self.repo.job_is_current(job):
+                    _lost()
+                    return
                 await self.executor.execute_run(
                     run_id=run_id,
                     draft=WorkflowDraft(**workflow["draft"]),
@@ -455,6 +510,9 @@ class TelegramRuntime:
                     workflow_id=job.workflow_id,
                     revision_id=str(revision_id),
                 )
+                if not self.repo.job_is_current(job):
+                    _lost()
+                    return
                 run = self.db.get_run(run_id)
                 if not run:
                     raise ValueError("run не найден после выполнения")
@@ -464,11 +522,15 @@ class TelegramRuntime:
                     "succeeded" if terminal == "succeeded" else "failed",
                     run_id=run_id,
                     error=None if terminal == "succeeded" else terminal,
+                    binding_epoch=job.binding_epoch,
                 )
-                await self._enqueue_notifications(job.chat_id, run_id)
+                await self._enqueue_notifications(job, run_id)
         except asyncio.CancelledError:
             try:
-                self.repo.set_job_status(job_id, "cancelled", error="runtime stopped")
+                self.repo.set_job_status(
+                    job_id, "cancelled", error="runtime stopped",
+                    binding_epoch=job.binding_epoch, allow_cancelled=True,
+                )
             except Exception:
                 pass
             raise
@@ -476,22 +538,35 @@ class TelegramRuntime:
             safe = self._safe_error(exc)
             logger.warning("telegram job %s failed: %s", job_id, safe)
             try:
-                self.repo.set_job_status(job_id, "failed", error=safe)
+                updated = self.repo.set_job_status(
+                    job_id, "failed", error=safe,
+                    binding_epoch=job.binding_epoch,
+                )
             except Exception:
+                updated = None
                 logger.warning("could not record failed telegram job")
-            await self._best_effort_message(
-                job.chat_id,
-                "Импорт или запуск не удался. Детерминированный анализ не затронут.",
-            )
+            if updated is not None and self.repo.job_is_current(job):
+                await self._best_effort_message(
+                    job.chat_id,
+                    "Импорт или запуск не удался. Детерминированный анализ не затронут.",
+                )
 
-    async def _enqueue_notifications(self, chat_id: int, run_id: str) -> None:
-        if self.repo.get_binding(chat_id) is None:
+    async def _enqueue_notifications(self, job: Any, run_id: str) -> None:
+        if not self.repo.job_is_current(job):
             return
-        settings = self.repo.get_settings(chat_id)
+        settings = self.repo.get_settings(job.chat_id)
         if settings.delivery_mode in ("alerts", "both"):
-            self.repo.enqueue_outbox(chat_id, run_id, "alert")
+            self.repo.enqueue_outbox(
+                job.chat_id, run_id, "alert",
+                user_id=job.user_id, workspace_id=job.workspace_id,
+                binding_epoch=job.binding_epoch,
+            )
         if settings.delivery_mode in ("jsonc", "both"):
-            self.repo.enqueue_outbox(chat_id, run_id, "jsonc")
+            self.repo.enqueue_outbox(
+                job.chat_id, run_id, "jsonc",
+                user_id=job.user_id, workspace_id=job.workspace_id,
+                binding_epoch=job.binding_epoch,
+            )
 
     # --- delivery ------------------------------------------------------
     async def process_outbox_once(self, limit: int = 5) -> int:
@@ -501,33 +576,59 @@ class TelegramRuntime:
         return len(items)
 
     async def _deliver_outbox(self, item: OutboxItem) -> None:
+        def complete(status: str, **kwargs: Any) -> bool:
+            return self.repo.finish_outbox(
+                item.id, status,
+                user_id=item.user_id or None,
+                workspace_id=item.workspace_id or None,
+                binding_epoch=item.binding_epoch,
+                **kwargs,
+            )
+
         try:
+            if not item.user_id or not item.workspace_id:
+                complete("cancelled", error="owner missing")
+                return
+            if not self.repo.delivery_is_current(item):
+                complete("cancelled", error="owner changed")
+                return
             if self.api is None:
                 raise TelegramUnavailable("telegram is not configured")
-            binding = self.repo.get_binding(item.chat_id)
-            if binding is None:
-                raise ValueError("binding missing")
-            with telegram_workspace_scope(binding.workspace_id):
+            # Payload is built from the delivery's own owner/workspace, never
+            # from the chat's current binding.
+            with telegram_workspace_scope(item.workspace_id):
                 if item.kind == "alert":
                     text = await self._alert_text(item.run_id)
-                    await self.api.send_message(item.chat_id, text)
+                    caption = None
                 elif item.kind == "jsonc":
-                    report = build_jsonc_report(self.db, item.run_id, binding.workspace_id)
-                    write_jsonc_report(report, binding.workspace_id, item.run_id)
+                    report = build_jsonc_report(self.db, item.run_id, item.workspace_id)
+                    write_jsonc_report(report, item.workspace_id, item.run_id)
+                    text = None
                     caption = (
                         f"NEDRA JSONC: run {item.run_id}\n"
                         f"deterministic findings: {report.finding_count}; "
                         f"AI hypotheses: {report.ai_hypothesis_count} (not verified)"
                     )
-                    await self.api.send_document(
-                        item.chat_id, report.filename, report.content, caption=caption,
-                    )
                 else:
                     raise ValueError("unknown outbox kind")
-            self.repo.finish_outbox(item.id, "sent")
+            # Final gate: locks the binding row until finish_outbox, so a
+            # concurrent re-bind cannot claim the old delivery in between.
+            with self.repo.delivery_guard(item) as current:
+                if not current:
+                    complete("cancelled", error="owner changed")
+                    return
+                if item.kind == "alert":
+                    await self.api.send_message(item.chat_id, text or "")
+                else:
+                    await self.api.send_document(
+                        item.chat_id, report.filename, report.content,
+                        caption=caption or "",
+                    )
+                if not complete("sent"):
+                    logger.warning("telegram outbox %s finished after cancellation", item.id)
         except asyncio.CancelledError:
             try:
-                self.repo.finish_outbox(item.id, "pending", error="runtime stopped", retry_delay_seconds=5)
+                complete("pending", error="runtime stopped", retry_delay_seconds=5)
             except Exception:
                 pass
             raise
@@ -535,14 +636,14 @@ class TelegramRuntime:
             safe = self._safe_error(exc)
             attempts = int(item.attempts)
             if attempts >= MAX_OUTBOX_ATTEMPTS:
-                self.repo.finish_outbox(item.id, "failed", error=safe)
+                complete("failed", error=safe)
                 logger.warning("telegram outbox %s exhausted: %s", item.id, safe)
             else:
                 delay = min(
                     OUTBOX_RETRY_MAX_SECONDS,
                     OUTBOX_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
                 )
-                self.repo.finish_outbox(item.id, "pending", error=safe, retry_delay_seconds=delay)
+                complete("pending", error=safe, retry_delay_seconds=delay)
                 logger.warning("telegram outbox %s retry in %ss: %s", item.id, delay, safe)
 
     async def _alert_text(self, run_id: str) -> str:
