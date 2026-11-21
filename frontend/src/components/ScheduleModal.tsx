@@ -187,8 +187,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     try {
       await apiClient.createSchedule(projectAtRequest, artifactId, spec);
       if (workflowRef.current !== projectAtRequest) return;
-      showOk('Расписание создано. Оно запускает сохранённый сценарий с выбранным архивом.');
       await refreshLists();
+      showOk('Расписание создано. Оно запускает сохранённый сценарий с выбранным архивом.');
     } catch (error: unknown) {
       if (workflowRef.current !== projectAtRequest) return;
       showError(`Ошибка расписания: ${describeRepositoryError(error)}`);
@@ -231,8 +231,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       if (workflowRef.current !== projectAtRequest) return;
       setWatchUrl('');
       setWatchBranch('');
-      showOk(`Наблюдение создано: ветка ${watch.branch}, проверка ${cadenceLabel(watch.cron_or_interval)}.`);
       await refreshLists();
+      showOk(`Наблюдение создано: ветка ${watch.branch}, проверка ${cadenceLabel(watch.cron_or_interval)}.`);
     } catch (error: unknown) {
       if (workflowRef.current !== projectAtRequest) return;
       showError(describeRepositoryError(error));
@@ -248,8 +248,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     setMessageRunId(null);
     try {
       await apiClient.setScheduleEnabled(row.id, nextEnabled);
-      showOk(nextEnabled ? 'Расписание включено; следующий запуск пересчитан.' : 'Расписание поставлено на паузу.');
       await refreshLists();
+      showOk(nextEnabled ? 'Расписание включено; следующий запуск пересчитан.' : 'Расписание поставлено на паузу.');
     } catch (error: unknown) {
       showError(describeRepositoryError(error));
     } finally {
@@ -264,10 +264,10 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     setMessageRunId(null);
     try {
       await apiClient.setRepositoryWatchEnabled(watch.id, nextEnabled);
-      showOk(nextEnabled
-        ? 'Наблюдение включено: следующая проверка будет позже.'
-        : 'Наблюдение на паузе: новые коммиты не проверяются.');
       await refreshLists();
+      showOk(nextEnabled
+        ? 'Наблюдение включено: следующая проверка запланирована.'
+        : 'Наблюдение на паузе: новые коммиты не проверяются.');
     } catch (error: unknown) {
       showError(describeRepositoryError(error));
     } finally {
@@ -284,9 +284,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       if (result.status === 'error') {
         showError(checkResultText(result));
       } else {
+        await refreshLists();
         showOk(checkResultText(result), result.runId);
       }
-      await refreshLists();
     } catch (error: unknown) {
       showError(describeRepositoryError(error));
     } finally {
