@@ -636,6 +636,17 @@ def create_schedule(payload: Dict[str, Any]):
     return {"id": sched_id, "status": "created"}
 
 
+@api_router.patch("/schedules/{schedule_id}")
+def update_schedule(schedule_id: str, payload: Dict[str, Any]):
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled должен быть boolean")
+    schedule = db_repo.set_schedule_enabled(schedule_id, enabled)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Расписание не найдено")
+    return schedule
+
+
 # --- Webhook Test Receiver ---
 @api_router.post("/webhook-test")
 async def webhook_test_receiver(request: Request):
