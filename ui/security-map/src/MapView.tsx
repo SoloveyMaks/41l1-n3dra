@@ -225,6 +225,7 @@ export function MapView(props: MapViewProps) {
   const sourceRef = useRef<HTMLElement>(null);
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
   const [railOpen, setRailOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<"map" | "details">("map");
   const computed = useMemo(
     () => computeMapLayout(model.nodes, model.edges),
     [model.nodes, model.edges],
@@ -365,10 +366,14 @@ export function MapView(props: MapViewProps) {
       skipDetailsScroll.current = false;
       return;
     }
-    if (selection && window.matchMedia("(max-width: 1100px)").matches) {
-      detailsRef.current?.scrollIntoView({ block: "start" });
+    if (
+      selection &&
+      mobileView === "details" &&
+      window.matchMedia("(max-width: 1100px)").matches
+    ) {
+      detailsRef.current?.scrollTo({ top: 0 });
     }
-  }, [selection?.kind, selection?.id]);
+  }, [selection?.kind, selection?.id, mobileView]);
 
   useEffect(() => {
     if (openRequest && window.matchMedia("(max-width: 1100px)").matches) {
@@ -380,8 +385,9 @@ export function MapView(props: MapViewProps) {
     setOpenRequest(null);
     setLocalSelection(value);
     props.onSelect?.(value);
-    if (typeof window !== "undefined" && window.innerWidth < 1100) {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1100px)").matches) {
       setRailOpen(false);
+      setMobileView("details");
     }
   };
 
@@ -414,6 +420,9 @@ export function MapView(props: MapViewProps) {
     };
     setOpenRequest(request);
     props.onOpenEvidence?.(request);
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1100px)").matches) {
+      setMobileView("details");
+    }
   };
 
   const evidenceButtons = (ids: string[]) => (
@@ -541,12 +550,13 @@ export function MapView(props: MapViewProps) {
       },
       labelBgStyle: {
         fill: "#0b1220",
-        fillOpacity: 0.94,
+        fillOpacity: 1,
         stroke: item.resolution === "resolved" ? "#334155" : "#92400e",
+        strokeWidth: 0.8,
       },
-      labelBgPadding: [6, 4],
-      labelBgBorderRadius: 4,
-      interactionWidth: 32,
+      labelBgPadding: [7, 4],
+      labelBgBorderRadius: 5,
+      interactionWidth: 36,
       className: `sm-edge sm-edge--${item.resolution}${selected ? " is-selected" : ""}`,
     };
   });
@@ -777,7 +787,24 @@ export function MapView(props: MapViewProps) {
         </div>
       )}
 
-      <div className={`sm-workspace ${railOpen ? "has-rail" : ""}`}>
+      <div className="sm-mobile-switch" role="group" aria-label="Карта или детали">
+        <button
+          type="button"
+          aria-pressed={mobileView === "map"}
+          onClick={() => setMobileView("map")}
+        >
+          Карта
+        </button>
+        <button
+          type="button"
+          aria-pressed={mobileView === "details"}
+          onClick={() => setMobileView("details")}
+        >
+          Детали
+        </button>
+      </div>
+
+      <div className={`sm-workspace ${railOpen ? "has-rail" : ""} ${mobileView === "details" ? "show-details" : ""}`}>
         <aside className={`sm-rail ${railOpen ? "is-open" : ""}`} aria-label="Путь и проблемы">
           <div className="sm-rail-head">
             <span>Путь и проблемы</span>
