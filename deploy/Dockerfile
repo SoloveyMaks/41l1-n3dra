@@ -14,6 +14,10 @@ COPY ui ./ui
 COPY docs ./docs
 RUN cd frontend && npm run build
 
+FROM ${NODE_IMAGE} AS node-runtime
+# Runtime dependency for packages/comparison. Only the node binary is copied;
+# npm/npx and dev tooling stay out of the final image.
+
 FROM ${PYTHON_IMAGE} AS python-wheels
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -25,6 +29,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     CG_DATA_DIR=/app/data \
+    CG_NODE_BIN=/usr/local/bin/node \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
@@ -39,8 +44,12 @@ RUN python -m pip install --no-index --find-links=/wheels -r /tmp/requirements.t
 COPY backend ./backend
 COPY db ./db
 COPY docs ./docs
+COPY packages/comparison ./packages/comparison
 COPY deploy/healthcheck.py /usr/local/bin/nedra-healthcheck.py
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=frontend-build /src/frontend/dist ./frontend/dist
+# Fail the build if the pinned Node binary cannot use the Python-slim libs.
+RUN /usr/local/bin/node --version
 
 RUN install -d -o nedra -g nedra /app/data
 USER nedra
