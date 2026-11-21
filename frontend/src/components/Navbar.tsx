@@ -1,13 +1,13 @@
 import React from 'react';
 import {
   ShieldCheck, Play, Upload, Clock, FileText, Bug,
-  Sparkles, CheckCircle2, AlertTriangle, Layers
+  Sparkles, CheckCircle2, AlertTriangle, Layers, GitCompare
 } from 'lucide-react';
 import { SecurityVerdict } from '../types';
 
 interface NavbarProps {
-  activeTab: 'editor' | 'live' | 'findings' | 'report' | 'schedule';
-  setActiveTab: (tab: 'editor' | 'live' | 'findings' | 'report' | 'schedule') => void;
+  activeTab: 'editor' | 'live' | 'findings' | 'report' | 'comparison' | 'schedule';
+  setActiveTab: (tab: 'editor' | 'live' | 'findings' | 'report' | 'comparison' | 'schedule') => void;
   onOpenUpload: () => void;
   onTriggerRun: () => void;
   onOpenAiTest: () => void;
@@ -117,6 +117,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               {latestVerdict}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab('comparison')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+            activeTab === 'comparison'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <GitCompare size={14} />
+          <span>Сравнение</span>
         </button>
 
         <button

@@ -1,5 +1,6 @@
 import {
   ArtifactManifest,
+  ComparisonDto,
   Finding,
   NodeDefinition,
   NodeRunRecord,
@@ -34,13 +35,21 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   });
   if (res.status === 401) {
     const payload = await res.json().catch(() => ({}));
-    throw new AuthRequiredError(payload.detail || 'Требуется вход по коду доступа');
+    throw new AuthRequiredError(detailText(payload) || 'Требуется вход по коду доступа');
   }
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.detail || `HTTP ${res.status}`);
+    throw new Error(detailText(payload) || `HTTP ${res.status}`);
   }
   return res;
+}
+
+function detailText(payload: any): string {
+  if (typeof payload?.detail === 'string') return payload.detail;
+  if (payload?.detail && typeof payload.detail === 'object') {
+    return payload.detail.message || payload.detail.code || '';
+  }
+  return '';
 }
 
 function jsonInit(method: string, body: unknown): RequestInit {
@@ -142,6 +151,10 @@ export const apiClient = {
 
   async runAiSyntheticTest(runId?: string): Promise<any> {
     return (await request('/ai/synthetic-test', jsonInit('POST', { runId }))).json();
+  },
+
+  async compareRuns(baselineRunId: string, currentRunId: string): Promise<ComparisonDto> {
+    return (await request(`/comparisons/${baselineRunId}/${currentRunId}`)).json();
   },
 
   getOfficialJsonUrl(runId: string): string {

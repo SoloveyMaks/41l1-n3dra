@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, Response, Up
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from backend.app.ai.service import AiService
+from backend.app.api.comparison import ComparisonError, compare_published_runs
 from backend.app.api.session import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
@@ -51,6 +52,8 @@ validator = WorkflowValidator()
 ai_service = AiService()
 intake = SafeArtifactIntake()
 codefacts_store = CodeFactsStore()
+_INTAKE_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_INTAKE", "2")))
+_RUN_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2")))
 
 # Store last received test webhooks in memory for UI verification (bounded, no secrets)
 received_webhooks: List[Dict[str, Any]] = []
@@ -120,7 +123,7 @@ def request_workspace_default() -> str:
 # --- Session (same-origin demo) ---
 @api_router.get("/health")
 def health():
-    return {"status": "ok", "authRequired": auth_required()}
+    return {"status": "ok"}
 
 
 @api_router.get("/session")
@@ -192,7 +195,8 @@ async def upload_artifact(file: UploadFile = File(...)):
     if not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Разрешены только файлы с расширением .zip")
     try:
-        manifest = await intake.ingest_upload(file, filename)
+        async with _INTAKE_SEM:
+            manifest = await intake.ingest_upload(file, filename)
         db_repo.save_artifact(_storage_manifest(manifest))
         return _public_artifact(manifest)
     except SafeIntakeError as exc:
@@ -349,16 +353,18 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
         trigger_type=payload.get("triggerType", "manual"),
     )
 
-    asyncio.create_task(
-        executor.execute_run(
-            run_id=run_id,
-            draft=draft,
-            artifact_id=artifact_id,
-            trigger_type=payload.get("triggerType", "manual"),
-            workflow_id=workflow_id,
-            revision_id=rev_id,
-        )
-    )
+    async def _execute_bounded() -> None:
+        async with _RUN_SEM:
+            await executor.execute_run(
+                run_id=run_id,
+                draft=draft,
+                artifact_id=artifact_id,
+                trigger_type=payload.get("triggerType", "manual"),
+                workflow_id=workflow_id,
+                revision_id=rev_id,
+            )
+
+    asyncio.create_task(_execute_bounded())
 
     return {
         "runId": run_id,
@@ -423,7 +429,7 @@ def _load_published_map(run_id: str, workspace: str,
     published = get_published_envelope(workspace, run_uuid(run_id), str(snapshot_id))
     if not published:
         return None
-    mapped = map_from_analysis_bundle(published["bundle"], published.get("bundleHash"))
+    mapped = map_from_analysis_bundle(published["bundle"])
     if not mapped:
         return None
     mapped["redactionVersion"] = "cg-redaction/1"
@@ -492,6 +498,30 @@ def get_evidence(run_id: str, evidence_id: str, request: Request):
         "maskedFragment": evidence["redactedSnippet"],
         "redactionVersion": payload.get("redactionVersion", "cg-redaction/1"),
     }
+
+
+@api_router.get("/comparisons/{baseline_run_id}/{current_run_id}")
+def compare_runs(baseline_run_id: str, current_run_id: str, request: Request):
+    baseline = db_repo.get_run(baseline_run_id)
+    current = db_repo.get_run(current_run_id)
+    if not baseline:
+        raise HTTPException(status_code=404, detail="Baseline run не найден")
+    if not current:
+        raise HTTPException(status_code=404, detail="Current run не найден")
+    try:
+        return compare_published_runs(
+            workspace=request_workspace(request),
+            baseline_run_id=baseline_run_id,
+            current_run_id=current_run_id,
+            baseline_run=baseline,
+            current_run=current,
+            store=codefacts_store,
+        )
+    except ComparisonError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @api_router.get("/runs/{run_id}/report")

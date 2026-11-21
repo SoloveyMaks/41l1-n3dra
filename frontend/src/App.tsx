@@ -10,6 +10,7 @@ import { UploadModal } from './components/UploadModal';
 import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
 import { AccessGate } from './components/AccessGate';
+import { ComparisonView } from './components/ComparisonView';
 
 import {
   ArtifactManifest,
@@ -27,7 +28,7 @@ import { apiClient, AuthRequiredError } from './api/client';
 
 export const App: React.FC = () => {
   // Navigation
-  const [activeTab, setActiveTab] = useState<'editor' | 'live' | 'findings' | 'report' | 'schedule'>('editor');
+  const [activeTab, setActiveTab] = useState<'editor' | 'live' | 'findings' | 'report' | 'comparison' | 'schedule'>('editor');
 
   // Access gate (public demo requires an access code; local mode gets a session automatically)
   const [session, setSession] = useState<SessionState | null>(null);
@@ -56,6 +57,7 @@ export const App: React.FC = () => {
   // Artifacts state
   const [artifacts, setArtifacts] = useState<ArtifactManifest[]>([]);
   const [currentArtifactId, setCurrentArtifactId] = useState<string>('');
+  const [runs, setRuns] = useState<RunSummary[]>([]);
 
   // Run execution state
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -91,9 +93,10 @@ export const App: React.FC = () => {
       }
 
       // 3. Load latest run if any
-      const runs = await apiClient.listRuns();
-      if (runs.length > 0) {
-        const latest = runs[0];
+      const runList = await apiClient.listRuns();
+      setRuns(runList);
+      if (runList.length > 0) {
+        const latest = runList[0];
         setCurrentRunId(latest.id);
         setCurrentRun(latest);
         loadRunDetails(latest.id);
@@ -417,6 +420,8 @@ export const App: React.FC = () => {
         {activeTab === 'findings' && <FindingsView findings={findings} />}
 
         {activeTab === 'report' && <ReportView report={report} runId={currentRunId} />}
+
+        {activeTab === 'comparison' && <ComparisonView runs={runs} />}
 
         {activeTab === 'schedule' && (
           <div className="flex-1 flex items-center justify-center p-6 bg-slate-950">
