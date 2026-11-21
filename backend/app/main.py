@@ -9,8 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.api.router import api_router, scheduler, db_repo, telegram_runtime
+from backend.app.api.router import (
+    api_router,
+    scheduler,
+    db_repo,
+    executor,
+    telegram_runtime,
+)
 from backend.app.api.admin import admin_router
+from backend.app.artifacts.repository import import_repository
+from backend.app.telegram.miniapp import create_miniapp_router
 from backend.app.notifications import NotificationRuntime, create_notification_router
 from backend.app.api.session import (
     allow_attempt,
@@ -43,7 +51,14 @@ _RATE_REGISTER = int(os.getenv("CG_RATE_REGISTER", "5"))
 _RATE_UPLOAD = int(os.getenv("CG_RATE_UPLOAD", "10"))
 _RATE_RUN = int(os.getenv("CG_RATE_RUN", "15"))
 _RATE_HOOK = int(os.getenv("CG_RATE_HOOK", "120"))
+_RATE_MINI_AUTH = int(os.getenv("CG_RATE_MINI_AUTH", "20"))
+_RATE_MINI_RUN = int(os.getenv("CG_RATE_MINI_RUN", "5"))
 _HOOK_PATH_RE = re.compile(r"^/api/repository-hooks/rw_[A-Za-z0-9]{1,40}$")
+# Mini App uses its own Bearer auth; these exact paths never get a cookie
+# session. Origin guard and rate limits still run before the exemption.
+_MINI_API_PREFIX = "/api/telegram/mini/"
+_MINI_AUTH_PATH = "/api/telegram/mini/auth"
+_MINI_RUNS_PATH = "/api/telegram/mini/runs"
 
 
 def _rate_bucket(method: str, path: str) -> str | None:
@@ -53,6 +68,10 @@ def _rate_bucket(method: str, path: str) -> str | None:
         return "login"
     if path == "/api/auth/register":
         return "register"
+    if path == _MINI_AUTH_PATH:
+        return "mini_auth"
+    if path == _MINI_RUNS_PATH:
+        return "mini_run"
     if path == "/api/artifacts" or path.startswith("/api/artifacts/"):
         return "upload"
     if re.fullmatch(r"/api/workflows/[^/]+/runs", path):
@@ -141,6 +160,7 @@ async def same_origin_session(request: Request, call_next):
         limits = {
             "login": _RATE_LOGIN, "register": _RATE_REGISTER,
             "upload": _RATE_UPLOAD, "run": _RATE_RUN, "hook": _RATE_HOOK,
+            "mini_auth": _RATE_MINI_AUTH, "mini_run": _RATE_MINI_RUN,
         }
         if not allow_attempt(client_key(request), bucket, limit=limits[bucket], window_seconds=_RATE_WINDOW):
             return JSONResponse(
@@ -156,6 +176,13 @@ async def same_origin_session(request: Request, call_next):
 
     if not request_origin_allowed(request):
         return JSONResponse({"detail": "Запрос с чужого origin запрещён"}, status_code=403)
+
+    # Mini App: origin guard and rate limits above still apply; the route does
+    # its own Bearer check. No cookie is issued and no session is accepted.
+    if path == _MINI_API_PREFIX.rstrip("/") or path.startswith(_MINI_API_PREFIX):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     public = public_demo()
     exempt = _PUBLIC_SESSION_EXEMPT if public else _LOCAL_SESSION_EXEMPT
@@ -205,6 +232,9 @@ async def workspace_scope(request: Request, call_next):
 app.include_router(api_router)
 app.include_router(create_notification_router(), prefix="/api")
 app.include_router(admin_router)
+app.include_router(
+    create_miniapp_router(db_repo, executor, import_repository)
+)
 
 frontend_dist = None
 try:
