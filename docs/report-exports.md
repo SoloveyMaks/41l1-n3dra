@@ -80,11 +80,14 @@ established. JSONC keeps the canonical passport unchanged and repeats the same
 warning in `limitations`.
 
 Before JSONC/DOCX rendering, technical provenance is sanitized recursively at
-the export boundary: URL userinfo becomes `***@host`, values of
-credential-looking query parameters (`token`, `api_key`, `sig`,
-`X-Amz-Signature`, …) become `***`, and secret-named fields (`apiKey`,
-`Authorization`, `client_secret`, …) become `[REDACTED]`. Hosts, paths, models,
-versions, request ids and non-secret query parameters are preserved. This is a
+the export boundary: URL userinfo becomes `***@host`, credential values in path
+segments (`/token/<secret>`, `/api/key/<secret>`, `;api_key=<secret>`,
+`key=<secret>`/`key:<secret>`) and in query parameters (`token`, `api_key`,
+`sig`, `X-Amz-Signature`, …) become `***`, and secret-named fields (`apiKey`,
+`Authorization`, `client_secret`, …) become `[REDACTED]`. Known token formats
+(`sk-…`, `AKIA…`, `ghp_…`) are masked even without a marker. Hosts, safe paths,
+models, versions, request ids, non-secret query parameters and legitimate token
+counts (`promptTokens`, `tokenCount`, `max_tokens`, …) are preserved. This is a
 display/export copy: the stored official JSON is not rewritten, and no export
 path logs the raw values.
 
@@ -307,7 +310,7 @@ test target; deployment pins it in `deploy/requirements.txt`.
 
 - Disposable PostgreSQL 16.16 container, `network=none`, Unix socket; real
   `runtime.*` rows through `DatabaseRepository`, no production/stage services.
-- Direct bundle checks: 54/54. Parity cases (`canonical`, empty canonical,
+- Direct bundle checks: 58/58. Parity cases (`canonical`, empty canonical,
   `findings=null`, string findings, no report) produced identical IDs in the
   same order in JSONC, Markdown and DOCX; empty canonical stayed 0 and malformed
   findings fell back to runtime rows.
@@ -320,10 +323,13 @@ test target; deployment pins it in `deploy/requirements.txt`.
   «Просканировано файлов: неизвестно; пропущено: неизвестно.», DOCX summary used
   «—»; an explicit saved `0` was not rewritten.
 - Fake sentinel credentials (`FAKE_*`): none appeared in JSONC, Markdown or DOCX.
-  URL userinfo became `***@provider.invalid`, secret query values became `***`,
-  secret fields became `[REDACTED]`; `model=safe-model`, `temperature=0`,
-  `requestId=req-safe-1` and provider/version fields survived. A malformed port
-  next to userinfo was still redacted without an exception.
+  URL userinfo became `***@provider.invalid`; path values became `/token/***`
+  and `/api/key/***`, matrix params `;api_key=***`; query values became `***`
+  for `api_key` and `X-Amz-Signature`; secret fields became `[REDACTED]`.
+  `model=safe-model`, `temperature=0`, `max_tokens=1000`, `requestId=req-safe-1`,
+  `promptTokens`/`completionTokens`/`totalTokens`/`tokenCount` and provider/
+  version fields survived. A malformed port next to userinfo was still redacted
+  without an exception.
 - In-process ASGI over the same rows: 61/61 — `md`/`docx`/`jsonc` returned 200
   with `attachment` and `no-store` for parity, empty, null, sanitize,
   contradictory and no-report runs; JSONC parsed; foreign Referer still 403.
@@ -335,10 +341,10 @@ test target; deployment pins it in `deploy/requirements.txt`.
   layout was checked through rendered PDF text and page images.
 - The DOCX table wraps long finding IDs across two lines where necessary; no
   clipping was observed.
-- Provenance sanitation is heuristic: it masks URL userinfo, credential-looking
-  query keys and secret-named fields. A secret stored under an arbitrary benign
-  key or hidden inside an opaque non-URL string is not detectable from key
-  names alone.
+- Provenance sanitation is heuristic: it masks URL userinfo, credential-named
+  path/query values and secret-named fields. An opaque secret stored under an
+  arbitrary benign key without a marker or known token format is not detectable
+  from the value alone.
 - The export is intentionally a snapshot of saved rows. A run without a saved
   report exports `reportAvailable=false` rather than fabricating a report.
 - Markdown is generated on request from the same bundle; the stored

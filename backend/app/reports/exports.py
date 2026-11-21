@@ -27,7 +27,20 @@ _SECRET_KEY_WORDS = {
     "bearer",
 }
 _SECRET_QUERY_KEYS = {"key", "sig", "signature"}
+_NON_SECRET_SUFFIX_WORDS = {
+    "count", "counts", "id", "ids", "name", "names", "type", "types",
+    "limit", "limits", "max", "min", "total", "length", "size", "usage",
+    "expires", "expiry", "ttl", "at", "version", "versions",
+}
+_PATH_LIKE_KEY_WORDS = {
+    "path", "paths", "url", "urls", "uri", "uris", "endpoint", "endpoints",
+    "route", "routes", "query", "queries", "param", "params", "parameter",
+    "parameters", "baseurl",
+}
 _URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_BARE_SECRET_PAIR_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9][A-Za-z0-9_.-]*)(\s*[=:]\s*)([^\s,;&\"']+)"
+)
 _PROVENANCE_MAX_DEPTH = 12
 _COVERAGE_STATUS_LABELS = {
     "complete": "полное",
@@ -37,17 +50,31 @@ _COVERAGE_STATUS_LABELS = {
 }
 
 
-def _is_secret_field(name: str) -> bool:
-    """CamelCase/snake_case aware: `promptTokens` is safe, `accessToken` is not."""
+def _name_words(name: str) -> List[str]:
+    """Split CamelCase/snake_case/kebab-case into lowercase words."""
     spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
-    words = [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
-    return any(word in _SECRET_KEY_WORDS for word in words)
+    return [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
+
+
+def _is_secret_name(name: str, extra_words=()) -> bool:
+    """A credential name, but `promptTokens`/`tokenCount`/`apiKeyId` stay safe."""
+    words = _name_words(name)
+    for index, word in enumerate(words):
+        if word not in _SECRET_KEY_WORDS and word not in extra_words:
+            continue
+        rest = words[index + 1:]
+        if rest and all(item in _NON_SECRET_SUFFIX_WORDS for item in rest):
+            continue
+        return True
+    return False
+
+
+def _is_secret_field(name: str) -> bool:
+    return _is_secret_name(name)
 
 
 def _is_secret_query_key(name: str) -> bool:
-    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
-    words = [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
-    return any(word in _SECRET_KEY_WORDS or word in _SECRET_QUERY_KEYS for word in words)
+    return _is_secret_name(name, _SECRET_QUERY_KEYS)
 
 
 def _redact_query(query: str) -> str:
@@ -64,8 +91,45 @@ def _redact_query(query: str) -> str:
     return "&".join(pairs) if changed else query
 
 
+def _redact_path(path: str) -> str:
+    """Drop credential values in path segments while keeping the endpoint shape.
+
+    Covers `/token/<secret>`, `/api/key/<secret>`, matrix params
+    (`;api_key=<secret>`) and `key=value`/`key:value` inside a segment. Known
+    token formats (`sk-…`, `AKIA…`, `ghp_…`) are masked even without a marker.
+    """
+    if not path:
+        return path
+    segments = path.split("/")
+    redacted: List[str] = []
+    previous_is_marker = False
+    for raw in segments:
+        if not raw:
+            redacted.append(raw)
+            continue
+        pieces: List[str] = []
+        for piece in raw.split(";"):
+            key, separator, value = piece.partition("=")
+            if not separator:
+                key, separator, value = piece.partition(":")
+            if separator and value and _is_secret_query_key(unquote_plus(key)):
+                pieces.append(f"{key}{separator}***")
+            else:
+                pieces.append(mask_sensitive_text(piece))
+        segment = ";".join(pieces)
+        if previous_is_marker and segment != "***":
+            segment = "***"
+        redacted.append(segment)
+        decoded = unquote_plus(raw)
+        previous_is_marker = (
+            not any(separator in decoded for separator in "=:;")
+            and _is_secret_query_key(decoded)
+        )
+    return "/".join(redacted)
+
+
 def _sanitize_url(url: str) -> str:
-    """Drop URL userinfo and secret query values, keep host/path/useful params."""
+    """Drop URL userinfo, path and query credentials, keep safe provenance."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -77,8 +141,48 @@ def _sanitize_url(url: str) -> str:
         host = netloc.rsplit("@", 1)[1]
         netloc = f"***@{host}" if host else "***"
     return urlunsplit(
-        (parts.scheme, netloc, parts.path, _redact_query(parts.query), parts.fragment)
+        (parts.scheme, netloc, _redact_path(parts.path),
+         _redact_query(parts.query), parts.fragment)
     )
+
+
+def _sanitize_reference(value: str) -> str:
+    """Sanitize a URL, a bare path, or a query-like provenance value."""
+    if "://" in value:
+        return _sanitize_text(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return _redact_path(value)
+    netloc = parts.netloc
+    if "@" in netloc:
+        host = netloc.rsplit("@", 1)[1]
+        netloc = f"***@{host}" if host else "***"
+    if netloc or parts.query:
+        return urlunsplit(
+            ("", netloc, _redact_path(parts.path), _redact_query(parts.query), parts.fragment)
+        )
+    if "/" not in value and "=" in value:
+        return _redact_query(value)
+    return _redact_path(value)
+
+
+def _is_path_like_key(name: str) -> bool:
+    return any(word in _PATH_LIKE_KEY_WORDS for word in _name_words(name))
+
+
+def _mask_bare_pairs(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        key = match.group(1)
+        if not _is_secret_query_key(key):
+            return match.group(0)
+        value = match.group(3)
+        # `mask_sensitive_text` already redacts the token after a scheme word.
+        if "authorization" in _name_words(key) and value.lower() in ("bearer", "basic"):
+            return match.group(0)
+        return f"{key}{match.group(2)}***"
+
+    return _BARE_SECRET_PAIR_RE.sub(replace, text)
 
 
 def _sanitize_text(value: str) -> str:
@@ -86,10 +190,10 @@ def _sanitize_text(value: str) -> str:
     chunks: List[str] = []
     cursor = 0
     for match in _URL_IN_TEXT_RE.finditer(value):
-        chunks.append(mask_sensitive_text(value[cursor:match.start()]))
+        chunks.append(_mask_bare_pairs(mask_sensitive_text(value[cursor:match.start()])))
         chunks.append(_sanitize_url(match.group(0)))
         cursor = match.end()
-    chunks.append(mask_sensitive_text(value[cursor:]))
+    chunks.append(_mask_bare_pairs(mask_sensitive_text(value[cursor:])))
     return "".join(chunks)
 
 
@@ -97,8 +201,8 @@ def _sanitize_provenance(value: Any, key: str = "", depth: int = 0) -> Any:
     """Recursively strip credentials from provenance while keeping safe fields.
 
     Export is the last boundary before a file leaves the process, so a
-    historical row must not carry URL userinfo, secret query values or
-    secret-named fields into JSONC/DOCX.
+    historical row must not carry URL userinfo, path/query credentials or
+    secret-named fields into JSONC/DOCX. Token counts and endpoint shape stay.
     """
     if depth > _PROVENANCE_MAX_DEPTH:
         return "[REDACTED]"
@@ -116,6 +220,8 @@ def _sanitize_provenance(value: Any, key: str = "", depth: int = 0) -> Any:
     if isinstance(value, str):
         if _is_secret_field(key) and value:
             return "[REDACTED]"
+        if _is_path_like_key(key) and value:
+            return _sanitize_reference(value)
         return _sanitize_text(value)
     return value
 
