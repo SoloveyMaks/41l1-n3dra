@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import {
   ShieldCheck, ShieldAlert, FileText, Download, Sparkles,
   CheckCircle2, AlertTriangle, HelpCircle, Layers, ArrowDownToLine,
-  FileCode2, KeyRound, PackageSearch
+  FileCode2, KeyRound, PackageSearch, Loader2
 } from 'lucide-react';
-import { ReportData, SecurityVerdict, ExecutionStatus, NodeRunRecord } from '../types';
+import { AiScanResult, ReportData, SecurityVerdict, ExecutionStatus, NodeRunRecord } from '../types';
 import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage';
-import { apiClient } from '../api/client';
+import { apiClient, ApiError, AuthRequiredError } from '../api/client';
+import { AiHypothesesPanel } from './AiHypothesesPanel';
 
 interface ReportViewProps {
   report: ReportData | null;
@@ -14,11 +15,85 @@ interface ReportViewProps {
   runStatus?: ExecutionStatus;
   failureReason?: string;
   nodeRuns?: NodeRunRecord[];
+  aiScan?: AiScanResult | null;
 }
 
-export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus, failureReason, nodeRuns = [] }) => {
+const exportErrorText = (error: unknown): string => {
+  if (error instanceof AuthRequiredError) return 'Сессия истекла. Войдите заново и повторите скачивание.';
+  if (error instanceof ApiError) {
+    if (error.status === 404 || error.code === 'RUN_NOT_FOUND') {
+      return 'Запуск или отчёт не найден. Возможно, он относится к другому аккаунту.';
+    }
+    if (error.status === 503 || error.code === 'REPORT_EXPORT_UNAVAILABLE') {
+      return 'DOCX недоступен на сервере: не установлен python-docx. JSONC при этом должен работать.';
+    }
+    return error.message;
+  }
+  return error instanceof Error ? error.message : 'Не удалось скачать отчёт';
+};
+
+const ExportButtons: React.FC<{
+  downloading: 'docx' | 'jsonc' | null;
+  onDownload: (format: 'docx' | 'jsonc') => void;
+}> = ({ downloading, onDownload }) => (
+  <div className="flex flex-wrap items-center gap-2">
+    <button
+      type="button"
+      onClick={() => onDownload('docx')}
+      disabled={downloading !== null}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shadow-md shadow-emerald-900/20 transition disabled:bg-slate-700 disabled:text-slate-400"
+    >
+      {downloading === 'docx' ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+      <span>{downloading === 'docx' ? 'Скачиваем DOCX…' : 'Скачать DOCX'}</span>
+    </button>
+    <button
+      type="button"
+      onClick={() => onDownload('jsonc')}
+      disabled={downloading !== null}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-700 text-white text-xs font-semibold shadow-md shadow-cyan-900/20 transition disabled:bg-slate-700 disabled:text-slate-400"
+    >
+      {downloading === 'jsonc' ? <Loader2 size={14} className="animate-spin" /> : <FileCode2 size={14} />}
+      <span>{downloading === 'jsonc' ? 'Скачиваем JSONC…' : 'Скачать JSONC'}</span>
+    </button>
+  </div>
+);
+
+export const ReportView: React.FC<ReportViewProps> = ({
+  report,
+  runId,
+  runStatus,
+  failureReason,
+  nodeRuns = [],
+  aiScan = null,
+}) => {
   const [activeSubTab, setActiveSubTab] = useState<'passport' | 'ai' | 'markdown'>('passport');
+  const [downloading, setDownloading] = useState<'docx' | 'jsonc' | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const canonicalCoverage = getCanonicalCoverage(nodeRuns);
+
+  const downloadExport = async (format: 'docx' | 'jsonc') => {
+    if (!runId) {
+      setDownloadError('Запуск не выбран: скачивать нечего.');
+      return;
+    }
+    setDownloading(format);
+    setDownloadError(null);
+    try {
+      const { blob, filename } = await apiClient.downloadReportExport(runId, format);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error: unknown) {
+      setDownloadError(exportErrorText(error));
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   if (!report || !runId) {
     const failed = runStatus === 'failed';
@@ -42,6 +117,20 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
             ? 'Пока run в очереди или выполняется, report на сервере ещё не создан. Дождись terminal-статуса.'
             : 'Запустите сценарий для генерации отчёта и карты безопасности.'}
         </p>
+        {runId && (
+          <div className="mt-5 w-full max-w-md space-y-2 rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-left">
+            <p className="text-[11px] leading-relaxed text-slate-400">
+              Экспорт — снимок уже сохранённых строк, без нового сканирования. Если отчёт не создан,
+              JSONC/DOCX честно содержат <span className="font-mono text-slate-300">reportAvailable=false</span>.
+            </p>
+            <ExportButtons downloading={downloading} onDownload={(format) => void downloadExport(format)} />
+            {downloadError && (
+              <p role="alert" className="rounded border border-rose-900 bg-rose-950/60 px-2 py-1.5 text-[11px] text-rose-200">
+                {downloadError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -77,7 +166,11 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
               <span className="text-xs font-mono text-slate-500">Запуск #{runId}</span>
             </div>
             <p className="text-xs text-slate-400">
-              Покрытие: <strong className="text-indigo-400">{coverageLabel(canonicalCoverage)}</strong> • Подтверждено находок: <strong className="text-rose-400">{p.confirmed_findings}</strong>
+              Покрытие: <strong className="text-indigo-400">{coverageLabel(canonicalCoverage)}</strong> • Находок:{' '}
+              <strong className="text-slate-200">{p.confirmed_findings + p.potential_findings + p.inconclusive_findings}</strong> •
+              подтверждено: <strong className="text-rose-400">{p.confirmed_findings}</strong> •
+              возможно: <strong className="text-yellow-300">{p.potential_findings}</strong> •
+              не подтверждено: <strong className="text-slate-300">{p.inconclusive_findings}</strong>
             </p>
             {coverageLabel(canonicalCoverage) !== 'Полное' && (
               <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-amber-300">{coverageReason(canonicalCoverage)}</p>
@@ -87,6 +180,7 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
 
         {/* Export Buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          <ExportButtons downloading={downloading} onDownload={(format) => void downloadExport(format)} />
           <a
             href={apiClient.getOfficialJsonUrl(runId)}
             download
@@ -106,6 +200,12 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
           </a>
         </div>
       </div>
+
+      {downloadError && (
+        <div role="alert" className="border-b border-rose-900 bg-rose-950/60 px-3 py-2 text-[11px] text-rose-200 sm:px-4">
+          {downloadError}
+        </div>
+      )}
 
       {/* Sub Tabs */}
       <div className="px-3 sm:px-4 pt-3 bg-slate-900/60 border-b border-slate-800 flex items-center gap-2 overflow-x-auto">
@@ -244,6 +344,8 @@ export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus
                 {report.ai_summary}
               </p>
             </div>
+
+            {aiScan && <AiHypothesesPanel aiScan={aiScan} />}
 
             {/* Trust Layer Principles Breakdown */}
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">

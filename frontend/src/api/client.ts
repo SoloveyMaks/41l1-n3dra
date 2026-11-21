@@ -115,6 +115,30 @@ export const apiClient = {
     return (await request('/profile')).json();
   },
 
+  async downloadReportExport(
+    runId: string,
+    format: 'docx' | 'jsonc',
+  ): Promise<{ blob: Blob; filename: string }> {
+    const res = await request(`/runs/${encodeURIComponent(runId)}/report/export.${format}`);
+    const blob = await res.blob();
+    const fallback = `nedra-${runId.slice(0, 12)}.${format}`;
+    const disposition = res.headers.get('content-disposition') || '';
+    const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    let filename = fallback;
+    if (utf8?.[1]) {
+      try {
+        filename = decodeURIComponent(utf8[1].trim());
+      } catch {
+        filename = utf8[1].trim();
+      }
+    } else {
+      const quoted = /filename="([^"]+)"/i.exec(disposition);
+      const plain = /filename=([^;]+)/i.exec(disposition);
+      filename = (quoted?.[1] || plain?.[1] || fallback).trim();
+    }
+    return { blob, filename };
+  },
+
   async getTelegramMe(): Promise<TelegramMe> {
     return (await request('/telegram/me')).json();
   },

@@ -956,6 +956,7 @@ export const App: React.FC = () => {
               runStatus={currentRun?.execution_status}
               failureReason={failureReason}
               nodeRuns={nodeRuns}
+              aiScan={aiScan}
             />
           )}
 
@@ -1152,6 +1153,7 @@ export const App: React.FC = () => {
             runStatus={currentRun?.execution_status}
             failureReason={failureReason}
             nodeRuns={nodeRuns}
+            aiScan={aiScan}
           />
         );
       case 'comparison':
