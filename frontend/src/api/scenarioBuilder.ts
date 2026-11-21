@@ -4,6 +4,7 @@ export type ScenarioDraft = WorkflowDraft;
 
 export interface ScenarioPreview {
   draft: ScenarioDraft;
+  validation: { valid: boolean; issues: { level: string; message: string }[] };
   summary: string;
   warnings: string[];
   source: 'ai' | string;
@@ -37,6 +38,27 @@ function detailText(payload: unknown): string {
   return '';
 }
 
+function isPreview(payload: unknown): payload is ScenarioPreview {
+  if (!payload || typeof payload !== 'object') return false;
+  const item = payload as ScenarioPreview;
+  const draft = item.draft;
+  if (!draft || draft.schemaVersion !== 1 || typeof draft.name !== 'string'
+    || !Array.isArray(draft.nodes) || !draft.nodes.length || !Array.isArray(draft.edges)
+    || item.validation?.valid !== true || !Array.isArray(item.validation.issues)
+    || typeof item.summary !== 'string' || !Array.isArray(item.warnings)
+    || !item.warnings.every((warning) => typeof warning === 'string')
+    || !Array.isArray(item.intents) || !item.intents.every((intent) => typeof intent === 'string')) return false;
+  const ids = new Set<string>();
+  for (const node of draft.nodes) {
+    if (!node || typeof node.id !== 'string' || !node.id || ids.has(node.id)
+      || typeof node.kind !== 'string' || typeof node.title !== 'string') return false;
+    ids.add(node.id);
+  }
+  return draft.edges.every((edge) => edge && typeof edge.id === 'string'
+    && ids.has(edge.source) && ids.has(edge.target)
+    && typeof edge.sourcePort === 'string' && typeof edge.targetPort === 'string');
+}
+
 export async function requestScenarioPreview(prompt: string, signal?: AbortSignal): Promise<ScenarioPreview> {
   const response = await fetch(`${API_BASE}/scenario-builder/preview`, {
     method: 'POST',
@@ -59,5 +81,12 @@ export async function requestScenarioPreview(prompt: string, signal?: AbortSigna
       code,
     );
   }
-  return payload as ScenarioPreview;
+  if (!isPreview(payload)) {
+    throw new ScenarioBuilderApiError(
+      'Сервер вернул непроверенный или повреждённый черновик. Повторите сборку.',
+      422,
+      'SCENARIO_PREVIEW_INVALID',
+    );
+  }
+  return payload;
 }

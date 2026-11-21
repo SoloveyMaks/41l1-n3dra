@@ -113,10 +113,14 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
 
   if (!isOpen) return null;
 
-  const stopVoice = () => {
-    voiceSeqRef.current += 1;
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
+  const stopVoice = (cancel = false) => {
+    if (cancel) {
+      voiceSeqRef.current += 1;
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+    } else {
+      recognitionRef.current?.stop();
+    }
     setListening(false);
   };
 
@@ -125,7 +129,7 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
     abortRef.current?.abort();
     abortRef.current = null;
     setLoading(false);
-    stopVoice();
+    stopVoice(true);
     onClose();
   };
 
@@ -198,6 +202,9 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
       setError(`Опишите сценарий хотя бы в ${MIN_PROMPT} символах.`);
       return;
     }
+    // Freeze the voice session before sending: late browser callbacks must not
+    // mutate the prompt whose preview is being built.
+    stopVoice(true);
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     abortRef.current?.abort();
@@ -335,6 +342,9 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
                 <div className="text-[11px] uppercase tracking-wider text-slate-500">Черновик</div>
                 <h3 className="mt-1 text-base font-bold text-slate-100">{preview.draft.name}</h3>
                 <p className="mt-2 text-xs leading-relaxed text-slate-300">{preview.summary}</p>
+                <p className="mt-2 text-xs text-emerald-300" role="status">
+                  Граф проверен: блоки и связи допустимы. Сохранение и запуск — отдельно, в редакторе.
+                </p>
               </div>
 
               {preview.warnings.length > 0 && (
@@ -363,6 +373,19 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-[11px] text-slate-400">
+                <div className="font-semibold text-slate-300">Связи: {preview.draft.edges.length}</div>
+                <ul className="mt-2 space-y-1 break-words text-[11px]">
+                  {preview.draft.edges.map((edge) => (
+                    <li key={edge.id}>
+                      {preview.draft.nodes.find((node) => node.id === edge.source)?.title}
+                      {' → '}
+                      {preview.draft.nodes.find((node) => node.id === edge.target)?.title}
+                    </li>
+                  ))}
+                </ul>
               </div>
 
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

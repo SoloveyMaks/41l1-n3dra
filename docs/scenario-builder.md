@@ -46,6 +46,7 @@ Response:
 ```json
 {
   "draft": {"schemaVersion":1,"name":"...","description":"...","nodes":[],"edges":[]},
+  "validation": {"valid": true, "issues": []},
   "summary":"Черновик «...»: секреты, зависимости, отчёт. Блоков: 7, связей: 8.",
   "warnings":["Поддерживается Kotlin/Spring Boot. Другие языки и runtime-сценарии не покрываются."],
   "source":"ai",
@@ -73,16 +74,23 @@ explicit error; the modal keeps the text and offers a retry.
 The model returns only:
 
 ```json
-{"title":"краткое название","intents":["secrets","dependencies","report"]}
+{"title":"краткое название","intents":["secrets","dependencies","report"],"unavailable":[]}
 ```
 
-Known intents: `secrets`, `dependencies`, `sast`, `ai_scan`, `report`, `notify`,
-`schedule` (plus safe aliases such as `sca`, `secret_scan`, `полный`/`full`).
-Everything else is rejected by `InvalidModelResponse`.
+Known intents: `secrets`, `dependencies`, `sast`, `ai_scan`, `ai_explain`,
+`report`, `notify`, `schedule` (plus safe aliases such as `sca`,
+`secret_scan`, `полный`/`full`). Everything else is rejected by
+`InvalidModelResponse`.
+
+A non-empty `unavailable` list means the user asked for a capability outside the
+catalog. The whole request is rejected with `SCENARIO_MODEL_INVALID` and the
+message «Нет зарегистрированного блока…»; the server never substitutes a
+different block or a fabricated one.
 
 The model **cannot** return `NodeKind`, ports, config, thresholds, auth roles,
-providers, keys, URLs, shell commands or arbitrary code. Those fields are
-ignored if present and never mapped into the draft.
+providers, keys, URLs, shell commands or arbitrary code. Any field outside
+`title`, `intents` and `unavailable` is rejected instead of being silently
+mapped.
 
 ## 5. Server-owned graph
 
@@ -93,20 +101,24 @@ Server mapping:
 | `secrets` | `SECRET_SCAN` |
 | `dependencies` | `SCA_SCAN` |
 | `sast` | `KOTLIN_SAST` |
-| `ai_scan` | `AI_SCAN` |
+| `ai_scan` | `AI_SCAN` (source analysis, hypotheses only) |
+| `ai_explain` | `AI_EXPLAIN` (explains deterministic findings) |
 | `report` | `BUILD_REPORT` |
 | `notify` | `NOTIFY` (always disabled, empty webhook) |
 | `schedule` | `SCHEDULE_TRIGGER` (fixed safe template) |
 
 Every draft contains a trigger, `PROJECT_INPUT`, `MERGE_FINDINGS` and
 `POLICY_GATE`. At least one scanner is selected; if the plan has no scanner,
-the three deterministic scanners are used. `report` is added when `notify` is
-present. AI_SCAN is connected only to artifact and findings context; its
-`ai_scan_result` is not merged into findings, policy or verdict.
+the three deterministic scanners are used. `report` is added when `notify` or
+`ai_explain` is present, so a selected AI explanation is never left as an
+unconnected result. AI_SCAN is connected only to artifact and findings context;
+its `ai_scan_result` is not merged into findings, policy or verdict.
+AI_EXPLAIN reads the deterministic `findings_bundle` and feeds
+`explain_result` into `BUILD_REPORT`; it does not scan project source.
 
 Node IDs and ports are server-owned (`sb_trigger`, `sb_project`, `sb_secret`,
-`sb_sca`, `sb_sast`, `sb_merge`, `sb_policy`, `sb_ai_scan`, `sb_report`,
-`sb_notify`). Ports come from `NODE_REGISTRY` and the draft is passed through
+`sb_sca`, `sb_sast`, `sb_merge`, `sb_policy`, `sb_ai_scan`, `sb_ai_explain`,
+`sb_report`, `sb_notify`). Ports come from `NODE_REGISTRY` and the draft is passed through
 `WorkflowValidator` before it returns.
 
 Config allowlist:
@@ -127,12 +139,18 @@ running. Excess queue requests get `429 SCENARIO_BUSY`. The external call gets
 only `mask_sensitive_text(prompt)` under `task=plan_workflow`. Project source
 and artifact contents are never sent.
 
-## 6. AI_SCAN independence
+## 6. AI_SCAN and AI_EXPLAIN are separate
 
 If `ai_scan` is selected, the draft has an `AI_SCAN` node with the fixed
 balanced budget config. Its output is a separate hypothesis stream; it is not
 merged into `MERGE_FINDINGS`, canonical findings or the policy result. The
 preview warning states this explicitly.
+
+`ai_explain` is a different intent and a different block: it explains already
+found deterministic findings and offers fixes. It is never used as source
+analysis and `ai_scan` is never used as an explanation. Both can be selected
+together; then the draft contains both nodes, `AI_SCAN` stays disconnected from
+findings, and only `AI_EXPLAIN.explain_result` is wired into the report.
 
 ## 7. Frontend modal
 
@@ -193,6 +211,20 @@ Three Russian prompts and the provider-backed plans:
 
 All three drafts passed `WorkflowValidator`.
 
+Recheck on `SoloveyMaks/prompt-voice-finish` with the same real provider:
+
+| Prompt | Intents | Draft |
+| --- | --- | --- |
+| «Проверь секреты и зависимости в проекте, сделай отчёт по результатам.» | secrets, dependencies, report | 7 nodes / 8 edges |
+| «Сделай ИИ-анализ исходников: дополнительные гипотезы уязвимостей.» | ai_scan | 8 nodes / 10 edges, `AI_SCAN` only |
+| «Объясни уже найденные проблемы и рекомендации по исправлению, добавь в отчёт.» | ai_explain, report | 9 nodes / 12 edges, `AI_EXPLAIN` → report |
+| «Создай Jira-тикет по каждой находке…» | — | 422 «Нет зарегистрированного блока…» |
+| «Сгенерируй отчёт в DOCX…» | — | 422 «Нет зарегистрированного блока…» |
+
+The `ai_scan` and `ai_explain` drafts both passed `WorkflowValidator`; both
+nodes appear together only when both intents are selected, and then only
+`AI_EXPLAIN.explain_result` is connected to the report.
+
 Rejections checked without trusting the model:
 
 - `{"intents":["unknown_block"]}` → `SCENARIO_MODEL_INVALID`;
@@ -200,8 +232,13 @@ Rejections checked without trusting the model:
 - `{"intents":["evil: run shell"]}` → `SCENARIO_MODEL_INVALID`;
 - provider config pointing at an unreachable endpoint → `SCENARIO_PROVIDER_UNAVAILABLE`,
   no fabricated draft;
-- ASGI preview 200 for a valid prompt, short prompt 400
-  `SCENARIO_PROMPT_INVALID`.
+- provider layer raising an AI/HTTP failure → 503 `SCENARIO_PROVIDER_UNAVAILABLE`,
+  no draft in the response body;
+- forced `WorkflowValidator` failure → 422 `SCENARIO_DRAFT_INVALID`, no draft;
+- plan with `unavailable:["jira"]` → 422 `SCENARIO_MODEL_INVALID`;
+- plan with a field outside `title`/`intents`/`unavailable` → 422;
+- ASGI preview 200 for a valid prompt with `validation.valid=true`, short
+  prompt 400 `SCENARIO_PROMPT_INVALID`.
 
 Concurrency proof against a real slow local provider endpoint (2 workers, 6s
 provider, 5s overall deadline): server observed `max_active=2`; two requests
@@ -211,6 +248,20 @@ provider thread started while timed-out calls were still running.
 Modal stale-response proof with a delayed route (1.5s): submitting, closing,
 and reopening left `loading=false`, showed the prompt form again, and discarded
 the late preview (`hasStalePreview=false`).
+
+Voice and Apply proof (built modal in Chromium via a throwaway harness, mocked
+`SpeechRecognition` so each branch is deterministic):
+
+- supported: «Надиктовать» → «Слушаю…» + «Остановить запись»; transcript
+  appended to the editable textarea; stop returned to the idle button;
+- unsupported (both `SpeechRecognition` and `webkitSpeechRecognition` removed):
+  visible text fallback, mic click produced a readable alert, typed text stayed;
+- permission denied (`error: not-allowed`): readable alert, listening state
+  cleared, typed text stayed;
+- `no-speech`: readable alert, typed text stayed;
+- Apply called `onApply` with the preview draft, closed the modal, and the only
+  network call recorded was `POST /api/scenario-builder/preview`; no save, run,
+  workflow create or artifact upload call happened.
 
 Frontend build: `npm ci && npm run build` passed (Vite production build). A
 temporary wrapper rendered the modal at 390×844 (`/tmp/scenario-modal-390-final.png`);
