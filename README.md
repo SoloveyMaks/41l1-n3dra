@@ -15,6 +15,9 @@
   статусом. Этот аудит ничего не выкладывает.
 - Runtime schema в исходнике — v5. Применённые исторические миграции сохраняют
   checksum; запуск backend может обновить БД уже при импорте модуля.
+- Custom-check/sandbox runtime в этой базе отсутствует. Reference checks —
+  отдельный имеющийся модуль; наличие такого названия не означает изолированное
+  выполнение пользовательского кода.
 - [Release handoff](docs/RELEASE-HANDOFF.md) описывает оставшиеся проверки,
   [release-аудит](docs/reviews/full-audit-release.md) — фактический охват.
 - Это прототип с ограничениями покрытия; production readiness не заявляется.
@@ -87,8 +90,8 @@ synthetic-векторами для проверки exact-механики; о�
 старт падает с понятной ошибкой, без DSN в тексте.
 
 ```bash
-python -X utf8 -m analyzers.selftest                      # 74 проверки
-python -X utf8 -m analyzers.compare <snapshot>             # 15/15, controls 6/6
+python -X utf8 -m analyzers.selftest
+python -X utf8 -m analyzers.compare <snapshot>
 python -X utf8 -m analyzers.contract_export <snapshot>/training-project \
     --db <snapshot>/vulnerability-database/vulnerabilities.json \
     --out analyzers/examples/bundle.json --rag-store .rag/store
@@ -96,8 +99,8 @@ node analyzers/validate_bundle.mjs analyzers/examples/bundle.json <snapshot>/tra
 ```
 
 `--rag-store` дополнительно индексирует выгрузку в файловое `rag/`: элементы
-получают id из содержания, поэтому второй прогон того же кода даёт
-`new: 0, reused: 148`. Это отдельный слой переиспользования, а не замена
+получают id из содержания и повторно используются при повторном импорте
+тех же данных. Это отдельный слой переиспользования, а не замена
 PostgreSQL-таблиц канонических фактов; ограничения — в
 [rag/README.md](rag/README.md).
 
@@ -130,8 +133,9 @@ cd frontend && npm ci && npm run build       # production build
 - Общее сравнение остаётся `inconclusive`; SQL-проверка узкая
   (`source_pattern`). Синтетический источник никогда не даёт `comparable=true`.
 - AI-объяснения — отдельный слой и не меняют проблемы, покрытие и вердикт.
-  Векторные представления текста необязательны, retrieval выключен; сейчас недоступны (403),
-  проверенных примеров 0. Политика предметной области не подключена к
+  Векторные представления текста необязательны, retrieval по deployment
+  умолчанию выключен. Доступность провайдера проверяется отдельно для окружения.
+  Политика предметной области не подключена к
   канонической подписи; допущения не являются работающим ограничением.
 - Аккаунты получают отдельные workspace; demo-сессия использует общий env
   workspace. Изоляция всех API требует отдельной живой проверки, наличие

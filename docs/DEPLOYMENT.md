@@ -181,7 +181,7 @@ optional 003/014/015; 015 содержит synthetic draft fixture, а не prod
 
 ```bash
 scripts/nedra-systemd-install.sh            # установить, не включать
-scripts/nedra-systemd-install.sh --enable   # включить db/app на login/boot
+scripts/nedra-systemd-install.sh --enable   # включить db/app/proxy на login/boot
 scripts/nedra-systemd-install.sh --enable --start
 ```
 
@@ -193,8 +193,7 @@ oneshot unit мог остаться failed при всё ещё работаю�
 контейнера ждёт 45 секунд (Telegram job grace — 15), затем Podman может послать
 SIGKILL; завершение всех прогонов этим не гарантируется.
 
- Для
-старта без интерактивного логина нужен `loginctl enable-linger $USER`; это
+Для старта без интерактивного логина нужен `loginctl enable-linger $USER`; это
 глобальная настройка пользователя, поэтому она не включается автоматически.
 `podman-restart.service` сам по себе не поднимает rootless-контейнеры без
 user-manager/linger.

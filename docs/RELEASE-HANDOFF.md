@@ -12,6 +12,18 @@ Release-аудит начат на exact `35d27d30ae44fd955824001e18eff895197c93
 Полный SHA результата берётся из git commit; после объединения независимых
 веток требуется новый exact SHA и новый полный образ.
 
+Координатор сообщил, что storage-владелец готовит новую forward migration для
+`telegram.binding_epoch_seq`. Она не входит в проверенную release-базу этой
+ветки. После объединения прежний `/tmp/nedra-mini-release-preflight/report.md`
+для exact35d27d3 не подтверждает новый состав image/ledger и не разрешает
+image-only rollback: обновляются manifest, список миграций, rehearsal и
+проверка совместимости данных. Отсутствующая в базе миграция 013 упомянута
+в db README; это вопрос к владельцу db, а не повод восстанавливать SQL наугад.
+
+В exact35d27d3 нет custom-check/sandbox runtime. Релиз не обещает эту функцию;
+имеющийся `backend/app/reference_checks` не заменяет sandbox пользовательского
+кода. Необъединённые фичи не включаются частичным overlay в image.
+
 Изолированная сборка frontend этой базы прошла: 2 223 модуля, JS 963,76 kB,
 CSS 152,88 kB; предупреждение о размере bundle. Это проверка compiled frontend,
 а не образа и не пользовательского пути с PostgreSQL/Telegram. Compile Python,
