@@ -26,6 +26,7 @@ class NotificationDecision:
     allowed: bool
     reason: str
     local: bool = False
+    addresses: tuple[str, ...] = ()
 
 
 def _is_public_ip(value: str) -> bool:
@@ -43,7 +44,7 @@ def _resolve(host: str, port: int) -> Tuple[list[str], Optional[str]]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as exc:
-        return [], f"DNS не разрешил host: {exc}"
+        return [], "Не удалось разрешить адрес приёмника"
     addresses = sorted({info[4][0] for info in infos})
     return addresses, None
 
@@ -53,19 +54,21 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
         return NotificationDecision(False, "URL вебхука не задан")
     if len(url) > 2048 or any(ch in url for ch in ("\r", "\n", "\x00")):
         return NotificationDecision(False, "Некорректный URL вебхука")
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").strip().lower()
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return NotificationDecision(False, "Некорректный URL или порт вебхука")
     if parts.scheme not in {"http", "https"}:
         return NotificationDecision(False, "Разрешены только http/https")
     if parts.username or parts.password:
         return NotificationDecision(False, "Userinfo в URL вебхука запрещён")
-    host = (parts.hostname or "").strip().lower()
     if not host:
         return NotificationDecision(False, "В URL нет host")
     if host in BLOCKED_HOSTNAMES:
         return NotificationDecision(False, "Cloud metadata/localhost alias запрещён")
-    try:
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-    except ValueError:
+    if not 1 <= port <= 65535:
         return NotificationDecision(False, "Некорректный порт")
     literal_ip: Optional[str] = None
     try:
@@ -76,6 +79,8 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
         literal_ip is not None and ipaddress.ip_address(literal_ip).is_loopback
     )
 
+    if not allow_local and not allow_external:
+        return NotificationDecision(False, "Отправка не разрешена: нужен явный выбор приёмника")
     addresses, error = _resolve(host, port)
     if error:
         return NotificationDecision(False, error)
@@ -92,7 +97,7 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
             return NotificationDecision(False, "Локальный/частный адрес запрещён без allowLocal=true")
         if not all(ipaddress.ip_address(address).is_loopback for address in addresses if _valid_ip(address)):
             return NotificationDecision(False, "В allowLocal разрешён только loopback, не частная сеть")
-        return NotificationDecision(True, "Локальный тестовый приёмник разрешён явным allowLocal=true", local=True)
+        return NotificationDecision(True, "Локальный тестовый приёмник разрешён явным allowLocal=true", local=True, addresses=tuple(addresses))
 
     if not allow_external:
         return NotificationDecision(False, "Внешняя отправка запрещена без allowExternal=true")
@@ -102,7 +107,7 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
         return NotificationDecision(False, "Внешняя отправка только на порт 443")
     if not all(_is_public_ip(address) for address in addresses if _valid_ip(address)):
         return NotificationDecision(False, "Внешний host разрешился в private/reserved адрес")
-    return NotificationDecision(True, "Внешний https-приёмник разрешён явным allowExternal=true")
+    return NotificationDecision(True, "Внешний https-приёмник разрешён явным allowExternal=true", addresses=tuple(addresses))
 
 
 def _valid_ip(value: str) -> bool:
