@@ -754,6 +754,21 @@ class DatabaseRepository:
                 (last_run, next_fire, self.workspace_id, schedule_id),
             )
 
+    def set_schedule_enabled(self, schedule_id: str, enabled: bool) -> Optional[Dict[str, Any]]:
+        """Pause/resume one schedule in this workspace; resume recalculates from now."""
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.schedules
+                   SET enabled = %s,
+                       next_fire_at = CASE WHEN %s THEN NULL ELSE next_fire_at END
+                 WHERE workspace_id = %s AND id = %s
+                 RETURNING *
+                """,
+                (1 if enabled else 0, bool(enabled), self.workspace_id, schedule_id),
+            ).fetchone()
+            return _row(row)
+
     # Deliveries (Webhook notifications)
     def save_delivery(self, delivery_id: str, run_id: str, channel: str, status: str,
                       target: str, status_code: Optional[int], message: str) -> None:

@@ -35,7 +35,7 @@ from backend.app.contracts.schemas import Finding, WorkflowDraft
 from backend.app.demo.default_workflow import get_default_workflow_draft
 from backend.app.demo.sample_project import create_sample_project_zip
 from backend.app.engine.executor import WorkflowExecutor
-from backend.app.engine.scheduler import WorkflowScheduler
+from backend.app.engine.scheduler import WorkflowScheduler, validate_schedule_expression
 from backend.app.engine.sse import SSEBroker
 from backend.app.engine.validator import WorkflowValidator
 from backend.app.storage.database import DatabaseRepository
@@ -54,7 +54,6 @@ ai_service = AiService()
 intake = SafeArtifactIntake()
 codefacts_store = CodeFactsStore()
 _INTAKE_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_INTAKE", "2")))
-_RUN_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2")))
 
 # Store last received test webhooks in memory for UI verification (bounded, no secrets)
 received_webhooks: List[Dict[str, Any]] = []
@@ -303,6 +302,8 @@ def get_workflow(workflow_id: str):
 
 @api_router.put("/workflows/{workflow_id}/draft")
 def update_workflow_draft(workflow_id: str, draft: WorkflowDraft):
+    if not db_repo.get_workflow(workflow_id):
+        raise HTTPException(status_code=404, detail="Сценарий не найден")
     rev_id = db_repo.save_workflow(workflow_id, draft.name, draft.description, draft.model_dump())
     return {"workflow_id": workflow_id, "latest_revision_id": rev_id}
 
@@ -355,15 +356,14 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
     )
 
     async def _execute_bounded() -> None:
-        async with _RUN_SEM:
-            await executor.execute_run(
-                run_id=run_id,
-                draft=draft,
-                artifact_id=artifact_id,
-                trigger_type=payload.get("triggerType", "manual"),
-                workflow_id=workflow_id,
-                revision_id=rev_id,
-            )
+        await executor.execute_run(
+            run_id=run_id,
+            draft=draft,
+            artifact_id=artifact_id,
+            trigger_type=payload.get("triggerType", "manual"),
+            workflow_id=workflow_id,
+            revision_id=rev_id,
+        )
 
     asyncio.create_task(_execute_bounded())
 
@@ -595,6 +595,8 @@ def download_readable_markdown(run_id: str):
 
 @api_router.get("/runs/{run_id}/events")
 async def stream_run_events(run_id: str, after: int = Query(default=0)):
+    if not db_repo.get_run(run_id):
+        raise HTTPException(status_code=404, detail="Запуск не найден")
     return StreamingResponse(
         sse_broker.subscribe(run_id, after_seq=after),
         media_type="text/event-stream",
@@ -620,10 +622,27 @@ def create_schedule(payload: Dict[str, Any]):
     cron_interval = payload.get("cronOrInterval", "interval:60")
     if not wf_id or not art_id:
         raise HTTPException(status_code=400, detail="workflowId и artifactId обязательны")
+    if not db_repo.get_workflow(wf_id):
+        raise HTTPException(status_code=404, detail="Сценарий не найден")
     if not db_repo.get_artifact(art_id):
         raise HTTPException(status_code=404, detail="Артефакт не найден")
+    try:
+        cron_interval = validate_schedule_expression(cron_interval)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db_repo.save_schedule(sched_id, wf_id, art_id, cron_interval, enabled=True)
     return {"id": sched_id, "status": "created"}
+
+
+@api_router.patch("/schedules/{schedule_id}")
+def update_schedule(schedule_id: str, payload: Dict[str, Any]):
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled должен быть boolean")
+    schedule = db_repo.set_schedule_enabled(schedule_id, enabled)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Расписание не найдено")
+    return schedule
 
 
 # --- Webhook Test Receiver ---
