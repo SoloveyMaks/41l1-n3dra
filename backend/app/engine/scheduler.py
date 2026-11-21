@@ -12,33 +12,41 @@ from backend.app.storage.database import DatabaseRepository
 logger = logging.getLogger("WorkflowScheduler")
 
 
-def validate_schedule_expression(value: Any) -> str:
-    """Accept interval:N (N>0) or a valid 5-field cron; reject the rest."""
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("cronOrInterval должен быть interval:N или 5-полевым cron")
-    expression = value.strip()
-    if expression.startswith("interval:"):
-        raw = expression.split(":", 1)[1].strip()
-        try:
-            seconds = int(raw)
-        except ValueError as exc:
-            raise ValueError("interval должен быть целым числом секунд") from exc
-        if seconds < 1:
-            raise ValueError("interval должен быть больше нуля")
-        return expression
-    if len(expression.split()) != 5:
-        raise ValueError("cron должен состоять из 5 полей")
+MAX_INTERVAL_SECONDS = 365 * 24 * 60 * 60
+
+
+def _interval_seconds(expression: str) -> int:
+    raw = expression.split(":", 1)[1].strip()
     try:
-        croniter(expression, datetime.now(timezone.utc))
-    except Exception as exc:
-        raise ValueError(f"некорректный cron: {expression}") from exc
-    return expression
+        seconds = int(raw)
+    except ValueError as exc:
+        raise ValueError("interval должен быть целым числом секунд") from exc
+    if not 1 <= seconds <= MAX_INTERVAL_SECONDS:
+        raise ValueError(f"interval должен быть от 1 до {MAX_INTERVAL_SECONDS} секунд")
+    return seconds
 
 
 def next_fire_at(expression: str, now: datetime) -> datetime:
     if expression.startswith("interval:"):
-        return now + timedelta(seconds=int(expression.split(":", 1)[1]))
+        return now + timedelta(seconds=_interval_seconds(expression))
     return croniter(expression, now).get_next(datetime)
+
+
+def validate_schedule_expression(value: Any) -> str:
+    """Accept a bounded interval or a cron that really has a next fire."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("cronOrInterval должен быть interval:N или 5-полевым cron")
+    expression = value.strip()
+    if expression.startswith("interval:"):
+        _interval_seconds(expression)
+        return expression
+    if len(expression.split()) != 5:
+        raise ValueError("cron должен состоять из 5 полей")
+    try:
+        next_fire_at(expression, datetime.now(timezone.utc))
+    except Exception as exc:
+        raise ValueError("cron не имеет следующего срабатывания или некорректен") from exc
+    return expression
 
 
 class WorkflowScheduler:
