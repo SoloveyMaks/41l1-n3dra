@@ -76,6 +76,10 @@ def _history_without_repo(reason: str) -> Dict[str, Any]:
         "reason": reason,
         "evidenceKind": "last_file_commit",
         "notBlame": True,
+        "pullRequests": [],
+        "pullRequestsStatus": "unsupported",
+        "pullRequestsReason": "История репозитория/PR недоступна для ZIP или неизвестного provider.",
+        "pullRequestsTruncated": False,
         "lineBlame": {
             "status": "unsupported",
             "reason": "Line blame не запрашивался: безопасной поддержки без токена нет.",
