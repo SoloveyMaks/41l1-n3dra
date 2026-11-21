@@ -216,37 +216,39 @@ PC-хост должен быть включён. `Linger=no`: после reboot
 
 ## Проверено реальной сборкой
 
-Текущий loopback/публичный образ собран из `integration-dev` HEAD `c01c96d`
-(worktree не изменялся):
+Финальный релиз собран из `integration-dev` HEAD
+`9862e190dca20589d1e43ee9d42012a32c658929` (worktree только читался):
 
-- `localhost/nedra-app:local` = `29b62158aed5...`, revision `dd6e541`,
-  Node `v22.23.5`, `db/`, `docs/`, `analyzers/`, `packages/comparison`,
-  healthcheck, Python wheels и `frontend/dist` внутри; `analyzers` import
-  проверен внутри контейнера.
-- Backend стартовал, применил ledger 001/002/004/005; `vector 0.8.7`,
-  `published_bundles=1`.
-- Auth: `GET /api/health` 200; `GET /api/runs` без сессии 401;
-  `GET /api/session` 200 без `Set-Cookie`; `POST /api/session` с access code 200
-  и cookie; неверный код 401.
-- Реальный multipart upload: `art_989a260ea1d5` (8 файлов, 5 Kotlin), run
-  `15dc34ba-...` succeeded/verdict fail/13 findings; `security-map` 200 schema
-  0.1 (10 nodes, 9 edges, 26 evidence, 13 findings), evidence ready.
-- Systemd user units переустановлены из `integration-dev`; app unit cycle прошёл,
-  artifact в volume `nedra-app-data` сохранился. Tunnel unit enabled/active,
-  DNS опубликован только для `nedra.soloveyka.bond`.
-- Optional Team B на отдельном workflow `wf_29522fd3`: run
-  `cc781c1b-f60e-4d60-908a-4c04036b1a97` succeeded/fail, 15 findings,
-  map 43 nodes/32 edges/67 evidence, все 67 evidence ready, published
-  `62a608b25f90...`; default workflow остался `backend` (default run
-  `3aadba14-...`: 6 findings). Advisory прочитан только из
-  `/app/data/team-b-advisories`, не из ZIP.
-- Node-образ `node-verify` (`7874a386f36b...`, 20 шагов) содержит
-  `node v22.23.5`; committed
-  `examples/demo/sql-before-after/{baseline,current}.published.json` прогнаны
-  через `/app/packages/comparison/compare-cli.mjs` внутри образа. Результат
-  равен committed `comparison.json` (`comparable=true`, 1 item
-  `resolved/unique_anchor`, `deletedFiles=[]`). Это реальный CLI-прогон, не fake
-  envelope.
+- `localhost/nedra-app:local` = `9ad49c9d3749bb35b6da316eeba1cbe47c4074a36ff7bb7bfa2c8ea907c87cc2`,
+  revision label `9862e19`; Node `v22.23.5`, `db/`, `docs/`,
+  `analyzers/`, `packages/comparison`, healthcheck и `frontend/dist`.
+- Пересоздан только `nedra-app` (`--app-only --recreate-app`); volumes
+  `nedra-db-data` и `nedra-app-data` сохранены. Контейнер healthy,
+  `/api/health` 200.
+- Публичный HTTPS `https://nedra.soloveyka.bond`: неверный код 401, верный
+  код 200, logout возвращает gate; cookie Secure/HttpOnly.
+- История запусков и SSE: выбор `c8b41afe-...` показывает 39 событий именно
+  этого run; initial load тоже подключает историю.
+- Карта: default `3aadba14-...` — 33 узла/32 связи/39 evidence/6 находок;
+  Team B `cc781c1b-...` — 43 узла/32 связи/67 evidence/15 находок.
+- Node/edge detail открывает «МАСКИРОВАННЫЙ ИСХОДНИК» (`READY`,
+  `cg-redaction/1`); переключение run очищает выбранный evidence.
+- Comparison `c8b41afe` / `52efd83f`: SQL `pattern_disappeared`, общий
+  результат «Недостаточно доказательств» (`comparable=false`).
+- Report downloads 200: `official.json` 7805 B, `readable.md` 4906 B.
+- Schedule pause/resume на отдельном workflow `wf_29522fd3`: pause → `enabled=0`,
+  UI «На паузе», запись оставлена в истории; default `interval:60` возвращён в
+  active, default draft не менялся.
+- Failed run на отдельном workflow `wf_2b138ff0` (run
+  `cc0d556c-...`): `failed/inconclusive`, `/report` 404, UI показывает
+  «Отчёт не сформирован» без вечного loading.
+- CORS: `OPTIONS /api/schedules/{id}` 200, PATCH 200 и
+  `Access-Control-Allow-Origin: https://nedra.soloveyka.bond`, response
+  `enabled=0/1`. Missing run: `/nodes` и `/events` — 404 «Запуск не найден».
+- 1440×900 и 390×844: `scrollWidth` равен viewport, карта видна.
+  Fresh public console: только заблокированный Cloudflare beacon
+  (`ERR_BLOCKED_BY_CLIENT`), app errors 0.
+- Optional Team B: map 43/32/67, 15 findings; default engine остался `backend`.
 
 ## Cache после redeploy
 
