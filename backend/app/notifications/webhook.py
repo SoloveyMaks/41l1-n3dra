@@ -4,9 +4,11 @@ import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 import httpx
 
 from backend.app.contracts.schemas import DeliveryResult, SecurityVerdict
+from backend.app.notifications.redact import mask_destination
 
 
 class WebhookNotifier:
@@ -14,7 +16,9 @@ class WebhookNotifier:
         self.timeout_sec = timeout_sec
 
     def send(self, url: str, run_id: str, verdict: SecurityVerdict,
-             passport_summary: Dict[str, Any], secret_token: Optional[str] = None) -> DeliveryResult:
+             passport_summary: Dict[str, Any], secret_token: Optional[str] = None,
+             addresses: Optional[list[str]] = None) -> DeliveryResult:
+        target = mask_destination(url)
         if not url:
             return DeliveryResult(
                 channel="webhook",
@@ -45,24 +49,39 @@ class WebhookNotifier:
             headers["X-Signature-SHA256"] = signature
 
         try:
-            # We use httpx with safe redirect disabled (SSRF protection)
-            with httpx.Client(timeout=self.timeout_sec, follow_redirects=False) as client:
-                resp = client.post(url, content=body_bytes, headers=headers)
+            # Redirects stay disabled.  When the caller supplies validated
+            # addresses, connect to them (pinned) so a DNS change between
+            # validation and the request cannot retarget the connection.
+            request_url = url
+            extensions = None
+            if addresses:
+                parts = urlsplit(url)
+                host = f'[{addresses[0]}]' if ':' in addresses[0] else addresses[0]
+                port = parts.port or (443 if parts.scheme == 'https' else 80)
+                request_url = f'{parts.scheme}://{host}:{port}{parts.path or "/"}'
+                headers["Host"] = parts.netloc
+                extensions = {'sni_hostname': parts.hostname}
+            with httpx.Client(timeout=self.timeout_sec, follow_redirects=False,
+                              trust_env=False) as client:
+                resp = client.post(request_url, content=body_bytes, headers=headers,
+                                   extensions=extensions)
                 status_ok = resp.status_code in (200, 201, 202, 204)
                 return DeliveryResult(
                     channel="webhook",
                     status="succeeded" if status_ok else "failed",
-                    target=url,
+                    target=target,
                     status_code=resp.status_code,
-                    message=f"HTTP {resp.status_code}: {resp.text[:100]}" if not status_ok else "Уведомление успешно доставлено",
+                    message=("Уведомление успешно доставлено" if status_ok
+                             else f"Приёмник вернул HTTP {resp.status_code}"),
                     timestamp=datetime.now(timezone.utc).isoformat()
                 )
-        except Exception as e:
+        except Exception as exc:  # noqa: BLE001 - delivery failure is a result
+            # Never echo URL, response body or exception text into API/logs.
             return DeliveryResult(
                 channel="webhook",
                 status="failed",
-                target=url,
+                target=target,
                 status_code=None,
-                message=f"Ошибка соединения при отправке вебхука: {str(e)}",
+                message=f"Ошибка соединения при отправке вебхука ({type(exc).__name__})",
                 timestamp=datetime.now(timezone.utc).isoformat()
             )
