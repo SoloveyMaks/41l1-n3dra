@@ -127,3 +127,18 @@ Provider live traffic намеренно не запускался: oversized-bo
 * Minor boundary limitation: valid JSON ровно **262144 decoded bytes**, сжатый gzip в 290 bytes, отклонён как oversized, хотя тот же plain JSON принят. Причина — `remaining <= 0` перед `decoder.flush()`/eof даже когда decoder уже полностью завершён. Это воспроизведённая консервативная ошибка на точном верхнем пределе, не обход memory bound и сама по себе не блокирует feature acceptance.
 * Повторно подтвердились COMMENTED-preserves-decision, incomplete false, 20-reviewer cap и URL sanitizer из прежнего прямого reducer proof; новых provider calls не было. Temporary scripts/logs: `responsibility-bb-proof.log`, `responsibility-bb-boundaries.py/.log` под `/tmp/sol-accounts-review/`.
 * Общая feature acceptance всё ещё открыта: ContextVar regression b3f7240, nested PR429 cooldown и CODEOWNERS suffix false attribution требуют собственных точных fix SHA и focused recheck. До этого результаты 2af8 по scoped to_thread не переносятся автоматически на b3f/bb.
+
+
+## Final targeted recheck: 265427f2 — context, admission, matcher and cooldown
+
+Точный совместный SHA `265427f2894d93f75568724e9e7e83b51157daf3`, локальный merge HEAD `9bc52ffd50488f563c9c7621d827c716b6fcc4a9`. Проверены только открытые cases; baseline/auth/TG не повторялись.
+
+* Реальный ASGI/PG прогон: 12 параллельных responsibility запросов двух account workspaces вернули HTTP 200 с правильными tenant paths; cross-workspace run/finding дали `[404, 404]`. Это подтверждает `copy_context().run` вокруг executor и отсутствие смешения ContextVar.
+* Same-key cancellation: отмена одного awaiter не отменила второго, результаты сохранили `tenant-0/A.kt` и `tenant-1/A.kt`, после завершения `inflight=0`, `active=0`, `queued=0`. Для 20 реальных запросов при удержанном PG lock наблюдались `active=4`, `queued=8`, `busy=8`; после общего 10 s deadline работающие executor threads ещё были видны как **4 real PG lock waiters**, то есть слот не освобождается до реального окончания sync DB работы. После снятия lock connections вернулись, счётчики очистились.
+* Локальный immutable intake повторил suffix boundaries: `A.kt` не совпал с `BA.kt`, `**/src/A.kt` не совпал с `notsrc/A.kt`; fallback сохранился. Ранее подтверждённые ownerless, `**/A.kt` root, inline comment и >400 incomplete остаются зелёными.
+* Живой локальный HTTPS transport (Unix socket, self-signed cert только для стенда) вернул PR list/detail `200`, reviews `429`; aggregate PR result сохранился, `reviewsStatus=rate_limited`, provider cooldown был выставлен на ~60 s, следующий другой path получил `rate_limited` до нового HTTP вызова (`extraCalls=0`). Это закрывает nested PR429 propagation.
+* Четыре поздних `Future exception was never retrieved`/`ResponsibilityNotFound` warnings появились только в моём диагностическом скрипте при принудительном timeout/PG lock; в нормальном owner proof исключение callback consumption заявлено. Само удержание слотов и pool cleanup подтверждено; warnings передал координатору как low-severity review hygiene.
+
+### Остаток
+
+Gzip exact decoded cap на ровно 262144 bytes остаётся консервативно отвергающим валидный gzip, зафиксировано как minor edge. Внешние provider calls, Telegram и production ports не использовались; frontend build и baseline auth/TG не повторялись. Принимаю 265427f2 по targeted context/admission/matcher/cooldown cases с этой minor edge и diagnostic warning оговорками.
