@@ -41,6 +41,15 @@ _URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 _BARE_SECRET_PAIR_RE = re.compile(
     r"(?i)\b([A-Za-z0-9][A-Za-z0-9_.-]*)(\s*[=:]\s*)([^\s,;&\"']+)"
 )
+# A scheme-less reference inside an error string: an absolute path
+# (`/token/<secret>`) or `host.tld/token/<secret>`. A bare word such as
+# `key/value` is ordinary prose and never treated as a path.
+_BARE_PATH_IN_TEXT_RE = re.compile(
+    r"(?<![\w:/.@-])(?:"
+    r"/[^\s\"'<>`()\[\],]+"
+    r"|[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}/[^\s\"'<>`()\[\],]+"
+    r")"
+)
 _PROVENANCE_MAX_DEPTH = 12
 _COVERAGE_STATUS_LABELS = {
     "complete": "полное",
@@ -185,15 +194,23 @@ def _mask_bare_pairs(text: str) -> str:
     return _BARE_SECRET_PAIR_RE.sub(replace, text)
 
 
+def _sanitize_prose(value: str) -> str:
+    """Prose without a URL scheme: bare secret pairs and credential paths."""
+    text = _mask_bare_pairs(mask_sensitive_text(value))
+    return _BARE_PATH_IN_TEXT_RE.sub(
+        lambda match: _sanitize_reference(match.group(0)), text
+    )
+
+
 def _sanitize_text(value: str) -> str:
     """Mask secrets in prose without letting the text masker eat URL params."""
     chunks: List[str] = []
     cursor = 0
     for match in _URL_IN_TEXT_RE.finditer(value):
-        chunks.append(_mask_bare_pairs(mask_sensitive_text(value[cursor:match.start()])))
+        chunks.append(_sanitize_prose(value[cursor:match.start()]))
         chunks.append(_sanitize_url(match.group(0)))
         cursor = match.end()
-    chunks.append(_mask_bare_pairs(mask_sensitive_text(value[cursor:])))
+    chunks.append(_sanitize_prose(value[cursor:]))
     return "".join(chunks)
 
 
@@ -414,7 +431,7 @@ def _safe_trace(value: Any) -> List[Dict[str, Any]]:
             continue
         steps.append({
             "step": item.get("step"),
-            "description": mask_sensitive_text(naturalize(str(item.get("description") or ""))),
+            "description": _sanitize_text(naturalize(str(item.get("description") or ""))),
             "location": _safe_location(item.get("location")),
         })
     return steps
@@ -428,9 +445,9 @@ def _safe_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
         "ruleId": finding.get("ruleId") or finding.get("rule_id"),
         "ruleVersion": finding.get("ruleVersion") or finding.get("rule_version"),
         "severity": finding.get("severity"),
-        "severityBasis": mask_sensitive_text(naturalize(str(finding.get("severityBasis") or ""))),
+        "severityBasis": _sanitize_text(naturalize(str(finding.get("severityBasis") or ""))),
         "confidence": finding.get("confidence"),
-        "confidenceBasis": mask_sensitive_text(naturalize(str(finding.get("confidenceBasis") or ""))),
+        "confidenceBasis": _sanitize_text(naturalize(str(finding.get("confidenceBasis") or ""))),
         "status": finding.get("status") or "inconclusive",
         "primaryLocation": _safe_location(finding.get("primaryLocation")),
         "relatedLocations": [
@@ -440,7 +457,7 @@ def _safe_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
         "redactedEvidence": mask_text(str(finding.get("redactedEvidence") or "")),
         "advisoryIds": list(finding.get("advisoryIds") or []),
         "coverageWarnings": [
-            mask_sensitive_text(str(item)) for item in (finding.get("coverageWarnings") or [])
+            _sanitize_text(str(item)) for item in (finding.get("coverageWarnings") or [])
         ],
     }
 
@@ -469,9 +486,9 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
             "status": item.get("status"),
             "primaryLocation": _safe_location(item.get("primaryLocation")),
             "redactedEvidence": mask_text(str(item.get("redactedEvidence") or "")),
-            "rationale": mask_sensitive_text(naturalize(str(item.get("rationale") or ""))),
-            "remediation": mask_sensitive_text(naturalize(str(item.get("remediation") or ""))),
-            "grounding": item.get("grounding"),
+            "rationale": _sanitize_text(naturalize(str(item.get("rationale") or ""))),
+            "remediation": _sanitize_text(naturalize(str(item.get("remediation") or ""))),
+            "grounding": _sanitize_provenance(item.get("grounding")),
         })
     observations.sort(
         key=lambda item: (
@@ -666,14 +683,14 @@ def build_markdown(bundle: ExportBundle) -> str:
     policy = PolicyResult.model_validate({**bundle.policy, "verdict": verdict})
     analysis = bundle.official.get("aiAnalysis") or {}
     items = [
-        item["ai_enrichment"]
+        _sanitize_provenance(item["ai_enrichment"])
         for item in (_frozen_findings(bundle.official) or [])
         if isinstance(item, dict) and isinstance(item.get("ai_enrichment"), dict)
     ]
     explanation = ExplainResult(
         status=analysis.get("status") or "disabled",
-        model=analysis.get("model") or "",
-        summary=analysis.get("summary") or "",
+        model=_sanitize_text(str(analysis.get("model") or "")),
+        summary=_sanitize_text(str(analysis.get("summary") or "")),
         items=items,
     ) if analysis.get("status") not in (None, "disabled") else None
     text = ReportBuilder().build_readable_markdown(
@@ -703,7 +720,7 @@ def build_markdown(bundle: ExportBundle) -> str:
     if bundle.ai_scan.get("limitations"):
         text += "\n**Ограничения:**\n"
     for limitation in bundle.ai_scan.get("limitations") or []:
-        text += f"\n- {mask_sensitive_text(naturalize(str(limitation)))}"
+        text += f"\n- {_sanitize_text(naturalize(str(limitation)))}"
     return text + "\n"
 
 
@@ -981,19 +998,19 @@ def build_docx(bundle: ExportBundle) -> bytes:
         heading = doc.add_heading("Почему такой итог", level=1)
         heading.paragraph_format.keep_with_next = True
         for reason in reasons:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(reason))), style="List Bullet")
     coverage_reasons = passport.get("coverage_reasons") if isinstance(passport.get("coverage_reasons"), list) else []
     if coverage_reasons:
         heading = doc.add_heading("Что осталось за пределами проверки", level=1)
         heading.paragraph_format.keep_with_next = True
         for reason in coverage_reasons:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(reason))), style="List Bullet")
     coverage_warnings = passport.get("coverage_warnings") or []
     if coverage_warnings:
         heading = doc.add_heading("Предупреждения по покрытию", level=2)
         heading.paragraph_format.keep_with_next = True
         for warning in coverage_warnings:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(warning))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(warning))), style="List Bullet")
 
     heading = doc.add_heading("Находки", level=1)
     heading.paragraph_format.keep_with_next = True
@@ -1058,7 +1075,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
             doc.add_paragraph("Ограничения:")
             finding_warnings = finding.get("coverageWarnings") or []
             for warning in finding_warnings:
-                doc.add_paragraph(mask_sensitive_text(naturalize(str(warning))), style="List Bullet")
+                doc.add_paragraph(_sanitize_text(naturalize(str(warning))), style="List Bullet")
             if not finding_warnings:
                 doc.add_paragraph(
                     "Отдельные ограничения этой находки не указаны; общие ограничения покрытия сохраняются."
@@ -1144,7 +1161,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
     if limitations:
         doc.add_paragraph("Ограничения:")
         for limitation in limitations:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(limitation))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(limitation))), style="List Bullet")
 
     heading = doc.add_heading("Приложение А. Технические сведения", level=1)
     heading.paragraph_format.keep_with_next = True

@@ -91,6 +91,36 @@ counts (`promptTokens`, `tokenCount`, `max_tokens`, …) are preserved. This is 
 display/export copy: the stored official JSON is not rewritten, and no export
 path logs the raw values.
 
+Free-form error strings are treated as references too. A provider error such as
+`request /token/<secret>?token=<secret>` has no path-like field name, so
+`_sanitize_prose` also scans scheme-less references inside the string: an
+absolute path (`/token/<secret>`, `/api/key/<secret>`, matrix params) and a
+bare `host.tld/token/<secret>`. They go through the same `_sanitize_reference`
+path/query redaction, while ordinary prose (`key/value`, `token/refresh`,
+`/tmp/build/log.txt`, `и/или`) stays unchanged. Because the same `_sanitize_text`
+now runs on `providerErrors` limitations, finding basis/warnings/trace text, AI
+rationale/remediation/grounding, the official `aiAnalysis.summary` and
+`ai_enrichment` used by readable Markdown, and the export `limitations`, no
+format can print a credential path that another format hides.
+
+### Inherited stored-report endpoints
+
+The same redaction is *not* applied by the inherited
+`GET /api/runs/{id}/report/official.json` and `GET /api/runs/{id}/report/readable.md`
+handlers in `backend/app/api/router.py`. They still serve the stored
+`official_json` and `readable_markdown` through `_remask_official_json` /
+`_remask_report_record`, which mask only selected text fields (evidence, AI
+summary/items, readable body) with `mask_sensitive_text`. `official.json` still
+prints raw provider provenance (URL userinfo, query credentials, signature) and
+a scheme-less `/token/<secret>` it carries in `aiAnalysis.summary`; `readable.md`
+keeps a scheme-less `/token/<secret>` from the stored body. Both were measured
+with fake sentinels against this branch. That router is outside this export task
+and is not edited here; the export router must not be mistaken for a fix of those
+two endpoints. Closing it is a router-side change: apply `_sanitize_provenance`
+to `aiAnalysis`/`securityPassport`/`policyResult` and `_sanitize_text` to
+`readable_markdown` inside `_remask_report_record`, or mount the export builders
+instead of serving stored text.
+
 When a saved passport has no measurement key (`files_scanned`, `lines_of_code`,
 `parser_errors`, …), readable exports say «неизвестно» and the DOCX summary
 uses «—». An explicitly saved `0` stays a measured zero; absence is never
@@ -198,8 +228,9 @@ report; deterministic findings may be empty and are still exported honestly.
   `Что проверено`; a saved `0` is kept. An absent measurement is never rendered
   as a measured zero.
 - Appendix A is built from the sanitized technical copy: userinfo and secret
-  query values are masked, secret-named fields are `[REDACTED]`, while safe
-  provider/model/request metadata remains visible.
+  query values are masked, secret-named fields are `[REDACTED]`, and a
+  scheme-less `/token/<secret>` inside a provider error string is masked too,
+  while safe provider/model/request metadata remains visible.
 - Display headings use «ИИ», while machine JSON fields remain `aiHypotheses`,
   `aiScan`, `aiAnalysis` and `provenance`.
 - AI hypotheses are labeled unverified and excluded from counts/verdict; the
