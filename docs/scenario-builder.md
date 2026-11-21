@@ -82,6 +82,11 @@ Known intents: `secrets`, `dependencies`, `sast`, `ai_scan`, `ai_explain`,
 `secret_scan`, `полный`/`full`). Everything else is rejected by
 `InvalidModelResponse`.
 
+Requesting Telegram (or another messenger channel) is rejected explicitly with
+«Telegram-доставка не поддерживается: доступен только HTTP webhook (intent
+notify)» and `422 SCENARIO_MODEL_INVALID`. It is never silently converted into a
+webhook `NOTIFY` node.
+
 A non-empty `unavailable` list means the user asked for a capability outside the
 catalog. The whole request is rejected with `SCENARIO_MODEL_INVALID` and the
 message «Нет зарегистрированного блока…»; the server never substitutes a
@@ -182,6 +187,27 @@ modal never calls save/run API and never replaces the canvas during preview.
 Root should not auto-save or auto-run after `onApply`; the user can review and
 save the workflow in the existing editor flow.
 
+The client accepts a preview only when it matches the canvas contract mirrored
+from `NODE_REGISTRY`:
+
+- `validation.valid === true` and every issue is a well-formed
+  `warning`/`info`; `valid=true` with an `error` issue is treated as corrupted;
+- every node kind is registered, every node has a non-empty unique id, a
+  string title, an object `config` and finite numeric `position.x/y`;
+- every edge has a non-empty unique id, both endpoints exist, and
+  `sourcePort`/`targetPort` belong to the corresponding registered output and
+  input port lists.
+
+Anything else is rejected with `SCENARIO_PREVIEW_INVALID`; the modal shows the
+error, keeps the current canvas untouched and never offers Apply. A valid
+server preview applies as before.
+
+The report node renders all three registry inputs
+(`findings_bundle`, `policy_result`, `explain_result`), so
+`MERGE_FINDINGS -> BUILD_REPORT` (including the planner edge
+`sb_e_merge_report`) and `AI_EXPLAIN -> BUILD_REPORT` stay visible on the
+canvas.
+
 Voice:
 
 - explicit mic click only; no recording on open;
@@ -269,6 +295,33 @@ the screenshot and OCR show the dialog, textarea, voice button and submit button
 inside the viewport. No `App.tsx` edit was made, so root owns the visible
 button/mount. Vision review was unavailable; OCR and viewport dimensions were
 used.
+
+### Strict preview recheck (2026-11-21)
+
+Real ASGI router with a controlled `complete_json` boundary:
+
+| Plan | Result |
+| --- | --- |
+| `intents:["secrets","report"]` | `200`, 6 nodes / 6 edges, `validation.valid=true` |
+| `intents:["telegram"]` | `422 SCENARIO_MODEL_INVALID`, «Telegram-доставка не поддерживается…», no draft |
+| `intents:["totally_unknown"]` | `422 SCENARIO_MODEL_INVALID`, no draft |
+
+Built frontend in Chromium at 390×844 with route-controlled preview responses:
+
+- `kind=not_registered`, `valid=true` + `level=error`, wrong target port,
+  duplicate edge id, and missing `config` were each rejected with
+  `SCENARIO_PREVIEW_INVALID`; zero Apply buttons, canvas stayed 3 nodes / 2 edges;
+- real `secrets+report` preview applied: 6 nodes / 6 edges, including
+  `MERGE_FINDINGS -> BUILD_REPORT` (`sb_e_merge_report`) and the
+  `findings_bundle` target handle;
+- `ai_explain+report`: 9 nodes / 12 edges, `sb_e_explain_report` visible;
+- `ai_scan`: 8 nodes / 10 edges, `ai_scan_result` output handle present;
+- no `Couldn't create edge` / React Flow `#008` console warnings;
+- non-GET calls were only `POST /scenario-builder/preview` and
+  `POST /workflows/wf-a/validate`; no save, workflow create or run;
+- SpeechRecognition removed: typed text stayed, readable text fallback shown.
+
+`npm run build` (tsc + Vite production build) passed.
 
 ## 9. Limitations
 

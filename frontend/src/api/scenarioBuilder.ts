@@ -1,4 +1,4 @@
-import type { WorkflowDraft } from '../types';
+import type { NodeKind, WorkflowDraft } from '../types';
 
 export type ScenarioDraft = WorkflowDraft;
 
@@ -38,25 +38,80 @@ function detailText(payload: unknown): string {
   return '';
 }
 
+interface NodePortContract {
+  inputs: readonly string[];
+  outputs: readonly string[];
+}
+
+// Mirrors backend/app/contracts/node_registry.py. A preview naming a kind or
+// port absent here is not a graph the canvas can render, so it is rejected
+// before Apply can touch the current draft.
+const NODE_PORTS: Record<NodeKind, NodePortContract> = {
+  manual_trigger: { inputs: [], outputs: ['out'] },
+  schedule_trigger: { inputs: [], outputs: ['out'] },
+  project_input: { inputs: ['trigger'], outputs: ['artifact'] },
+  secret_scan: { inputs: ['artifact'], outputs: ['scan_result'] },
+  sca_scan: { inputs: ['artifact'], outputs: ['scan_result'] },
+  kotlin_sast: { inputs: ['artifact'], outputs: ['scan_result'] },
+  merge_findings: { inputs: ['scan_1', 'scan_2', 'scan_3'], outputs: ['findings_bundle'] },
+  branch_merge: { inputs: ['branch_a', 'branch_b'], outputs: ['out'] },
+  condition: { inputs: ['in'], outputs: ['true_branch', 'false_branch'] },
+  policy_gate: { inputs: ['findings_bundle'], outputs: ['policy_result'] },
+  ai_explain: { inputs: ['findings_bundle'], outputs: ['explain_result'] },
+  ai_scan: { inputs: ['artifact', 'findings_bundle'], outputs: ['ai_scan_result'] },
+  build_report: { inputs: ['findings_bundle', 'policy_result', 'explain_result'], outputs: ['report'] },
+  notify: { inputs: ['report'], outputs: ['delivery_result'] },
+};
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function isPreview(payload: unknown): payload is ScenarioPreview {
-  if (!payload || typeof payload !== 'object') return false;
-  const item = payload as ScenarioPreview;
-  const draft = item.draft;
-  if (!draft || draft.schemaVersion !== 1 || typeof draft.name !== 'string'
-    || !Array.isArray(draft.nodes) || !draft.nodes.length || !Array.isArray(draft.edges)
-    || item.validation?.valid !== true || !Array.isArray(item.validation.issues)
-    || typeof item.summary !== 'string' || !Array.isArray(item.warnings)
-    || !item.warnings.every((warning) => typeof warning === 'string')
-    || !Array.isArray(item.intents) || !item.intents.every((intent) => typeof intent === 'string')) return false;
-  const ids = new Set<string>();
-  for (const node of draft.nodes) {
-    if (!node || typeof node.id !== 'string' || !node.id || ids.has(node.id)
-      || typeof node.kind !== 'string' || typeof node.title !== 'string') return false;
-    ids.add(node.id);
+  if (!isObject(payload)) return false;
+  const { draft, validation, summary, warnings, intents } = payload;
+  if (!isObject(draft) || draft.schemaVersion !== 1
+    || typeof draft.name !== 'string' || typeof draft.description !== 'string'
+    || !Array.isArray(draft.nodes) || !draft.nodes.length || !Array.isArray(draft.edges)) return false;
+  if (!isObject(validation) || validation.valid !== true || !Array.isArray(validation.issues)) return false;
+  for (const issue of validation.issues) {
+    if (!isObject(issue) || typeof issue.level !== 'string' || typeof issue.message !== 'string') return false;
+    // valid=true paired with an error issue is self-contradictory: refuse to
+    // advertise "graph verified" and never allow Apply.
+    if (issue.level !== 'warning' && issue.level !== 'info') return false;
   }
-  return draft.edges.every((edge) => edge && typeof edge.id === 'string'
-    && ids.has(edge.source) && ids.has(edge.target)
-    && typeof edge.sourcePort === 'string' && typeof edge.targetPort === 'string');
+  if (typeof summary !== 'string' || !Array.isArray(warnings)
+    || !warnings.every((warning) => typeof warning === 'string')
+    || !Array.isArray(intents) || !intents.every((intent) => typeof intent === 'string')) return false;
+
+  const nodes = new Map<string, NodePortContract>();
+  for (const node of draft.nodes) {
+    if (!isObject(node) || typeof node.id !== 'string' || !node.id || nodes.has(node.id)
+      || typeof node.title !== 'string' || !isObject(node.config)) return false;
+    const kind = node.kind;
+    if (typeof kind !== 'string' || !Object.prototype.hasOwnProperty.call(NODE_PORTS, kind)) return false;
+    nodes.set(node.id, NODE_PORTS[kind as NodeKind]);
+    const position = node.position;
+    if (!isObject(position) || !isFiniteNumber(position.x) || !isFiniteNumber(position.y)) return false;
+    if (node.version !== undefined && (!isFiniteNumber(node.version) || node.version < 1)) return false;
+  }
+
+  const edgeIds = new Set<string>();
+  for (const edge of draft.edges) {
+    if (!isObject(edge) || typeof edge.id !== 'string' || !edge.id || edgeIds.has(edge.id)) return false;
+    edgeIds.add(edge.id);
+    if (typeof edge.source !== 'string' || typeof edge.target !== 'string') return false;
+    const sourcePorts = nodes.get(edge.source);
+    const targetPorts = nodes.get(edge.target);
+    if (!sourcePorts || !targetPorts) return false;
+    if (typeof edge.sourcePort !== 'string' || !sourcePorts.outputs.includes(edge.sourcePort)) return false;
+    if (typeof edge.targetPort !== 'string' || !targetPorts.inputs.includes(edge.targetPort)) return false;
+  }
+  return true;
 }
 
 export async function requestScenarioPreview(prompt: string, signal?: AbortSignal): Promise<ScenarioPreview> {

@@ -35,6 +35,7 @@ from backend.app.scenario_builder.catalog import (
     MAX_PROMPT_CHARS,
     MAX_TITLE_CHARS,
     MIN_PROMPT_CHARS,
+    UNSUPPORTED_INTENTS,
 )
 from backend.app.scenario_builder.models import ScenarioPreview
 
@@ -52,6 +53,7 @@ SYSTEM_PROMPT = """Ты планировщик сценария проверки
 - report — отчёт
 - notify — уведомление (сервер создаст его выключенным)
 - schedule — запуск по расписанию (сервер выберет безопасный шаблон)
+Telegram, мессенджеры и другие каналы доставки не поддерживаются: перечисли их в unavailable, не подменяй notify.
 Правила: не возвращай NodeKind, ports, config, роли, auth, provider, ключи, URL, команды или код. Не придумывай CVE. Если запрошенной возможности нет в каталоге, перечисли её в unavailable, не подменяй другим блоком. Для общей проверки безопасности выбери secrets, dependencies, sast, report. Заголовок не длиннее 80 символов."""
 
 
@@ -102,6 +104,9 @@ def _normalize_intents(raw: Any) -> List[str]:
         if not isinstance(item, str):
             raise InvalidModelResponse("intent должен быть строкой")
         key = item.strip().lower().replace("-", "_").replace(" ", "_")
+        unsupported = UNSUPPORTED_INTENTS.get(key)
+        if unsupported:
+            raise InvalidModelResponse(unsupported)
         canonical = INTENT_ALIASES.get(key)
         if canonical is None or canonical not in _ALL_INTENTS:
             raise InvalidModelResponse("Нет зарегистрированного блока для запрошенной возможности")

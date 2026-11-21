@@ -43,7 +43,6 @@ INTENT_ALIASES: Dict[str, str] = {
     "notify": "notify",
     "notification": "notify",
     "webhook": "notify",
-    "telegram": "notify",
     "уведомление": "notify",
     "schedule": "schedule",
     "scheduled": "schedule",
@@ -61,6 +60,14 @@ KNOWN_INTENTS: Tuple[str, ...] = (
     "notify",
     "schedule",
 )
+
+# Requested capabilities with no registered block. They are rejected with a
+# precise message instead of being silently mapped to another delivery path.
+UNSUPPORTED_INTENTS: Dict[str, str] = {
+    "telegram": "Telegram-доставка не поддерживается: доступен только HTTP webhook (intent notify).",
+    "telegram_bot": "Telegram-доставка не поддерживается: доступен только HTTP webhook (intent notify).",
+    "телеграм": "Telegram-доставка не поддерживается: доступен только HTTP webhook (intent notify).",
+}
 
 DEFAULT_INTENTS: Tuple[str, ...] = ("secrets", "dependencies", "sast", "report")
 
