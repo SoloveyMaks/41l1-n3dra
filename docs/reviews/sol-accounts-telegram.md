@@ -2,9 +2,39 @@
 
 Дата проверки: 2026-11-21. Проверял отдельной веткой после fast-forward merge локальной `dev`; исходный проверенный HEAD: `75c2f09aaa9d2fd49c3de408084be8b8688638ac` (до последующего owner fix). Использовались отдельные PostgreSQL 16/pgvector контейнер и ASGI-приложение; production-порты не трогались. Все приведённые итоговые Telegram proofs повторены с синтетическим токеном и локальным либо отключённым транспортом.
 
+## Итоговая targeted acceptance: 024c300 + 4ab9621
+
+**Все конкретные findings этого backend account/Telegram review закрыты в проверенном scope.** Финальный source HEAD review: `fb4027cde8aa816b411b2d0e1aeb40663a59530c`, содержит exact owner fixes `024c300bd13093fceb24796aef794f26ba7d62ba` (cancellation guard cleanup), `4ab96214d51044eef4a03e9d8505b5d13d7ecc87` (общий recovery limit), `a5df48c301a7eddbfdb71dbd883e261e4cada366` (off-loop DB waits), `4e9e5731c62033b7558ee7563e60890c06a2c9d2` (recovery/leases) и `f82cd4b6ff17a2a3947d62cf7562bff9cd267a5d` (rebind owner/epoch). Это принятие перечисленных исправлений, а не доказательство внешней Telegram-доставки или общей production readiness. Ниже сохранена история находок на старых SHA.
+
+Повторён независимый realPG proof исходной cancellation leak с настоящим `_deliver_outbox` и rebind; внешнего Telegram send не было, credentials синтетические:
+
+* Same-loop guard/rebind: timer **0.200 с**, ticker **11** шагов, max gap **0.021 с**; rebind дождался lock, старый owner/epoch после переключения guard не прошёл.
+* Acquire thread заблокирован реальным holder transaction; `_deliver_outbox` отменён **дважды**, пока lock занят. После unlock holder задача корректно завершилась отменой. Новый `SELECT ... FOR UPDATE` с `lock_timeout=200ms` успешен, `idle in transaction` guard сессий **0**.
+* Pool после cleanup: size **3**, available **3** (holder и worker connection вернулись); настоящий новый rebind завершился с правильным owner.
+* Отдельно настоящий `_release_delivery_guard_safe` ждал очереди worker-а; две отмены вызывающей coroutine не помешали release. Binding row снова свободен, все pool connections доступны.
+* На этом же source HEAD total recovery limit повторно прошёл: `[1,2,3,4]` для четырёх exhausted job при четырёх `limit=1`, mixed buckets меняются по одной строке с сохранением run_id, два конкурентных прохода изменили ровно две строки, финальный queued claim один.
+
+Отмена во время реального внешнего HTTP send самостоятельно не проверялась: проверены реальные acquire/cleanup/release и повторные cancellation без подмены Telegram API. Ранее принятые account/tenant, rebind epoch и lease fencing proofs не прогонялись целиком повторно, их owning logic в последнем cleanup fix не менялась. Сохраняется описанное ниже ограничение переноса аккаунта в другой chat: Telegram history каскадно удаляется, runtime run/report этим кодом не удаляются.
+
+## История targeted rechecks
+
+## Targeted recheck: общий recovery limit 4ab9621
+
+Точный owner commit `4ab96214d51044eef4a03e9d8505b5d13d7ecc87` влит в review HEAD `f6ffaba8f67d2b82fb715b69f90002d3dbe3ad60`. Подтверждённый дефект неограниченного exhausted UPDATE **закрыт**. В `recover_jobs` теперь один общий `SELECT ... FOR UPDATE OF j SKIP LOCKED LIMIT` для exhausted, run-backed settlement и retry candidates.
+
+Независимый proof на новых disposable PG, настоящие repository/runtime/importer, `api=None`, запрещённый URL отклоняется до сети:
+
+* Старое воспроизведение теперь даёт `RECOVERY_LIMIT1_EXHAUSTED_CHANGED 1` (раньше 4).
+* Четыре exhausted jobs, четыре прохода `limit=1`: cumulative interrupted `[1, 2, 3, 4]`.
+* Смешанные exhausted + running/run-backed jobs при `limit=1`: ровно одна изменённая строка за проход, existing run_id сохранён.
+* Два конкурентных recovery с `limit=1` изменили ровно две из четырёх exhausted строк. Конкурентные returned queued candidates заканчиваются одним успешным `claim_job`.
+* Повторены только recovery guards: два runtime/start подхватили queued ровно один раз; stale retry1/exhausted interrupted, heartbeat/current token и отказы wrong/superseded token, existing run_id без нового import/run, rebind отзывает leased job — всё прошло.
+
+На момент этого recheck общая Telegram acceptance оставалась открытой из-за cancellation acquire leak; она закрыта финальным 024c300 recheck выше. Исходный same-loop deadlock уже закрыт. Внешние Telegram sends не выполнялись.
+
 ## Targeted recheck: event loop fix a5df48c
 
-Точный owner commit `a5df48c301a7eddbfdb71dbd883e261e4cada366` влит в review HEAD `0c073808bed45eec83b5e0d0d3b185a7f405e802`. Исходный same-loop deadlock исправлен в повторённом proof: настоящий `acquire_delivery_guard` удерживал binding row lock, coroutine ожидала 0.2 секунды, параллельно настоящий `_handle_start` делал rebind. Получено `timer_seconds 0.201 ticks 11 max_gap 0.021`; loop продолжал работать, rebind дождался освобождения lock, старый owner/epoch после переключения не прошёл новый guard. ASGI/baseline/auth нагрузки не повторялись. **Fix пока не принят целиком: отмена acquire оставляет lock.**
+Точный owner commit `a5df48c301a7eddbfdb71dbd883e261e4cada366` влит в review HEAD `0c073808bed45eec83b5e0d0d3b185a7f405e802`. Исходный same-loop deadlock исправлен в повторённом proof: настоящий `acquire_delivery_guard` удерживал binding row lock, coroutine ожидала 0.2 секунды, параллельно настоящий `_handle_start` делал rebind. Получено `timer_seconds 0.201 ticks 11 max_gap 0.021`; loop продолжал работать, rebind дождался освобождения lock, старый owner/epoch после переключения не прошёл новый guard. ASGI/baseline/auth нагрузки не повторялись. **На этом историческом SHA fix ещё не принимался целиком: отмена acquire оставляла lock; исправлено финальным 024c300.**
 
 ### High — отмена доставки во время acquire теряет connection с binding lock
 
@@ -12,11 +42,11 @@
 
 Воспроизведение без внешнего send: другой connection удерживал guard того же chat; запущен настоящий `_deliver_outbox` для реального run/outbox row, с синтетическим API credentials. `pg_stat_activity` подтвердил ожидание acquire. Coroutine отменена и завершилась `CancelledError`; исходный holder затем освобождён. Через 0.2 секунды новая транзакция с `lock_timeout=200ms` не смогла заблокировать binding: `CANCEL_DURING_ACQUIRE lockfree False`, найдена **1** `idle in transaction` guard connection. Для очистки только этой disposable PG сессии применён `pg_terminate_backend`; приложение/production не трогались. До API send выполнение не дошло.
 
-Нужен cancellation-safe acquire: сохранить результат фонового acquire и гарантированно освободить connection, даже если ожидающая coroutine уже отменена. Потерянный guard блокирует будущий rebind до закрытия connection; это отдельный дефект от уже исправленной остановки event loop. Bounded exhausted recovery из предыдущего review остаётся открытым.
+Нужен cancellation-safe acquire: сохранить результат фонового acquire и гарантированно освободить connection, даже если ожидающая coroutine уже отменена. Потерянный guard блокирует будущий rebind до закрытия connection; это отдельный дефект от уже исправленной остановки event loop. Bounded exhausted recovery закрыт отдельным 4ab9621 recheck выше.
 
 ## Targeted recheck: recovery fix 4e9e573
 
-Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен после merge локальной `dev` `091e7a44eb93e36b1a565a36fdd489ae2619b298` в review HEAD `dbc9a1a079aba6109c2003099223c9d68bfe7586`. Исходный дефект «нет recovery» исправлен в проверенных сценариях, но **полностью bounded recovery не принят**: найдено нарушение лимита ниже. Same-loop deadlock исправлен отдельным a5df48c recheck выше, но cancellation acquire выявил новую утечку lock.
+Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен после merge локальной `dev` `091e7a44eb93e36b1a565a36fdd489ae2619b298` в review HEAD `dbc9a1a079aba6109c2003099223c9d68bfe7586`. Исходный дефект «нет recovery» исправлен в проверенных сценариях, но **на этом историческом SHA полностью bounded recovery не принят**: найдено нарушение лимита ниже. Same-loop deadlock исправлен отдельным a5df48c recheck выше, но cancellation acquire выявил утечку lock, закрытую финальным 024c300.
 
 ### Medium — exhausted jobs обрабатываются без лимита batch
 
@@ -82,4 +112,4 @@ Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен пос�
 
 ## Ограничения проверки
 
-Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, same-loop deadlock исправлен a5df48c; принятие блокирует новая cancellation acquire lock leak, а exhausted recovery batch остаётся неограниченным.
+Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, same-loop deadlock исправлен a5df48c; cancellation acquire lock leak закрыта финальным 024c300, exhausted recovery batch — 4ab9621. Конкретных открытых findings в этом scope не осталось.
