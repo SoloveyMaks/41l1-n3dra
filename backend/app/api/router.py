@@ -27,7 +27,7 @@ from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
 from backend.app.artifacts.sample_source import build_zip_from_directory
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
-from backend.app.codefacts.publish import get_published_envelope, map_from_analysis_bundle
+from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
 from backend.app.contracts.schemas import Finding, WorkflowDraft
@@ -442,7 +442,13 @@ def get_security_map(run_id: str, request: Request):
     run = db_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    payload = _load_published_map(run_id, workspace)
+    try:
+        payload = _load_published_map(run_id, workspace)
+    except PublishedHashMissing as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PUBLISHED_HASH_MISSING", "message": str(exc)},
+        ) from exc
     if not payload:
         payload = _load_run_artifact(run_id, workspace)
     if not payload:
@@ -468,7 +474,13 @@ def get_evidence(run_id: str, evidence_id: str, request: Request):
     run = db_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    payload = _load_published_map(run_id, workspace)
+    try:
+        payload = _load_published_map(run_id, workspace)
+    except PublishedHashMissing as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PUBLISHED_HASH_MISSING", "message": str(exc)},
+        ) from exc
     if not payload:
         payload = _load_run_artifact(run_id, workspace)
     if not payload:
