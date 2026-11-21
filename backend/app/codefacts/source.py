@@ -63,7 +63,7 @@ def mask_token(value: str) -> str:
     return f"{value[:2]}****{value[-2:]}"
 
 
-def mask_text(text: str) -> str:
+def mask_text(text: str, *, max_chars: Optional[int] = MAX_SNIPPET_CHARS) -> str:
     """Убирает секреты из фрагмента, сохраняя структуру кода для UI."""
     if not text:
         return ""
@@ -85,8 +85,8 @@ def mask_text(text: str) -> str:
     text = _BEARER_RE.sub(lambda m: f"{m.group(1)}{mask_token(m.group(2))}", text)
     text = _LONG_TOKEN_RE.sub(lambda m: mask_token(m.group(0)), text)
     text = _CONTROL_RE.sub(" ", text)
-    if len(text) > MAX_SNIPPET_CHARS:
-        text = text[:MAX_SNIPPET_CHARS] + " …"
+    if max_chars is not None and len(text) > max_chars:
+        text = text[:max_chars] + " …"
     return text
 
 
