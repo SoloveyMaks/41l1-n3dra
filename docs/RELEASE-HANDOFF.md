@@ -10,8 +10,7 @@
   `d9507494f8c7`; asset `index-DA9FQkXU.js`.
 - Public smoke прошёл: user/admin roles, login/403, immutable asset, missing
   asset 404, sample run, карта, SSE, JSON/Markdown, published comparison.
-- Current `dev` source выше `63ca8c1` содержит только docs. **`main` merge ещё
-  pending у root**; не заявлять, что main уже merged.
+- `main` синхронизирован через PR после публичной проверки. Изменения после публичной ревизии затрагивают только документацию.
 - Review `18082` остаётся healthy на `b6abde4` и не тронут.
 
 ## Как показать
@@ -77,9 +76,9 @@
 - Общий workspace без аккаунтов; роли `user`/`admin` ограничивают операторские
   действия.
 
-## Перед main
+## Доставка изменений
 
-1. Root выполняет PR merge и финальную приёмку; worker не push/merge main.
+1. PR №1 слит в `main` после публичной проверки. Новые изменения проходят review и PR.
 2. После merge не менять public revision без отдельного deploy/smoke.
 3. Публичный smoke уже выполнен; полный UI/security-аудит не заявляется.
 
