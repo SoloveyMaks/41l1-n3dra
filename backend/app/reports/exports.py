@@ -39,7 +39,11 @@ _PATH_LIKE_KEY_WORDS = {
 }
 _URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 _BARE_SECRET_PAIR_RE = re.compile(
-    r"(?i)\b([A-Za-z0-9][A-Za-z0-9_.-]*)(\s*[=:]\s*)([^\s,;&\"']+)"
+    r"(?i)\b([A-Za-z0-9][A-Za-z0-9_.-]*)(\s*[=:]\s*)"
+    r'''("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&"']+)'''
+)
+_AUTHORIZATION_CREDENTIAL_RE = re.compile(
+    r'''(?i)(\bauthorization\s*[=:]\s*["']?(?:bearer|basic)\s+)[^\s,;&"']+'''
 )
 # A scheme-less reference inside an error string: an absolute path
 # (`/token/<secret>`) or `host.tld/token/<secret>`. A bare word such as
@@ -189,14 +193,16 @@ def _mask_bare_pairs(text: str) -> str:
         # `mask_sensitive_text` already redacts the token after a scheme word.
         if "authorization" in _name_words(key) and value.lower() in ("bearer", "basic"):
             return match.group(0)
-        return f"{key}{match.group(2)}***"
+        quote = value[0] if value.startswith(('"', "'")) else ""
+        return f"{key}{match.group(2)}{quote}***{quote}"
 
     return _BARE_SECRET_PAIR_RE.sub(replace, text)
 
 
 def _sanitize_prose(value: str) -> str:
     """Prose without a URL scheme: bare secret pairs and credential paths."""
-    text = _mask_bare_pairs(mask_sensitive_text(value))
+    text = _AUTHORIZATION_CREDENTIAL_RE.sub(r"\1***", value)
+    text = _mask_bare_pairs(mask_sensitive_text(text))
     return _BARE_PATH_IN_TEXT_RE.sub(
         lambda match: _sanitize_reference(match.group(0)), text
     )
