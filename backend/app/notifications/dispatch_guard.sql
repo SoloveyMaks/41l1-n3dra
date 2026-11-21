@@ -1,4 +1,4 @@
--- Forward notification upgrade. The original schema remains unchanged.
+-- Notification dispatch guard, installed after the base notification schema.
 ALTER TABLE runtime.completion_notifications
     ADD COLUMN IF NOT EXISTS retry_cancelled boolean NOT NULL DEFAULT false;
 
