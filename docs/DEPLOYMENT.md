@@ -28,9 +28,22 @@ backend.
 2. `python-wheels`: закреплённый Python 3.12 image, wheel-кэш по
    `deploy/requirements.txt`.
 3. `runtime`: установка только из локальных wheel, копирование `backend`, `db`
-   (миграции ledger), `docs` (canonical `contracts.schema.json`), healthcheck,
-   `frontend/dist`; non-root `nedra` (uid 10001), read-only rootfs, writable
-   `/app/data` и tmpfs `/tmp`.
+   (миграции ledger), `docs` (canonical `contracts.schema.json`), `packages/comparison`,
+   healthcheck, `frontend/dist`; non-root `nedra` (uid 10001), read-only rootfs,
+   writable `/app/data` и tmpfs `/tmp`.
+
+### Node 22 для comparison
+
+`packages/comparison` вызывает Node-модули, поэтому в runtime добавлен отдельный
+stage `node-runtime` из того же pinned Node image; в финальный образ копируется
+только `/usr/local/bin/node` (без npm/npx и без runtime `npm install`).
+`packages/comparison` копируется в `/app/packages/comparison`, а
+`docs/data-contracts/validate-bundle.mjs` уже лежит в `/app/docs`.
+
+Python slim (Debian 13) содержит нужные shared libs (`libstdc++`, `libgcc_s`,
+`libm`, glibc); сборка проверяет это через `RUN node --version`. Backend вызывает
+CLI как bounded child process без shell (`subprocess.run` с timeout 60), temp JSON
+создаёт сам backend; image задаёт `CG_NODE_BIN=/usr/local/bin/node`.
 
 `CG_DATA_DIR=/app/data` задан и в образе, и в `runtime.env`. Intake и codefacts
 используют этот корень (`data_root()`), поэтому артефакты, распаковка, snapshot
@@ -185,26 +198,29 @@ Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное �
 
 ## Проверено реальной сборкой
 
-Образ собран из **staged-копии** `integration-dev` (чужой worktree не изменялся)
-с overlay текущих `deploy/`, `.dockerignore` и `scripts/`:
+Текущий loopback-образ собран из `integration-dev` HEAD 2503230 (worktree не
+изменялся, deploy-файлы уже в dev):
 
-- `localhost/nedra-app:local` = `cea099bf235c...`, 17 шагов, слои `db/`, `docs/`,
-  healthcheck; Python-зависимости и `frontend/dist` внутри.
-- Backend стартовал, применил ledger 001/002/004; `vector 0.8.7`.
-- `/` отдаёт Vite build; `/api/session` выдаёт cookie в локальном режиме;
-  чужой `Origin` — 403; unsafe-метод без сессии — 401.
-- `POST /api/artifacts/sample` создал артефакт, файлы появились в `/app/data`
-  (volume `nedra-app-data`) и пережили пересоздание контейнера.
-- `/api/health` в этой сборке ещё 404: backend с endpoint находится в отдельной
-  ветке. Новый `deploy/healthcheck.py` strict, поэтому после слияния и
-  пересборки контейнер будет healthy только с публичным `/api/health`; текущий
-  локальный образ до пересборки ожидаемо не проходит strict-проверку.
-- Проверены safe-replace: запущенный контейнер при смене env не трогается без
-  `--recreate-app`; остановленный пересоздаётся; контейнер без owner label
-  отвергается `up`/`down`.
-- Systemd user units установлены и `systemd-analyze verify` прошёл; db/app
-  включены, tunnel disabled. Linger не включался.
-- DNS/туннель не публиковались.
+- `localhost/nedra-app:local` = `204670634fe5...`, revision `2503230`,
+  18 шагов; `db/`, `docs/`, healthcheck, Python wheels и `frontend/dist` внутри.
+- Backend стартовал, применил ledger 001/002/004/005; `vector 0.8.7`,
+  `published_bundles=1`.
+- Auth: `GET /api/health` 200; `GET /api/runs` без сессии 401;
+  `GET /api/session` 200 без `Set-Cookie`; `POST /api/session` с access code 200
+  и cookie; неверный код 401.
+- Реальный multipart upload: `art_989a260ea1d5` (8 файлов, 5 Kotlin), run
+  `15dc34ba-...` succeeded/verdict fail/13 findings; `security-map` 200 schema
+  0.1 (10 nodes, 9 edges, 26 evidence, 13 findings), evidence ready.
+- Systemd user units переустановлены из `integration-dev`; app unit cycle прошёл,
+  artifact в volume `nedra-app-data` сохранился. Tunnel unit disabled/inactive,
+  DNS не публиковался.
+- Node-образ `node-verify` (`7874a386f36b...`, 20 шагов) содержит
+  `node v22.23.5`; committed
+  `examples/demo/sql-before-after/{baseline,current}.published.json` прогнаны
+  через `/app/packages/comparison/compare-cli.mjs` внутри образа. Результат
+  равен committed `comparison.json` (`comparable=true`, 1 item
+  `resolved/unique_anchor`, `deletedFiles=[]`). Это реальный CLI-прогон, не fake
+  envelope.
 
 ## Ограничения
 
@@ -212,8 +228,9 @@ Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное �
   systemd user manager (при linger) или после логина.
 - Сборка требует сеть для первого `podman build` (digest pull) и `npm ci`.
 - `CG_PUBLIC_DEMO=1` требует access code; без него backend не стартует. Код
-  хранится только в `runtime.env` и никогда не печатается. До пересборки с
-  публичным `/api/health` systemd app unit после reboot будет падать на health.
-- Optional 003 — PG worker; `/api/health` ждёт merge backend. Deploy-код strict
-  и готов к пересборке.
+  хранится только в `runtime.env` и никогда не печатается.
+- Optional 003 — зона PG worker; deploy не выполняет его SQL.
+- Текущий loopback-образ `204670634fe5` (HEAD 2503230) ещё без Node; Dockerfile с
+  Node проверен отдельным `node-verify` образом, финальная пересборка — после
+  следующего backend commit (auth/rate/origin).
 - Volumes удаляются только вручную и осознанно; скрипты этого не делают.
