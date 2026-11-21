@@ -30,16 +30,48 @@ def _safe_ai_item(item: Any) -> Dict[str, Any]:
     return data
 
 
+_SKIPPED_SCOPE_LABELS = {
+    "runtime-configuration": "конфигурация времени выполнения",
+    "runtime-guards": "защита во время выполнения",
+    "binaries-and-archives": "бинарники и архивы",
+    "dependency-resolution": "разрешение зависимостей",
+    "generated-code": "сгенерированный код",
+}
+
+
 class ReportBuilder:
     def build_security_passport(self, bundle_coverage: Coverage, policy_result: PolicyResult,
-                                findings: List[Finding]) -> SecurityPassport:
+                                findings: List[Finding],
+                                canonical_coverage: Optional[Dict[str, Any]] = None) -> SecurityPassport:
         confirmed = sum(1 for f in findings if f.status.value == "confirmed")
         potential = sum(1 for f in findings if f.status.value == "potential")
         inconclusive = sum(1 for f in findings if f.status.value == "inconclusive")
 
-        # Completeness score: penalize parser errors and unresolved deps
+        # Legacy parser/AST ratio: kept in JSON, but never presented as the
+        # overall coverage verdict.
         penalty = (bundle_coverage.parser_errors * 0.1) + (bundle_coverage.unresolved_dependencies * 0.05)
-        score = max(0.0, min(1.0, 1.0 - penalty))
+        parser_score = max(0.0, min(1.0, 1.0 - penalty))
+
+        canonical = canonical_coverage or {}
+        coverage_status = str(canonical.get("coverageStatus") or "unknown")
+        expected_verified = canonical.get("expectedScopesVerified") is True
+        skipped_scopes = [str(item) for item in (canonical.get("skippedScopes") or [])]
+        completeness_known = coverage_status == "complete" and expected_verified
+        coverage_reasons: List[str] = []
+        if not completeness_known:
+            if coverage_status == "partial":
+                reason = "Полнота проверки не установлена: проверена только часть областей"
+                if skipped_scopes:
+                    labels = [_SKIPPED_SCOPE_LABELS.get(scope, scope) for scope in skipped_scopes]
+                    reason += "; не проверено: " + ", ".join(labels)
+                reason += "."
+            elif coverage_status == "complete" and not expected_verified:
+                reason = "Полнота проверки не установлена: обязательные области проверки не подтверждены."
+            elif coverage_status == "unavailable":
+                reason = "Полнота проверки недоступна: данные покрытия недоступны."
+            else:
+                reason = "Полнота проверки неизвестна: данные покрытия не предоставлены."
+            coverage_reasons.append(reason)
 
         warnings = []
         if bundle_coverage.parser_errors > 0:
@@ -60,7 +92,12 @@ class ReportBuilder:
             potential_findings=potential,
             inconclusive_findings=inconclusive,
             verdict=policy_result.verdict,
-            completeness_score=round(score, 2),
+            completeness_score=1.0 if completeness_known else 0.0,
+            completeness_known=completeness_known,
+            coverage_status=coverage_status,
+            coverage_reasons=coverage_reasons,
+            skipped_scopes=skipped_scopes,
+            parser_completeness_score=round(parser_score, 2),
             coverage_warnings=warnings
         )
 
@@ -89,7 +126,24 @@ class ReportBuilder:
         md.append(f"| Неразрешенных зависимостей | {passport.unresolved_dependencies} |")
         md.append(f"| Подтвержденных находок | **{passport.confirmed_findings}** |")
         md.append(f"| Потенциальных находок | {passport.potential_findings} |")
-        md.append(f"| Индекс полноты проверки | **{int(passport.completeness_score * 100)}%** |\n")
+        if passport.completeness_known:
+            md.append("| Полнота проверки | **100%** |")
+        else:
+            if passport.coverage_status == "partial" or (
+                passport.coverage_status == "complete" and not passport.completeness_known
+            ):
+                completeness_label = "не установлена"
+            elif passport.coverage_status == "unavailable":
+                completeness_label = "недоступна"
+            else:
+                completeness_label = "неизвестна"
+            md.append(f"| Полнота проверки | **{completeness_label}** |\n")
+
+        if passport.coverage_reasons:
+            md.append("### ⚠️ Полнота проверки")
+            for reason in passport.coverage_reasons:
+                md.append(f"- {reason}")
+            md.append("")
 
         if passport.coverage_warnings:
             md.append("### ⚠️ Предупреждения по покрытию:")

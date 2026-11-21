@@ -256,7 +256,15 @@ class SecurityPassport(BaseModel):
     potential_findings: int = 0
     inconclusive_findings: int = 0
     verdict: SecurityVerdict = SecurityVerdict.PENDING
-    completeness_score: float = 1.0  # 0.0 to 1.0
+    # Canonical coverage completeness: 1.0 only when complete + expected scopes verified.
+    # 0.0 with completeness_known=false means "not established", not "zero scanned".
+    completeness_score: float = 0.0
+    completeness_known: bool = False
+    coverage_status: str = "unknown"  # complete | partial | unavailable | unknown
+    coverage_reasons: List[str] = Field(default_factory=list)
+    skipped_scopes: List[str] = Field(default_factory=list)
+    # Legacy parser/AST ratio; kept for JSON consumers, not the overall verdict.
+    parser_completeness_score: float = 1.0
     coverage_warnings: List[str] = Field(default_factory=list)
 
 
