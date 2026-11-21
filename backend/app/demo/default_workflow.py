@@ -22,21 +22,21 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
             kind=NodeKind.SECRET_SCAN,
             title="Secret Scanner",
             position={"x": 500, "y": 100},
-            config={}
+            config={"engine": "full"}
         ),
         WorkflowNode(
             id="node_sca",
             kind=NodeKind.SCA_SCAN,
             title="SCA Dependencies",
             position={"x": 500, "y": 250},
-            config={}
+            config={"engine": "full"}
         ),
         WorkflowNode(
             id="node_sast",
             kind=NodeKind.KOTLIN_SAST,
             title="Kotlin SAST",
             position={"x": 500, "y": 400},
-            config={}
+            config={"engine": "full"}
         ),
         WorkflowNode(
             id="node_merge",
