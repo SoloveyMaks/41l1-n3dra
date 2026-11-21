@@ -8,9 +8,10 @@
 
 - `dev` — собранная интеграция: backend, frontend, карта, comparison, AI,
   PostgreSQL publish и локальный деплой.
-- `main` — только после приёмки; эта ветка не делает merge/push в `main`.
-- Публикация `nedra.soloveyka.bond` — staged/pending. Хост — локальный ПК +
-  Cloudflare Tunnel, не независимый VPS; DNS ещё не опубликован.
+- `main` — после финальной приёмки; PR #1 направлен из `dev` в `main`.
+- `https://nedra.soloveyka.bond` опубликован через отдельный Cloudflare Tunnel.
+  Хост — локальный ПК, не независимый VPS. Публичный образ `c01c96d`; новый
+  optional Team B adapter ждёт финальную пересборку.
 - Production readiness, внешняя auth-модель и преимущество retrieval не
   заявляются.
 
@@ -69,8 +70,10 @@
 - SQL proof в [docs/sql-before-after.md](docs/sql-before-after.md) узкий:
   per-file `source_pattern` `KOTLIN-SQL-INJECTION` на demo fixture (before
   finding, after 0 при checked scope). Это не global comparison и не
-  production publication. Global per-rule observations + comparison persistence
-  сейчас доводятся в `dev`.
+  production publication. Отдельный API `/api/comparisons/{b}/{c}/sql-pattern`
+  уже проверен на двух реальных опубликованных scanner runs: SQL 1 → 0,
+  `pattern_disappeared`, общий comparison `inconclusive`. Per-rule observations
+  и сохранение comparison в PostgreSQL включены.
 
 ### AI и retrieval
 
@@ -94,9 +97,10 @@
 - `dev` собирается локально через `scripts/nedra-*.sh`: PostgreSQL + pgvector и
   backend в rootless Podman; БД без host-портов; backend только на
   `127.0.0.1:18080`.
-- Наружу планируется только HTTPS Cloudflare Tunnel на
-  `nedra.soloveyka.bond`. DNS/route/run не выполнялись — это отдельный шаг после
-  review public auth; домен пока не published.
+- Наружу опубликован только HTTPS Cloudflare Tunnel на `nedra.soloveyka.bond`.
+  API закрыт сессией по коду доступа: anonymous runs 401, GET session без cookie,
+  неверный код 401, успешный login с Secure/HttpOnly/SameSite=Lax. Это shared
+  demo workspace, отдельные приватные кабинеты и роли не реализованы.
 - Shared demo access code (`CG_ACCESS_CODE`) и остальные секреты живут только в
   `~/.config/nedra/runtime.env` (mode 600). Они не коммитятся, не печатаются
   скриптами и не передаются в argv.
@@ -115,9 +119,22 @@
   runtime graph (`runtime-configuration`, `runtime-guards`,
   `binaries-and-archives`) неизвестны. Такие gaps остаются видимыми; graph
   comparison может быть `inconclusive`.
-- Global comparison и production per-rule observation ещё доводятся; demo SQL
-  proof нельзя переносить на весь проект.
+- Global comparison сохраняется, но остаётся `inconclusive`, пока полнота
+  ожидаемых scopes не подтверждена. Узкий SQL proof нельзя переносить на весь проект.
 - Реальный vetted example и embedding provider/model/dimension появятся только
   после подтверждённого adapter/D; сейчас их нет.
-- Auth/roles, TTL artifact store и публикация домена — предмет отдельной
-  приёмки; текущий loopback demo не является production-границей.
+- Приватные роли/кабинеты и TTL artifact store не реализованы. Домен опубликован
+  с общим demo access gate; он зависит от локального ПК и входа пользователя
+  (`Linger=no`). Production readiness не заявляется.
+
+## Подключение командных анализаторов
+
+`analyzers/` сохранён отдельным пакетом; runtime adapter включается явным
+`config.engine=team_b` на scanner nodes. Смешение engines в одном run запрещено.
+Training проверен с PostgreSQL: 15 findings (5/5/5), 43 nodes, 32 edges,
+67 evidence, canonical publication успешна. Default engine остаётся `backend`.
+
+Adapter использует полный frozen manifest и ZIP hash из intake, доверенный
+серверный advisory и серверный HMAC. Известный demo key запрещён. Без advisory
+SCA сохраняет error, zero findings дают `inconclusive`, а не `pass`. Team B
+`CG26-SAST-001` не переименовывается под SQL proof другого правила.

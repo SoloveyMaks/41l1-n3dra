@@ -9,9 +9,10 @@
 
 - `dev` — собранная интеграция backend/frontend/map/comparison/AI/PostgreSQL.
 - `main` — после приёмки. Merge/push в `main` делает координатор, не worker.
-- Публикация `nedra.soloveyka.bond` — **staged/pending**: хост — локальный ПК,
-  доступ планируется через отдельный Cloudflare Tunnel. Это не независимый VPS;
-  DNS/route/run не выполнены, production readiness не заявляется.
+- `https://nedra.soloveyka.bond` опубликован: отдельный Cloudflare Tunnel,
+  shared demo access gate. Хост — локальный ПК; `Linger=no`, после reboot нужен
+  пользовательский login. Работающий образ `c01c96d`; интегрированный Team B
+  adapter ожидает финальную пересборку. Production readiness не заявляется.
 
 ## Живая проверка (факты)
 
@@ -25,10 +26,25 @@
 - Session/API: `/api/health` 200; `POST /api/session` выдаёт same-origin cookie;
   sample artifact и workflow-run проходят; после session — без ложных auth
   ошибок.
-- SQL proof (demo): настоящие `SastAnalyzer`/`SecretAnalyzer`/`ScaAnalyzer` и
-  `extract_facts`; before — `KOTLIN-SQL-INJECTION`, after — 0 findings;
-  comparison `resolved/unique_anchor` только при checked source scope.
-  Подробности и negative probes — [sql-before-after.md](sql-before-after.md).
+- SQL proof через настоящий upload/executor/PostgreSQL: два immutable scanner
+  runs, before — 1 `KOTLIN-SQL-INJECTION`, after — 0; отдельный SQL API возвращает
+  `pattern_disappeared/source_pattern`, общий comparison — `inconclusive`.
+  Comparison сохранён в БД; повторный запрос сохраняет тот же ID.
+- Training на default engine: 33 nodes, 32 edges, 39 evidence, 6 findings.
+  Pickup export прослеживается до SQL/данных; evidence открывает masked source.
+- Optional Team B adapter: PostgreSQL publication, 15 findings (5/5/5), 43 nodes,
+  32 edges, 67 evidence. Mixed engine validation отклоняется; default не сменён.
+  Отсутствующий advisory даёт error и `inconclusive` при zero findings;
+  известный demo HMAC key отклоняется, raw secrets в AI payload не передаются.
+- Внешний HTTPS: health 200, anonymous runs 401, GET session без Set-Cookie,
+  wrong login 401, correct login 200 с Secure/HttpOnly/SameSite=Lax; auth map,
+  evidence и SQL API 200. Default Python-urllib UA блокируется Cloudflare 1010;
+  curl и браузер проходят. Brigada config не менялся.
+- Отказ AI provider даёт fallback и не меняет finding/evidence/вердикт.
+  Потеря checked scope, несовместимый rulesHash и неоднозначный anchor дают
+  `inconclusive`; удалённый path — `file_deleted`. Эти negative cases проверены
+  на копиях реальных envelopes в /tmp; отдельные scanner runs для них не создавались.
+  Demo и его ограничения — [sql-before-after.md](sql-before-after.md).
 - Loopback-образ и health проверялись deploy-скриптами; актуальные image ID,
   revision и container health смотри через `scripts/nedra-status.sh`, а не в
   этом файле — они меняются.
@@ -55,7 +71,7 @@ curl -s -b /tmp/nedra.jar -c /tmp/nedra.jar -X POST http://127.0.0.1:8000/api/se
 curl -s -b /tmp/nedra.jar -X POST http://127.0.0.1:8000/api/artifacts/sample
 ```
 
-### Локальный контейнер (staged)
+### Локальный контейнер
 
 ```bash
 scripts/nedra-bootstrap.sh --check     # read-only
@@ -65,7 +81,7 @@ scripts/nedra-up.sh                    # --db-only/--app-only/--recreate-app
 scripts/nedra-status.sh
 scripts/nedra-stop.sh                  # или nedra-down.sh
 scripts/nedra-systemd-install.sh       # tunnel unit не включается
-scripts/nedra-tunnel.sh status         # route/run — отдельный шаг, не выполнялся
+scripts/nedra-tunnel.sh status         # опубликованный отдельный tunnel nedra
 ```
 
 Секреты и shared demo access code (`CG_ACCESS_CODE`) — только в
@@ -102,8 +118,8 @@ bundle и не заменяет global comparison.
   Internal map hash пересчитывается по своему recipe после замены coverage.
 - Comparison не выдаёт fix при `changed`, потере покрытия или неоднозначном
   anchor; `deletedFiles` — отдельный список, не «исправление».
-- SQL proof `KOTLIN-SQL-INJECTION` — узкий per-file source pattern; global
-  per-rule observation/comparison persistence сейчас доводится в `dev`.
+- SQL proof `KOTLIN-SQL-INJECTION` — узкий per-file source pattern; per-rule
+  observation и comparison persistence включены, global attestation остаётся false.
 - AI — только ReformBoss, default `deepseek-v4.1-flash-1017`; ключ не в логах.
 - Embeddings `unavailable`: реальный `/v1/embeddings` вернул 403
   `token_model_not_allowed`; spec/dimension не выдумываются, fake vectors нет.
@@ -113,15 +129,19 @@ bundle и не заменяет global comparison.
 - 3–5 подготовленных примеров — механика хранения/сравнения, не доказательство
   преимущества retrieval.
 
-## Что осталось до main
+## Перед слиянием в main
 
-1. Приёмка global comparison/per-rule observation на реальных scanner runs.
-2. Реальный vetted example (не synthetic) + подтверждённый embedding adapter/spec.
-3. Публичный auth/roles и отдельная публикация домена через Cloudflare Tunnel.
-4. Parser/anchor/runtime graph ограничения остаются неизвестными: не заявлять
-   complete coverage или отсутствие уязвимостей; graph comparison может быть
-   `inconclusive`.
-5. Merge `dev → main` и release-проверка — отдельный шаг координатора.
+1. Закончить отрицательные API/БД сценарии: scope, immutability, ошибочные ZIP.
+2. Пересобрать итоговый dev с optional Team B package и проверить публичный путь.
+3. Обновить PR и слить `dev → main` с сохранением истории.
 
-**Не заявлять:** production readiness, независимый VPS, опубликованный домен,
-преимущество retrieval по 3–5 примерам, полное покрытие parser/runtime graph.
+## Оставшиеся ограничения
+
+- Нет проверенного embedding provider/model/dimension и реального vetted
+  remediation example. Это optional часть: основной анализ работает без неё.
+- Parser/anchor/runtime graph ограничения остаются видимыми. Полное покрытие и
+  отсутствие уязвимостей не заявляются; общий comparison может быть `inconclusive`.
+- Shared demo workspace не является системой приватных многопользовательских
+  кабинетов. Хост должен работать, user manager — быть запущен.
+- 3–5 примеров не доказывают преимущество retrieval. Независимый VPS и
+  production readiness не заявляются.

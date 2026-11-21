@@ -4,11 +4,11 @@ AI Security Workflow для Cyber Garden 2026: собственные SECRET/SCA
 Kotlin/Spring Boot, визуальный workflow, карта доказательств и сравнение
 immutable bundles.
 
-**Статус:** `dev` собран и прошёл живой PostgreSQL publish (13 findings, AI
-succeeded, 26 evidence, map hash self-check). `main` — после приёмки.
-Публикация `nedra.soloveyka.bond` — staged/pending: приложение живёт на локальном
-ПК и будет доступно через Cloudflare Tunnel, а не на отдельном VPS. Домен ещё не
-опубликован; production readiness не заявляется.
+**Статус:** приложение опубликовано на [nedra.soloveyka.bond](https://nedra.soloveyka.bond)
+за общим кодом доступа. Хост — локальный ПК + отдельный Cloudflare Tunnel.
+`dev` содержит интеграцию команды; PR в `main` ждёт финальную отладку.
+Работающий публичный образ пока `c01c96d`; optional Team B adapter добавлен в
+`dev` и ожидает пересборку. Версию образа проверяйте через runbook.
 
 ## Что внутри
 
@@ -30,7 +30,7 @@ succeeded, 26 evidence, map hash self-check). `main` — после приёмк
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
 - [SQL before/after proof](docs/sql-before-after.md), [что проверено](docs/data-contracts/verification.md)
 - [Анализаторы пакета B](analyzers/README.md) — SECRET/SCA/SAST и выгрузка `AnalysisBundle`
-- [Отчёт по анализаторам](docs/analyzers-report.md)
+- [Отчёт по анализаторам](docs/analyzers-report.md), [подключение Team B к runtime](docs/team-b-runtime.md)
 
 ## Локальный запуск (PostgreSQL)
 
@@ -69,9 +69,10 @@ curl -s -b /tmp/nedra.jar http://127.0.0.1:8000/api/workflows
 curl -s -b /tmp/nedra.jar -X POST http://127.0.0.1:8000/api/artifacts/sample
 ```
 
-## Контейнерный запуск (staged)
+## Контейнерный запуск
 
-Локальный ПК — единственный хост. Публикация DNS/туннеля — отдельный шаг.
+Локальный ПК — единственный хост. Отдельный туннель `nedra` уже опубликован;
+существующие маршруты Brigada не менялись.
 
 ```bash
 scripts/nedra-bootstrap.sh --check     # read-only проверка
@@ -81,7 +82,7 @@ scripts/nedra-up.sh                    # db + app; идемпотентно
 scripts/nedra-status.sh
 scripts/nedra-stop.sh                  # или nedra-down.sh
 scripts/nedra-systemd-install.sh       # user units; tunnel не включается
-scripts/nedra-tunnel.sh status         # read-only; route/run не выполнялись
+scripts/nedra-tunnel.sh status         # состояние отдельного туннеля nedra
 ```
 
 Секреты и shared demo access code — только в `~/.config/nedra/runtime.env`
@@ -101,8 +102,10 @@ scripts/nedra-tunnel.sh status         # read-only; route/run не выполн�
 - Comparison: fingerprint/anchor + signature + coverage. Потеря покрытия,
   неоднозначный anchor и `changed` не выдаются за fix; удалённые файлы — отдельный
   `deletedFiles`.
-- SQL proof в `docs/sql-before-after.md` — узкий per-file `source_pattern` для
-  `KOTLIN-SQL-INJECTION`, не global comparison и не production publication.
+- SQL API proof — узкий per-file `source_pattern` для `KOTLIN-SQL-INJECTION`
+  по двум опубликованным scanner runs. До параметризации — 1 finding, после — 0:
+  `pattern_disappeared`; общий comparison остаётся `inconclusive`.
+  Committed demo envelopes в `docs/sql-before-after.md` — отдельный пример.
 - AI: только ReformBoss, default `deepseek-v4.1-flash-1017`. Embeddings сейчас
   `unavailable`: `POST /v1/embeddings` вернул 403 `token_model_not_allowed`;
   registry pending, fake vectors запрещены, vetted требует реального scanner
@@ -118,7 +121,9 @@ scripts/nedra-tunnel.sh status         # read-only; route/run не выполн�
 
 ## Ограничения
 
-Локальный хост должен быть включён; домен пока не опубликован. Семантика
+Локальный хост должен быть включён. `Linger=no`: после перезагрузки user units
+нужен вход пользователя. Cloudflare блокирует default Python-urllib User-Agent
+кодом 1010; браузер и curl проходят. Семантика
 parser/anchor и полнота runtime graph (`runtime-configuration`,
 `runtime-guards`, `binaries-and-archives`) не доказаны — такие gaps остаются
 видимыми, а comparison может быть `inconclusive`. 3–5 подготовленных примеров
