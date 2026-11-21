@@ -48,7 +48,8 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
               "provider": "github", "reason": "...", "evidenceKind": "last_file_commit",
               "notBlame": true,
               "commit": {"sha": "...",
-                         "author": {"displayName": "...", "login": "..."},
+                         "author": {"displayName": "...", "login": "...",
+                                    "provider": "github", "profileUrl": "https://github.com/...", "isBot": false},
                          "committer": {"displayName": "...", "login": "..."},
                          "date": "...", "url": "...", "message": "..."},
               "associationCommitSha": "...", "frozenCommitSha": "...",
@@ -270,3 +271,50 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
 - Stream ceiling test через Unix local HTTP transport: plain exact 262144 → ok;
   plain 2 MiB → failed без полного body; gzip 16 MiB при 8 KiB wire chunks →
   failed, tracemalloc peak ~0.5 MiB (не 22 MiB).
+
+
+## Проверенные публичные аккаунты
+
+`PersonEvidence` отдельно передаёт `provider`, `login`, `profileUrl` и
+`isBot` для автора коммита, коммиттера, автора PR, mergedBy и каждого reviewer.
+Логин берётся только из официального account object GitHub (`login`) или
+GitLab (`username`), имя из git не превращается в username. Email отсутствует.
+Профиль строится из проверенного логина на `https://github.com/{login}` или
+`https://gitlab.com/{username}`; произвольные `html_url`/`web_url` аккаунта
+игнорируются. Только точный HTTPS host, без credentials, port, query/fragment;
+UI дополнительно сверяет provider, login и полный ожидаемый URL профиля.
+GitHub `type=Bot` или официальный login с `[bot]` даёт метку «бот».
+
+В панели сначала показан кликабельный `@login`, отдельное имя — вторично.
+У непривязанного git author сохраняется имя и подпись «аккаунт не привязан»;
+при отсутствии данных — «аккаунт неизвестен». Автор и коммиттер остаются
+разными строками. Автор PR и «Слил PR» отдельно от «Одобрил PR #…».
+В сводку одобривших попадают только APPROVED + appliesToMerge при полностью
+загруженных reviews и известном merged head; исторические approvals видны
+в деталях, неполнота/отсутствие подтверждения явно подписаны.
+
+Проверка 2026-11-22, read-only public API без токена: существующий CPython
+sample дал последний коммит файла `fea9926d805c9e8b2c124b3437943ea393362555`,
+автора и коммиттера `@gpshead` с `https://github.com/gpshead`, PR #160301
+с автором/mergedBy `@gpshead`, три reviewer account evidence (`StanFromIreland`,
+`JelleZijlstra`, `gpshead`). Настоящий APPROVED от `@JelleZijlstra` относится
+к другому head и остаётся историческим, не попадает в действующие одобрения.
+Всего 7 identity records, 3 уникальных аккаунта, 1 реальное историческое
+APPROVED, 0 подтверждённых одобрений merged head в этом sample.
+Это не проверка GitLab runtime, не общий аудит и не доказательство автора
+уязвимости. Никакие GitHub данные не менялись, код репозитория не скачивался.
+
+Отдельные проверки: `backend/tests/test_responsibility_users.py` (13 checks;
+synthetic metadata/reducer, без сети) охватывают вредные URL/логины,
+непривязанные имена, ботов, COMMENTED после APPROVED, отзыв/запрос изменений,
+неполные reviews, wrong head, unmerged, after-merge и лимит reviewers.
+
+Browser smoke: Chromium, 390×844, реальный provider DTO на локальной странице:
+`scrollWidth=390`, 7 account links, 0 page errors. Отдельная явно synthetic
+UI-фикстура проверила два действующих approver, исключение исторического
+approval/CHANGES_REQUESTED из сводки, непривязанное `Full Name` без
+`@Full Name`, bot committer, неполные reviews и отказ от 6 вредных profile
+URLs (чужой host, credentials, query, fragment, явный port). Fixture не
+подтверждает реальные identities; endpoint/session/tenant заново не проверялись.
+`npm run build` прошёл; `npm run lint` — 0 errors, 45 warnings в существующем
+frontend. Dependencies использованы локальные, без network install.

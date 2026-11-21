@@ -64,10 +64,50 @@ const reviewTone = (state: string): string =>
 
 const shortSha = (sha?: string | null): string => (sha ? sha.slice(0, 12) : '—');
 
-const personText = (person?: ResponsibilityPerson | null): string => {
-  if (!person) return '—';
-  const parts = [person.displayName, person.login ? `@${person.login}` : ''].filter(Boolean);
-  return parts.length ? parts.join(' · ') : '—';
+const safeProfileUrl = (person?: ResponsibilityPerson | null): string | null => {
+  if (!person?.login || !person.profileUrl) return null;
+  const host = person.provider === 'github' ? 'github.com' : person.provider === 'gitlab' ? 'gitlab.com' : null;
+  if (!host || person.profileUrl !== `https://${host}/${person.login}`) return null;
+  try {
+    const url = new URL(person.profileUrl);
+    if (url.protocol !== 'https:' || url.host !== host || url.username || url.password || url.search || url.hash) return null;
+    if (decodeURIComponent(url.pathname) !== `/${person.login}`) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
+
+const PersonIdentity: React.FC<{ person?: ResponsibilityPerson | null }> = ({ person }) => {
+  const url = safeProfileUrl(person);
+  const distinctName = person?.displayName && person.displayName !== person.login;
+  return (
+    <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1 break-words [overflow-wrap:anywhere]">
+      {person?.login ? (
+        url ? <a href={url} target="_blank" rel="noreferrer" className="font-semibold text-indigo-300 hover:underline">@{person.login}</a>
+          : <span className="font-semibold text-slate-200">@{person.login}</span>
+      ) : <span className="text-slate-400">{person?.displayName ? 'аккаунт не привязан' : 'аккаунт неизвестен'}</span>}
+      {distinctName && <span className="text-slate-400">· {person.displayName}</span>}
+      {person?.isBot && <span className="rounded border border-slate-700 px-1 text-[9px] text-slate-400">бот</span>}
+    </span>
+  );
+};
+
+const ApproversSummary: React.FC<{ pr: ResponsibilityPullRequest }> = ({ pr }) => {
+  const complete = pr.reviewsStatus === 'available' && !pr.reviewsIncomplete;
+  const approvals = complete && pr.mergedAt && pr.headSha
+    ? pr.reviews.filter((review) => review.state === 'APPROVED' && review.appliesToMerge)
+    : [];
+  const historical = pr.reviews.some((review) => review.state === 'APPROVED' && !review.appliesToMerge);
+  return (
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[10px] text-slate-400">
+      <span>Одобрил PR #{pr.number}:</span>
+      {approvals.length ? approvals.map((review, index) => (
+        <PersonIdentity key={review.reviewer.login || index} person={review.reviewer} />
+      )) : <span className="text-amber-300/80">{!complete ? 'не подтверждено: отзывы неполные или недоступны' : historical ? 'есть историческое одобрение; для слитой версии не подтверждено' : 'одобрение слитой версии не подтверждено'}</span>}
+      {pr.reviewsTruncated && <span className="text-amber-300/80">· список ограничен</span>}
+    </div>
+  );
 };
 
 const safeRepositoryUrl = (value?: string | null): string | null => {
@@ -75,7 +115,7 @@ const safeRepositoryUrl = (value?: string | null): string | null => {
   try {
     const parsed = new URL(value);
     if (parsed.protocol !== 'https:') return null;
-    if (!['github.com', 'gitlab.com'].includes(parsed.hostname.toLowerCase())) return null;
+    if (!['github.com', 'gitlab.com'].includes(parsed.host) || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
     return parsed.toString();
   } catch {
     return null;
@@ -89,7 +129,7 @@ const ReviewRow: React.FC<{ review: ResponsibilityReview }> = ({ review }) => {
       <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${reviewTone(review.state)}`}>
         решение: {review.state === 'NONE' ? 'нет' : REVIEW_STATE_LABEL[review.state] || review.state}
       </span>
-      <span className="text-[10px] text-slate-300">{personText(review.reviewer)}</span>
+      <PersonIdentity person={review.reviewer} />
       <span className="text-[9px] text-slate-500">
         {review.submittedAt ? new Date(review.submittedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'время неизвестно'}
       </span>
@@ -97,7 +137,7 @@ const ReviewRow: React.FC<{ review: ResponsibilityReview }> = ({ review }) => {
         последний отзыв: {REVIEW_STATE_LABEL[opinion] || opinion}
       </span>
       <span className={`text-[9px] ${review.appliesToMerge ? 'text-emerald-300' : 'text-amber-300'}`}>
-        {review.appliesToMerge ? 'действует к merged head' : 'историческое / не доказано к merge'}
+        {review.appliesToMerge ? 'решение для слитой версии' : 'историческое / для слитой версии не подтверждено'}
       </span>
       {review.limitation && <span className="basis-full text-[9px] leading-snug text-amber-300/80">{review.limitation}</span>}
     </div>
@@ -110,7 +150,7 @@ const PullRequestRow: React.FC<{ pr: ResponsibilityPullRequest }> = ({ pr }) => 
     <div className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-mono text-[10px] text-indigo-300">#{pr.number}</span>
-        <span className="min-w-0 text-[10px] font-semibold text-slate-200">{pr.title || 'Без названия'}</span>
+        <span className="min-w-0 break-words text-[10px] font-semibold text-slate-200 [overflow-wrap:anywhere]">{pr.title || 'Без названия'}</span>
         {url && (
           <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[9px] text-indigo-300 hover:text-indigo-200">
             PR <ExternalLink size={9} />
@@ -119,18 +159,19 @@ const PullRequestRow: React.FC<{ pr: ResponsibilityPullRequest }> = ({ pr }) => 
         {pr.mergedAt ? <span className="text-[9px] text-emerald-300">merged</span> : <span className="text-[9px] text-amber-300">не merged</span>}
       </div>
       <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] text-slate-400">
-        <span>автор PR: <strong className="text-slate-300">{personText(pr.author)}</strong></span>
-        <span>merged by: <strong className="text-slate-300">{personText(pr.mergedBy)}</strong></span>
+        <span>Автор PR: <PersonIdentity person={pr.author} /></span>
+        <span>Слил PR: <PersonIdentity person={pr.mergedBy} /></span>
         <span>{pr.mergedAt ? new Date(pr.mergedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'дата merge неизвестна'}</span>
         {pr.headSha && <span className="font-mono">head {shortSha(pr.headSha)}</span>}
       </div>
       <div className="mt-1 space-y-1">
+        <ApproversSummary pr={pr} />
         {pr.reviewsStatus === 'available' || pr.reviewsStatus === 'incomplete' ? (
           pr.reviews.length ? (
             <>
               {pr.reviews.map((review, index) => <ReviewRow key={`${pr.number}-${review.reviewer.login || review.reviewer.displayName || index}-${index}`} review={review} />)}
               {pr.reviewsTruncated && <p className="text-[9px] text-amber-300">Показаны не все reviewers; список ограничен.</p>}
-              {pr.reviewsIncomplete && <p className="text-[9px] text-amber-300">Reviews неполные: unseen dismissal/approval может изменить решение; активным не считаем.</p>}
+              {pr.reviewsIncomplete && <p className="text-[9px] text-amber-300">Отзывы неполные: позднее решение могло изменить одобрение; действующим его не считаем.</p>}
             </>
           ) : <p className="text-[9px] text-slate-500">API не вернул reviews для этого PR.</p>
         ) : (
@@ -295,8 +336,9 @@ export const ResponsibilityPanel: React.FC<ResponsibilityPanelProps> = ({ runId,
             </div>
             {data.history.commit ? (
               <div className="mt-1 space-y-0.5 text-[10px] text-slate-400">
-                <div>Автор коммита: <strong className="text-slate-200">{personText(data.history.commit.author)}</strong></div>
-                <div>Коммиттер: <strong className="text-slate-200">{personText(data.history.commit.committer)}</strong></div>
+                <div>Автор коммита: <PersonIdentity person={data.history.commit.author} /></div>
+                <div>Коммиттер: <PersonIdentity person={data.history.commit.committer} /></div>
+                {data.history.pullRequests.map((pr) => <ApproversSummary key={pr.number} pr={pr} />)}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <span>{data.history.commit.date || 'дата неизвестна'}</span>
                   {safeRepositoryUrl(data.history.commit.url) && (

@@ -33,10 +33,13 @@ class LineBlameInfo(BaseModel):
 
 
 class PersonEvidence(BaseModel):
-    """Public identity only: display name/login. Email is deliberately absent."""
+    """Public provider account evidence; git names alone never establish a login."""
 
     displayName: Optional[str] = None
     login: Optional[str] = None
+    provider: Optional[str] = None
+    profileUrl: Optional[str] = None
+    isBot: Optional[bool] = None
 
 
 class CommitEvidence(BaseModel):
