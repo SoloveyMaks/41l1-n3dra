@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.analyzers.base import BaseAnalyzer
+from backend.app.analyzers.file_discovery import prune_scan_dirs
 from backend.app.analyzers.version_comparator import matches_version_range
 from backend.app.contracts.schemas import (
     Confidence, Coverage, Diagnostic, Finding, FindingStatus,
@@ -112,7 +113,8 @@ class ScaAnalyzer(BaseAnalyzer):
             r"""(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*libs\.([a-zA-Z0-9._]+)\s*\)"""
         )
 
-        for root, _, files in os.walk(root_path):
+        for root, dirnames, files in os.walk(root_path):
+            prune_scan_dirs(dirnames)
             for file_name in files:
                 if not (file_name.endswith(".gradle.kts") or file_name.endswith(".gradle")):
                     continue
