@@ -81,6 +81,40 @@ Before finding: `src/main/kotlin/demo/RepairLookupController.kt:12`,
 Это статическое исчезновение паттерна, не доказательство отсутствия всех
 уязвимостей и не runtime-проверка.
 
+## Узкое SQL-сравнение
+
+Для конкретного правила есть отдельный модуль
+[`packages/comparison/sql-rule.mjs`](../packages/comparison/sql-rule.mjs) и
+[`sql-rule-cli.mjs`](../packages/comparison/sql-rule-cli.mjs). Полный контракт —
+[SQL rule comparison](data-contracts/sql-rule-comparison.md).
+
+```sh
+node packages/comparison/sql-rule-cli.mjs \
+  examples/demo/sql-before-after/baseline.published.json \
+  examples/demo/sql-before-after/current.published.json
+```
+
+На этих реальных envelopes результат:
+
+```json
+{
+  "scope": "source_pattern",
+  "status": "pattern_disappeared",
+  "matchingBasis": "unique_anchor",
+  "globalComparable": false,
+  "expectedScopesVerified": {"baseline": true, "current": true}
+}
+```
+
+Тот же `pattern_disappeared` сохраняется, если принудительно поставить
+`expectedScopesVerified=false` и `partial` scan/coverage с пропуском других
+rules: proof опирается на фактический checked scope
+`SAST/path/KOTLIN-SQL-INJECTION`, а не на глобальный attestation. Потеря
+checked scope → `inconclusive`; несовместимый `rulesHash` → `inconclusive`;
+удаление path из полного current manifest → `file_deleted`. Этот модуль не
+вызывает `compareBundles`, не делает run comparable и не проверяет graph
+runtime; обычное сравнение и его guards остаются отдельными.
+
 ## Откуда взялся checked scope
 
 `SastAnalyzer` теперь сам пишет typed наблюдения в
@@ -175,7 +209,8 @@ real bundle, а не изображают новый scanner result.
 - Нет embeddings, vetted remediation examples или AI-совета.
 - Нет утверждения, что параметризация сохранила функциональность приложения.
 
-Итог: реальный scanner и real code facts дают воспроизводимое основание для
-`resolved` в границах demo-adapter; production-путь честно требует
-per-file SQL checked outcome и согласованного source-graph coverage, иначе
-сравнение остаётся `inconclusive`.
+Итог: обычный `SastAnalyzer` даёт per-file SQL observation; demo global
+comparison показывает `resolved`, а узкий SQL DTO — `pattern_disappeared` при
+checked scope с обеих сторон. Production adapter может использовать эти scopes
+без synthetic source graph; обычный comparison по-прежнему отдельно зависит
+от graph/runtime coverage и может остаться `inconclusive`.
