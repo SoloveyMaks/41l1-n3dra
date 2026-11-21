@@ -66,43 +66,4 @@ FOR EACH ROW EXECUTE FUNCTION guard_snapshot_origin();
 CREATE TRIGGER guard_snapshot_origin
 BEFORE UPDATE OR DELETE ON snapshot_origins
 FOR EACH ROW EXECUTE FUNCTION guard_snapshot_origin();
-
--- A content hash is only valid while at least one intake origin backs it.
--- Deferred check: CanonicalPublisher inserts the hash and origin in one
--- transaction; arbitrary/direct inserts without an origin fail at commit.
-CREATE FUNCTION check_snapshot_content_origin() RETURNS trigger
-LANGUAGE plpgsql SET search_path = data_contract, pg_temp AS $$
-BEGIN
-  PERFORM 1 FROM snapshot_origins
-   WHERE workspace_id = NEW.workspace_id
-     AND snapshot_id = NEW.snapshot_id
-     AND artifact_hash = NEW.artifact_hash;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'snapshot content hash has no artifact origin';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-CREATE CONSTRAINT TRIGGER check_snapshot_content_origin
-AFTER INSERT OR UPDATE ON snapshot_content_hashes
-DEFERRABLE INITIALLY DEFERRED
-FOR EACH ROW EXECUTE FUNCTION check_snapshot_content_origin();
-
--- Row triggers do not fire for TRUNCATE. Keep the append-only facts in place
--- for ordinary SQL paths; DB owners/superusers can still disable/drop triggers.
-CREATE FUNCTION guard_snapshot_origin_truncate() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  RAISE EXCEPTION 'snapshot origin/content hash truncate is not allowed';
-END;
-$$;
-
-CREATE TRIGGER guard_snapshot_content_hashes_truncate
-BEFORE TRUNCATE ON snapshot_content_hashes
-FOR EACH STATEMENT EXECUTE FUNCTION guard_snapshot_origin_truncate();
-
-CREATE TRIGGER guard_snapshot_origins_truncate
-BEFORE TRUNCATE ON snapshot_origins
-FOR EACH STATEMENT EXECUTE FUNCTION guard_snapshot_origin_truncate();
 COMMIT;

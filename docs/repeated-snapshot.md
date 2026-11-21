@@ -42,10 +42,11 @@ Hash без происхождения не является фактом: defer
 
 ## Миграция и adoption
 
-`db/migrations/006_snapshot_origins.up.sql` создаёт таблицы, FK `runs` и
-guard-триггеры. `backend/app/storage/migrate.py::MARKERS` проверяет полный
-набор: обе таблицы с PK/FK, `runs_snapshot_content_hash_fkey`, deferred origin
-guard, row-guards и TRUNCATE-guards. Поэтому ручной `psql` с полным 006 без ledger
-подхватывается при старте, а частичная схема не помечается применённой.
+Историческая `db/migrations/006_snapshot_origins.up.sql` создаёт таблицы,
+FK `runs` и row-guards. Deferred origin guard и TRUNCATE-guards добавлены
+forward-миграцией `007_snapshot_origin_guards.up.sql`; 006 не переписывается.
+`backend/app/storage/migrate.py::MARKERS` отдельно проверяет историческую 006 и
+полную 007-схему. Поэтому ручной полный 006 подхватывается, затем применяется
+007; частичная схема и invalid existing data не помечаются применёнными.
 `snapshot_content_hashes`/`snapshot_origins` backfill-ятся из существующих
-`snapshots` с сохранением данных.
+`snapshots` с сохранением данных. Детали: `docs/forward-snapshot-migration.md`.

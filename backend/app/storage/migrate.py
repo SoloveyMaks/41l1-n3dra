@@ -20,6 +20,64 @@ LEDGER_TABLE = "public.schema_migrations"
 LOCK_NAME = "41l1-n3dra:data_contract_migrations"
 
 # Чем проверить, что файл уже применён вне ledger (ручной psql).
+_SNAPSHOT_ORIGIN_BASE_MARKER = (
+    "to_regclass('data_contract.snapshot_content_hashes') IS NOT NULL "
+    "AND to_regclass('data_contract.snapshot_origins') IS NOT NULL "
+    "AND EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = to_regclass('data_contract.runs') "
+    "AND conname = 'runs_snapshot_content_hash_fkey' "
+    "AND contype = 'f' "
+    "AND confrelid = to_regclass('data_contract.snapshot_content_hashes')) "
+    "AND EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = to_regclass('data_contract.snapshot_content_hashes') "
+    "AND contype = 'p') "
+    "AND EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = to_regclass('data_contract.snapshot_origins') "
+    "AND contype = 'p') "
+    "AND EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = to_regclass('data_contract.snapshot_content_hashes') "
+    "AND contype = 'f' "
+    "AND confrelid = to_regclass('data_contract.snapshots')) "
+    "AND EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = to_regclass('data_contract.snapshot_origins') "
+    "AND contype = 'f' "
+    "AND confrelid = to_regclass('data_contract.snapshot_content_hashes')) "
+    "AND EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = to_regclass('data_contract.snapshot_origins') "
+    "AND contype = 'f' "
+    "AND confrelid = to_regclass('data_contract.artifacts')) "
+    "AND EXISTS (SELECT 1 FROM pg_trigger "
+    "WHERE tgrelid = to_regclass('data_contract.snapshot_content_hashes') "
+    "AND tgname = 'guard_snapshot_content_hash' "
+    "AND NOT tgisinternal AND tgenabled = 'O') "
+    "AND EXISTS (SELECT 1 FROM pg_trigger "
+    "WHERE tgrelid = to_regclass('data_contract.snapshot_origins') "
+    "AND tgname = 'guard_snapshot_origin' "
+    "AND NOT tgisinternal AND tgenabled = 'O')"
+)
+_SNAPSHOT_GUARDS_MARKER = (
+    "AND EXISTS (SELECT 1 FROM pg_trigger "
+    "WHERE tgrelid = to_regclass('data_contract.snapshot_content_hashes') "
+    "AND tgname = 'check_snapshot_content_origin' "
+    "AND NOT tgisinternal AND tgenabled = 'O' "
+    "AND tgdeferrable AND tginitdeferred) "
+    "AND EXISTS (SELECT 1 FROM pg_trigger "
+    "WHERE tgrelid = to_regclass('data_contract.snapshot_content_hashes') "
+    "AND tgname = 'guard_snapshot_content_hashes_truncate' "
+    "AND NOT tgisinternal AND tgenabled = 'O') "
+    "AND EXISTS (SELECT 1 FROM pg_trigger "
+    "WHERE tgrelid = to_regclass('data_contract.snapshot_origins') "
+    "AND tgname = 'guard_snapshot_origins_truncate' "
+    "AND NOT tgisinternal AND tgenabled = 'O')"
+)
+_SNAPSHOT_GUARD_SCHEMA_MARKER = (
+    _SNAPSHOT_ORIGIN_BASE_MARKER + " " + _SNAPSHOT_GUARDS_MARKER
+)
+_SNAPSHOT_FULL_MARKER = (
+    _SNAPSHOT_GUARD_SCHEMA_MARKER
+    + " AND to_regprocedure('data_contract.snapshot_origin_guards_v1()') IS NOT NULL"
+)
+
 MARKERS: Dict[str, str] = {
     "001_core.up.sql": "to_regclass('data_contract.workspaces') IS NOT NULL",
     "002_integrity_publish.up.sql": "to_regclass('data_contract.published_bundles') IS NOT NULL",
@@ -29,49 +87,19 @@ MARKERS: Dict[str, str] = {
         "WHERE table_schema = 'data_contract' AND table_name = 'bundle_envelopes' "
         "AND column_name = 'canonical_envelope')"
     ),
-    "006_snapshot_origins.up.sql": (
-        "to_regclass('data_contract.snapshot_content_hashes') IS NOT NULL "
-        "AND to_regclass('data_contract.snapshot_origins') IS NOT NULL "
-        "AND EXISTS (SELECT 1 FROM pg_constraint "
-        "WHERE conrelid = to_regclass('data_contract.runs') "
-        "AND conname = 'runs_snapshot_content_hash_fkey' "
-        "AND contype = 'f' "
-        "AND confrelid = to_regclass('data_contract.snapshot_content_hashes')) "
-        "AND EXISTS (SELECT 1 FROM pg_constraint "
-        "WHERE conrelid = to_regclass('data_contract.snapshot_content_hashes') "
-        "AND contype = 'p') "
-        "AND EXISTS (SELECT 1 FROM pg_constraint "
-        "WHERE conrelid = to_regclass('data_contract.snapshot_origins') "
-        "AND contype = 'p') "
-        "AND EXISTS (SELECT 1 FROM pg_constraint "
-        "WHERE conrelid = to_regclass('data_contract.snapshot_content_hashes') "
-        "AND contype = 'f' "
-        "AND confrelid = to_regclass('data_contract.snapshots')) "
-        "AND EXISTS (SELECT 1 FROM pg_constraint "
-        "WHERE conrelid = to_regclass('data_contract.snapshot_origins') "
-        "AND contype = 'f' "
-        "AND confrelid = to_regclass('data_contract.snapshot_content_hashes')) "
-        "AND EXISTS (SELECT 1 FROM pg_constraint "
-        "WHERE conrelid = to_regclass('data_contract.snapshot_origins') "
-        "AND contype = 'f' "
-        "AND confrelid = to_regclass('data_contract.artifacts')) "
-        "AND EXISTS (SELECT 1 FROM pg_trigger "
-        "WHERE tgrelid = to_regclass('data_contract.snapshot_content_hashes') "
-        "AND tgname = 'check_snapshot_content_origin' "
-        "AND NOT tgisinternal AND tgdeferrable AND tginitdeferred) "
-        "AND EXISTS (SELECT 1 FROM pg_trigger "
-        "WHERE tgrelid = to_regclass('data_contract.snapshot_content_hashes') "
-        "AND tgname = 'guard_snapshot_content_hash' AND NOT tgisinternal) "
-        "AND EXISTS (SELECT 1 FROM pg_trigger "
-        "WHERE tgrelid = to_regclass('data_contract.snapshot_origins') "
-        "AND tgname = 'guard_snapshot_origin' AND NOT tgisinternal) "
-        "AND EXISTS (SELECT 1 FROM pg_trigger "
-        "WHERE tgrelid = to_regclass('data_contract.snapshot_content_hashes') "
-        "AND tgname = 'guard_snapshot_content_hashes_truncate' AND NOT tgisinternal) "
-        "AND EXISTS (SELECT 1 FROM pg_trigger "
-        "WHERE tgrelid = to_regclass('data_contract.snapshot_origins') "
-        "AND tgname = 'guard_snapshot_origins_truncate' AND NOT tgisinternal)"
-    ),
+    # 006 is the historical, byte-for-byte applied migration. Its marker only
+    # covers the objects created by that file; guards added later live in 007.
+    "006_snapshot_origins.up.sql": _SNAPSHOT_ORIGIN_BASE_MARKER,
+    "007_snapshot_origin_guards.up.sql": _SNAPSHOT_FULL_MARKER,
+}
+
+# Review DB has a legitimately finalized 006 file (3f56903) whose ledger
+# checksum is immutable. Accept only that exact checksum, and only while the
+# full guard schema is actually present. No other unknown checksum is ignored.
+CHECKSUM_ALIASES: Dict[str, Dict[str, str]] = {
+    "006_snapshot_origins.up.sql": {
+        "273cd694c6d1fc91e2520bb66cdc9217fdd8415a99833bcf403d4bdca7c068d7": _SNAPSHOT_GUARD_SCHEMA_MARKER,
+    },
 }
 
 VECTOR_FLAG = "DB_ENABLE_VECTOR"
@@ -139,12 +167,27 @@ def _apply_with_ledger(dsn: str, files: List[Path], markers: Dict[str, str],
             checksum = hashlib.sha256(path.read_bytes()).hexdigest()
             known = recorded.get(path.name)
             if known is not None:
-                if known != checksum:
+                if known == checksum:
+                    continue
+                alias_marker = CHECKSUM_ALIASES.get(path.name, {}).get(known)
+                if alias_marker is not None:
+                    alias_present = conn.execute(
+                        f"SELECT {alias_marker} AS present"
+                    ).fetchone()["present"]
+                    if alias_present:
+                        logger.warning(
+                            "Ledger %s содержит известный finalized checksum; "
+                            "принимаю только полную фактическую схему", path.name,
+                        )
+                        continue
                     raise MigrationError(
-                        f"Файл миграции {path.name} изменился после применения. "
-                        "Не правьте применённую миграцию — добавьте новую."
+                        f"Ledger {path.name} содержит известный checksum, "
+                        "но фактическая схема/guards неполные; migration остановлен"
                     )
-                continue
+                raise MigrationError(
+                    f"Неизвестный checksum в ledger для {path.name}; "
+                    "общий ignore checksum запрещён — migration остановлен"
+                )
 
             marker = markers.get(path.name)
             already_present = marker is not None and conn.execute(
