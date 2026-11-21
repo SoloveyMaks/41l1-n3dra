@@ -22,17 +22,22 @@ from backend.app.api.session import (
     public_demo,
     public_config_error,
 )
+from backend.app.codefacts.identity import reset_workspace_scope, set_workspace_scope
 
 logger = logging.getLogger("App")
 
 # Local mode keeps the same-origin CSRF/session guard and may auto-issue a cookie
 # on GET. Public demo (CG_PUBLIC_DEMO=1) requires the access-code login and never
-# auto-issues a cookie; all /api except /api/session and /api/health stay closed.
-_LOCAL_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health", "/api/webhook-test"}
-_PUBLIC_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health"}
+# auto-issues a cookie; all /api except session/auth/health stay closed.
+_AUTH_EXEMPT = {"/api/auth/register", "/api/auth/login", "/api/auth/logout"}
+_LOCAL_SESSION_EXEMPT = {
+    "/api/session", "/api/session/logout", "/api/health", "/api/webhook-test",
+} | _AUTH_EXEMPT
+_PUBLIC_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health"} | _AUTH_EXEMPT
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _RATE_WINDOW = int(os.getenv("CG_RATE_WINDOW_SECONDS", "60"))
 _RATE_LOGIN = int(os.getenv("CG_RATE_LOGIN", "10"))
+_RATE_REGISTER = int(os.getenv("CG_RATE_REGISTER", "5"))
 _RATE_UPLOAD = int(os.getenv("CG_RATE_UPLOAD", "10"))
 _RATE_RUN = int(os.getenv("CG_RATE_RUN", "15"))
 _RATE_HOOK = int(os.getenv("CG_RATE_HOOK", "120"))
@@ -42,8 +47,10 @@ _HOOK_PATH_RE = re.compile(r"^/api/repository-hooks/rw_[A-Za-z0-9]{1,40}$")
 def _rate_bucket(method: str, path: str) -> str | None:
     if method != "POST":
         return None
-    if path == "/api/session":
+    if path == "/api/session" or path == "/api/auth/login":
         return "login"
+    if path == "/api/auth/register":
+        return "register"
     if path == "/api/artifacts" or path.startswith("/api/artifacts/"):
         return "upload"
     if re.fullmatch(r"/api/workflows/[^/]+/runs", path):
@@ -115,8 +122,8 @@ async def same_origin_session(request: Request, call_next):
     bucket = _rate_bucket(request.method, path)
     if bucket:
         limits = {
-            "login": _RATE_LOGIN, "upload": _RATE_UPLOAD, "run": _RATE_RUN,
-            "hook": _RATE_HOOK,
+            "login": _RATE_LOGIN, "register": _RATE_REGISTER,
+            "upload": _RATE_UPLOAD, "run": _RATE_RUN, "hook": _RATE_HOOK,
         }
         if not allow_attempt(client_key(request), bucket, limit=limits[bucket], window_seconds=_RATE_WINDOW):
             return JSONResponse(
@@ -157,6 +164,25 @@ async def same_origin_session(request: Request, call_next):
         set_session_cookie(response, issue_session(), request)
         response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.middleware("http")
+async def workspace_scope(request: Request, call_next):
+    """Request/background scope для аккаунта.
+
+    ContextVar задаётся до входа в остальные middleware и сбрасывается после
+    ответа. Concurrency-safe: значение живёт в контексте задачи, а не в
+    os.environ. Demo-сессия получает общий env workspace — это явный режим.
+    """
+    if not request.url.path.startswith("/api"):
+        return await call_next(request)
+    session = session_from_request(request)
+    token = set_workspace_scope(session["workspaceId"]) if session else None
+    try:
+        return await call_next(request)
+    finally:
+        if token is not None:
+            reset_workspace_scope(token)
 
 
 app.include_router(api_router)
