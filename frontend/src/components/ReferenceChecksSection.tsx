@@ -28,7 +28,7 @@ const optionalString = (value: unknown): string | undefined =>
  * empty registry stays empty.
  */
 const readReferences = (payload: unknown): PinnedReference[] => {
-  if (!Array.isArray(payload)) throw new Error('Сервер вернул неожиданный формат реестра эталонов.');
+  if (!Array.isArray(payload)) throw new Error('Не удалось загрузить список эталонов. Повторите позже.');
   const seen = new Set<string>();
   const result: PinnedReference[] = [];
   for (const raw of payload) {
@@ -49,17 +49,14 @@ const readReferences = (payload: unknown): PinnedReference[] => {
 };
 
 const describeLoadError = (error: unknown): string => {
-  if (error instanceof TypeError) return 'Не удалось связаться с сервером эталонов.';
+  if (error instanceof TypeError) return 'Не удалось загрузить список эталонов. Повторите позже.';
   if (error instanceof Error) return error.message;
-  return 'Не удалось загрузить реестр эталонов.';
+  return 'Не удалось загрузить список эталонов. Повторите позже.';
 };
 
 const describeStatusError = (status: number): string => {
   if (status === 401 || status === 403) return 'Нужен вход в аккаунт с доступом к workspace.';
-  if (status === 404) return 'Сервер не отдаёт реестр эталонов: GET /reference-checks/references недоступен.';
-  if (status === 503) return 'Сервис эталонных проверок временно недоступен (HTTP 503).';
-  if (status >= 500) return `Сервис эталонных проверок недоступен (HTTP ${status}).`;
-  return `Не удалось загрузить реестр эталонов (HTTP ${status}).`;
+  return 'Не удалось загрузить список эталонов. Повторите позже.';
 };
 
 interface ReferenceChecksSectionProps {
@@ -143,7 +140,7 @@ export const ReferenceChecksSection: React.FC<ReferenceChecksSectionProps> = ({
         <div>
           <h2 className="text-sm font-semibold text-slate-100">Эталонные проверки</h2>
           <p className="text-[11px] text-slate-500">
-            Источник эталонов и SHA — сервер. UI передаёт только id манифеста и запуска.
+            Сравните проверяемый запуск с закреплённым эталоном.
           </p>
         </div>
         <button
@@ -153,13 +150,13 @@ export const ReferenceChecksSection: React.FC<ReferenceChecksSectionProps> = ({
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] text-slate-300 hover:bg-slate-800 disabled:opacity-50"
         >
           <RefreshCw size={12} className={state.status === 'loading' ? 'animate-spin' : ''} />
-          Обновить реестр
+          Обновить список
         </button>
       </div>
 
       {state.status === 'loading' && (
         <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-6 text-xs text-slate-400">
-          <Loader2 size={14} className="animate-spin" /> Загружаем реестр эталонов…
+          <Loader2 size={14} className="animate-spin" /> Загружаем список эталонов…
         </div>
       )}
 
@@ -170,10 +167,10 @@ export const ReferenceChecksSection: React.FC<ReferenceChecksSectionProps> = ({
         >
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <div className="min-w-0 flex-1">
-            <div className="font-medium">Реестр эталонов недоступен.</div>
+            <div className="font-medium">Не удалось загрузить список эталонов.</div>
             <div className="mt-0.5 break-words text-amber-300/90">{state.message}</div>
             <div className="mt-1 text-[10px] text-amber-300/70">
-              Сравнение не запускается, пока сервер не отдаст список эталонов. Фальшивые эталоны не подставляются.
+              Сравнение станет доступно после загрузки списка эталонов.
             </div>
           </div>
           <button
@@ -188,8 +185,7 @@ export const ReferenceChecksSection: React.FC<ReferenceChecksSectionProps> = ({
 
       {state.status === 'ready' && state.references.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-4 py-5 text-center text-xs text-slate-500">
-          Реестр эталонов пуст: сервер не вернул ни одного закреплённого эталона.
-          Сравнение недоступно, пока эталон не закрепят на сервере.
+          Закреплённых эталонов пока нет. Сравнение станет доступно, когда эталон закрепят.
         </div>
       )}
 

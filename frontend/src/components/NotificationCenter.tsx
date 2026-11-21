@@ -101,8 +101,21 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
 
   const abortRef = useRef<AbortController | null>(null);
   const inFlightRef = useRef(false);
+  // Monotonic epoch of this mounted center context. Every async action captures
+  // it and discards its result after unmount or a StrictMode effect replay, so
+  // a late response cannot mutate state, refresh, or call the parent for a
+  // previous session. A plain `mounted` ref would stay false after replay.
+  const epochRef = useRef(0);
+  const onOpenRunRef = useRef(onOpenRun);
+
+  useEffect(() => {
+    onOpenRunRef.current = onOpenRun;
+  }, [onOpenRun]);
+
+  const isCurrent = useCallback((epoch: number) => epochRef.current === epoch, []);
 
   const refresh = useCallback(async (surfaceError: boolean) => {
+    const epoch = epochRef.current;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     const controller = new AbortController();
@@ -113,19 +126,23 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
     }
     try {
       const next = await getNotifications(controller.signal);
+      if (!isCurrent(epoch)) return;
       setInbox(next);
       setFeedError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return;
+      if (!isCurrent(epoch)) return;
       // Polling failures are visible too: never present an empty journal as
       // "nothing happened" while the server is unavailable.
       setFeedError(errorText(cause));
     } finally {
-      inFlightRef.current = false;
-      if (abortRef.current === controller) abortRef.current = null;
-      setLoading(false);
+      if (isCurrent(epoch)) {
+        inFlightRef.current = false;
+        if (abortRef.current === controller) abortRef.current = null;
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [isCurrent]);
 
   useEffect(() => {
     void refresh(false);
@@ -135,32 +152,38 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
     const timer = window.setInterval(tick, POLL_MS);
     window.addEventListener('focus', tick);
     return () => {
+      // Invalidate every pending callback before closing its request. Resetting
+      // inFlight here also lets a StrictMode replay start a fresh load.
+      epochRef.current += 1;
+      inFlightRef.current = false;
       window.clearInterval(timer);
       window.removeEventListener('focus', tick);
       abortRef.current?.abort();
+      abortRef.current = null;
     };
   }, [refresh]);
 
   useEffect(() => {
     if (!open || !settingsOpen) return;
+    const epoch = epochRef.current;
     let cancelled = false;
     setSettingsLoading(true);
     setSettingsError(null);
     setSettingsNotice(null);
     getNotificationSettings()
       .then((value) => {
-        if (!cancelled) setSettings(value);
+        if (!cancelled && isCurrent(epoch)) setSettings(value);
       })
       .catch((cause) => {
-        if (!cancelled) setSettingsError(errorText(cause));
+        if (!cancelled && isCurrent(epoch)) setSettingsError(errorText(cause));
       })
       .finally(() => {
-        if (!cancelled) setSettingsLoading(false);
+        if (!cancelled && isCurrent(epoch)) setSettingsLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [open, settingsOpen]);
+  }, [open, settingsOpen, isCurrent]);
 
   useEffect(() => {
     if (!open) return;
@@ -172,48 +195,58 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
   }, [open]);
 
   const openItem = async (item: NotificationItem) => {
+    const epoch = epochRef.current;
+    const runId = item.run_id;
     if (!item.read_at) {
       setInbox((prev) => ({
         unread: Math.max(0, prev.unread - 1),
         items: prev.items.map((entry) =>
-          entry.run_id === item.run_id
+          entry.run_id === runId
             ? { ...entry, read_at: new Date().toISOString() }
             : entry,
         ),
       }));
-      setBusyRun(item.run_id);
+      setBusyRun(runId);
       try {
-        await markNotificationRead(item.run_id);
+        await markNotificationRead(runId);
       } catch {
-        void refresh(false);
+        if (isCurrent(epoch)) void refresh(false);
       } finally {
-        setBusyRun(null);
+        if (isCurrent(epoch)) setBusyRun(null);
       }
     }
-    if (onOpenRun) {
-      onOpenRun(item.run_id);
+    // Logout/unmount/new session bumps the epoch: a delayed mark-read must not
+    // navigate the parent into the previous session's run.
+    if (!isCurrent(epoch)) return;
+    const openRun = onOpenRunRef.current;
+    if (openRun) {
+      openRun(runId);
       setOpen(false);
     }
   };
 
   const readAll = async () => {
+    const epoch = epochRef.current;
     setBusyRun('*');
     setActionError(null);
     try {
       await markAllNotificationsRead();
+      if (!isCurrent(epoch)) return;
       const now = new Date().toISOString();
       setInbox((prev) => ({
         unread: 0,
         items: prev.items.map((item) => ({ ...item, read_at: item.read_at ?? now })),
       }));
     } catch (cause) {
+      if (!isCurrent(epoch)) return;
       setActionError(errorText(cause));
     } finally {
-      setBusyRun(null);
+      if (isCurrent(epoch)) setBusyRun(null);
     }
   };
 
   const saveSettings = async () => {
+    const epoch = epochRef.current;
     setSettingsBusy(true);
     setSettingsError(null);
     setSettingsNotice(null);
@@ -226,6 +259,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
         allow_local: settings.allow_local,
         allow_external: settings.allow_external,
       });
+      if (!isCurrent(epoch)) return;
       setSettings(saved);
       if (!saved.enabled) {
         setSettingsNotice('Внешняя доставка выключена. Уведомления остаются в журнале со статусом «Пропущено».');
@@ -236,9 +270,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
       }
       await refresh(true);
     } catch (cause) {
+      if (!isCurrent(epoch)) return;
       setSettingsError(errorText(cause));
     } finally {
-      setSettingsBusy(false);
+      if (isCurrent(epoch)) setSettingsBusy(false);
     }
   };
 

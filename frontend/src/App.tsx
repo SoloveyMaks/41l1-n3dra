@@ -1076,10 +1076,12 @@ export const App: React.FC = () => {
   }, [currentRun, currentRunId, liveBaselineSeq]);
 
   const isAdmin = session?.role === 'admin';
-  // A remount on account/workspace/role change drops the previous account's
-  // inbox, settings and in-flight polling instead of reusing its state.
+  // Every identity member is separate: user id alone cannot distinguish a
+  // workspace switch for the same account, and the session id distinguishes
+  // a re-login. A change remounts the center, dropping foreign inbox state.
   const notificationKey = [
-    session?.user?.userId || session?.workspaceId || 'anon',
+    session?.user?.userId || 'anon',
+    session?.workspaceId || '',
     session?.role || '',
     session?.sessionId || '',
   ].join(':');
