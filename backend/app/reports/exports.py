@@ -662,14 +662,23 @@ def build_docx(bundle: ExportBundle) -> bytes:
                 run_evidence.font.size = mods["Pt"](8.5)
             trace = finding.get("trace") or []
             if trace:
-                doc.add_paragraph("Цепочка доказательств:")
+                trace_heading = doc.add_paragraph("Цепочка доказательств:")
+                trace_heading.paragraph_format.keep_with_next = True
+                trace_paragraphs = []
                 for step in trace:
-                    doc.add_paragraph(
+                    trace_paragraph = doc.add_paragraph(
                         f"{step.get('step')}. {step.get('description')}",
                         style="List Bullet",
                     )
+                    trace_paragraph.paragraph_format.keep_together = True
+                    trace_paragraphs.append(trace_paragraph)
+                # A short chain is one visual unit; a long chain keeps only the
+                # heading/first bullet together and may flow across pages.
+                if len(trace_paragraphs) <= 4:
+                    trace_heading.paragraph_format.keep_together = True
+                    for trace_paragraph in trace_paragraphs[:-1]:
+                        trace_paragraph.paragraph_format.keep_with_next = True
 
-    doc.add_page_break()
     heading = doc.add_heading("Гипотезы ИИ-сканера", level=1)
     heading.paragraph_format.keep_with_next = True
     ai_scan = bundle.ai_scan
