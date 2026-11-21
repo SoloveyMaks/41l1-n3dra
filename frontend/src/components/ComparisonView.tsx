@@ -9,8 +9,8 @@ import {
   SqlPatternResult,
 } from '../types';
 import { apiClient, ApiError } from '../api/client';
-import { getRunSecurityMap } from '../api/securityMap';
-import type { Finding as CanonicalFinding } from '../../../docs/data-contracts/contracts';
+import { getRunSecurityMap, validateComparisonScope } from '../api/securityMap';
+import type { Finding as CanonicalFinding, RunScope } from '../../../docs/data-contracts/contracts';
 
 const STATUS_LABEL: Record<ComparisonStatus, string> = {
   persistent: 'Осталось',
@@ -145,7 +145,7 @@ const missingContextNote = (
   const context = lookup.contexts[runId];
   if (!context || context.status === 'loading') return 'Загружаем каноническую находку…';
   if (context.status === 'unavailable') return 'Канонический контекст недоступен';
-  return 'Каноническая находка не найдена в published envelope';
+  return context.findings.has(findingId) ? null : 'Каноническая находка не найдена в published envelope';
 };
 
 const humanReason = (reason: string): string => {
@@ -614,6 +614,18 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
     }
     let cancelled = false;
     const runIds = unique([result.baselineRunId, result.currentRunId]);
+    const expectedByRun: Record<string, RunScope> = {
+      [result.baselineRunId]: {
+        workspaceId: result.workspaceId,
+        runId: result.baselineRunId,
+        snapshotId: result.baselineSnapshotId,
+      },
+      [result.currentRunId]: {
+        workspaceId: result.workspaceId,
+        runId: result.currentRunId,
+        snapshotId: result.currentSnapshotId,
+      },
+    };
     const initial: ContextByRun = {};
     runIds.forEach((runId) => {
       initial[runId] = { status: 'loading' };
@@ -623,6 +635,17 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
       void getRunSecurityMap(runId)
         .then((payload) => {
           if (cancelled) return;
+          const scopeIssue = validateComparisonScope(expectedByRun[runId], payload);
+          if (scopeIssue) {
+            setRunContexts((previous) => ({
+              ...previous,
+              [runId]: {
+                status: 'unavailable',
+                message: `Ответ карты относится к другому запуску или снимку (${scopeIssue}). Находки не сопоставлены.`,
+              },
+            }));
+            return;
+          }
           const findings = new Map(payload.findings.map((finding) => [finding.id, toFindingContext(finding)]));
           setRunContexts((previous) => ({
             ...previous,

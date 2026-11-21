@@ -129,6 +129,51 @@ export async function getRunSecurityMap(
   return { identity, map, findings };
 }
 
+const hasForeignScope = (expected: RunScope, items: readonly unknown[]): boolean =>
+  items.some((item) => {
+    if (typeof item !== 'object' || item === null) return true;
+    const { workspaceId, runId, snapshotId } = item as Record<string, unknown>;
+    return workspaceId !== expected.workspaceId ||
+      runId !== expected.runId ||
+      snapshotId !== expected.snapshotId;
+  });
+
+/**
+ * Comparison items reference canonical finding IDs of one published envelope.
+ * The response is usable only when the envelope, the map and every nested
+ * record belong to the exact workspace/run/snapshot of the compared side.
+ * A foreign or nested finding ID must never resolve a canonical finding, nor
+ * satisfy the "missing from envelope" check.
+ */
+export function validateComparisonScope(
+  expected: RunScope,
+  payload: RunSecurityMap,
+): string | null {
+  const { identity } = payload;
+  if (
+    identity.workspaceId !== expected.workspaceId ||
+    identity.runId !== expected.runId ||
+    identity.snapshotId !== expected.snapshotId
+  )
+    return 'identity';
+  const mapIdentity = payload.map.identity;
+  if (
+    mapIdentity.workspaceId !== expected.workspaceId ||
+    mapIdentity.runId !== expected.runId ||
+    mapIdentity.snapshotId !== expected.snapshotId
+  )
+    return 'map';
+  if (hasForeignScope(expected, payload.map.nodes)) return 'node';
+  if (hasForeignScope(expected, payload.map.edges)) return 'edge';
+  if (hasForeignScope(expected, payload.map.evidence)) return 'evidence';
+  if (hasForeignScope(expected, payload.map.diagnostics)) return 'diagnostic';
+  if (hasForeignScope(expected, payload.findings)) return 'finding';
+  if (payload.map.policyInputs.some((input) => input.workspaceId !== expected.workspaceId)) {
+    return 'policy';
+  }
+  return null;
+}
+
 /**
  * Backend returns SourceState as declared by ui/security-map. We only verify
  * that the payload belongs to the requested scope and evidence; the fragment
