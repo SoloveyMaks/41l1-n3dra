@@ -1085,6 +1085,41 @@ class DatabaseRepository:
                 (error[:500] if error else None, self.workspace_id, run_id, token),
             )
 
+    def release_repository_watch_dispatch(self, run_id: str, token: str,
+                                          error: Optional[str] = None) -> None:
+        """Return an unstarted run to the recoverable queued state."""
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET state = 'queued',
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       error = COALESCE(%s, error),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND run_id = %s
+                   AND state = 'running' AND claim_token = %s
+                """,
+                (error[:500] if error else None, self.workspace_id, run_id, token),
+            )
+
+    def interrupt_repository_watch_dispatch(self, run_id: str, token: str,
+                                            error: Optional[str] = None) -> None:
+        """Run already started but has no terminal status: never claim done."""
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET claim_token = NULL,
+                       claimed_until = NULL,
+                       error = COALESCE(%s, error),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND run_id = %s
+                   AND state = 'running' AND claim_token = %s
+                """,
+                (error[:500] if error else None, self.workspace_id, run_id, token),
+            )
+
     def recover_repository_watch_dispatches(self, limit: int) -> List[Dict[str, Any]]:
         with get_pool().connection() as conn:
             rows = conn.execute(

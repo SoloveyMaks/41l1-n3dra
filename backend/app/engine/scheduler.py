@@ -463,7 +463,6 @@ class RepositoryWatchService:
         )
         if not claimed:
             return
-        finalize = True
         error: Optional[str] = None
         try:
             run = await self._db("get_run", run_id)
@@ -478,7 +477,7 @@ class RepositoryWatchService:
                 error = "Ревизия сценария недоступна"
                 return
             if not self.executor:
-                finalize = False  # claim истечёт, следующий старт подхватит run
+                error = "Прогон ещё не запущен"
                 return
             draft = WorkflowDraft(**revision["draft"])
             await self.executor.execute_run(
@@ -489,22 +488,46 @@ class RepositoryWatchService:
                 workflow_id=run["workflow_id"],
                 revision_id=run["revision_id"],
             )
-            final = await self._db("get_run", run_id)
-            if final and final.get("execution_status") == "failed":
-                error = "Прогон завершился с ошибкой"
+        except asyncio.CancelledError:
+            # Не помечаем done: queued run должен остаться recoverable.
+            error = "Прогон прерван"
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Repository run dispatch failed: %s", type(exc).__name__)
             error = "Не удалось запустить прогон"
         finally:
-            if finalize:
-                try:
-                    await self._db(
-                        "finish_repository_watch_dispatch", run_id, token, error
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Failed to finish repository dispatch: %s", type(exc).__name__
-                    )
+            # Settlement looks at the actual run status: only a terminal run may
+            # close the ledger as done. A still-queued run goes back to queued;
+            # a started-but-not-terminal run stays running (no fake done).
+            try:
+                await self._settle_dispatch(run_id, token, error)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to finish repository dispatch: %s", type(exc).__name__
+                )
+
+    async def _settle_dispatch(self, run_id: str, token: str,
+                               error: Optional[str]) -> None:
+        run = await self._db("get_run", run_id)
+        status = (run or {}).get("execution_status")
+        if status == "queued":
+            await self._db(
+                "release_repository_watch_dispatch", run_id, token,
+                error or "Прогон не запустился",
+            )
+            return
+        if status == "running":
+            await self._db(
+                "interrupt_repository_watch_dispatch", run_id, token,
+                error or "Прогон прерван до завершения",
+            )
+            return
+        final_error = error
+        if status == "failed" and not final_error:
+            final_error = "Прогон завершился с ошибкой"
+        await self._db("finish_repository_watch_dispatch", run_id, token, final_error)
 
     async def recover_queued_runs(self) -> None:
         await self._db("release_stale_repository_claims")
