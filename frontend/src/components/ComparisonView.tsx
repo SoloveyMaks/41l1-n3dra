@@ -170,7 +170,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
         <option value="">Выберите запуск</option>
         {finished.map((run) => (
           <option key={run.id} value={run.id}>
-            {artifacts.find((artifact) => artifact.id === run.artifact_id)?.filename || 'Проект не указан'} · {workflows.find((workflow) => workflow.id === run.workflow_id)?.name || 'Сценарий проверки'} · {dateRu(run.created_at)} · {verdictRu(run)}
+            {artifacts.find((artifact) => artifact.id === run.artifact_id)?.filename || 'Проект не указан'} · {dateRu(run.created_at)} · {workflows.find((workflow) => workflow.id === run.workflow_id)?.name || 'Сценарий проверки'} · {verdictRu(run)}
           </option>
         ))}
       </select>

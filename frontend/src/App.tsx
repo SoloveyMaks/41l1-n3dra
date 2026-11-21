@@ -91,6 +91,8 @@ export const App: React.FC = () => {
   const runLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
+  const adminOverviewSeq = useRef(0);
+  const authRef = useRef<{ epoch: number; role: SessionRole | undefined }>({ epoch: 0, role: undefined });
   const noticeTimer = useRef<number | null>(null);
 
   const showNotice = useCallback((kind: Notice['kind'], text: string) => {
@@ -110,13 +112,36 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const refreshAdminOverview = useCallback(async (): Promise<void> => {
+    const epoch = authRef.current.epoch;
+    if (authRef.current.role !== 'admin') return;
+    if (epoch !== authRef.current.epoch || authRef.current.role !== 'admin') return;
+    const seq = ++adminOverviewSeq.current;
+    try {
+      const value = await apiClient.getAdminOverview();
+      if (epoch !== authRef.current.epoch || seq !== adminOverviewSeq.current || authRef.current.role !== 'admin') return;
+      setAdminOverview(value);
+    } catch {
+      // Never keep stale counters looking current after a failed refresh.
+      if (epoch === authRef.current.epoch && seq === adminOverviewSeq.current && authRef.current.role === 'admin') {
+        setAdminOverview(null);
+      }
+    }
+  }, []);
+
   const refreshRuns = useCallback(async (): Promise<RunSummary[]> => {
+    const epoch = authRef.current.epoch;
     setRunsLoading(true);
     try {
       const list = await apiClient.listRuns();
+      if (epoch !== authRef.current.epoch) return [];
       setRuns(list);
+      // Overview counters must reflect a completed run and a manual refresh.
+      // This is a no-op for user sessions; node-level SSE does not call it.
+      if (authRef.current.role === 'admin') void refreshAdminOverview();
       return list;
     } catch (e: any) {
+      if (epoch !== authRef.current.epoch) return [];
       if (e instanceof AuthRequiredError) {
         setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
       } else {
@@ -124,9 +149,9 @@ export const App: React.FC = () => {
       }
       return [];
     } finally {
-      setRunsLoading(false);
+      if (epoch === authRef.current.epoch) setRunsLoading(false);
     }
-  }, [showNotice]);
+  }, [refreshAdminOverview, showNotice]);
 
   const loadRunDetails = useCallback(async (runId: string) => {
     const seq = ++runLoadSeq.current;
@@ -307,6 +332,9 @@ export const App: React.FC = () => {
         setAuthError('Этот код не даёт доступ к админ-панели');
         return;
       }
+      authRef.current = { epoch: authRef.current.epoch + 1, role: state.role };
+      setAdminOverview(null);
+      adminOverviewSeq.current += 1;
       setSession(state);
       await loadInitialData();
       setAdminSection('overview');
@@ -318,6 +346,10 @@ export const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
+    // Invalidate in-flight admin/overview work before the network await.
+    authRef.current = { epoch: authRef.current.epoch + 1, role: 'user' };
+    adminOverviewSeq.current += 1;
+    setAdminOverview(null);
     try {
       await apiClient.logout();
     } catch {
@@ -327,6 +359,8 @@ export const App: React.FC = () => {
     selectedRunRef.current = null;
     runLoadSeq.current += 1;
     workflowSelectSeq.current += 1;
+    adminOverviewSeq.current += 1;
+    setAdminOverview(null);
     setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
     setCurrentRunId(null);
     setCurrentRun(null);
@@ -505,13 +539,14 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (session?.role !== 'admin') return;
-    let cancelled = false;
-    apiClient.getAdminOverview()
-      .then((value) => { if (!cancelled) setAdminOverview(value); })
-      .catch(() => { if (!cancelled) setAdminOverview(null); });
-    return () => { cancelled = true; };
-  }, [session?.role]);
+    authRef.current = { ...authRef.current, role: session?.role };
+    if (session?.role !== 'admin') {
+      adminOverviewSeq.current += 1;
+      setAdminOverview(null);
+      return;
+    }
+    void refreshAdminOverview();
+  }, [session?.role, refreshAdminOverview]);
 
   const handleArtifactLoaded = (manifest: ArtifactManifest) => {
     setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);

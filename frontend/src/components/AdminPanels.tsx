@@ -45,14 +45,17 @@ export const AdminOverviewPanel: React.FC<{
       <span className="rounded-full border border-slate-700 px-2 py-1 text-[10px] text-slate-400">админ-режим</span>
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Stat label="Проекты (workspace)" value={overview?.counts?.projects ?? artifacts.length} />
-      <Stat label="Проверки (workspace)" value={overview?.counts?.runs ?? runs.length} />
+      <Stat label="Проекты (workspace)" value={overview ? (overview.counts?.projects ?? '—') : '—'} />
+      <Stat label="Проверки (workspace)" value={overview ? (overview.counts?.runs ?? '—') : '—'} />
       <Stat label="Проблемы (выбранная)" value={findings.length} tone={findings.some((f) => f.severity === 'critical') ? 'text-rose-300' : 'text-slate-100'} />
       <Stat label="Покрытие (canonical)" value={coverageLabel(getCanonicalCoverage(nodeRuns))} />
     </div>
+    {!overview && (
+      <p className="mt-2 text-xs text-amber-300">Не удалось получить общие показатели. Общие счётчики скрыты; показаны только факты выбранной проверки.</p>
+    )}
     <div className="mt-4 grid gap-4 lg:grid-cols-2">
       <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Последняя проверка</h2>
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{overview ? 'Последняя проверка' : 'Последняя загруженная проверка'}</h2>
         {latestRun ? (
           <div className="space-y-1 text-sm">
             <div className="font-semibold text-slate-100">{verdictLabel(latestRun)}</div>
@@ -80,7 +83,7 @@ export const AdminOverviewPanel: React.FC<{
             <dt className="text-slate-500">Админка</dt><dd className="text-slate-200">{overview.auth?.adminAvailable ? 'доступна' : 'выключена'}</dd>
           </dl>
         ) : (
-          <p className="text-xs text-slate-500">DTO `/api/admin/overview` пока не отдаётся этим backend; счётчики выше построены по реальным данным приложения.</p>
+          <p className="text-xs text-amber-300">Не удалось получить общие показатели. Общие счётчики скрыты, чтобы не выдавать загруженную историю за полный workspace.</p>
         )}
       </section>
     </div>
