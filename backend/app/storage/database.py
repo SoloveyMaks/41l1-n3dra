@@ -27,7 +27,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from backend.app.codefacts.identity import WorkspaceConfigError, workspace_id as identity_workspace_id
+from backend.app.codefacts.identity import (
+    WorkspaceConfigError,
+    configured_workspace_id,
+    workspace_id as identity_workspace_id,
+)
 from backend.app.storage.migrate import ensure_contract_schema, ensure_optional_schema
 
 logger = logging.getLogger("RuntimeSchema")
@@ -312,8 +316,20 @@ def init_db(workspace_id: uuid.UUID) -> None:
 
 class DatabaseRepository:
     def __init__(self):
-        self.workspace_id = _workspace_id()
-        init_db(self.workspace_id)
+        # init_db всегда на явном env workspace: аккаунты создают свои
+        # workspace-строки при регистрации, а не через runtime-инициализацию.
+        self._default_workspace_id = uuid.UUID(configured_workspace_id())
+        init_db(self._default_workspace_id)
+
+    @property
+    def workspace_id(self) -> uuid.UUID:
+        """Текущий workspace: request/background scope или env default.
+
+        Свойство, а не поле: один общий db_repo обслуживает все аккаунты, но
+        каждый запрос/задача видит только свой workspace. Scheduler/demo без
+        scope остаются на env workspace — это явный demo-режим.
+        """
+        return uuid.UUID(identity_workspace_id())
 
     # Workflow operations
     def save_workflow(self, workflow_id: str, name: str, description: str, draft: Dict[str, Any]) -> str:

@@ -14,8 +14,10 @@ import json
 import mimetypes
 import os
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Iterator, Optional
 
 NS_URL = uuid.NAMESPACE_URL
 
@@ -57,19 +59,16 @@ def _runtime_workspace(raw: str) -> str:
     return str(uuid.UUID(raw))
 
 
-def workspace_id(seed: str | None = None) -> str:
-    """One workspace UUID for codefacts and runtime storage.
+# Request/background scope. ContextVar переживает asyncio.create_task и
+# anyio.to_thread, поэтому один и тот же воркер-поток не смешивает workspace
+# двух одновременных запросов. os.environ при этом не мутируется.
+_SCOPED_WORKSPACE: ContextVar[Optional[str]] = ContextVar(
+    "cg_scoped_workspace", default=None
+)
 
-    Compatibility: CG_WORKSPACE_ID accepts a UUID or a seed (uuid5), while
-    RUNTIME_WORKSPACE_ID accepts only a UUID. If both names are set, they must
-    resolve to the same UUID; a silent split would put maps and runtime rows in
-    different workspaces, so startup fails instead.
-    """
-    if seed is not None:
-        raw = seed.strip()
-        if not raw:
-            return DEFAULT_WORKSPACE_ID
-        return _cg_workspace(raw)
+
+def configured_workspace_id() -> str:
+    """Workspace из окружения, игнорируя request-scope (для demo/admin/init)."""
     cg = os.getenv("CG_WORKSPACE_ID", "").strip()
     runtime = os.getenv("RUNTIME_WORKSPACE_ID", "").strip()
     if cg and runtime:
@@ -86,6 +85,50 @@ def workspace_id(seed: str | None = None) -> str:
     if runtime:
         return _runtime_workspace(runtime)
     return DEFAULT_WORKSPACE_ID
+
+
+def workspace_id(seed: str | None = None) -> str:
+    """Workspace UUID с учётом request/background scope.
+
+    Приоритет: явный seed -> ContextVar (аккаунт/фоновая задача) -> env/default.
+    Compatibility: CG_WORKSPACE_ID accepts a UUID or a seed (uuid5), while
+    RUNTIME_WORKSPACE_ID accepts only a UUID. If both names are set, they must
+    resolve to the same UUID; a silent split would put maps and runtime rows in
+    different workspaces, so startup fails instead.
+    """
+    if seed is not None:
+        raw = seed.strip()
+        if not raw:
+            return DEFAULT_WORKSPACE_ID
+        return _cg_workspace(raw)
+    scoped = _SCOPED_WORKSPACE.get()
+    if scoped is not None:
+        return scoped
+    return configured_workspace_id()
+
+
+def set_workspace_scope(workspace: str) -> Token:
+    """Закрепить workspace за текущим контекстом запроса/задачи."""
+    if not _is_uuid(workspace):
+        raise WorkspaceConfigError("workspace scope должен быть UUID")
+    return _SCOPED_WORKSPACE.set(str(uuid.UUID(workspace)))
+
+
+def reset_workspace_scope(token: Token) -> None:
+    _SCOPED_WORKSPACE.reset(token)
+
+
+def current_workspace_scope() -> Optional[str]:
+    return _SCOPED_WORKSPACE.get()
+
+
+@contextmanager
+def workspace_scope(workspace: str) -> Iterator[str]:
+    token = set_workspace_scope(workspace)
+    try:
+        yield workspace
+    finally:
+        reset_workspace_scope(token)
 
 
 def run_uuid(internal_run_id: str, workspace: str | None = None) -> str:

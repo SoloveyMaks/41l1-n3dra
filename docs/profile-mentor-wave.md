@@ -1,291 +1,181 @@
-# Профиль и история запусков — сессионный фундамент
+# Профиль и история запусков: реальные аккаунты
 
-Волна 24h, backend-only. Цель — минимальный, честный фундамент профиля:
-вошедший пользователь видит сводку своего профиля и свою историю запусков,
-привязанную к идентичности подписанной сессии. Полноценного аккаунта,
-регистрации и пароля здесь нет, и API это не изображает.
+Волна 24h. Первая версия (nonce-псевдоним) заменена настоящей аутентификацией:
+регистрация, вход, выход, `me`, история запусков и изоляция по пользователю.
+Demo-вход сохранён отдельным явным режимом и больше не называется профилем.
 
-## Что добавлено
+## Контракт
 
-| Файл | Роль |
+| Слой | Решение |
 |---|---|
-| `db/migrations/008_profile_history.up.sql` | новая схема `profile`: профили и закладки запусков |
-| `backend/app/storage/profile.py` | `ProfileStore`: чтение/запись в PostgreSQL |
-| `backend/app/api/profile.py` | `create_profile_router()`: три эндпоинта |
-| `docs/profile-mentor-wave.md` | этот контракт и ограничения |
+| Схема | `account` (не `auth`, чтобы не столкнуться с Supabase `auth`) |
+| Пользователь | `account.users`: `user_id`, нормализованный `email`, scrypt-хэш, `role`, личный `workspace_id` |
+| Пароль | stdlib `hashlib.scrypt`, n=16384, r=8, p=1, соль 16 байт, min 10 / max 256 символов |
+| Сессия | подписанный токен v3 + строка `account.sessions`; logout отзывает строку |
+| Workspace | новый UUID на аккаунт; строка в `data_contract.workspaces` создаётся при регистрации |
+| Demo | v1/v2 токены и `/api/session` остаются, помечены `mode=demo`, общий env workspace |
+| Admin | `CG_ADMIN_ACCESS_CODE` работает как раньше; регистрация всегда `role=user` |
 
-Существующие `backend/app/api/session.py`, `backend/app/api/router.py`,
-`backend/app/main.py` и frontend не изменялись. Admin-guards не ослаблены:
-профильные эндпоинты используют только `session_from_request`, а `require_admin`
-остаётся нетронутым.
-
-## Идентичность: почему это не аккаунт
-
-Текущий токен `cg_session` (v1/v2) содержит workspace, роль, issued и nonce.
-Постоянного `user_id` в нём нет. Поэтому профиль — это **анонимный сессионный
-псевдоним**:
+## Токен и проверка
 
 ```text
-profile_id = "p_" + HMAC-SHA256(CG_SESSION_SECRET, "profile:" + nonce)[:32]
+v3.<session_id>.<user_id>.<workspace>.<role>.<issued>.<nonce>.<hmac_sha256>
 ```
 
-Свойства:
+Проверка на каждом запросе:
 
-- один и тот же cookie даёт один и тот же `profile_id` на всех запросах;
-- nonce уже подписан сервером; `HMAC` необратим, наружу уходит только digest,
-  сам nonce и `CG_SESSION_SECRET` не раскрываются;
-- повторный вход выдаёт новый nonce → новый `profile_id`; история старого
-  профиля остаётся в БД, но этим токеном недоступна;
-- при незаданном `CG_SESSION_SECRET` работает эфемерный секрет процесса:
-  после рестарта `profile_id` меняется, и старая история становится недоступной.
-  Для настоящей истории секрет обязан быть постоянным;
-- запрос без валидной сессии → `401`, подделанная подпись → `401`;
-- **изоляция аккаунтов не заявляется**: пользователи публичного demo делят
-  workspace, а закладка запуска не доказывает авторство запуска.
+1. HMAC над первыми семью сегментами;
+2. окно `issued` (`SESSION_TTL_SECONDS`);
+3. строка `account.sessions`: не отозвана, не истекла, пользователь не disabled;
+4. `session_id/user_id/workspace/role/issued` в токене совпадают со строкой БД.
 
-Последний пункт важен. В общем workspace любой вошедший, знающий `run_id`,
-может добавить его в свою историю. Читать чужую историю нельзя: каждый запрос
-фильтруется по `(workspace_id, profile_id)`. Но это изоляция сессий, а не
-доказанное владение аккаунтом.
+Старые v1/v2 проверяются по прежней схеме и получают `mode=demo`, `userId=null`.
+Подделанная подпись, отозванная сессия и истёкший срок дают `401`.
 
-### Почему не правили `session.py`
+## API
 
-Задача запрещает правки `session.py`/`router.py`. Псевдоним выводится из уже
-подписанного nonce, поэтому формат токена обратно совместим: старые v1/v2
-cookie продолжают работать без миграции и без нового серверного секрета.
-Если позже появится `user_id` в токене, `profile_id` можно заменить на него —
-схема БД уже готова к строковому идентификатору (`p_...` — просто текущий
-формат).
-
-## API-контракт
-
-Все три маршрута требуют валидную сессию и монтируются под `/api/profile`.
-
-| Метод | Путь | Смысл |
+| Метод | Путь | Доступ |
 |---|---|---|
-| `GET` | `/api/profile` | сводка своего профиля |
-| `GET` | `/api/profile/history?limit=20` | свои закладки запусков, `1..100` |
-| `POST` | `/api/profile/runs/{run_id}` | добавить существующий запуск своего workspace в свою историю |
+| `POST` | `/api/auth/register` | без сессии; в `CG_PUBLIC_DEMO=1` требует `accessCode` |
+| `POST` | `/api/auth/login` | без сессии |
+| `POST` | `/api/auth/logout` | отзывает текущую v3 сессию, стирает cookie |
+| `GET` | `/api/auth/me` | сессия; для demo возвращает `mode=demo`, `user=null` |
+| `GET` | `/api/auth/history?limit=20` | сессия; запуски только своего workspace |
+| `GET` | `/api/profile` | только account-сессия; demo получает `403 DEMO_SESSION` |
 
-### `GET /api/profile`
-
-```json
-{
-  "profileId": "p_25a8c3b521e2a9deefc73e1f41523dea",
-  "scope": {
-    "kind": "anonymous_session",
-    "workspaceId": "11111111-2222-4333-8444-555555555555",
-    "role": "user",
-    "issuedAt": "2026-11-21T12:02:51+00:00",
-    "expiresAt": "2026-11-22T00:02:51+00:00",
-    "accountIsolation": false,
-    "note": "Профиль привязан к подписанной сессии, а не к аккаунту..."
-  },
-  "createdAt": "2026-11-21T12:02:51.201000+00:00",
-  "lastSeenAt": "2026-11-21T12:02:51.201000+00:00",
-  "history": {
-    "runs": 1,
-    "lastRunAt": "2026-11-21T12:02:51.189541+00:00",
-    "lastBookmarkedAt": "2026-11-21T12:02:51.231225+00:00"
-  }
-}
-```
-
-`history.runs` считает только закладки, для которых запуск ещё существует в
-`runtime.runs`. Удалённый запуск не выдаётся как живой.
-
-### `GET /api/profile/history`
+Регистрация:
 
 ```json
-{
-  "profileId": "p_25a8c3b521e2a9deefc73e1f41523dea",
-  "scope": {"kind": "anonymous_session", "accountIsolation": false},
-  "limit": 20,
-  "items": [
-    {
-      "id": "run_smoke",
-      "workflow_id": "wf_smoke",
-      "revision_id": "rev_smoke",
-      "artifact_id": null,
-      "trigger_type": "manual",
-      "execution_status": "succeeded",
-      "security_verdict": "pass",
-      "total_findings": 2,
-      "critical_count": 0,
-      "high_count": 0,
-      "medium_count": 0,
-      "low_count": 0,
-      "info_count": 0,
-      "started_at": null,
-      "finished_at": null,
-      "created_at": "2026-11-21T12:02:51.189541+00:00",
-      "bookmarked_at": "2026-11-21T12:02:51.231225+00:00"
-    }
-  ]
-}
+POST /api/auth/register
+{"email": "alice@example.com", "password": "correct horse battery staple"}
 ```
 
-`workspace_id` наружу не отдаётся. Данные запуска читаются из `runtime.runs`
-в момент запроса, поэтому статус и счётчики всегда актуальны.
+Ответ (`200`): `authenticated`, `mode=account`, `user{userId,email,displayName,role,workspaceId,createdAt}`,
+`sessionId`, `expiresInSec`. Cookie `cg_session` — HttpOnly, SameSite=Lax, Secure при HTTPS.
 
-### `POST /api/profile/runs/{run_id}`
+Ошибки: `400 INVALID_ACCOUNT`, `409 EMAIL_TAKEN`, `401 INVALID_CREDENTIALS`,
+`403 DEMO_ACCESS_CODE_REQUIRED`, `401 AUTH_REQUIRED`.
+Логин намеренно не различает «нет такого email» и «неверный пароль».
 
-Идемпотентно. Запуск должен существовать в `runtime.runs` того же workspace.
+`GET /api/auth/history` отдаёт `runtime.runs` своего workspace, свежие первыми;
+`workspace_id` наружу не уходит. `GET /api/profile` добавляет агрегаты:
+`runs`, `lastRunAt`, `byStatus`, `byVerdict`, `totalFindings`.
+
+Demo-сессия:
 
 ```json
-{
-  "profileId": "p_25a8c3b521e2a9deefc73e1f41523dea",
-  "runId": "run_smoke",
-  "recorded": true,
-  "created": true,
-  "createdAt": "2026-11-21T12:02:51.231225+00:00"
-}
+POST /api/session {"role": "user"}
+→ {"authenticated": true, "mode": "demo", "user": null, "workspaceId": "<env>"}
+GET /api/profile → 403 {"code": "DEMO_SESSION", ...}
 ```
 
-Повторный вызов возвращает `200`, `"created": false`. Чужой/несуществующий
-запуск → `404 RUN_NOT_FOUND` без различия между «нет такого» и «есть в другом
-workspace». Запрос с чужого `Origin` → `403` (дополнительно к middleware
-`main.py`). Хранилище недоступно → `503 PROFILE_STORAGE_UNAVAILABLE` без DSN в
-тексте.
+## Изоляция
 
-### Автозапись истории пока не включена
+Все runtime-таблицы уже scoped по `workspace_id` (`PK (workspace_id, id)`).
+Не хватало одного: глобальный `DatabaseRepository` был жёстко привязан к env
+workspace. Теперь:
 
-`trigger_run` в `router.py` не знает профиль, а править его в этой волне
-запрещено. Поэтому запуск попадает в историю только явным `POST` после
-создания запуска. Root может либо вызвать этот `POST` из frontend после
-`POST /api/workflows/{id}/runs`, либо позже добавить executor-hook, который
-записывает закладку в той же транзакции/после создания run. Полурабочих
-автозаписей здесь нет.
+- `identity.workspace_id()` читает request/background `ContextVar`;
+- `DatabaseRepository.workspace_id` — свойство, возвращающее текущий scope;
+- middleware `workspace_scope` ставит scope из проверенной сессии и сбрасывает
+  после ответа;
+- `asyncio.create_task` и `anyio.to_thread` копируют контекст, поэтому фоновая
+  задача запуска видит workspace своего запроса;
+- `os.environ` не мутируется, поэтому одновременные запросы двух аккаунтов не
+  перетирают друг друга;
+- scheduler/repository watches без контекста работают на env workspace — это
+  явный demo-режим, а не silent default для аккаунтов.
 
-## Схема БД
+Проверка владения не добавляет новых правил: чужой `workflow/artifact/run/report`
+просто не находится в workspace и даёт `404`; списки возвращают только свои строки.
+Admin-guards (`require_admin`) не изменены.
 
-`008_profile_history.up.sql` создаёт отдельную схему `profile`, а не таблицы
-в `data_contract`: канонические факты анализа не должны мутировать, а записи
-профиля можно удалить без потери истории запусков.
+`GET /api/profile` для demo — `403`, потому что nonce-сессия не является
+аккаунтом. Скрывать это только в UI запрещено контрактом.
 
-```sql
-profile.session_profiles (
-  workspace_id uuid REFERENCES data_contract.workspaces,
-  profile_id   text CHECK (profile_id ~ '^p_[0-9a-f]{32}$'),
-  created_at, last_seen_at,
-  PRIMARY KEY (workspace_id, profile_id)
-);
+## Миграции
 
-profile.run_bookmarks (
-  workspace_id, profile_id, run_id, created_at,
-  PRIMARY KEY (workspace_id, profile_id, run_id),
-  FOREIGN KEY (workspace_id, profile_id)
-    REFERENCES profile.session_profiles ON DELETE CASCADE
-);
-```
+- `008_profile_history.up.sql` — прежняя схема `profile` с bookmarks; больше не
+  используется, но не удаляется: данные не теряем.
+- `009_accounts.up.sql` — `account.users`, `account.sessions`, индексы, sentinel.
+  Аддитивно, транзакционно, `IF NOT EXISTS`, без down/destructive SQL.
+- Ledger `public.schema_migrations` фиксирует 009 автоматически при старте backend
+  или через `python -m backend.app.storage.migrate`.
+- Старые данные (env workspace, v1/v2 cookie, demo admin) остаются рабочими.
 
-Индексы: `(workspace_id, profile_id, created_at DESC)`. Миграция идемпотентна
-по DDL (`IF NOT EXISTS`), транзакционная, без down/destructive SQL. Ledger
-`public.schema_migrations` фиксирует её автоматически при старте backend или
-через `python -m backend.app.storage.migrate`.
+Регистрация создаёт личный workspace; runtime-схема общая, поэтому DDL на
+каждого пользователя не выполняется.
 
-`run_bookmarks` намеренно не имеет FK на `runtime.runs`: `runtime` создаётся
-после контрактных миграций и живёт в compatibility-слое. Связь проверяется
-при вставке и join-ом при чтении; если run удалён, закладка просто перестаёт
-попадать в выдачу.
+## Фоновые запуски и scheduler
 
-## Патч интеграции для root
+Ручной запуск: `POST /api/workflows/{id}/runs` создаёт run в workspace запроса и
+`asyncio.create_task` наследует scope. `WorkflowExecutor`/`SSEBroker` не менялись:
+они по-прежнему используют один `db_repo` и `workspace_id()`, которые теперь
+читают контекст.
 
-`router.py` не менялся. В конец `backend/app/api/router.py`, рядом с другими
-`include_router`:
+Ограничение: `WorkflowScheduler` и `RepositoryWatchService` запускаются без
+request-контекста и остаются на env (demo) workspace. Для per-user schedules и
+watches нужен явный workspace в scheduler-задаче (root integration/AI owner) —
+это не делается молчаливым `os.environ` или гонкой потоков. `executor.py` и
+`contracts/` в этой волне не правились.
 
-```python
-from backend.app.api.profile import create_profile_router
-
-api_router.include_router(create_profile_router())
-```
-
-Больше ничего не нужно: `main.py` уже применяет `/api`-middleware (same-origin,
-session gate) ко всем маршрутам `api_router`. Проверено на реальном `app`:
-без cookie — `401`, с подписанной cookie — `200`.
-
-Если root предпочитает монтировать в `main.py`, эквивалент:
-
-```python
-from backend.app.api.profile import create_profile_router
-app.include_router(create_profile_router(), prefix="/api")
-```
-
-## Живая проверка (изолированный PostgreSQL)
-
-Прод не трогался. Поднят одноразовый контейнер
-`docker.io/library/postgres:17-alpine` на свободном localhost-порту с
-`--tmpfs /var/lib/postgresql/data`, пустая БД `profile_verify`.
+## Эксплуатация
 
 ```bash
-DATABASE_URL=postgresql://verify:verifypass@127.0.0.1:<port>/profile_verify \
-CG_WORKSPACE_ID=11111111-2222-4333-8444-555555555555 \
-CG_SESSION_SECRET=verify-secret-not-production \
-python3 -m backend.app.storage.migrate
+CG_SESSION_SECRET=<постоянный секрет>   # иначе v3-сессии умрут после рестарта
+CG_SESSION_TTL_SECONDS=43200            # опционально
+CG_RATE_LOGIN=10 CG_RATE_REGISTER=5     # per-IP, 60s window
+CG_PUBLIC_DEMO=1 CG_ACCESS_CODE=...     # регистрация дополнительно требует accessCode
 ```
 
-Результат:
+Без `CG_SESSION_SECRET` процесс работает на эфемерном секрете: это допустимо
+только для локального demo.
+
+## Ограничения
+
+1. Нет подтверждения email, сброса пароля, смены пароля и удаления аккаунта.
+2. Нет UI; контракт backend-only.
+3. Регистрация в публичном demo закрыта кодом доступа; в локальном режиме открыта.
+4. Повышение до `admin` — только SQL (`UPDATE account.users SET role='admin'`),
+   эндпоинта нет. Demo-admin остаётся отдельным входом по коду.
+5. Per-user schedules/watches не включены (см. выше).
+6. Старая схема `profile` (008) оставлена как историческая; её bookmarks не
+   участвуют в выдаче.
+
+## Живая проверка
+
+Изолированный PostgreSQL 17 в docker (`--tmpfs`, отдельная БД), миграции
+001–009, реальный `backend.app.main:app` через ASGI. Прод не тронут.
+
+Проверено:
+
+- регистрация A и B, у каждого свой workspace UUID, отличный от env;
+- повторная регистрация → `409`, неверный пароль → `401`;
+- `me`/`session` → `mode=account`;
+- B не видит workflow/artifact/run/report/evidence A: `404`, списки без A;
+- A не видит workflow B; `GET /api/workflows` создаёт demo-default только в
+  своём workspace;
+- фоновый run A создаётся и завершается в workspace A (события `run_status`
+  лежат в `runtime.run_events` A), env workspace не тронут;
+- `logout` отзывает v3: старый cookie → `401`, новый login работает;
+- demo-сессия: `mode=demo`, `/api/profile` → `403 DEMO_SESSION`, admin-эндпоинт
+  → `403`;
+- параллельные ASGI-запросы A/B под `asyncio.gather` возвращают каждый только
+  свои workflows;
+- повторный `python -m backend.app.storage.migrate` → `ledger актуален`.
+
+Отдельный прогон default-workflow (`wf_secure_pr_gate`) аккаунта:
 
 ```text
-Применены миграции: 001_core.up.sql, 002_integrity_publish.up.sql,
-004_bundle_envelopes.up.sql, 005_canonical_envelope.up.sql,
-006_snapshot_origins.up.sql, 007_snapshot_origin_guards.up.sql,
-008_profile_history.up.sql
+run 4dd39728-... ws 95d41020-...
+status running (через 300s)
+db row {'ws': '95d41020-...', 'execution_status': 'running', ...}
+events: run_status running, node_status node_start succeeded,
+        node_project running, edge_data artifactId art_47ebf2ab539a
 ```
 
-Затем полный `DatabaseRepository()` (contract + runtime schema), два разных
-подписанных токена и реальные HTTP-запросы через `TestClient`:
-
-```text
-profile ids differ: p_25a8c3b5... p_370b56da...
-no session: 401 AUTH_REQUIRED
-A summary before: {"runs": 0, ...}
-A bookmark: True 2026-11-21T12:02:51.231225+00:00
-A bookmark repeat idempotent: created=False
-A history item: run_smoke succeeded 2026-11-21T12:02:51.231225+00:00
-A summary after: {"runs": 1, ...}
-missing run: 404 RUN_NOT_FOUND
-foreign workspace run: 404 RUN_NOT_FOUND
-B isolated: items=0 runs=0
-DB bookmarks: [{'profile_id': 'p_25a8...', 'run_id': 'run_smoke',
-                'workspace_id': '11111111-...'}]
-forged cookie: 401
-SMOKE OK
-```
-
-Проверено отдельно:
-
-- монтирование ровно предложенным патчем на реальном `backend.app.main:app`:
-  `unauthenticated through main middleware: 401`,
-  `mounted GET /api/profile: 200`, `mounted GET /api/profile/history: 200`;
-- повторный `python -m backend.app.storage.migrate`:
-  `Миграции уже применены, ledger актуален`;
-- запись в БД видна через SQL (`profile.run_bookmarks`), то есть это не
-  in-memory заглушка;
-- второй токен не видит закладку первого.
-
-Одноразовая БД и временное окружение после проверки удаляются; в репозиторий
-не попадают.
-
-## Ограничения и следующий шаг
-
-1. **Нет регистрации/пароля.** Профиль не является завершённой аутентификацией
-   и не должен так называться в UI. `scope.accountIsolation=false` — явный
-   маркер для frontend.
-2. **История только по явной закладке.** Автозапись из `trigger_run` требует
-   правки `router.py`/executor — отдельная интеграция root.
-3. **Смена сессии = новый профиль.** Для постоянной истории нужен `user_id` в
-   токене. Предложение: session v3 с полем `userId` (7 сегментов либо
-   опциональный claim), `verify_session` возвращает его, `profile_id`
-   становится `u_<userId>`; старые v1/v2 остаются валидными с текущим
-   сессионным псевдонимом. Регистрация, пароль и постоянный user id — вне
-   этой волны.
-4. **Нет удаления истории.** Осознанно не добавлял: сначала нужно решить,
-   удаляет ли пользователь закладку или всю историю, и как это сочетается с
-   audit-требованиями.
-5. **Нет frontend-страницы.** Только backend-контракт; UI-владелец может
-   рисовать по этому документу.
-
-Эксплуатационное требование: для переживания рестартов задать постоянный
-`CG_SESSION_SECRET`. Без него профиль работает, но псевдоним меняется вместе
-с процессом.
+То есть executor и файловый CodeFacts-слой видят workspace аккаунта, а не env:
+`run_events` пишутся в его workspace. Полный workflow на sample-артефакте дольше
+300 секунд — тест завершён по таймауту, не по ошибке изоляции. Пустой workflow
+завершается быстро и даёт честный `failed` с `"Граф пуст"`, тоже внутри своего
+workspace.
