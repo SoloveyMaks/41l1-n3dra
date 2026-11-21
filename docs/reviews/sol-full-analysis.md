@@ -78,3 +78,15 @@ The independent real-code `/tmp/sol-final-focused.py` run established:
 Proof output: `ORIGINAL_ACCEPTED=True`, `MUTATION_REJECTED=SnapshotIntegrityError`, `ADDED_FILE_ACCEPTED=True`, `SCANNER_READS_ADDED_FILE=[('injected.properties','SECRET-PASSWORD-LITERAL')]`, `DISTINCT_SECRET_COUNT=2`. Local proof directory: `/tmp/sol-final-frozen-2qj_q8a3`.
 
 The focused signature mutation checks were repeated on this exact merged combination and passed for Team B rules, composition, parser and selected catalog; an identical catalog at a different path again preserved the signature. Proof directory: `/tmp/sol-signature-jsol2w8v`. The catalog/signature issues are resolved for this combination; the remaining acceptance condition is rejection/exclusion of added frozen-input files, followed by verification of its exact fix SHA.
+
+## a461dca follow-up: root-level extra fixed, excluded-directory extra remains
+
+Read-only verification used root's clean combined HEAD `3b95bdbfdeb15048c375809722e68539dfa2d7ae`, containing exact file-set fix `a461dcaa1a3a1449dc27230aacfda35843dc7d38` and shared signature resolver `e87c0fcebba2eec1c3e693d80b6f6bc00501d4dd`. Only this review document was edited.
+
+The requested `/tmp/sol-final-focused.py` repetition passed: original accepted, existing mutation rejected, root-level `injected.properties` rejected, and distinct SECRET count two. Proof directory `/tmp/sol-final-frozen-499uw5lr`. The file-set commit changes only `backend/app/integrations/full_analysis.py`, preserving security-map construction. Signature input sensitivity and path independence were repeated successfully on root's combined HEAD (`/tmp/sol-signature-yllrdqhp`).
+
+**Verdict remains blocked by the same added-file identity defect in an intake-excluded directory.** The new `_reject_added_scan_files` prunes every `INTAKE_SKIP_DIRS` directory (`full_analysis.py:124`), including `build`, before inspecting extra files. However, backend `SecretAnalyzer` and `SastAnalyzer` recurse with `os.walk(root_path)` without pruning those directories (`secret_analyzer.py:96`, `sast_analyzer.py:52`). Therefore the verifier and actual backend scanner have different input sets.
+
+The identical focused proof, changing only the added file path to `build/injected.properties`, returned `ADDED_FILE_ACCEPTED=True` and `SCANNER_READS_ADDED_FILE=[('build/injected.properties','SECRET-PASSWORD-LITERAL')]`. The frozen project initially contained only README; the password was randomly generated and never printed. Script `/tmp/sol-final-excluded-focused.py`, proof directory `/tmp/sol-final-frozen-7b_c2_g4`. This is a direct continuation of the requested extra-file case, not a new broad audit.
+
+To close it, the guard must reject added files actually read by either backend scanner even under intake-excluded directories, or both backend scanners must enforce the same exclusions before reading. Root received the exact proof immediately. Owner assertions that build-generated additions are intentionally ignored are insufficient while an actual supported scanner demonstrably consumes them under the old frozen identity.
