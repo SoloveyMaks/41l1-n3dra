@@ -127,6 +127,15 @@ sender видит новый epoch и отменяет доставку. Сня�
 прекращается без второго run. `set_job_status` с lease token не может
 перезаписать terminal history чужим/просроченным token-ом.
 
+`recover_jobs(limit)` — **общий** предел на проход: одним
+`SELECT ... FOR UPDATE SKIP LOCKED LIMIT` выбираются до `limit` строк из всех
+бакетов (exhausted, run-backed settle, retry), затем обновления/возврат идут в
+той же транзакции. Поэтому 4 исчерпанных job-а при `limit=1` дают ровно один
+`interrupted` за проход; следующие проходы добирают остальные. Два
+конкурирующих recovery не превышают limit и не дублируют execution: строки
+разведены row lock, а вернувшиеся retry-id всё равно проходят атомарный
+`claim_job` (один claim, второй `None`).
+
 ## API/runtime contract
 
 - `/api/telegram/me` под старым аккаунтом после rebind: `bound=false`.
@@ -218,6 +227,24 @@ TG ASYNC SMOKE OK
 ждёт ту же строку в worker thread: 21 тик heartbeat, unbind 200, delivery
 завершается. Recovery 012 после перевода DB-вызовов в threads не
 регрессировал.
+
+## Recovery limit evidence
+
+Живой PG17:
+
+```text
+limit=1 exhaustive: one row per pass {'interrupted': 4}
+mixed buckets share limit: changed 1
+two concurrent recovery: two rows, no overrun {'importing': 2, 'interrupted': 2}
+concurrent recovery same queued: single claim [id] [id]
+TG LIMIT SMOKE OK
+```
+
+Проверено: 4 stale importing с `recovery_attempts=3` при `limit=1` — ровно по
+одному `interrupted` за проход (4 прохода); смешанные exhausted/running бакеты
+делят один total limit (изменена ровно одна строка); два параллельных recovery
+с `limit=1` обработали по одной строке, не все четыре; два recovery вернули один
+и тот же queued id, но `claim_job` выиграл только один.
 
 ## Ограничения
 
