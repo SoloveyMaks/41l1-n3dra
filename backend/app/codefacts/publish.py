@@ -208,6 +208,14 @@ def get_published_envelope(workspace: str, run_id: str, snapshot_id: str) -> Opt
 
 
 def map_from_analysis_bundle(bundle: Dict[str, Any], published_hash: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Build SecurityMapDto from canonical coverage.
+
+    `bundleHash` inside map is our internal content hash
+    sha256(canonical_json(map_without_bundleHash, sort_keys=True)), not the SQL
+    published bundle hash and not canonicalHash. The published hash stays in
+    `publication` metadata; `published_hash` is accepted only for compatibility
+    and never written into map.
+    """
     try:
         code_facts = bundle["codeFacts"]
         findings = [finding for scan in bundle["scanResults"] for finding in scan["findings"]]
@@ -226,10 +234,11 @@ def map_from_analysis_bundle(bundle: Dict[str, Any], published_hash: Optional[st
             "coverage": code_facts["coverage"],
             "policyInputs": code_facts.get("policyInputs", []),
             "diagnostics": code_facts.get("diagnostics", []),
-            "bundleHash": published_hash or content_hash(bundle),
             "findingRefs": [finding["id"] for finding in findings],
             "findingNodeLinks": links,
         }
+        # Recompute after canonical coverage; never return the source map hash.
+        map_dto["bundleHash"] = content_hash(map_dto)
     except (KeyError, TypeError):
         return None
     return {"identity": map_dto["identity"], "map": map_dto, "findings": findings}

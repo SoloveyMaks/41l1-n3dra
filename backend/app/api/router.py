@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, Response, Up
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from backend.app.ai.service import AiService
+from backend.app.api.comparison import ComparisonError, compare_published_runs
 from backend.app.api.session import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
@@ -120,7 +121,7 @@ def request_workspace_default() -> str:
 # --- Session (same-origin demo) ---
 @api_router.get("/health")
 def health():
-    return {"status": "ok", "authRequired": auth_required()}
+    return {"status": "ok"}
 
 
 @api_router.get("/session")
@@ -423,7 +424,7 @@ def _load_published_map(run_id: str, workspace: str,
     published = get_published_envelope(workspace, run_uuid(run_id), str(snapshot_id))
     if not published:
         return None
-    mapped = map_from_analysis_bundle(published["bundle"], published.get("bundleHash"))
+    mapped = map_from_analysis_bundle(published["bundle"])
     if not mapped:
         return None
     mapped["redactionVersion"] = "cg-redaction/1"
@@ -492,6 +493,30 @@ def get_evidence(run_id: str, evidence_id: str, request: Request):
         "maskedFragment": evidence["redactedSnippet"],
         "redactionVersion": payload.get("redactionVersion", "cg-redaction/1"),
     }
+
+
+@api_router.get("/comparisons/{baseline_run_id}/{current_run_id}")
+def compare_runs(baseline_run_id: str, current_run_id: str, request: Request):
+    baseline = db_repo.get_run(baseline_run_id)
+    current = db_repo.get_run(current_run_id)
+    if not baseline:
+        raise HTTPException(status_code=404, detail="Baseline run не найден")
+    if not current:
+        raise HTTPException(status_code=404, detail="Current run не найден")
+    try:
+        return compare_published_runs(
+            workspace=request_workspace(request),
+            baseline_run_id=baseline_run_id,
+            current_run_id=current_run_id,
+            baseline_run=baseline,
+            current_run=current,
+            store=codefacts_store,
+        )
+    except ComparisonError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @api_router.get("/runs/{run_id}/report")
