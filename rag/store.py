@@ -792,7 +792,6 @@ class Store:
             items.append(
                 {
                     "exampleId": payload.get("exampleId"),
-                    "status": payload.get("status"),
                     "sourceRef": payload.get("sourceRef"),
                     "verificationBasis": payload.get("verificationBasis"),
                     "limitations": payload.get("limitations") or [],
