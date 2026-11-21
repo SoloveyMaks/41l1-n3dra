@@ -28,6 +28,17 @@ export class AuthRequiredError extends Error {
   }
 }
 
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers || {});
   const res = await fetch(`${API_BASE}${path}`, {
@@ -42,7 +53,8 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   }
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(detailText(payload) || `HTTP ${res.status}`);
+    const code = typeof payload?.detail?.code === 'string' ? payload.detail.code : typeof payload?.code === 'string' ? payload.code : undefined;
+    throw new ApiError(detailText(payload) || `HTTP ${res.status}`, res.status, code);
   }
   return res;
 }

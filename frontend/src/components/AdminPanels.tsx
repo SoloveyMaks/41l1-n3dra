@@ -1,7 +1,7 @@
 import React from 'react';
 import { Activity, AlertTriangle, Bot, Database, FolderKanban, Gauge, KeyRound, ShieldCheck } from 'lucide-react';
 import { AdminOverview, ArtifactManifest, Finding, NodeRunRecord, ReportData, RunSummary, SessionState } from '../types';
-import { coverageLabel, getCanonicalCoverage } from '../coverage';
+import { coverageLabel, coverageReason, getCanonicalCoverage, scopeLabel } from '../coverage';
 import { AdminSection } from './AdminShell';
 
 const dateLabel = (value?: string): string => {
@@ -159,7 +159,8 @@ export const AdminAnalyzersPanel: React.FC<{ report: ReportData | null; nodeRuns
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
             <dt className="text-slate-500">Статус покрытия</dt><dd>{coverageLabel(getCanonicalCoverage(nodeRuns))}</dd>
             <dt className="text-slate-500">Файлов проверено</dt><dd>{report.passport.files_scanned} из {report.passport.files_scanned + report.passport.files_skipped} <span className="text-slate-500">(не полнота правил)</span></dd>
-            <dt className="text-slate-500">Пропущенные области</dt><dd>{getCanonicalCoverage(nodeRuns)?.skippedScopes.length ? getCanonicalCoverage(nodeRuns)?.skippedScopes.join(', ') : '—'}</dd>
+            <dt className="text-slate-500">Пропущенные области</dt><dd title={getCanonicalCoverage(nodeRuns)?.skippedScopes.join(', ')}>{getCanonicalCoverage(nodeRuns)?.skippedScopes.length ? getCanonicalCoverage(nodeRuns)?.skippedScopes.map(scopeLabel).join(', ') : '—'}</dd>
+            <dt className="text-slate-500">Почему</dt><dd>{coverageReason(getCanonicalCoverage(nodeRuns))}</dd>
             <dt className="text-slate-500">Строк кода</dt><dd>{report.passport.lines_of_code}</dd>
             <dt className="text-slate-500">Ошибок парсера</dt><dd>{report.passport.parser_errors}</dd>
             <dt className="text-slate-500">Неразрешённых зависимостей</dt><dd>{report.passport.unresolved_dependencies}</dd>

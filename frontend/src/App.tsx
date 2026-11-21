@@ -479,11 +479,25 @@ export const App: React.FC = () => {
     }
   };
 
+  const resetRunSelection = () => {
+    closeSSE();
+    selectedRunRef.current = null;
+    runLoadSeq.current += 1;
+    setCurrentRunId(null);
+    setCurrentRun(null);
+    setNodeRuns([]);
+    setFindings([]);
+    setReport(null);
+    setEvents([]);
+    setIsRunning(false);
+  };
+
   const handleLoadSample = async () => {
     try {
       const manifest = await apiClient.loadSampleArtifact();
       setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
       setCurrentArtifactId(manifest.id);
+      if (session?.role !== 'admin') resetRunSelection();
       showNotice('ok', `Открыт пример: ${manifest.filename}`);
     } catch (e: any) {
       showNotice('error', e?.message || 'Не удалось открыть пример');
@@ -510,6 +524,7 @@ export const App: React.FC = () => {
           : node,
       ),
     });
+    if (session?.role !== 'admin') resetRunSelection();
     showNotice('ok', `Артефакт выбран: ${manifest.filename}`);
   };
 
@@ -527,16 +542,7 @@ export const App: React.FC = () => {
 
   const handleUserSelectArtifact = (artifactId: string) => {
     handleSelectArtifact(artifactId);
-    closeSSE();
-    selectedRunRef.current = null;
-    runLoadSeq.current += 1;
-    setCurrentRunId(null);
-    setCurrentRun(null);
-    setNodeRuns([]);
-    setFindings([]);
-    setReport(null);
-    setEvents([]);
-    setIsRunning(false);
+    resetRunSelection();
   };
 
   const nodeStatusMap: Record<string, NodeRunStatus> = {};
@@ -593,6 +599,7 @@ export const App: React.FC = () => {
           artifacts={artifacts}
           currentArtifactId={currentArtifactId}
           runs={runs}
+          workflows={workflows}
           currentRun={currentRun}
           currentRunId={currentRunId}
           findings={findings}
@@ -744,7 +751,7 @@ export const App: React.FC = () => {
           />
         );
       case 'comparison':
-        return <ComparisonView runs={runs} onRefreshRuns={() => void refreshRuns()} />;
+        return <ComparisonView runs={runs} artifacts={artifacts} workflows={workflows} onRefreshRuns={() => void refreshRuns()} />;
       case 'analyzers':
         return <AdminAnalyzersPanel report={report} nodeRuns={nodeRuns} />;
       case 'ai':

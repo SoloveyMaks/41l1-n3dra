@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeftRight, GitCompare, RefreshCw, ShieldAlert } from 'lucide-react';
-import { ComparisonDto, ComparisonStatus, RunSummary, SqlPatternResult } from '../types';
-import { apiClient } from '../api/client';
+import { ArtifactManifest, ComparisonDto, ComparisonStatus, RunSummary, SqlPatternResult } from '../types';
+import { apiClient, ApiError } from '../api/client';
 
 const STATUS_LABEL: Record<ComparisonStatus, string> = {
   persistent: 'Остаётся',
@@ -37,10 +37,35 @@ const STATUS_CLASS: Record<ComparisonStatus, string> = {
 
 interface ComparisonViewProps {
   runs: RunSummary[];
+  artifacts: ArtifactManifest[];
+  workflows: Array<{ id: string; name?: string }>;
   onRefreshRuns?: () => void;
 }
 
-export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshRuns }) => {
+const verdictRu = (run: RunSummary): string => {
+  if (run.security_verdict === 'fail') return 'Найдены проблемы';
+  if (run.security_verdict === 'pass') return 'Нет блокирующих проблем';
+  if (run.security_verdict === 'inconclusive') return 'Неполная проверка';
+  return 'Проверка идёт';
+};
+
+const dateRu = (value: string): string => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+};
+
+const errorExplanation = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/same snapshot|same_snapshot|один и тот же снимок|must be distinct|runs\/snapshots|COMPARISON_REJECTED/i.test(message)) {
+    return 'Нельзя сравнить: у проверок один и тот же снимок проекта. Выберите проверки разных снимков.';
+  }
+  if (/same run|same_run|одна и та же проверка/i.test(message)) {
+    return 'Нельзя сравнить проверку саму с собой. Выберите две разные проверки.';
+  }
+  return message || 'Не удалось сравнить проверки';
+};
+
+export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts, workflows, onRefreshRuns }) => {
   const finished = useMemo(
     () => runs.filter((run) => run.execution_status === 'succeeded' || run.execution_status === 'failed'),
     [runs],
@@ -49,6 +74,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
   const [current, setCurrent] = useState('');
   const [result, setResult] = useState<ComparisonDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const requestSeq = useRef(0);
   const [sqlResult, setSqlResult] = useState<SqlPatternResult | null>(null);
@@ -60,6 +86,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
     setBaseline(value);
     setResult(null);
     setError(null);
+    setErrorCode(null);
     setBusy(false);
     setSqlResult(null);
     setSqlError(null);
@@ -70,6 +97,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
     setCurrent(value);
     setResult(null);
     setError(null);
+    setErrorCode(null);
     setBusy(false);
     setSqlResult(null);
     setSqlError(null);
@@ -101,6 +129,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
     const seq = ++requestSeq.current;
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     setSqlResult(null);
     setSqlError(null);
     try {
@@ -122,7 +151,8 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
     } catch (e: any) {
       if (seq === requestSeq.current) {
         setResult(null);
-        setError(e?.message || 'Не удалось сравнить запуски');
+        setError(errorExplanation(e));
+        setErrorCode(e instanceof ApiError ? e.code || null : null);
       }
     } finally {
       if (seq === requestSeq.current) setBusy(false);
@@ -140,7 +170,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
         <option value="">Выберите запуск</option>
         {finished.map((run) => (
           <option key={run.id} value={run.id}>
-            {run.id} · {run.security_verdict} · {new Date(run.created_at).toLocaleString('ru-RU')}
+            {artifacts.find((artifact) => artifact.id === run.artifact_id)?.filename || 'Проект не указан'} · {workflows.find((workflow) => workflow.id === run.workflow_id)?.name || 'Сценарий проверки'} · {dateRu(run.created_at)} · {verdictRu(run)}
           </option>
         ))}
       </select>
@@ -165,7 +195,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
           )}
         </div>
         <p className="text-xs text-slate-400">
-          Сравнение не запускает сканеры и не считает partial coverage доказанным исправлением.
+          Сравнение не запускает сканеры и не считает неполное покрытие доказанным исправлением.
           Неизвестные связи и потеря покрытия остаются видимыми.
         </p>
 
@@ -198,14 +228,14 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
         )}
         {sameSelection && (
           <div className="rounded-xl border border-amber-900 bg-amber-950/30 p-3 text-xs text-amber-200">
-            Было и Стало совпадают — выберите разные запуски.
+            Было и Стало — одна и та же проверка. Выберите две разные проверки.
           </div>
         )}
 
         {error && (
           <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-900 bg-rose-950/50 p-3 text-xs text-rose-200">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>{error}</span>
+            <span>{error}{errorCode && <details className="mt-1 text-[10px] text-rose-300/70"><summary>Технический код</summary>{errorCode}</details>}</span>
           </div>
         )}
 
@@ -218,7 +248,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshR
                   : 'Недостаточно доказательств: исправление не подтверждено'}
               </div>
               <div className="mt-1 text-[11px] opacity-80">
-                До: {result.baselineRunId} · После: {result.currentRunId}
+                Было: {artifacts.find((artifact) => artifact.id === runs.find((run) => run.id === result.baselineRunId)?.artifact_id)?.filename || 'проект не указан'} · Стало: {artifacts.find((artifact) => artifact.id === runs.find((run) => run.id === result.currentRunId)?.artifact_id)?.filename || 'проект не указан'}
               </div>
               {result.reasons.length > 0 && (
                 <ul className="mt-2 list-disc space-y-1 pl-5">

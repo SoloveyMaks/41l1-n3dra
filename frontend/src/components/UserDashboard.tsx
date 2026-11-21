@@ -10,7 +10,7 @@ import { FindingsView } from './FindingsView';
 import { ReportView } from './ReportView';
 import { SecurityMapScreen } from './SecurityMapScreen';
 import { ComparisonView } from './ComparisonView';
-import { coverageLabel, getCanonicalCoverage } from '../coverage';
+import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage';
 
 type UserSection = 'check' | 'problems' | 'map' | 'report' | 'comparison';
 
@@ -18,6 +18,7 @@ interface UserDashboardProps {
   artifacts: ArtifactManifest[];
   currentArtifactId: string;
   runs: RunSummary[];
+  workflows: Array<{ id: string; name?: string }>;
   currentRun: RunSummary | null;
   currentRunId: string | null;
   findings: Finding[];
@@ -77,6 +78,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
   artifacts,
   currentArtifactId,
   runs,
+  workflows,
   currentRun,
   currentRunId,
   findings,
@@ -256,6 +258,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                     <div className="text-base font-bold">{verdictLabel(currentRun.security_verdict, currentRun.total_findings)}</div>
                     <div className="mt-1 text-xs opacity-80">{executionLabel(currentRun)}</div>
                     <div className="mt-1 text-xs opacity-80">Проект проверки: {projectName(currentRun.artifact_id, artifacts)}</div>
+                    <div className="mt-2 text-[11px] opacity-80">{coverageReason(coverage)}</div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg bg-black/20 p-2">
                         <div className="opacity-60">Проблемы</div>
@@ -371,7 +374,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
             <button onClick={() => setSection('check')} className="mb-3 text-xs text-indigo-300 hover:text-indigo-200">
               ← Назад к проверке
             </button>
-            <ComparisonView runs={runs} onRefreshRuns={onRefreshRuns} />
+            <ComparisonView runs={runs} artifacts={artifacts} workflows={workflows} onRefreshRuns={onRefreshRuns} />
           </div>
         )}
       </main>
