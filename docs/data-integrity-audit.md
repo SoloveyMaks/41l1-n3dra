@@ -1,23 +1,26 @@
 # Аудит целостности данных и честности результатов
 
 Ветка: `SoloveyMaks/data-integrity-audit`, run `run_bbf876ca1e6c`.
-Локальная `dev` (`9862e19`) уже является предком HEAD (`git merge-base --is-ancestor 9862e19 HEAD`), отдельный merge-коммит не создавался.
+Локальная `dev` обновлена координатором до `8f5d523` (включает admin/roles `4012fb5`); она смержена в ветку аудита merge-коммитом `6fe2aa3`. Базовая точка `9862e19` была предком HEAD ещё до этого merge.
 
 ## 1. Итог
 
 | ID | Влияние | Дефект | Где |
 |---|---|---|---|
 | P1-1 | высокое | Повторная загрузка того же архива даёт тот же `snapshotId`, но новый `artifactId`; canonical publish падает с конфликтом и остаётся `published=false` | `backend/app/storage/canonical.py:1125`, `1129`; `backend/app/codefacts/identity.py:98`, `113`; `backend/app/artifacts/intake.py:118`, `303` |
-| P1-2 | высокое | Опубликованный canonical bundle всегда `partial`: backend-сканеры захардкожены как partial, graph coverage всегда содержит skipped scopes, а `expectedScopesVerified=false` понижает и team_b. SQL `pass`, сравнения и `vetted` недостижимы, при этом runtime может показать PASS | `backend/app/codefacts/canonical.py:674`, `493-506`, `620-706`; `backend/app/codefacts/publish.py:92-102`; `db/migrations/002_integrity_publish.up.sql:71-77` |
-| P1-3 | высокое | `/security-map` и `/evidence` не различают published canonical envelope и локальный mutable fallback; `publication.reason` теряется | `backend/app/api/router.py:421-465`, `451-458`, `477-500` |
+| P1-2 | высокое | Runtime показывает PASS как итог, хотя canonical bundle остаётся `partial` и может быть не опубликован; API/отчёт не отдают `publication`/coverage рядом с вердиктом. `expectedScopesVerified=false` — принятое честное ограничение, его нельзя поднимать в `true` без доказанных scopes | `backend/app/engine/executor.py:528-575`; `backend/app/storage/database.py:468-500`; `backend/app/api/router.py:420-433`, `601-609`; `backend/app/reports/builder.py:44-46` |
+| P2-0 | среднее (продукт) | Сравнения и `vetted` недостижимы, пока `expectedScopesVerified=false`: comparison всегда `comparable=false`, `RemediationStore` требует `expected_scopes_verified=true`. Это известная незавершённость, не подделка данных; UI/API должны называть причину явно | `backend/app/codefacts/publish.py:96`; `packages/comparison/index.mjs:369-374`; `backend/app/storage/remediation.py:215-223` |
+| P1-3 | высокое | `/security-map` и `/evidence` не различают published canonical envelope и локальный mutable fallback; `publication.reason` теряется | `backend/app/api/router.py:456-476`, `480-511`, `512-548` |
 | P2-1 | среднее | Runtime-слой не связан FK с artifact/revision и не проверяет evidence/coverage: принимает `verdict=pass` с несуществующими artifact/revision, findings и report можно переписать после завершения | `backend/app/storage/runtime_schema.sql:52-60`, `90-111`, `113-126`; проверено живыми SQL probes |
 | P2-2 | среднее | Comparison engine вычисляет `comparable` до добавления reason про `contract_scenario`; результат — `comparable=true` с причиной «синтетика» | `packages/comparison/index.mjs:376-377`; подтверждено live node probe |
 | P2-3 | среднее | Policy Gate может выдать PASS по неполному покрытию: `strictCoverageRequired=false` отключает проверку gaps, а `Coverage` не содержит scopes/skipped/limits; team_b теряет эти поля | `backend/app/engine/executor.py:528`, `560-575`; `backend/app/integrations/team_b.py:188-199` |
 | P2-4 | среднее | `save_findings` не удаляет устаревшие findings; `started_at` node_run равен времени завершения; `official.json` всегда пишет `executionStatus: succeeded` | `backend/app/storage/database.py:607-647`, `677-702`; `backend/app/engine/executor.py:925-936`; `backend/app/reports/builder.py:168` |
 | P2-5 | среднее | Domain policy никогда не попадает в canonical signature/policyInputs; `hmacKeyVersion` захардкожен, ротация ключа не видна сравнению | `backend/app/codefacts/canonical.py:731-735`, `620-706` |
 | P3-1 | низкое | Маскирование source best-effort: JWT маскируется частично, короткие значения не маскируются; `redacted_snippet` в БД не проверяется на содержание | `backend/app/codefacts/source.py:66-88`; проверено pure-функцией |
-| P3-2 | низкое (до split) | Runtime-таблицы читаются из одного env-workspace, session workspace учитывается только для canonical/local файлов | `backend/app/api/session.py:185-187`; `backend/app/storage/database.py:292-296` |
+| P3-2 | низкое (до split) | Runtime-таблицы читаются из одного env-workspace, session workspace учитывается только для canonical/local файлов | `backend/app/api/session.py:227-229`; `backend/app/storage/database.py:292-296` |
 | P3-3 | низкое | `raw_secrets_checked=True` — константа; `ai_explanations` и `remediation_examples` нигде не пишутся приложением | `backend/app/ai/service.py:62`, `227`, `385`; `backend/app/contracts/schemas.py:240` |
+| A-1 | среднее | Нет server-side отзыва сессии: logout удаляет cookie, admin-токен жив до TTL | `backend/app/api/router.py:168-170`; `backend/app/api/session.py:155-188`; `docs/admin-access.md` |
+| A-2 | низкое | `POST /api/webhook-test` не admin-гард; в local mode вообще без сессии | `backend/app/main.py:31`; `backend/app/api/router.py:688-715` |
 
 Полного «safe/fixed» нет: часть инвариантов SQL сильна, но прикладной слой обходит их или не публикует факты.
 
@@ -35,7 +38,7 @@ backend/app/storage/runtime_schema.sql
 backend/app/storage/runtime_guards.sql
 ```
 
-SQL probes выполнялись с `ON_ERROR_STOP=1`, каждый негативный probe — в `BEGIN … ROLLBACK`. Живые проверки comparison engine — `node v22.23.3` на `docs/data-contracts/illustrative-bundle.json`. Чистые функции identity/masking проверены Python-вызовом.
+SQL probes выполнялись с `ON_ERROR_STOP=1`, каждый негативный probe — в `BEGIN … ROLLBACK`. Живые проверки comparison engine — `node v22.23.3` на `docs/data-contracts/illustrative-bundle.json`. Чистые функции identity/masking проверены Python-вызовом; ядро сессий/ролей — Python-вызовом с заглушкой `fastapi` (без запуска сервера).
 
 Не проверено: полный backend e2e (в системном Python нет `psycopg`), реальные сканеры на чужом коде, сетевой AI/embedding provider, production RLS/роли, поведение под нагрузкой. Выводы P1-1/P1-2 опираются на код и воспроизведение чистых функций/движка, а не на полный API-прогон.
 
@@ -64,7 +67,7 @@ SQL probes выполнялись с `ON_ERROR_STOP=1`, каждый негат�
 | `file_deleted`, когда файл ещё есть в current snapshot | отклонён: `file still exists` |
 | draft finding через `published_findings` | не виден (0 строк), прямой `findings` — 1 строка |
 
-Эти инварианты закрывают ссылки node/edge на evidence, диапазоны evidence, неизменяемость опубликованных фактов, подделку `resolved/file_deleted` и публикацию без трёх family outcomes.
+Это проверка SQL-контракта на ручном fixture, а не поведение приложения: приложение само не публикует `complete`/`pass` из-за `expectedScopesVerified=false` (P2-0). Инварианты закрывают ссылки node/edge на evidence, диапазоны evidence, неизменяемость опубликованных фактов, подделку `resolved/file_deleted` и публикацию без трёх family outcomes.
 
 ## 4. Дефекты по влиянию
 
@@ -87,42 +90,52 @@ if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["a
 
 Проверено pure-функциями: одинаковый manifest hash → одинаковый `snapshot_id`; два случайных artifact id → разные `artifact_scope_id`. Полный API-прогон не выполнялся (нет `psycopg`), но конфликт — прямое следствие сравнения в коде.
 
-Направление фикса: сделать artifact identity content-addressed (по archive hash) либо разрешить переиздание snapshot с тем же manifest и новым artifact, сохраняя immutable привязку явно; добавить regression на «загрузить тот же zip дважды».
+Точный reproduction (без правки исходников):
 
-### P1-2. Canonical всегда partial, runtime может показать PASS
-
-В `_build_analysis_bundle` статус каждого сканера захардкожен:
-
-```python
-# canonical.py:674
-"status": "partial" if visited > 0 else "unsupported",
+```text
+1. POST /api/artifacts с одним и тем же zip дважды.
+   -> два разных artifactId (art_<random>), один и тот же snapshotId.
+2. Первый run: publish_run_artifact -> published=true.
+3. Второй run с новым artifactId и тем же manifest:
+   canonical.py:1125 -> CanonicalConflictError("snapshot: exists with a different artifact identity")
+   publish.py:153 -> {"published": false, "reason": "publish failed: ..."}
 ```
 
-`_build_coverage` всегда кладёт в `skippedScopes` три значения и требует `not skipped` для `complete` (`canonical.py:495-517`), поэтому graph coverage тоже всегда `partial`. Плюс `publish.py:92-102` всегда ставит `origin="scanner"`, `expectedScopesVerified=False`, `domainPolicyApplicability="not_applicable"`. Для engine `team_b` bundle приходит из `analyzers.cg26.contract.build_bundle` и может содержать `complete`, но `_downgrade_unverified` (`canonical.py:691-704`) понижает его до `partial` из-за `expectedScopesVerified=false`.
+Ожидаемый контракт: одинаковые bytes проекта должны либо переиспользовать одну artifact identity (content-addressed по archive hash), либо давать детерминированный конфликт до запуска с явным `publication.status=conflict`; молчаливый `published=false` при успешном run недопустим. Snapshot с тем же manifest не должен становиться непубликуемым из-за случайного id загрузки.
 
-SQL `guard_run` требует для `pass` три `complete` outcome и checked coverage по каждой family (`002_integrity_publish.up.sql:71-77`). Следовательно:
+Направление фикса: сделать artifact identity content-addressed (по archive hash) либо разрешить переиздание snapshot с тем же manifest и новым artifact, сохраняя immutable привязку явно; добавить regression на «загрузить тот же zip дважды».
 
-- published bundle с `security_verdict='pass'` из приложения невозможен;
-- comparison engine получает `expectedScopesVerified=false` и всегда ставит `comparable=false` (live probe: `scanner+unverified` → `false`, reason «A/B не подтвердили полноту ожидаемых scopes»);
-- `RemediationStore._require_vetted_evidence` требует `expected_scopes_verified=true`, значит `vetted` из этого пайплайна невозможен.
+### P1-2. PASS в runtime при partial/unpublished canonical
 
-При этом runtime verdict считается независимо в `POLICY_GATE` (`executor.py:528-575`) по `FindingsBundle.coverage`, а UI читает runtime (`/api/runs/{id}`, `/report`). Поэтому сценарий «runtime PASS + canonical partial/не опубликован» достижим: canonical publish вернёт `published=false`, но пользователь увидит PASS. Это расхождение фактов и вердикта, а не только косметика.
+`expectedScopesVerified=false` в `publish.py:96` — принятое честное ограничение: сканеры пока не доказали expected scopes, и поднимать флаг в `true` без доказательств нельзя. Из-за него canonical coverage понижается до `partial` (`_downgrade_unverified`, `canonical.py:691-704`), SQL `guard_run` не пропускает `pass` (`002_integrity_publish.up.sql:71-77`), и это ожидаемо.
 
-Направление фикса: либо публиковать `complete` только при реально доказанных scopes и не показывать PASS без этого, либо явно хранить/показывать `publication.status` и `coverage.status` рядом с вердиктом и запретить PASS при partial canonical coverage. Решать вместе с владельцами A/B: docs/data-contracts/verification.md уже относит «scanner полнота expected scopes» к непроверенному.
+Дефект в другом: runtime вердикт считается отдельно в `POLICY_GATE` (`executor.py:528-575`) по `FindingsBundle.coverage`, а UI и отчёт читают runtime (`/api/runs/{id}`, `/report`). Поэтому пользователь видит PASS как итог, хотя canonical bundle остаётся `partial` и может быть вообще не опубликован. В ответе `/api/runs/{id}` нет ни `publication`, ни `coverage.status`; в `official.json` `executionStatus` захардкожен `succeeded` (`reports/builder.py:168`). Это не «надо поднять expectedScopesVerified», а «нельзя показывать PASS как доказанный итог, пока canonical это не подтверждает».
+
+Проверяемые следствия:
+
+- `security-map`/`evidence` отдают local fallback без пометки (P1-3);
+- comparison получает `expectedScopesVerified=false` и всегда `comparable=false` (live node probe: `scanner+unverified` → `false`);
+- отчёт показывает PASS и completeness score, не отражая canonical partial.
+
+Направление фикса: оставить `expectedScopesVerified=false`; в API/UI рядом с вердиктом отдавать `publication.status`, `coverage.status`, `expectedScopesVerified` и причину; не называть PASS доказанным, если canonical partial/unpublished. Полноту expected scopes доказывают A/B, а не аудит.
+
+### P2-0. Сравнения и vetted недостижимы по принятой причине
+
+Пока `expectedScopesVerified=false`, comparison engine всегда ставит `comparable=false` (`packages/comparison/index.mjs:369-374`), а `RemediationStore._require_vetted_evidence` требует `expected_scopes_verified=true` (`storage/remediation.py:215-223`). Это продуктовая незавершённость, а не подделка данных: превращать её в `comparable=true` нельзя. Проблема в том, что API/UI не всегда называют причину явно: `/comparisons` отдаёт `comparable=false` с текстом, а `security-map`/отчёт вообще не показывают `expectedScopesVerified`. До появления доказанных scopes сравнение должно быть явно помечено «недоступно: expected scopes не подтверждены», а не выглядеть как пустой/сломанный результат.
 
 ### P1-3. Published и локальный fallback неразличимы в API
 
 `get_security_map` сначала пробует canonical, затем молча отдаёт локальный run-файл:
 
 ```python
-# api/router.py:451-458
+# api/router.py:480-490
 payload = _load_published_map(run_id, workspace)
 ...
 if not payload:
     payload = _load_run_artifact(run_id, workspace)
 ```
 
-Локальный файл (`CodeFactsStore.save_run`) перезаписывается на каждом этапе и содержит `publication` с `published=false`, но ответ API собирается только из `identity/map/findings`; поле `publication` не возвращается. То же для `/evidence` (`router.py:477-500`). Клиент не может отличить immutable published bundle от mutable локальной карты; `map.bundleHash` — внутренний content hash, не SQL `bundleHash`.
+Локальный файл (`CodeFactsStore.save_run`) перезаписывается на каждом этапе и содержит `publication` с `published=false`, но ответ API собирается только из `identity/map/findings`; поле `publication` не возвращается. То же для `/evidence` (`router.py:512-548`). Клиент не может отличить immutable published bundle от mutable локальной карты; `map.bundleHash` — внутренний content hash, не SQL `bundleHash`.
 
 Направление фикса: добавить в ответ `publication: {status, bundleHash, publishedAt, reason, expectedScopesVerified}` и не выдавать fallback за published.
 
@@ -208,14 +221,44 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 
 ### P3-2. Workspace/session до split
 
-`request_workspace` берёт workspace из подписанной cookie (`session.py:185-187`), но `DatabaseRepository` инициализируется одним env-workspace (`database.py:292-296`), и все runtime-чтения (`/runs`, `/findings`, `/report`, `/schedules`) этот workspace игнорируют. Сейчас все сессии получают один и тот же default workspace, поэтому утечки между пользователями нет. После введения разных user/admin workspace чтения runtime нужно скоупить по `request_workspace`, иначе оба увидят одни и те же runs/reports.
+`request_workspace` берёт workspace из подписанной cookie (`session.py:227-229`), но `DatabaseRepository` инициализируется одним env-workspace (`database.py:292-296`), и все runtime-чтения (`/runs`, `/findings`, `/report`, `/schedules`) этот workspace игнорируют. Сейчас все сессии получают один и тот же default workspace, поэтому утечки между пользователями нет. После введения разных user/admin workspace чтения runtime нужно скоупить по `request_workspace`, иначе оба увидят одни и те же runs/reports.
 
 ### P3-3. AI и vetted memory
 
 - `ExplainResult.raw_secrets_checked` всегда `True` (`service.py:62`, `227`, `385`; default в `schemas.py:240`), независимой проверки нет. Поле не выводится в `official.json`, но как контракт оно ложно.
 - `data_contract.ai_explanations` и `RemediationStore` не используются API/executor: grep по `backend/app` не находит INSERT в `ai_explanations` и вызовов `RemediationStore` вне storage-модуля. AI-текст лежит в `runtime.reports` рядом с фактами (в отдельных полях), а «vetted vs draft» существует только как SQL/библиотека. Для split это значит: immutability AI-объяснений и vetted-примеров пока не является свойством работающего продукта.
 
-## 5. Матрица сравнения
+## 5. Admin/roles после merge dev (`8f5d523`)
+
+Контракт: `docs/admin-access.md`. Модель — один общий demo-workspace, роли `user`/`admin` только закрывают операторские действия; ACL и отдельных аккаунтов нет.
+
+### Что подтверждено кодом
+
+| Проверка | Где | Результат |
+|---|---|---|
+| admin-код отдельный и не равен user-коду | `session.py:79-92` | `admin_available()` false при пустом/совпадающем коде; `verify_admin_code()` сравнивает UTF-8 bytes через `hmac.compare_digest` |
+| роль подписана в токене, не берётся из body без кода | `session.py:145-188`; `router.py:174-205` | `v2.<workspace>.<role>...`; `v1` принимается только как `user`; `role` в body валидируется как `user`/`admin`, иначе 400 |
+| anon → 401, user → 403 на admin-маршрутах | `session.py:237-243` | `require_admin`: нет сессии — 401, роль не admin — 403 |
+| user не меняет draft/schedules | `router.py:323`, `339`, `649`, `655`, `676` | `create_workflow`, `PUT draft`, `GET/POST/PATCH schedules` вызывают `require_admin` |
+| training/AI/logs закрыты | `router.py:255`, `715`, `722` | `require_admin` на training artifact, AI synthetic-test, webhook logs |
+| overview только admin | `admin.py:106-110` | `require_admin` первой строкой |
+| overview без DSN/keys/codes | `admin.py:32-104`, `112-168` | counts, latency, `error` только `type(exc).__name__`, migrations, provider/model/configured, vector status/version/active specs, upload limits, booleans. Нет `DATABASE_URL`, `CG_*`, base URL, API key |
+| session response без секретов | `router.py:134-210` | `role`, `adminAvailable`, `workspaceId`, TTL; коды не возвращаются |
+| local mode не даёт auto-admin | `main.py:141-150` | авто-сессия на safe GET всегда `issue_session()` → `user`; admin только через `POST /api/session` с admin-кодом |
+| token/role core, live (stub FastAPI) | `session.py:145-188`, `237-243` | admin token → `role=admin`; подмена role/workspace/срока → `None`; v1 token → `user`; неверный role в issue → `ValueError`; `require_admin`: anon 401, user 403, admin OK |
+
+### Остаточные риски admin-слоя
+
+- **A-1 (среднее): нет server-side отзыва сессии.** Logout удаляет cookie, но подписанный admin-токен жив до `SESSION_TTL_SECONDS` (по умолчанию 12 ч). `docs/admin-access.md` это признаёт. Для реального admin до split нужен session store/rotation/revocation, иначе утёкшая cookie = admin до истечения TTL.
+- **A-2 (низкое): `POST /api/webhook-test` не закрыт admin-гардом.** В local mode путь входит в `_LOCAL_SESSION_EXEMPT` (`main.py:31`, `125-150`), в public mode доступен любому залогиненному user. Список ограничен 200 записями и 64 KiB (`router.py:688-715`), но это log injection/спам, а не admin-действие. Логи читает только admin.
+- **A-3 (информация): роль не изолирует данные.** user видит все runs/findings/map/report общего workspace — это заявленный контракт, не баг. Но до user/admin split нельзя трактовать `role` как tenant boundary: данные общие, роль закрывает только мутации и overview.
+- **A-4 (информация): overview шире примера в docs.** Отдаёт `vector.embeddingModel/dimension/metric` и `migrations.latestAppliedAt`; это не секреты, но при ужесточении контракта их стоит либо оставить явно разрешёнными, либо убрать.
+- **A-5 (низкое): local mode с эфемерным `CG_SESSION_SECRET`.** Это допустимо для локального demo (`main.py:57-61`), но при `CG_PUBLIC_DEMO=1` `public_config_error` требует секрет и код (`session.py:99-109`).
+- **A-6 (низкое): Secure-cookie зависит от `CG_TRUST_PROXY`.** `set_session_cookie` ставит `secure=True` только если видит `https` в `request.url.scheme` или доверенном `x-forwarded-proto` (`session.py:246-257`). За TLS-прокси без `CG_TRUST_PROXY=1` cookie уйдёт без `Secure`; для admin-панели это надо закрыть на deploy.
+
+`docs/admin-access.md` заявляет live HTTP-матрицу 401/403/200. Полный HTTP-прогон в этом аудите не выполнялся (нет `psycopg`, backend не поднимался). Ядро токенов/кодов и `require_admin` проверено live с заглушкой `fastapi`; маршрутные гарды проверены статически — расхождений с матрицей по перечисленным маршрутам не найдено.
+
+## 6. Матрица сравнения
 
 | Измерение | Где проверяется | Статус |
 |---|---|---|
@@ -229,10 +272,10 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 | несовместимость AI/advisory | вне сравнения; AI validator только CVE/версии | не смешивается с фактами, но grounding ограничен |
 | synthetic origin | reason добавляется, но `comparable` уже вычислен | дефект P2-2 |
 
-## 6. Рекомендации перед разделением user/admin
+## 7. Рекомендации перед разделением user/admin
 
 1. Починить identity artifact/snapshot (P1-1) и добавить regression «тот же архив дважды».
-2. Определить один источник истины для вердикта: либо canonical `complete` с доказанными scopes, либо явный `partial` в API и запрет PASS без него (P1-2).
+2. Не поднимать `expectedScopesVerified` вручную. Пока scopes не доказаны, отдавать рядом с вердиктом `publication.status`/`coverage.status`/`expectedScopesVerified` и не называть PASS доказанным итогом (P1-2, P2-0).
 3. Возвращать `publication` в `/security-map` и `/evidence`, не маскировать fallback под published (P1-3).
 4. Закрыть runtime FK/immutability или перевести пользовательские чтения на `published_*` (P2-1).
 5. Исправить порядок вычисления `comparable` (P2-2).
@@ -242,10 +285,12 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 9. Усилить masking и добавить проверку `redacted_snippet` на секреты (P3-1).
 10. Скоупить runtime-чтения по `request_workspace` до появления разных workspace (P3-2).
 11. Подключить `ai_explanations`/`RemediationStore` к API или убрать их из заявлений о продукте (P3-3).
+12. До реального admin добавить server-side session store/revocation: logout сейчас не отзывает подписанный admin-токен до TTL (A-1).
+13. Закрыть `POST /api/webhook-test` admin-гардом или явно описать его как публичный тестовый приёмник; не считать `role` tenant-изоляцией (A-2, A-3).
 
-## 7. Что не подтверждено
+## 8. Что не подтверждено
 
-- Нет полного API e2e: в системном Python нет `psycopg`, backend не поднимался; P1-1 проверен кодом и чистыми функциями, не HTTP-запросом.
+- Нет полного API e2e: в системном Python нет `psycopg`/`fastapi`, backend не поднимался; P1-1 проверен кодом и чистыми функциями, admin/roles — ядро live с заглушкой, HTTP-матрица 401/403/200 не прогонялась.
 - Нет реального scanner run на Kotlin-проекте и реального AI/embedding provider; выводы о PASS/partial — по коду и SQL guard, не по живому прогону с секретами.
-- Не проверялись production RLS/роли, удаление артефактов по TTL, вебхуки наружу, производительность и конкурентные гонки под нагрузкой.
+- Не проверялись production RLS/роли, удаление артефактов по TTL, вебхуки наружу, производительность и конкурентные гонки под нагрузкой; live auth не прогонялся.
 - SQL-инварианты проверены на синтетическом fixture; часть негативных сценариев (например, `introduced` при partial baseline) выведена из кода guard, а не воспроизведена отдельным run.
