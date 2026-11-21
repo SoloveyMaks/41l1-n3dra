@@ -80,6 +80,7 @@ export const App: React.FC = () => {
   const selectedRunRef = useRef<string | null>(null);
   const runLoadSeq = useRef(0);
   const validateSeq = useRef(0);
+  const workflowSelectSeq = useRef(0);
   const noticeTimer = useRef<number | null>(null);
 
   const showNotice = useCallback((kind: Notice['kind'], text: string) => {
@@ -163,7 +164,11 @@ export const App: React.FC = () => {
       if (selectedRunRef.current !== runId) return;
       try {
         const event = JSON.parse(message.data);
-        setEvents((prev) => [...prev, event]);
+        setEvents((prev) => {
+          if (prev.some((item) => item.seq === event.seq)) return prev;
+          const next = [...prev, event];
+          return next.length > 1000 ? next.slice(-1000) : next;
+        });
         if (event.type === 'run_status') {
           const status = event.payload?.status;
           if (status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted') {
@@ -232,6 +237,7 @@ export const App: React.FC = () => {
         setCurrentRunId(latest.id);
         setCurrentRun(latest);
         await loadRunDetails(latest.id);
+        connectSSE(latest.id);
       }
     } catch (e: any) {
       if (e instanceof AuthRequiredError) {
@@ -241,7 +247,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Сервер недоступен');
       }
     }
-  }, [loadRunDetails, showNotice, validateDraft]);
+  }, [connectSSE, loadRunDetails, showNotice, validateDraft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,6 +307,7 @@ export const App: React.FC = () => {
     closeSSE();
     selectedRunRef.current = null;
     runLoadSeq.current += 1;
+    workflowSelectSeq.current += 1;
     setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
     setCurrentRunId(null);
     setCurrentRun(null);
@@ -324,13 +331,16 @@ export const App: React.FC = () => {
     setReport(null);
     setEvents([]);
     setIsRunning(false);
+    connectSSE(runId);
     void loadRunDetails(runId);
   };
 
   const handleSelectWorkflow = async (nextWorkflowId: string) => {
     if (!nextWorkflowId) return;
+    const seq = ++workflowSelectSeq.current;
     try {
       const workflow = await apiClient.getWorkflow(nextWorkflowId);
+      if (seq !== workflowSelectSeq.current) return;
       if (!workflow?.draft) {
         showNotice('error', 'У сценария нет сохранённого draft');
         return;
@@ -339,9 +349,10 @@ export const App: React.FC = () => {
       setDraft(workflow.draft);
       setSelectedNodeId(null);
       await validateDraft(nextWorkflowId, workflow.draft);
+      if (seq !== workflowSelectSeq.current) return;
       showNotice('ok', `Открыт сценарий: ${workflow.name || nextWorkflowId}`);
     } catch (e: any) {
-      showNotice('error', e?.message || 'Не удалось открыть сценарий');
+      if (seq === workflowSelectSeq.current) showNotice('error', e?.message || 'Не удалось открыть сценарий');
     }
   };
 
