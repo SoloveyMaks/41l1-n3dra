@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from backend.app.ai.provider import mask_sensitive_text
 from backend.app.telegram.menus import callback_secret_from_token
 from backend.app.telegram.proxy_bridge import UnixSocketProxyBridge
 
@@ -40,7 +41,8 @@ _TELEGRAM_URL_RE = re.compile(r"https?://[^\s\"']*api\.telegram\.org[^\s\"']*")
 
 def _redact_log_text(value: str) -> str:
     value = _URL_TOKEN_RE.sub("bot***", value)
-    return _TELEGRAM_URL_RE.sub("https://api.telegram.org/***", value)
+    value = _TELEGRAM_URL_RE.sub("https://api.telegram.org/***", value)
+    return mask_sensitive_text(value)
 
 
 class _TelegramLogFilter(logging.Filter):
@@ -217,7 +219,7 @@ def redact_telegram_text(
         value = value.replace(proxy_url, "***")
     value = _URL_TOKEN_RE.sub("bot***", value)
     value = _TELEGRAM_URL_RE.sub("https://api.telegram.org/***", value)
-    return value[:500]
+    return mask_sensitive_text(value)[:500]
 
 
 class TelegramBotAPI:
@@ -338,11 +340,14 @@ class TelegramBotAPI:
     ) -> Any:
         url = f"{self._settings.safe_base_url}/bot{self._settings.token}/{method}"
         client = await self._require_client()
+        request_options: Dict[str, Any] = {}
+        if timeout is not None:
+            request_options["timeout"] = timeout
         try:
             response = await client.post(
                 url,
                 json=payload or {},
-                timeout=timeout,
+                **request_options,
             )
         except httpx.HTTPError as exc:
             raise TelegramUnavailable(redact_telegram_text(exc, self._settings.token, self._settings.proxy_url)) from None
