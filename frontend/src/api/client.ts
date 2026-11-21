@@ -16,6 +16,10 @@ import {
   SessionRole,
   SessionState,
   SqlPatternResult,
+  TelegramBinding,
+  TelegramMe,
+  TelegramScenario,
+  TelegramSettings,
   WorkflowDraft
 } from '../types';
 
@@ -109,6 +113,26 @@ export const apiClient = {
 
   async getProfile(): Promise<ProfileData> {
     return (await request('/profile')).json();
+  },
+
+  async getTelegramMe(): Promise<TelegramMe> {
+    return (await request('/telegram/me')).json();
+  },
+
+  async createTelegramBinding(): Promise<TelegramBinding> {
+    return (await request('/telegram/binding', { method: 'POST' })).json();
+  },
+
+  async unbindTelegram(): Promise<{ bound: boolean; removed: boolean }> {
+    return (await request('/telegram/unbind', { method: 'POST' })).json();
+  },
+
+  async listTelegramScenarios(): Promise<{ items: TelegramScenario[] }> {
+    return (await request('/telegram/scenarios')).json();
+  },
+
+  async updateTelegramSettings(settings: TelegramSettings): Promise<TelegramSettings> {
+    return (await request('/telegram/settings', jsonInit('PUT', settings))).json();
   },
 
   async getAdminOverview(): Promise<AdminOverview> {

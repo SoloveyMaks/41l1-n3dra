@@ -14,6 +14,7 @@ import { ComparisonView } from './components/ComparisonView';
 import { Navbar } from './components/Navbar';
 import { ScenarioCreateModal } from './components/ScenarioCreateModal';
 import { AccountModal } from './components/AccountModal';
+import { UserSettingsPanel } from './components/UserSettingsPanel';
 import { AdminShell, AdminSection } from './components/AdminShell';
 import {
   AdminAccessPanel,
@@ -964,6 +965,18 @@ export const App: React.FC = () => {
               artifacts={artifacts}
               workflows={workflows}
               onRefreshRuns={() => void refreshRuns()}
+            />
+          )}
+
+          {activeTab === 'settings' && (
+            <UserSettingsPanel
+              session={session}
+              workflowId={workflowId}
+              artifactId={currentArtifactId}
+              onOpenRun={(runId) => {
+                handleSelectRun(runId);
+                setActiveTab('live');
+              }}
             />
           )}
         </main>
