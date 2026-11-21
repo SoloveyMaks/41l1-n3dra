@@ -22,7 +22,9 @@ DEFAULT_BINDING_TTL_SECONDS = 600
 MAX_CODE_LENGTH = 128
 DELIVERY_MODES = ("alerts", "jsonc", "both")
 OUTBOX_KINDS = ("alert", "jsonc")
-JOB_STATUSES = ("queued", "importing", "running", "succeeded", "failed", "cancelled")
+JOB_STATUSES = ("queued", "importing", "running", "succeeded", "failed", "cancelled", "interrupted")
+JOB_LEASE_SECONDS = 120
+MAX_JOB_RECOVERY_ATTEMPTS = 3
 
 
 class SettingsOwnershipLost(RuntimeError):
@@ -64,6 +66,10 @@ class Job:
     run_id: Optional[str]
     status: str
     error: Optional[str]
+    lease_token: Optional[str] = None
+    lease_until: Any = None
+    heartbeat_at: Any = None
+    recovery_attempts: int = 0
     binding_epoch: int = 1
     created_at: Any = None
     updated_at: Any = None
@@ -131,6 +137,10 @@ def _job(row: Dict[str, Any]) -> Job:
         run_id=row.get("run_id"),
         status=str(row["status"]),
         error=row.get("error"),
+        lease_token=row.get("lease_token"),
+        lease_until=row.get("lease_until"),
+        heartbeat_at=row.get("heartbeat_at"),
+        recovery_attempts=int(row.get("recovery_attempts") or 0),
         binding_epoch=int(row.get("binding_epoch") or 1),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
@@ -474,32 +484,99 @@ class TelegramRepository:
                 row = existing
         return _job(row)
 
-    def claim_job(self, job_id: str) -> Optional[Job]:
-        """Atomically move queued -> importing; only one worker may execute it."""
+    def claim_job(self, job_id: str,
+                  lease_seconds: int = JOB_LEASE_SECONDS,
+                  max_recovery_attempts: int = MAX_JOB_RECOVERY_ATTEMPTS) -> Optional[Job]:
+        """Atomically claim/retry a job under a live owner and a short lease.
+
+        ``queued`` is claimable directly. A stale ``importing`` job is
+        claimable only while it has no ``run_id``; a job that already created a
+        run is never re-imported by this path.
+        """
         try:
             parsed = uuid.UUID(str(job_id))
         except (ValueError, TypeError, AttributeError):
             return None
+        token = secrets.token_urlsafe(18)
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
                 UPDATE telegram.jobs j
-                   SET status = 'importing', updated_at = now()
+                   SET status = 'importing',
+                       lease_token = %s,
+                       lease_until = now() + make_interval(secs => %s),
+                       heartbeat_at = now(),
+                       recovery_attempts = j.recovery_attempts
+                           + CASE WHEN j.status = 'importing' THEN 1 ELSE 0 END,
+                       updated_at = now()
                   FROM telegram.bindings b
                  WHERE j.job_id = %s
-                   AND j.status = 'queued'
+                   AND j.status IN ('queued', 'importing')
+                   AND (j.status = 'queued'
+                        OR (j.run_id IS NULL
+                            AND (j.lease_until IS NULL OR j.lease_until < now())
+                            AND j.recovery_attempts < %s))
                    AND b.chat_id = j.chat_id
                    AND b.user_id = j.user_id
                    AND b.workspace_id = j.workspace_id
                    AND b.binding_epoch = j.binding_epoch
                 RETURNING j.*
                 """,
-                (parsed,),
+                (token, int(lease_seconds), parsed, int(max_recovery_attempts)),
             ).fetchone()
         return _job(row) if row else None
 
+    def heartbeat_job(self, job: Job,
+                      lease_seconds: int = JOB_LEASE_SECONDS) -> bool:
+        """Renew a lease only for the same token and current owner generation."""
+        if not job.lease_token:
+            return False
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE telegram.jobs j
+                   SET lease_until = now() + make_interval(secs => %s),
+                       heartbeat_at = now(),
+                       updated_at = now()
+                  FROM telegram.bindings b
+                 WHERE j.job_id = %s
+                   AND j.lease_token = %s
+                   AND j.status IN ('importing', 'running')
+                   AND b.chat_id = j.chat_id
+                   AND b.user_id = j.user_id
+                   AND b.workspace_id = j.workspace_id
+                   AND b.binding_epoch = j.binding_epoch
+                RETURNING j.job_id
+                """,
+                (int(lease_seconds), uuid.UUID(str(job.job_id)), job.lease_token),
+            ).fetchone()
+        return row is not None
+
+    def job_lease_valid(self, job: Job) -> bool:
+        """Fencing check before side effects: token, lease, owner and status."""
+        if not job.lease_token:
+            return False
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 AS ok
+                  FROM telegram.jobs j
+                  JOIN telegram.bindings b
+                    ON b.chat_id = j.chat_id
+                   AND b.user_id = j.user_id
+                   AND b.workspace_id = j.workspace_id
+                   AND b.binding_epoch = j.binding_epoch
+                 WHERE j.job_id = %s
+                   AND j.lease_token = %s
+                   AND j.status IN ('importing', 'running')
+                   AND j.lease_until IS NOT NULL AND j.lease_until > now()
+                """,
+                (uuid.UUID(str(job.job_id)), job.lease_token),
+            ).fetchone()
+        return row is not None
+
     def job_is_current(self, job: Job) -> bool:
-        """True only while the chat still belongs to the job's owner/epoch."""
+        """Owner-generation check (lease-independent)."""
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
@@ -508,9 +585,105 @@ class TelegramRepository:
                    AND binding_epoch = %s
                 """,
                 (int(job.chat_id), _uuid(job.user_id, "userId"),
-                 _uuid(job.workspace_id, "workspaceId"), int(job.binding_epoch)),
+                 _uuid(job.workspace_id, "workspaceId"),
+                 int(job.binding_epoch)),
             ).fetchone()
         return row is not None
+
+    def recover_jobs(self, limit: int = 20,
+                     max_recovery_attempts: int = MAX_JOB_RECOVERY_ATTEMPTS) -> List[str]:
+        """Settle orphaned jobs and return bounded claimable job ids.
+
+        Jobs with an existing run are never re-imported: if the run is terminal
+        the job follows it, otherwise the job becomes terminal ``interrupted``.
+        """
+        safe_limit = max(1, min(int(limit), 100))
+        with get_pool().connection() as conn:
+            # Exhausted import retries become an honest terminal state.
+            conn.execute(
+                """
+                UPDATE telegram.jobs j
+                   SET status = 'interrupted',
+                       error = 'recovery attempts exhausted',
+                       lease_token = NULL,
+                       lease_until = NULL,
+                       updated_at = now()
+                  FROM telegram.bindings b
+                 WHERE j.status = 'importing'
+                   AND j.run_id IS NULL
+                   AND (j.lease_until IS NULL OR j.lease_until < now())
+                   AND j.recovery_attempts >= %s
+                   AND b.chat_id = j.chat_id
+                   AND b.user_id = j.user_id
+                   AND b.workspace_id = j.workspace_id
+                   AND b.binding_epoch = j.binding_epoch
+                """,
+                (int(max_recovery_attempts),),
+            )
+            with_run = conn.execute(
+                """
+                SELECT j.job_id, j.run_id, j.status AS job_status,
+                       r.execution_status AS run_status
+                  FROM telegram.jobs j
+                  JOIN telegram.bindings b
+                    ON b.chat_id = j.chat_id
+                   AND b.user_id = j.user_id
+                   AND b.workspace_id = j.workspace_id
+                   AND b.binding_epoch = j.binding_epoch
+                  LEFT JOIN runtime.runs r
+                    ON r.workspace_id = j.workspace_id AND r.id = j.run_id
+                 WHERE j.status IN ('importing', 'running')
+                   AND j.run_id IS NOT NULL
+                   AND (j.lease_until IS NULL OR j.lease_until < now())
+                 ORDER BY j.created_at
+                 LIMIT %s
+                """,
+                (safe_limit,),
+            ).fetchall()
+            for row in with_run:
+                run_status = row.get("run_status")
+                if run_status == "succeeded":
+                    status, error = "succeeded", None
+                elif run_status in ("failed", "cancelled", "interrupted"):
+                    status, error = "failed", str(run_status)
+                else:
+                    status = "interrupted"
+                    error = "runtime restarted; run preserved"
+                conn.execute(
+                    """
+                    UPDATE telegram.jobs j
+                       SET status = %s,
+                           error = %s,
+                           lease_token = NULL,
+                           lease_until = NULL,
+                           updated_at = now()
+                     WHERE j.job_id = %s
+                       AND j.status IN ('importing', 'running')
+                       AND j.run_id IS NOT NULL
+                       AND (j.lease_until IS NULL OR j.lease_until < now())
+                    """,
+                    (status, error, row["job_id"]),
+                )
+            candidates = conn.execute(
+                """
+                SELECT j.job_id
+                  FROM telegram.jobs j
+                  JOIN telegram.bindings b
+                    ON b.chat_id = j.chat_id
+                   AND b.user_id = j.user_id
+                   AND b.workspace_id = j.workspace_id
+                   AND b.binding_epoch = j.binding_epoch
+                 WHERE j.status = 'queued'
+                    OR (j.status = 'importing'
+                        AND j.run_id IS NULL
+                        AND (j.lease_until IS NULL OR j.lease_until < now())
+                        AND j.recovery_attempts < %s)
+                 ORDER BY j.created_at
+                 LIMIT %s
+                """,
+                (int(max_recovery_attempts), safe_limit),
+            ).fetchall()
+        return [str(row["job_id"]) for row in candidates]
 
     def get_job(self, job_id: str) -> Optional[Job]:
         try:
@@ -532,11 +705,13 @@ class TelegramRepository:
         run_id: Optional[str] = None,
         error: Optional[str] = None,
         binding_epoch: Optional[int] = None,
+        lease_token: Optional[str] = None,
         allow_cancelled: bool = False,
     ) -> Optional[Job]:
         if status not in JOB_STATUSES:
             raise ValueError("Некорректный статус job")
         parsed = uuid.UUID(str(job_id))
+        terminal = status in ("succeeded", "failed", "cancelled", "interrupted")
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
@@ -544,8 +719,11 @@ class TelegramRepository:
                    SET status = %s,
                        run_id = COALESCE(%s, run_id),
                        error = %s,
+                       lease_token = CASE WHEN %s THEN NULL ELSE lease_token END,
+                       lease_until = CASE WHEN %s THEN NULL ELSE lease_until END,
                        updated_at = now()
                  WHERE job_id = %s
+                   AND (%s::text IS NULL OR lease_token = %s)
                    AND (%s::bigint IS NULL OR binding_epoch = %s)
                    AND (
                        (%s AND status IN ('queued', 'importing', 'running', 'cancelled'))
@@ -553,7 +731,9 @@ class TelegramRepository:
                    )
                 RETURNING *
                 """,
-                (status, run_id, error, parsed, binding_epoch, binding_epoch,
+                (status, run_id, error, terminal, terminal, parsed,
+                 lease_token, lease_token,
+                 binding_epoch, binding_epoch,
                  bool(allow_cancelled), bool(allow_cancelled)),
             ).fetchone()
         return _job(row) if row else None
