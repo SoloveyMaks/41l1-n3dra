@@ -4,9 +4,9 @@ import os
 import re
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.router import (
@@ -250,6 +250,26 @@ try:
         frontend_dist = candidate
 except Exception:  # pragma: no cover - только для упакованного frontend
     frontend_dist = None
+
+
+@app.get("/miniapp", include_in_schema=False)
+@app.get("/miniapp/", include_in_schema=False)
+def miniapp_page():
+    """Serve the SPA entry directly; no catch-all and no /api fallback.
+
+    The static mount below still serves /assets/* and returns its own 404 for
+    missing assets. Only the two exact Mini App URLs fall back to index.html.
+    """
+    index = frontend_dist / "index.html" if frontend_dist is not None else None
+    if index is None or not index.is_file():
+        raise HTTPException(status_code=404, detail="Mini App frontend не собран")
+    return FileResponse(
+        index,
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
 if frontend_dist is not None:
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 
