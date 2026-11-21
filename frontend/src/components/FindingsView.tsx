@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   KeyRound, PackageSearch, FileCode2, ShieldAlert,
   Search, Filter, ExternalLink, ChevronRight, CheckCircle2
@@ -15,6 +15,12 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+
+  useEffect(() => {
+    if (selectedFinding && !findings.some((finding) => finding.id === selectedFinding.id)) {
+      setSelectedFinding(null);
+    }
+  }, [findings, selectedFinding]);
 
   const filteredFindings = findings.filter((f) => {
     if (analyzerFilter !== 'all' && f.analyzer !== analyzerFilter) return false;
@@ -36,12 +42,12 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
   const medCount = findings.filter((f) => f.severity === 'medium').length;
 
   return (
-    <div className="flex-1 h-full flex overflow-hidden bg-slate-950">
+    <div className="flex-1 h-full flex flex-col lg:flex-row overflow-hidden bg-slate-950">
       {/* Main List */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Filter bar */}
-        <div className="p-3.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-1">
+        <div className="p-3.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
             <div className="relative flex-1 max-w-xs">
               <Search size={14} className="absolute left-2.5 top-2.5 text-slate-500" />
               <input
@@ -54,7 +60,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
             </div>
 
             {/* Analyzer filter buttons */}
-            <div className="flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800 text-xs">
+            <div className="flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800 text-xs overflow-x-auto max-w-full">
               {['all', 'secret', 'sca', 'sast'].map((a) => (
                 <button
                   key={a}
@@ -85,7 +91,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
           </div>
 
           {/* Counts */}
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
             <span className="text-rose-400 font-semibold font-mono">
               Critical: {critCount}
             </span>

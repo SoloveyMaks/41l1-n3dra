@@ -27,6 +27,12 @@ interface WorkflowCanvasProps {
   onSaveDraft: () => void;
   onResetToTemplate: () => void;
   isSaving: boolean;
+  workflows: any[];
+  workflowId: string;
+  onSelectWorkflow: (workflowId: string) => void;
+  artifacts: import('../types').ArtifactManifest[];
+  currentArtifactId: string;
+  onSelectArtifact: (artifactId: string) => void;
 }
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -39,6 +45,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onSaveDraft,
   onResetToTemplate,
   isSaving,
+  workflows,
+  workflowId,
+  onSelectWorkflow,
+  artifacts,
+  currentArtifactId,
+  onSelectArtifact,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
 
@@ -139,50 +151,80 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   return (
     <div className="flex-1 h-full relative bg-slate-950">
       {/* Top Bar on Canvas */}
-      <div className="absolute top-3 left-4 z-10 flex items-center gap-2">
-        <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3 py-1.5 shadow-lg backdrop-blur-md flex items-center gap-2 text-xs">
-          <span className="font-semibold text-slate-200">{draft.name}</span>
-          <span className="text-slate-500">•</span>
-          <span className="text-slate-400 font-mono">{draft.nodes.length} блоков</span>
-          <span className="text-slate-500">•</span>
-          <span className="text-slate-400 font-mono">{draft.edges.length} связей</span>
+      <div className="absolute top-2 left-2 right-2 z-10 flex flex-wrap items-start gap-2 pointer-events-none">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-2 min-w-0 rounded-xl border border-slate-800 bg-slate-900/95 px-2.5 py-1.5 shadow-lg backdrop-blur-md text-xs">
+          <label className="flex items-center gap-1.5 min-w-0">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500">Сценарий</span>
+            <select
+              value={workflowId}
+              onChange={(event) => onSelectWorkflow(event.target.value)}
+              className="max-w-[170px] sm:max-w-[230px] bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200"
+              title="Выбрать сохранённый сценарий"
+            >
+              {workflows.map((workflow) => (
+                <option key={workflow.id} value={workflow.id}>
+                  {workflow.name || workflow.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 min-w-0">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500">Проект</span>
+            <select
+              value={currentArtifactId}
+              onChange={(event) => onSelectArtifact(event.target.value)}
+              className="max-w-[170px] sm:max-w-[240px] bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200"
+              title="Артефакт, который попадёт в запуск"
+            >
+              <option value="">{artifacts.length ? 'Авто-выбор' : 'Нет артефактов'}</option>
+              {artifacts.map((artifact) => (
+                <option key={artifact.id} value={artifact.id}>
+                  {artifact.filename} · {artifact.kotlin_file_count} kt · {artifact.id.slice(0, 6)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="hidden sm:inline text-slate-600">•</span>
+          <span className="hidden sm:inline text-slate-400 font-mono">{draft.nodes.length} блоков</span>
+          <span className="hidden sm:inline text-slate-600">•</span>
+          <span className="hidden sm:inline text-slate-400 font-mono">{draft.edges.length} связей</span>
         </div>
 
-        {/* Validation indicator */}
         <div
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs shadow-lg backdrop-blur-md ${
+          className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] shadow-lg backdrop-blur-md ${
             hasErrors
-              ? 'bg-rose-950/80 border-rose-800 text-rose-300'
-              : 'bg-emerald-950/80 border-emerald-800 text-emerald-300'
+              ? 'bg-rose-950/90 border-rose-800 text-rose-300'
+              : 'bg-emerald-950/90 border-emerald-800 text-emerald-300'
           }`}
         >
-          {hasErrors ? <AlertCircle size={14} /> : <CheckCircle2 size={14} />}
-          <span>{hasErrors ? `Ошибок в графе: ${validationIssues.length}` : 'Граф валиден (DAG OK)'}</span>
+          {hasErrors ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
+          <span>{hasErrors ? `Ошибок: ${validationIssues.filter((issue) => issue.level === 'error').length}` : 'Граф валиден'}</span>
         </div>
-      </div>
 
-      <div className="absolute top-3 right-4 z-10 flex items-center gap-2">
+        <div className="pointer-events-auto ml-auto flex items-center gap-2">
         <button
           onClick={onResetToTemplate}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-medium shadow-lg backdrop-blur-md transition cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-medium shadow-lg backdrop-blur-md transition cursor-pointer"
+          title="Вернуть сохранённый draft с сервера"
         >
           <RotateCcw size={13} />
-          <span>Шаблон PR Gate</span>
+          <span className="hidden sm:inline">Сбросить draft</span>
         </button>
 
         <button
           onClick={onSaveDraft}
           disabled={isSaving}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition cursor-pointer"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition cursor-pointer"
         >
           <Save size={13} />
           <span>{isSaving ? 'Сохранение...' : 'Сохранить draft'}</span>
         </button>
+        </div>
       </div>
 
       {/* Validation Issues Drawer if any */}
       {hasErrors && (
-        <div className="absolute bottom-4 left-4 z-10 max-w-md bg-rose-950/95 border border-rose-800 rounded-xl p-3 shadow-2xl backdrop-blur-md text-xs text-rose-200 space-y-1">
+        <div className="absolute bottom-3 left-2 right-2 sm:right-auto sm:left-4 z-10 max-w-md bg-rose-950/95 border border-rose-800 rounded-xl p-3 shadow-2xl backdrop-blur-md text-xs text-rose-200 space-y-1">
           <div className="font-semibold text-rose-100 flex items-center gap-1.5">
             <AlertCircle size={14} />
             <span>Требуется исправить перед запуском:</span>

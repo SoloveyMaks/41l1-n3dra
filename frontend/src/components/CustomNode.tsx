@@ -231,7 +231,7 @@ function renderConfigSummary(kind: NodeKind, config: Record<string, any>) {
         </div>
       );
     case 'ai_explain':
-      return <div className="text-fuchsia-300">Модель: {config.model || 'gemini-3.8-flash'}</div>;
+      return <div className="text-fuchsia-300">Модель: deepseek-v4.1-flash-1017</div>;
     case 'build_report':
       return <div>Security Passport + JSON</div>;
     case 'notify':

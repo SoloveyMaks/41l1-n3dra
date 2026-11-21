@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, GitCompare, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, ArrowLeftRight, GitCompare, RefreshCw, ShieldAlert } from 'lucide-react';
 import { ComparisonDto, ComparisonStatus, RunSummary, SqlPatternResult } from '../types';
 import { apiClient } from '../api/client';
 
@@ -37,9 +37,10 @@ const STATUS_CLASS: Record<ComparisonStatus, string> = {
 
 interface ComparisonViewProps {
   runs: RunSummary[];
+  onRefreshRuns?: () => void;
 }
 
-export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
+export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, onRefreshRuns }) => {
   const finished = useMemo(
     () => runs.filter((run) => run.execution_status === 'succeeded' || run.execution_status === 'failed'),
     [runs],
@@ -82,9 +83,19 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
     }
   }, [finished, baseline, current]);
 
+  const canCompare = Boolean(baseline && current && baseline !== current && !busy);
+  const sameSelection = Boolean(baseline && current && baseline === current);
+
+  const swap = () => {
+    const nextBaseline = current;
+    const nextCurrent = baseline;
+    changeBaseline(nextBaseline);
+    changeCurrent(nextCurrent);
+  };
+
   const compare = async () => {
-    if (!baseline || !current || baseline === current) {
-      setError('Выберите два разных завершённых запуска');
+    if (!canCompare) {
+      setError(sameSelection ? 'Baseline и Current должны быть разными запусками' : 'Выберите два завершённых опубликованных запуска');
       return;
     }
     const seq = ++requestSeq.current;
@@ -139,9 +150,19 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
   return (
     <section className="flex-1 overflow-auto p-6 bg-slate-950">
       <div className="mx-auto max-w-5xl space-y-4">
-        <div className="flex items-center gap-2">
-          <GitCompare size={18} className="text-indigo-400" />
-          <h2 className="text-sm font-semibold text-white">Сравнение опубликованных запусков</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <GitCompare size={18} className="text-indigo-400" />
+            <h2 className="text-sm font-semibold text-white">Сравнение опубликованных запусков</h2>
+          </div>
+          {onRefreshRuns && (
+            <button
+              onClick={onRefreshRuns}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700"
+            >
+              <RefreshCw size={13} /> Обновить историю
+            </button>
+          )}
         </div>
         <p className="text-xs text-slate-400">
           Сравнение не запускает сканеры и не считает partial coverage доказанным исправлением.
@@ -151,14 +172,35 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
         <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
           {select(baseline, changeBaseline, 'Baseline (до)')}
           {select(current, changeCurrent, 'Current (после)')}
-          <button
-            onClick={compare}
-            disabled={busy}
-            className="rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 px-4 py-2 text-xs font-semibold text-white"
-          >
-            {busy ? 'Сравниваем…' : 'Сравнить'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2 md:flex-col">
+            <button
+              onClick={swap}
+              disabled={!baseline || !current}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+              title="Поменять baseline и current"
+            >
+              <ArrowLeftRight size={13} /> Поменять
+            </button>
+            <button
+              onClick={compare}
+              disabled={!canCompare}
+              className="rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-400 px-4 py-2 text-xs font-semibold text-white"
+            >
+              {busy ? 'Сравниваем…' : 'Сравнить'}
+            </button>
+          </div>
         </div>
+
+        {finished.length < 2 && (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
+            Для сравнения нужны минимум два завершённых запуска. Запустите workflow или обновите историю.
+          </div>
+        )}
+        {sameSelection && (
+          <div className="rounded-xl border border-amber-900 bg-amber-950/30 p-3 text-xs text-amber-200">
+            Baseline и Current совпадают — выберите разные запуски.
+          </div>
+        )}
 
         {error && (
           <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-900 bg-rose-950/50 p-3 text-xs text-rose-200">
@@ -185,8 +227,8 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
               )}
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-slate-800">
-              <table className="w-full text-left text-xs">
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full min-w-[620px] text-left text-xs">
                 <thead className="bg-slate-900 text-slate-400">
                   <tr>
                     <th className="px-3 py-2">Статус</th>
