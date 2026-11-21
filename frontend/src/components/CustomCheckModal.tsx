@@ -79,6 +79,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
 
   useEffect(() => {
     if (!isOpen) {
+      seqRef.current += 1;
       abortRef.current?.abort();
       setForm(EMPTY_FORM);
       setPreview(null);
@@ -88,6 +89,22 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
       setBusy(null);
     }
   }, [isOpen]);
+
+  useEffect(() => () => {
+    seqRef.current += 1;
+    abortRef.current?.abort();
+  }, []);
+
+  const updateForm = (next: CustomCheckSpec) => {
+    seqRef.current += 1;
+    abortRef.current?.abort();
+    setForm(next);
+    setValidation(null);
+    setPreview(null);
+    setSaved(null);
+    setBusy(null);
+    setError(null);
+  };
 
   if (!isOpen) return null;
 
@@ -180,7 +197,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
           <div>
             <h2 id="custom-check-title" className="text-base font-semibold">Своя проверка</h2>
             <p className="mt-1 text-xs text-slate-400">
-              Python-скрипт запускается только в bwrap: без сети, host env и записи в проект.
+              Проверка запускается изолированно: без сети, секретов сервера и записи в проект.
             </p>
           </div>
           <button
@@ -199,7 +216,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
             <input
               aria-label="Название проверки"
               value={form.name}
-              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              onChange={(event) => updateForm({ ...form, name: event.target.value })}
               placeholder="Например, TODO в Kotlin"
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             />
@@ -209,7 +226,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
             <input
               aria-label="Версия проверки"
               value={form.version}
-              onChange={(event) => setForm({ ...form, version: event.target.value })}
+              onChange={(event) => updateForm({ ...form, version: event.target.value })}
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             />
           </label>
@@ -232,7 +249,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
               type="radio"
               name="custom-check-source"
               checked={form.sourceKind === 'template'}
-              onChange={() => setForm({ ...form, sourceKind: 'template', templateId: form.templateId || 'todo_scan' })}
+              onChange={() => updateForm({ ...form, sourceKind: 'template', templateId: form.templateId || 'todo_scan' })}
             />
             Встроенный шаблон
           </label>
@@ -241,7 +258,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
               type="radio"
               name="custom-check-source"
               checked={form.sourceKind === 'script'}
-              onChange={() => setForm({ ...form, sourceKind: 'script' })}
+              onChange={() => updateForm({ ...form, sourceKind: 'script' })}
             />
             Свой Python-скрипт
           </label>
@@ -253,7 +270,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
             <select
               aria-label="Встроенный шаблон проверки"
               value={form.templateId || ''}
-              onChange={(event) => setForm({ ...form, templateId: event.target.value })}
+              onChange={(event) => updateForm({ ...form, templateId: event.target.value })}
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             >
               {templates.map((item) => (
@@ -267,10 +284,10 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
             <textarea
               aria-label="Python-скрипт проверки"
               value={form.script}
-              onChange={(event) => setForm({ ...form, script: event.target.value })}
+              onChange={(event) => updateForm({ ...form, script: event.target.value })}
               rows={10}
               spellCheck={false}
-              placeholder="print(json.dumps({'schemaVersion': 'custom-check-result/1', 'findings': []}))"
+              placeholder="import json; print(json.dumps({'schemaVersion': 'custom-check-result/1', 'findings': []}))"
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100"
             />
           </label>
@@ -285,7 +302,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
               min={1}
               max={10}
               value={form.timeoutSeconds}
-              onChange={(event) => setForm({ ...form, timeoutSeconds: Number(event.target.value) })}
+              onChange={(event) => updateForm({ ...form, timeoutSeconds: Number(event.target.value) })}
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             />
           </label>
@@ -297,7 +314,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
               min={64}
               max={512}
               value={form.memoryMb}
-              onChange={(event) => setForm({ ...form, memoryMb: Number(event.target.value) })}
+              onChange={(event) => updateForm({ ...form, memoryMb: Number(event.target.value) })}
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             />
           </label>
@@ -309,7 +326,7 @@ export const CustomCheckModal: React.FC<CustomCheckModalProps> = ({ isOpen, onCl
               min={1024}
               max={65536}
               value={form.maxOutputBytes}
-              onChange={(event) => setForm({ ...form, maxOutputBytes: Number(event.target.value) })}
+              onChange={(event) => updateForm({ ...form, maxOutputBytes: Number(event.target.value) })}
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             />
           </label>

@@ -49,6 +49,7 @@ from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
 from backend.app.contracts.schemas import Finding, WorkflowDraft
 from backend.app.demo.default_workflow import get_default_workflow_draft
+from backend.app.demo.default_workflow_upgrade import upgrade_system_default_workflow
 from backend.app.demo.sample_project import create_sample_project_zip
 from backend.app.engine.executor import WorkflowExecutor
 from backend.app.engine.scheduler import WorkflowScheduler, validate_schedule_expression
@@ -390,6 +391,14 @@ def list_workflows():
         def_id = "wf_secure_pr_gate"
         db_repo.save_workflow(def_id, def_draft.name, def_draft.description, def_draft.model_dump())
         wfs = db_repo.list_workflows()
+    elif any(
+        row.get("id") == "wf_secure_pr_gate"
+        and not any(node.get("kind") == "ai_scan" for node in (row.get("draft") or {}).get("nodes", []))
+        for row in wfs
+    ):
+        result = upgrade_system_default_workflow(db_repo, apply=True)
+        if result.applied:
+            wfs = db_repo.list_workflows()
     return _strip_private_paths(wfs)
 
 

@@ -34,14 +34,15 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
     const controller = new AbortController();
     setCustomError('');
     listCustomChecks(controller.signal)
-      .then(setCustomChecks)
+      .then((items) => { if (!controller.signal.aborted) setCustomChecks(items); })
       .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
         setCustomChecks([]);
         setCustomError(error instanceof Error ? error.message : 'Не удалось загрузить проверки');
       });
     getCustomCheckStatus(controller.signal)
-      .then(setCustomSandbox)
-      .catch(() => setCustomSandbox(null));
+      .then((value) => { if (!controller.signal.aborted) setCustomSandbox(value); })
+      .catch(() => { if (!controller.signal.aborted) setCustomSandbox(null); });
     return () => controller.abort();
   }, [nodeId, nodeKind]);
 
@@ -362,8 +363,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               )}
               {!customError && customChecks.length === 0 && (
                 <p className="text-[10px] text-slate-500">
-                  Сохранённых проверок нет. Создайте их в «Custom Check» — в палитру попадает только
-                  проверка, прошедшая validate в sandbox.
+                  Сохранённых проверок нет. Нажмите «Создать свой блок» в палитре: после проверки контракта он появится в сценарии.
                 </p>
               )}
               {selectedCheck && (

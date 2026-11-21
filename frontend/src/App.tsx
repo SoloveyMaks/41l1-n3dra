@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { WorkflowCanvas } from './components/WorkflowCanvas';
+import { CustomCheckModal } from './components/CustomCheckModal';
+import { listCustomChecks, type CustomCheckDefinition } from './api/customChecks';
+import { addCheck } from './workflow/addCheck';
 import { NodePalette } from './components/NodePalette';
 import { InspectorPanel } from './components/InspectorPanel';
 import { LiveRunView } from './components/LiveRunView';
@@ -36,6 +39,7 @@ import {
   ExecutionStatus,
   Finding,
   NodeKind,
+  NodeDefinition,
   NodeRunRecord,
   ProfileData,
   ReportData,
@@ -48,7 +52,6 @@ import {
   SessionState,
   WorkflowDraft,
   WorkflowEdge,
-  WorkflowNode,
 } from './types';
 import { apiClient, ApiError, AuthRequiredError } from './api/client';
 import { buildRunTelemetry } from './execution/runTelemetry';
@@ -142,6 +145,9 @@ export const App: React.FC = () => {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isAiTestOpen, setIsAiTestOpen] = useState(false);
   const [isScenarioOpen, setIsScenarioOpen] = useState(false);
+  const [isCustomCheckOpen, setIsCustomCheckOpen] = useState(false);
+  const [customChecks, setCustomChecks] = useState<CustomCheckDefinition[]>([]);
+  const [nodeDefinitions, setNodeDefinitions] = useState<NodeDefinition[]>([]);
   const [isScenarioPromptOpen, setIsScenarioPromptOpen] = useState(false);
   const [scenarioName, setScenarioName] = useState('');
   const [scenarioBusy, setScenarioBusy] = useState(false);
@@ -529,12 +535,18 @@ export const App: React.FC = () => {
   };
 
   const loadInitialData = useCallback(async () => {
+    const epoch = authRef.current.epoch;
     try {
-      const [artifactList, workflowList, runList] = await Promise.all([
+      const [artifactList, workflowList, runList, definitions, checks] = await Promise.all([
         apiClient.listArtifacts(),
         apiClient.listWorkflows(),
         apiClient.listRuns(),
+        apiClient.getNodeTypes(),
+        listCustomChecks().catch(() => []),
       ]);
+      if (epoch !== authRef.current.epoch) return;
+      setNodeDefinitions(definitions);
+      setCustomChecks(checks);
       setArtifacts(artifactList);
       setCurrentArtifactId(artifactList[0]?.id || '');
       setWorkflows(workflowList);
@@ -728,6 +740,8 @@ export const App: React.FC = () => {
     setIsRunning(false);
     setSelectedNodeId(null);
     setIsAccountOpen(false);
+    setIsCustomCheckOpen(false);
+    setCustomChecks([]);
     setProfile(null);
     setAccountHistory([]);
     setAccountError(null);
@@ -880,18 +894,26 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleAddNode = (kind: NodeKind) => {
-    const newId = `node_${kind}_${Date.now()}`;
-    const newNode: WorkflowNode = {
-      id: newId,
-      kind,
-      version: 1,
-      title: kind.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-      config: {},
-      position: { x: 300 + Math.random() * 100, y: 150 + Math.random() * 100 },
-    };
-    handleDraftChange({ ...draft, nodes: [...draft.nodes, newNode] });
-    setSelectedNodeId(newId);
+  const handleAddNode = (kind: NodeKind, custom?: CustomCheckDefinition) => {
+    if (kind === 'ai_scan') {
+      const existing = draft.nodes.find((node) => node.kind === 'ai_scan');
+      if (existing) {
+        setSelectedNodeId(existing.id);
+        showNotice('ok', 'ИИ-проверка уже есть в сценарии');
+        return;
+      }
+    }
+    const added = addCheck(draft, kind, nodeDefinitions.find((item) => item.kind === kind), custom);
+    handleDraftChange(added.draft);
+    setSelectedNodeId(added.node.id);
+    if (kind === 'ai_scan') showNotice('ok', 'ИИ-проверка добавлена. Проверьте связи и сохраните сценарий.');
+    if (kind === 'custom_check') showNotice('ok', 'Свой блок добавлен. Проверьте связи и сохраните сценарий.');
+  };
+
+  const handleCustomCheckSaved = (definition: CustomCheckDefinition) => {
+    setCustomChecks((items) => [...items.filter((item) => item.id !== definition.id), definition]);
+    handleAddNode('custom_check', definition);
+    setIsCustomCheckOpen(false);
   };
 
   const handleUpdateNodeConfig = (nodeId: string, newConfig: Record<string, any>, newTitle?: string) => {
@@ -1155,7 +1177,12 @@ export const App: React.FC = () => {
         <main className="relative flex flex-1 overflow-hidden">
           {activeTab === 'editor' && (
             <div className="flex h-full flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
-              <NodePalette onAddNode={handleAddNode} />
+              <NodePalette
+                onAddNode={handleAddNode}
+                onCreateCustomBlock={() => setIsCustomCheckOpen(true)}
+                customChecks={customChecks}
+                onAddCustomBlock={(definition) => handleAddNode('custom_check', definition)}
+              />
               <WorkflowCanvas
                 draft={draft}
                 onDraftChange={handleDraftChange}
@@ -1181,6 +1208,7 @@ export const App: React.FC = () => {
               {selectedNode && (
                 <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
                   <InspectorPanel
+                    key={session?.workspaceId}
                     node={selectedNode}
                     artifacts={artifacts}
                     onUpdateConfig={handleUpdateNodeConfig}
@@ -1218,6 +1246,7 @@ export const App: React.FC = () => {
             <FindingsView
               findings={findings}
               runId={currentRunId}
+              runStatus={currentRun?.execution_status}
               aiScan={aiScan}
               aiItems={report?.run_id === currentRunId ? report.ai_items : []}
               aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
@@ -1286,6 +1315,12 @@ export const App: React.FC = () => {
           onClose={() => setIsUploadOpen(false)}
           onArtifactLoaded={handleArtifactLoaded}
           showTraining={false}
+        />
+        <CustomCheckModal
+          key={`${session?.workspaceId}-${workflowId}`}
+          isOpen={isCustomCheckOpen}
+          onClose={() => setIsCustomCheckOpen(false)}
+          onSaved={handleCustomCheckSaved}
         />
         <ScenarioPromptModal
           isOpen={isScenarioPromptOpen}
@@ -1382,7 +1417,12 @@ export const App: React.FC = () => {
               </span>
             </div>
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-              <NodePalette onAddNode={handleAddNode} />
+              <NodePalette
+                onAddNode={handleAddNode}
+                onCreateCustomBlock={() => setIsCustomCheckOpen(true)}
+                customChecks={customChecks}
+                onAddCustomBlock={(definition) => handleAddNode('custom_check', definition)}
+              />
               <WorkflowCanvas
                 draft={draft}
                 onDraftChange={handleDraftChange}
@@ -1407,6 +1447,7 @@ export const App: React.FC = () => {
               />
               {selectedNode && (
                 <InspectorPanel
+                  key={session?.workspaceId}
                   node={selectedNode}
                   artifacts={artifacts}
                   onUpdateConfig={handleUpdateNodeConfig}
@@ -1464,6 +1505,7 @@ export const App: React.FC = () => {
           <FindingsView
             findings={findings}
             runId={currentRunId}
+            runStatus={currentRun?.execution_status}
             aiScan={aiScan}
             aiItems={report?.run_id === currentRunId ? report.ai_items : []}
             aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
@@ -1538,6 +1580,12 @@ export const App: React.FC = () => {
         onClose={() => setIsUploadOpen(false)}
         onArtifactLoaded={handleArtifactLoaded}
         showTraining
+      />
+      <CustomCheckModal
+        key={`${session?.workspaceId}-${workflowId}`}
+        isOpen={isCustomCheckOpen}
+        onClose={() => setIsCustomCheckOpen(false)}
+        onSaved={handleCustomCheckSaved}
       />
       <ScenarioPromptModal
         isOpen={isScenarioPromptOpen}

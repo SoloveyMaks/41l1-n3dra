@@ -243,6 +243,11 @@ def build_draft_from_plan(
             id="sb_e_policy_report", source="sb_policy", sourcePort="policy_result",
             target="sb_report", targetPort="policy_result",
         ))
+        if include_ai:
+            edges.append(WorkflowEdge(
+                id="sb_e_ai_scan_report", source="sb_ai_scan", sourcePort="ai_scan_result",
+                target="sb_report", targetPort="ai_scan_result",
+            ))
         if include_explain:
             edges.append(WorkflowEdge(
                 id="sb_e_explain_report", source="sb_ai_explain", sourcePort="explain_result",

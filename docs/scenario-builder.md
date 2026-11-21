@@ -436,3 +436,15 @@ No product defect was found in this pass. One earlier harness-only artifact was
 a delayed `page.route` left from a stale-response check; it was removed before
 the real Apply, otherwise it fabricated a zero-node preview and is not a product
 behavior.
+
+
+### Проверка после подключения своих блоков (22.11.2026)
+
+`AI_SCAN.ai_scan_result` соединяется с выделенным входом отчёта и при сборке
+по описанию; гипотезы не входят в deterministic findings/policy/verdict.
+Client port catalog и карточка отчёта показывают этот четвёртый вход.
+`custom_check` зарегистрирован в контракте редактора, но planner не выдумывает
+скрипты/definitionId: свои проверки добавляются через форму в палитре.
+На отдельной PostgreSQL настоящий provider preview вернул valid=true;
+неизвестный intent по-прежнему отвергается. Поддержанный голосовой ввод
+зависит от браузера; живая речь и Telegram-доставка этой проверкой не доказаны.

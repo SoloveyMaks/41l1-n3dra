@@ -4,6 +4,8 @@ import {
   GitMerge, ShieldAlert, GitFork, Sparkles, FileText, Send,
   ChevronLeft, ChevronRight, Plus
 } from 'lucide-react';
+import type { CustomCheckDefinition } from '../api/customChecks';
+import { CUSTOM_CHECK_PALETTE_ITEM } from './customCheckPaletteItem';
 import { NodeKind } from '../types';
 import './NodePalette.css';
 
@@ -20,6 +22,8 @@ const readPaletteCollapsed = (): boolean => {
 interface NodePaletteProps {
   onAddNode: (kind: NodeKind) => void;
   onCreateCustomBlock?: () => void;
+  customChecks?: CustomCheckDefinition[];
+  onAddCustomBlock?: (definition: CustomCheckDefinition) => void;
   onNodeDragStart?: (event: React.DragEvent<HTMLButtonElement>, kind: NodeKind) => void;
 }
 
@@ -48,6 +52,7 @@ const PALETTE_ITEMS: Array<{
       { kind: 'secret_scan', title: 'Поиск секретов', desc: 'Поиск паролей и токенов', icon: KeyRound, color: 'text-amber-400 border-amber-800/60 bg-amber-950/30' },
       { kind: 'sca_scan', title: 'Зависимости', desc: 'Известные уязвимости Gradle/KTS', icon: PackageSearch, color: 'text-orange-400 border-orange-800/60 bg-orange-950/30' },
       { kind: 'kotlin_sast', title: 'Анализ Kotlin', desc: 'Пути небезопасных данных', icon: FileCode2, color: 'text-rose-400 border-rose-800/60 bg-rose-950/30' },
+      { kind: 'ai_scan', title: 'ИИ: поиск уязвимостей', desc: 'Четвёртая проверка: гипотезы по коду', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
     ],
   },
   {
@@ -64,12 +69,7 @@ const PALETTE_ITEMS: Array<{
       { kind: 'branch_merge', title: 'Объединить ветви', desc: 'Продолжить после развилки', icon: GitMerge, color: 'text-indigo-400 border-indigo-800/60 bg-indigo-950/30' },
     ],
   },
-  {
-    category: 'AI-анализ кода',
-    items: [
-      { kind: 'ai_scan', title: 'AI: поиск уязвимостей', desc: 'Гипотезы по коду со скрытыми секретами', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
-    ],
-  },
+  { category: 'Свои проверки', items: [CUSTOM_CHECK_PALETTE_ITEM] },
   {
     category: 'Объяснения и отчёты',
     items: [
@@ -83,6 +83,8 @@ const PALETTE_ITEMS: Array<{
 export const NodePalette: React.FC<NodePaletteProps> = ({
   onAddNode,
   onCreateCustomBlock,
+  customChecks = [],
+  onAddCustomBlock,
   onNodeDragStart,
 }) => {
   const [collapsed, setCollapsed] = useState(readPaletteCollapsed);
@@ -109,7 +111,7 @@ export const NodePalette: React.FC<NodePaletteProps> = ({
       <div className="node-palette__header">
         <div className="node-palette__intro">
           <h2 id={headingId}>Палитра блоков</h2>
-          {!collapsed && <p>Нажмите блок, чтобы добавить в сценарий</p>}
+          {!collapsed && <p>3 скриптовые проверки + 1 ИИ. Нажмите блок, чтобы добавить.</p>}
         </div>
         <button
           type="button"
@@ -151,6 +153,22 @@ export const NodePalette: React.FC<NodePaletteProps> = ({
             </div>
           </section>
         ))}
+        {customChecks.length > 0 && (
+          <section className="node-palette__category">
+            <h3>Мои проверки</h3>
+            <div className="node-palette__items">
+              {customChecks.map((definition) => (
+                <button key={definition.id} type="button" className="node-palette__item text-violet-300 border-violet-800/60 bg-violet-950/30" onClick={() => onAddCustomBlock?.(definition)}>
+                  <FileCode2 size={16} className="node-palette__item-icon" aria-hidden="true" />
+                  <span className="node-palette__item-copy">
+                    <span className="node-palette__item-title">{definition.name}</span>
+                    <span className="node-palette__item-description">Версия {definition.version}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         {onCreateCustomBlock && (
           <button type="button" className="node-palette__custom" onClick={onCreateCustomBlock}>
             <Plus size={16} aria-hidden="true" />

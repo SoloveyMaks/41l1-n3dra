@@ -53,13 +53,14 @@ const NODE_PORTS: Record<NodeKind, NodePortContract> = {
   secret_scan: { inputs: ['artifact'], outputs: ['scan_result'] },
   sca_scan: { inputs: ['artifact'], outputs: ['scan_result'] },
   kotlin_sast: { inputs: ['artifact'], outputs: ['scan_result'] },
+  custom_check: { inputs: ['artifact'], outputs: ['custom_findings'] },
   merge_findings: { inputs: ['scan_1', 'scan_2', 'scan_3'], outputs: ['findings_bundle'] },
   branch_merge: { inputs: ['branch_a', 'branch_b'], outputs: ['out'] },
   condition: { inputs: ['in'], outputs: ['true_branch', 'false_branch'] },
   policy_gate: { inputs: ['findings_bundle'], outputs: ['policy_result'] },
   ai_explain: { inputs: ['findings_bundle'], outputs: ['explain_result'] },
   ai_scan: { inputs: ['artifact', 'findings_bundle'], outputs: ['ai_scan_result'] },
-  build_report: { inputs: ['findings_bundle', 'policy_result', 'explain_result'], outputs: ['report'] },
+  build_report: { inputs: ['findings_bundle', 'policy_result', 'explain_result', 'ai_scan_result'], outputs: ['report'] },
   notify: { inputs: ['report'], outputs: ['delivery_result'] },
 };
 

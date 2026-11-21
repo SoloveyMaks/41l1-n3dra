@@ -125,7 +125,7 @@ def _ai_scan_node() -> WorkflowNode:
         # Advisory side branch: the only outgoing edge goes to the report's
         # dedicated AI input. It never reaches policy, canonical findings or
         # the deterministic counts.
-        position={"x": 760, "y": 430},
+        position={"x": 500, "y": 560},
         config={
             "profile": "balanced",
             "maxFiles": 6,

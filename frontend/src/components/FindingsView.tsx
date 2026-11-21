@@ -4,6 +4,7 @@ import {
   Search, ChevronRight
 } from 'lucide-react';
 import { AiScanResult, Finding } from '../types';
+import { CustomFindingsPanel } from './CustomFindingsPanel';
 import { EvidenceCard } from './EvidenceCard';
 import { AiHypothesesPanel } from './AiHypothesesPanel';
 import { ResponsibilityPanel } from './ResponsibilityPanel';
@@ -13,6 +14,7 @@ import type { FindingSortMode } from '../severity';
 interface FindingsViewProps {
   findings: Finding[];
   runId?: string | null;
+  runStatus?: string;
   aiScan?: AiScanResult | null;
   aiItems?: Array<{ findingId: string; explanation: string; remediation: string; suggestedFixedVersion?: string }>;
   aiStatus?: string;
@@ -25,7 +27,7 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   inconclusive: 'не подтверждено',
 };
 
-export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = null, aiScan = null, aiItems = [], aiStatus, onOpenReport }) => {
+export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = null, runStatus, aiScan = null, aiItems = [], aiStatus, onOpenReport }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -73,6 +75,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = nu
     <div className="flex-1 h-full flex flex-col lg:flex-row overflow-hidden bg-slate-950">
       {/* Main List */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <CustomFindingsPanel key={runId} runId={runId} runStatus={runStatus} />
         {/* Filter bar */}
         <div className="p-3.5 bg-slate-900 border-b border-slate-800 space-y-2">
           <div className="relative w-full">

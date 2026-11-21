@@ -104,6 +104,7 @@ const KIND_META: Record<string, { title: string; phase: PhaseId; icon: IconCompo
   condition: { title: 'Ветвление по риску', phase: 'verdict', icon: GitFork, color: 'text-yellow-400' },
   branch_merge: { title: 'Сведение ветвей', phase: 'verdict', icon: GitMerge, color: 'text-indigo-400' },
   ai_explain: { title: 'AI-объяснение', phase: 'ai', icon: Sparkles, color: 'text-fuchsia-400' },
+  custom_check: { title: 'Своя проверка', phase: 'scanners', icon: FileCode2, color: 'text-violet-300' },
   ai_scan: { title: 'AI-гипотезы', phase: 'ai', icon: Sparkles, color: 'text-fuchsia-300' },
   build_report: { title: 'Отчёт и паспорт проверки', phase: 'report', icon: FileText, color: 'text-cyan-400' },
   notify: { title: 'Уведомление', phase: 'delivery', icon: Send, color: 'text-sky-400' },
@@ -403,6 +404,17 @@ function describeStage(nodeRun: NodeRunRecord): StageCopy {
 
   if (kind === 'branch_merge') {
     return { short: 'Ветви сведены, данные переданы дальше' };
+  }
+
+  if (kind === 'custom_check') {
+    const result = asObject(output.custom_findings);
+    const findings = asArray(result.findings);
+    return {
+      short: `Своя проверка: ${findings.length} ${plural(findings.length, 'результат', 'результата', 'результатов')}`,
+      detail: asString(result.summary) || 'Python-проверка выполнена в изолированной среде.',
+      chips: severityChips(findings),
+      warning: 'Результаты своей проверки показаны отдельно и не меняют вердикт штатных сканеров.',
+    };
   }
 
   if (kind === 'ai_scan') {
