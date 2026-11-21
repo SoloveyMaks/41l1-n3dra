@@ -7,18 +7,21 @@
 
 ## Статус
 
-- Exact candidate `c7057ee` запушен в `origin/dev`; app source не менялся после
-  `b6abde4`. FINAL Sol structure `8d8e0ca` принят.
-- Три независимых review приняты: logic, visual, structure FINAL. Все шесть
-  исходных структурных препятствий закрыты в проверенных путях; это не полный
-  аудит и не release-wide approval.
-- FINAL продукта принят. Deploy `c705` **остановлен checksum mismatch** для
-  applied 006 и безопасно откатан на `9862e19`; public updated не заявлен,
-  public smoke pending. Новая попытка — pending forward `007` и проверки
-  проверки восстановленной копии; детали в [deployment final](docs/deployment-final.md).
-- Root build PASS. `main` и финальная приёмка ещё pending.
+- **Публичный стенд обновлён:** https://nedra.soloveyka.bond работает, health
+  200; публичная revision `63ca8c1`, asset `index-DA9FQkXU.js`.
+- Финальная проверка продукта принята: три review (logic, visual, structure) и
+  независимый migration review на PostgreSQL 16 — PASS. Шесть исходных
+  структурных препятствий закрыты в проверенных путях.
+- `007` применена обычным startup, ledger 6; историческая `006` не изменена,
+  DB backup 600, volumes не тронуты.
+- Проверенный прототип доступен для показа с ограничениями ниже. Это не полный
+  security-аудит и не все функции.
+- `main` merge ещё pending у root; текущий `dev` выше `63ca8c1` содержит только
+  docs.
 
 ## Проверить проект за 3 шага
+
+Откройте https://nedra.soloveyka.bond, войдите по пользовательскому коду.
 
 1. **Выберите проект** — ZIP или «Попробовать пример». Поддерживается
    Kotlin/Spring Boot.
@@ -53,6 +56,7 @@
 - [Sol logic](docs/reviews/sol-logic.md) — принят AFTER85
 - [Sol visual](docs/reviews/sol-visual.md) — принят AFTER85
 - [Sol structure](docs/reviews/sol-structure.md) — принят FINAL
+- [Sol migration](docs/reviews/sol-migration.md) — 007/PG16 PASS
 - [Report coverage](docs/report-coverage.md) — каноническая полнота отчёта
 - [Контракты данных](docs/data-contracts/README.md), [SQL ↔ DTO](docs/data-contracts/mapping.md)
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
@@ -109,13 +113,12 @@ cd frontend && npm ci && npm run build       # production build
 
 ## Ограничения
 
-Публичный deploy `c705` не подтверждён: попытка остановлена checksum mismatch,
-выполнен безопасный откат на `9862e19` (healthy 200, старый asset). Новая
-попытка pending `007`; public smoke ещё не выполнялся. Неблокирующие
-visual-остатки — короткие edge labels, часть comparison-текста на 390;
-конструктор на 390 повторно не проверялся. Полные ограничения, три review и
-чеклист deploy/public smoke — в [release handoff](docs/RELEASE-HANDOFF.md).
+Shared workspace: аккаунтов и приватных кабинетов нет; роли `user`/`admin`
+ограничивают операторские действия. Хост — локальный ПК; `Linger=no`, после
+reboot нужен login. Покрытие частичное; embeddings 403/disabled, retrieval
+выключен; vetted-примеров 0. Общее сравнение `inconclusive`, SQL-проверка узкая.
+Неблокирующие visual-остатки — короткие edge labels, часть comparison-текста на
+390; конструктор на 390 не перепроверялся.
 
-Хост публичного стенда — локальный ПК; `Linger=no`, после reboot нужен
-пользовательский login. Production readiness, полный аудит и полное покрытие не
-заявляются.
+Полный security-аудит, «все функции проверены» и production readiness не
+заявляются. Полная сводка — в [release handoff](docs/RELEASE-HANDOFF.md).
