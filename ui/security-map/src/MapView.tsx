@@ -87,6 +87,37 @@ const sourceStatusText: Record<string, string> = {
   unavailable: "недоступен",
 };
 
+const sourceErrorReason = (code: string): string => {
+  if (code === "source_unavailable")
+    return "Сервис не смог отдать сохранённый фрагмент.";
+  if (code === "evidence_not_available")
+    return "Фрагмент не найден в сохранённом снимке.";
+  if (code === "source_scope_mismatch")
+    return "Фрагмент относится к другому запуску или снимку.";
+  return "Сервис не смог загрузить фрагмент.";
+};
+
+const findingSeverityOrder: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+const findingStatusOrder: Record<string, number> = {
+  confirmed: 0,
+  open: 1,
+  inconclusive: 2,
+  dismissed: 3,
+};
+
+const findingConfidenceOrder: Record<string, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
 const edgeKindText: Record<string, string> = {
   routes_to: "Обращается",
   matches: "Подходит под правило",
@@ -221,10 +252,20 @@ export function MapView(props: MapViewProps) {
     miniMapTouched.current = true;
     setMiniMapOpen((value) => !value);
   };
-  const focusIds = useMemo(
-    () => initialFocusNodeIds(model.nodes, model.edges, model.findings),
-    [model.nodes, model.edges, model.findings],
-  );
+  const primaryFinding = useMemo(() => {
+    const withRefs = model.findings.filter((finding) => finding.nodeIds.length > 0);
+    const pool = withRefs.length ? withRefs : model.findings;
+    return [...pool].sort((a, b) =>
+      (findingSeverityOrder[a.severity] ?? 9) - (findingSeverityOrder[b.severity] ?? 9) ||
+      (findingStatusOrder[a.status] ?? 9) - (findingStatusOrder[b.status] ?? 9) ||
+      (findingConfidenceOrder[a.confidence] ?? 9) - (findingConfidenceOrder[b.confidence] ?? 9) ||
+      a.label.localeCompare(b.label),
+    )[0] ?? null;
+  }, [model.findings]);
+  const focusIds = useMemo(() => {
+    if (!primaryFinding || !primaryFinding.nodeIds.length) return [];
+    return initialFocusNodeIds(model.nodes, model.edges, model.findings, primaryFinding.id);
+  }, [primaryFinding, model.nodes, model.edges, model.findings]);
   const readableFocusIds = useMemo(() => {
     const byId = new Map(model.nodes.map((node) => [node.id, node]));
     const routePath = focusIds.filter((id) =>
@@ -248,6 +289,9 @@ export function MapView(props: MapViewProps) {
   const canvasKey = `${Math.round(canvasSize.width / 50)}x${Math.round(canvasSize.height / 50)}`;
   const [localSelection, setLocalSelection] = useState<Selection | null>(null);
   const [openRequest, setOpenRequest] = useState<EvidenceRequest | null>(null);
+  const autoSelectedKey = useRef<string | null>(null);
+  const skipDetailsScroll = useRef(false);
+  const lastFocusedKey = useRef<string | null>(null);
 
   useEffect(() => {
     setMapNodes(
@@ -279,6 +323,20 @@ export function MapView(props: MapViewProps) {
     setOpenRequest(null);
   }, [model.scope.workspaceId, model.scope.runId, model.scope.snapshotId]);
 
+  const autoSelectionKey = `${model.scope.workspaceId}:${model.scope.runId}:${model.scope.snapshotId}:${model.revision}`;
+  useEffect(() => {
+    if (props.selection !== undefined) return;
+    if (autoSelectedKey.current === autoSelectionKey) return;
+    autoSelectedKey.current = autoSelectionKey;
+    setOpenRequest(null);
+    if (primaryFinding) {
+      skipDetailsScroll.current = true;
+      setLocalSelection({ kind: "finding", id: primaryFinding.id });
+    } else {
+      setLocalSelection(null);
+    }
+  }, [props.selection, autoSelectionKey, primaryFinding]);
+
   const selection =
     props.selection === undefined
       ? localSelection
@@ -303,6 +361,10 @@ export function MapView(props: MapViewProps) {
   }, [selection?.kind, selection?.id]);
 
   useEffect(() => {
+    if (skipDetailsScroll.current) {
+      skipDetailsScroll.current = false;
+      return;
+    }
     if (selection && window.matchMedia("(max-width: 1100px)").matches) {
       detailsRef.current?.scrollIntoView({ block: "start" });
     }
@@ -334,6 +396,12 @@ export function MapView(props: MapViewProps) {
     openRequest &&
     sameRequest(sourceState.request, openRequest)
       ? sourceState
+      : null;
+
+  const sourceError =
+    activeSource &&
+    (activeSource.status === "error" || activeSource.status === "unavailable")
+      ? activeSource
       : null;
 
   const open = (id: string) => {
@@ -377,12 +445,15 @@ export function MapView(props: MapViewProps) {
   }
   if (finding) finding.nodeIds.forEach((id) => selectedNodeIds.add(id));
   const adjacentIds = new Set(selectedNodeIds);
+  if (finding) focusIds.forEach((id) => adjacentIds.add(id));
   for (const item of model.edges) {
     if (selectedNodeIds.has(item.fromId)) adjacentIds.add(item.toId);
     if (selectedNodeIds.has(item.toId)) adjacentIds.add(item.fromId);
   }
   const hasSelection = Boolean(selection);
-  const unknownEdges = model.edges.filter((item) => item.resolution !== "resolved");
+  const unknownEdges = model.edges.filter((item) => item.resolution === "unknown");
+  const partialEdges = model.edges.filter((item) => item.resolution === "partial");
+  const unresolvedEdges = [...unknownEdges, ...partialEdges];
   const unknownNodeIds = new Set(
     unknownEdges.flatMap((item) => [item.fromId, item.toId]),
   );
@@ -395,6 +466,13 @@ export function MapView(props: MapViewProps) {
       .map((item) => item.id),
   );
   if (edge) connectedEdges.add(edge.id);
+  if (finding) {
+    for (const item of model.edges) {
+      if (focusIds.includes(item.fromId) && focusIds.includes(item.toId)) {
+        connectedEdges.add(item.id);
+      }
+    }
+  }
 
   useEffect(() => {
     setMapNodes((current) =>
@@ -424,6 +502,7 @@ export function MapView(props: MapViewProps) {
     model.nodes.length,
     model.edges.length,
     model.findings.length,
+    focusIds.join("|"),
     layout?.viewId,
     JSON.stringify(layout?.nodePositions),
   ]);
@@ -452,7 +531,7 @@ export function MapView(props: MapViewProps) {
         stroke: colour,
         strokeWidth: selected ? 3.2 : 1.7,
         strokeDasharray: item.resolution === "resolved" ? undefined : "7 6",
-        opacity: dimmed ? 0.18 : 1,
+        opacity: dimmed ? 0.32 : 1,
       },
       labelStyle: {
         fill: item.resolution === "resolved" ? "#cbd5e1" : "#fcd34d",
@@ -542,6 +621,16 @@ export function MapView(props: MapViewProps) {
     void flow?.fitView({ padding: 0.1, minZoom: 0.06, maxZoom: 1.2, duration: 260 });
   };
 
+  const modelFocusKey = `${model.revision}:${focusIds.join("|")}`;
+  const initialReadableIds = () => {
+    const narrow = canvasSize.width > 0 && canvasSize.width < 600;
+    return narrow && narrowFocusIds.length
+      ? narrowFocusIds
+      : readableFocusIds.length
+        ? readableFocusIds
+        : focusIds;
+  };
+
   const focusSelection = () => {
     const ids = new Set(selectedNodeIds);
     if (edge) {
@@ -551,23 +640,26 @@ export function MapView(props: MapViewProps) {
     if (finding) finding.nodeIds.forEach((id) => ids.add(id));
     if (ids.size) {
       focusViewport([...ids], 0.55, 1.15);
-    } else {
-      const narrow = canvasSize.width > 0 && canvasSize.width < 600;
-      focusViewport(narrow && narrowFocusIds.length ? narrowFocusIds : readableFocusIds.length ? readableFocusIds : focusIds);
+      return;
     }
+    const idsToFocus = initialReadableIds();
+    if (idsToFocus.length) focusViewport(idsToFocus);
+    else fitAll();
   };
 
   useEffect(() => {
-    if (!flow || !nodesMeasured || !focusIds.length) return;
-    const narrow = canvasSize.width > 0 && canvasSize.width < 600;
-    const ids = narrow && narrowFocusIds.length
-      ? narrowFocusIds
-      : readableFocusIds.length
-        ? readableFocusIds
-        : focusIds;
-    const timer = window.setTimeout(() => focusViewport(ids), 60);
+    if (!flow || !nodesMeasured || !canvasSize.width) return;
+    if (lastFocusedKey.current === modelFocusKey) return;
+    const timer = window.setTimeout(() => {
+      lastFocusedKey.current = modelFocusKey;
+      if (!focusIds.length) {
+        void flow.fitView({ padding: 0.1, minZoom: 0.06, maxZoom: 1.2, duration: 0 });
+        return;
+      }
+      focusViewport(initialReadableIds());
+    }, 60);
     return () => window.clearTimeout(timer);
-  }, [flow, nodesMeasured, model.revision, focusIds.join("|"), readableFocusIds.join("|"), narrowFocusIds.join("|"), canvasKey, canvasSize.width, canvasSize.height]);
+  }, [flow, nodesMeasured, modelFocusKey, canvasSize.width]);
 
   const reset = () => {
     const nextPositions = computeMapLayout(model.nodes, model.edges);
@@ -581,8 +673,10 @@ export function MapView(props: MapViewProps) {
       nodePositions: nextPositions,
     });
     requestAnimationFrame(() => {
-      const narrow = canvasSize.width > 0 && canvasSize.width < 600;
-      focusViewport(narrow && narrowFocusIds.length ? narrowFocusIds : readableFocusIds.length ? readableFocusIds : focusIds);
+      lastFocusedKey.current = modelFocusKey;
+      const ids = initialReadableIds();
+      if (ids.length) focusViewport(ids);
+      else fitAll();
     });
   };
 
@@ -615,11 +709,13 @@ export function MapView(props: MapViewProps) {
         </div>
         <div className="sm-actions">
           <span
-            className={`sm-health ${unknownEdges.length ? "is-warn" : model.coverage.status === "complete" ? "is-ok" : "is-partial"}`}
+            className={`sm-health ${unresolvedEdges.length ? "is-warn" : model.coverage.status === "complete" ? "is-ok" : "is-partial"}`}
           >
             {unknownEdges.length
               ? `${unknownEdges.length} ${plural(unknownEdges.length, "связь не установлена", "связи не установлены", "связей не установлено")}`
-              : coverageText[model.coverage.status] ?? "Проверено неполностью"}
+              : partialEdges.length
+                ? `${partialEdges.length} ${plural(partialEdges.length, "связь подтверждена частично", "связи подтверждены частично", "связей с частичным подтверждением")}`
+                : coverageText[model.coverage.status] ?? "Проверено неполностью"}
           </span>
           <button
             className={`sm-tool ${railOpen ? "is-active" : ""}`}
@@ -655,16 +751,23 @@ export function MapView(props: MapViewProps) {
         <span>Нажмите на стрелку, чтобы увидеть основание.</span>
       </div>
 
-      {unknownEdges.length > 0 && (
+      {unresolvedEdges.length > 0 && (
         <button
           className="sm-unknown-banner"
-          onClick={() => choose({ kind: "edge", id: unknownEdges[0].id })}
+          onClick={() => choose({ kind: "edge", id: unresolvedEdges[0].id })}
         >
           <span>
-            {unknownEdges.length}{" "}
-            {plural(unknownEdges.length, "связь не установлена", "связи не установлены", "связей не установлено")}
+            {unknownEdges.length && partialEdges.length
+              ? `Не установлено: ${unknownEdges.length} · частично: ${partialEdges.length}`
+              : unknownEdges.length
+                ? `${unknownEdges.length} ${plural(unknownEdges.length, "связь не установлена", "связи не установлены", "связей не установлено")}`
+                : `${partialEdges.length} ${plural(partialEdges.length, "связь подтверждена частично", "связи подтверждены частично", "связей с частичным подтверждением")}`}
           </span>
-          <small>Жёлтый пунктир — это пробел анализа, а не безопасное состояние. Открыть первую связь →</small>
+          <small>
+            {unknownEdges.length
+              ? "Жёлтый пунктир — это пробел анализа, а не безопасное состояние. Открыть первую связь →"
+              : "Связи подтверждены частично — проверьте основание. Открыть первую связь →"}
+          </small>
         </button>
       )}
 
@@ -882,6 +985,12 @@ export function MapView(props: MapViewProps) {
           )}
           {finding && (
             <>
+              {!finding.nodeIds.length && (
+                <p className="sm-muted">
+                  У этой проблемы нет привязки к узлам карты. Путь не подсвечен;
+                  ниже — факты и доказательства, но это не значит, что маршрут безопасен.
+                </p>
+              )}
               <div className="sm-detail-pills">
                 <span className={`sm-status sm-status--${finding.status}`}>{statusText[finding.status] ?? finding.status}</span>
                 <span className={`sm-status sm-status--${finding.severity}`}>{severityText[finding.severity] ?? finding.severity}</span>
@@ -928,7 +1037,7 @@ export function MapView(props: MapViewProps) {
               ) : activeSource?.status === "error" || activeSource?.status === "unavailable" ? (
                 <>
                   <p role="alert" className="sm-amber-text">
-                    Фрагмент кода недоступен.
+                    Фрагмент кода недоступен. {sourceErrorReason(activeSource.code)}
                   </p>
                   <button
                     onClick={() =>
@@ -953,17 +1062,23 @@ export function MapView(props: MapViewProps) {
                   <dt>Байты</dt><dd className="sm-mono">{evidence.location.byteStart}–{evidence.location.byteEnd}</dd>
                   <dt>Источник анализа</dt><dd>{evidence.producerVersion}</dd>
                   <dt>ID доказательства</dt><dd className="sm-mono">{evidence.id}</dd>
+                  {sourceError && (
+                    <>
+                      <dt>Код ошибки</dt>
+                      <dd className="sm-mono">{sourceError.code}</dd>
+                    </>
+                  )}
                 </dl>
               </details>
             </section>
           )}
           <details className="sm-tech">
-            <summary>Scope и подпись</summary>
+            <summary>Технический контекст и подпись</summary>
             <dl>
-              <dt>Workspace</dt><dd className="sm-mono">{model.scope.workspaceId}</dd>
-              <dt>Run</dt><dd className="sm-mono">{model.scope.runId}</dd>
-              <dt>Snapshot</dt><dd className="sm-mono">{model.scope.snapshotId}</dd>
-              <dt>Revision</dt><dd className="sm-mono">{model.revision}</dd>
+              <dt>Рабочая область</dt><dd className="sm-mono">{model.scope.workspaceId}</dd>
+              <dt>Запуск</dt><dd className="sm-mono">{model.scope.runId}</dd>
+              <dt>Снимок</dt><dd className="sm-mono">{model.scope.snapshotId}</dd>
+              <dt>Ревизия</dt><dd className="sm-mono">{model.revision}</dd>
             </dl>
           </details>
           <section className="sm-coverage">

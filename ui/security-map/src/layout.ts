@@ -205,7 +205,8 @@ const SEVERITY_ORDER: Record<string, number> = {
 export function initialFocusNodeIds(
   nodes: readonly ViewNode[],
   edges: readonly ViewEdge[],
-  findings: readonly { nodeIds: string[]; severity: string; status: string }[],
+  findings: readonly { id: string; nodeIds: string[]; severity: string; status: string }[],
+  findingId?: string,
 ): string[] {
   if (!nodes.length) return [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -248,13 +249,21 @@ export function initialFocusNodeIds(
   };
 
   const focus = new Set<string>();
-  const preferred = [...findings]
-    .filter((finding) => finding.nodeIds.some((id) => byId.has(id)))
-    .sort((a, b) =>
-      (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9) ||
-      a.status.localeCompare(b.status) ||
-      a.nodeIds.join("|").localeCompare(b.nodeIds.join("|")),
-    )[0];
+  const selectedFinding = findingId
+    ? findings.find((finding) => finding.id === findingId)
+    : undefined;
+  if (findingId && (!selectedFinding || !selectedFinding.nodeIds.some((id) => byId.has(id)))) {
+    return [];
+  }
+  const preferred = findingId
+    ? selectedFinding
+    : [...findings]
+        .filter((finding) => finding.nodeIds.some((id) => byId.has(id)))
+        .sort((a, b) =>
+          (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9) ||
+          a.status.localeCompare(b.status) ||
+          a.nodeIds.join("|").localeCompare(b.nodeIds.join("|")),
+        )[0];
 
   const seedPriority: Record<string, number> = {
     sink: 0,
