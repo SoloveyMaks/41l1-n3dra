@@ -198,14 +198,25 @@ export function PickupPreview({
   onLayoutChange?: (layout: SecurityMapLayout) => void;
   onRetry?: () => void;
 }) {
+  const fullscreen =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).has("fullscreen");
   return (
-    <MapView
-      key={scopeKey(pickupPreview.scope)}
-      model={pickupPreview}
-      loadState={loadState}
-      layout={layout}
-      onLayoutChange={onLayoutChange}
-      onRetry={onRetry}
-    />
+    <div
+      style={
+        fullscreen
+          ? { position: "absolute", top: 0, left: 0, right: 0, zIndex: 50, height: "100vh" }
+          : { height: "calc(100vh - 150px)", minHeight: 560 }
+      }
+    >
+      <MapView
+        key={scopeKey(pickupPreview.scope)}
+        model={pickupPreview}
+        loadState={loadState}
+        layout={layout}
+        onLayoutChange={onLayoutChange}
+        onRetry={onRetry}
+      />
+    </div>
   );
 }
