@@ -106,9 +106,13 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 - Используется только `artifact.repository.commit_sha` + `primaryLocation.path`
   finding. URL, branch и path от клиента не принимаются.
 - Допустимы только `github.com`/`gitlab.com` из artifact meta; redirects
-  отключены, response streamed с ceiling 256 KiB на decompressed bytes, timeout
-  4 s (connect 2 s), общий enrichment deadline 9 s, кэш 15 минут. Запросы
-  concurrent bounded (не более двух PR detail/review одновременно).
+  отключены. Response читается `aiter_raw` с hard ceiling 256 KiB на compressed
+  и 256 KiB на decompressed bytes; gzip/deflate декодируются инкрементально
+  через `zlib.decompressobj(max_length)`, `Content-Length` не доверяем.
+  `Accept-Encoding: identity`; unsupported/повреждённый content-encoding —
+  `failed`, без чтения всего body. Request hard deadline 4 s (connect 2 s),
+  общий enrichment deadline 9 s, кэш 15 минут. Запросы concurrent bounded
+  (не более двух PR detail/review одновременно).
 - GitHub: `GET https://api.github.com/repos/{owner}/{repo}/commits?sha={frozenSHA}&path={path}&per_page=1`.
 - GitLab: `GET https://gitlab.com/api/v4/projects/{project}/repository/commits?ref_name={frozenSHA}&path={path}&per_page=1`.
 - Возвращаются commit SHA, author и committer раздельно (display name/login,
@@ -147,10 +151,15 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   для commit/PR-части, анализ не ломается. PR lookup failure отдельный
   `pullRequestsStatus`, commit history при этом остаётся доступной, если
   provider её отдал.
-- DB/store/CODEOWNERS читаются в `asyncio.to_thread` с сохранённым ContextVar;
-  build ответственности ограничен semaphore (4 active), одинаковые
-  run/finding запросы дедуплицируются in-flight; deadline 10 s, отмена не
-  оставляет бесконечных задач.
+- DB/store/CODEOWNERS читаются в `asyncio.to_thread` с сохранённым ContextVar.
+  Bounded admission: 4 active + 8 queued; сверх этого — `503
+  RESPONSIBILITY_BUSY`, без создания task. Одинаковые workspace/run/finding
+  дедуплицируются in-flight, отмена одного caller не отменяет shared build.
+- Общий deadline 10 s включает ожидание в очереди. Слот sync worker не
+  освобождается при HTTP timeout/cancel, пока `_load_context` реально не
+  завершился; shared task exception забирается в done callback без warning.
+  Кэш истории — только публичные provider-ответы (provider/project/commit/path),
+  без tenant-данных.
 - ZIP без repository/commit_sha → `unavailable` с причиной «история не входит в
   snapshot». Роль и CODEOWNERS всё равно считаются, если snapshot доступен.
 - Line blame отсутствует: `lineBlame.status=unsupported`; file history не
@@ -229,6 +238,11 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
 - ZIP-артефакт никогда не получает историю репозитория.
 - Sol-сценарии: malicious CODEOWNERS intake + matcher уложился в микросекунды,
   `/src/` не матчит nested, ownerless `/src/` снял fallback, `**/A.kt` матчит
-  root, inline comment не owner, 401-е правило дало `incomplete`; pool/gate
-  test показал tick gap 0.011 s, dedupe 5 запросов → 1 чтение БД; deadline
-  cancellation очистил in-flight без задач.
+  root, inline comment не owner, 401-е правило дало `incomplete`.
+- Admission test: 20 distinct keys при slow DB → peak real workers 4, 8 busy
+  503, 12 timeout 503; после caller timeout новые ключи не подняли peak выше 4;
+  в конце active=0, queue=0, inflight=0. Same-key test: отмена одного caller,
+  второй получил результат, БД прочитана 1 раз; exception без task warning.
+- Stream ceiling test через Unix local HTTP transport: plain exact 262144 → ok;
+  plain 2 MiB → failed без полного body; gzip 16 MiB при 8 KiB wire chunks →
+  failed, tracemalloc peak ~0.5 MiB (не 22 MiB).
