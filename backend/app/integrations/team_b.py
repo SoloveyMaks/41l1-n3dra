@@ -13,17 +13,16 @@ import hmac
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from backend.app.analyzers.advisory_catalog import PACKAGED_ADVISORY_DB
 from backend.app.codefacts.identity import (
     revision_uuid,
     run_uuid,
     storage_manifest_hash,
 )
 from backend.app.codefacts.map_builder import ensure_artifact_meta
-from backend.app.codefacts.publish import map_from_analysis_bundle
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.schemas import (
     Confidence,
@@ -56,25 +55,51 @@ class TeamBPayload:
     bundle: Dict[str, Any]
     scan_results: Dict[str, ScanResult]
     raw_result: Any = None
+    warnings: tuple[str, ...] = ()
 
 
-def _trusted_advisory_path() -> Optional[Path]:
+def _trusted_advisory_path() -> tuple[Optional[Path], Optional[str]]:
+    """Resolve the server-side catalog; an uploaded project never influences it.
+
+    A broken catalog configuration degrades SCA only: Secret and SAST still run
+    against the frozen snapshot. The packaged snapshot is never selected by the
+    uploaded repository.
+    """
     raw = os.getenv("CG26_ADVISORY_DB", "").strip()
-    if not raw:
-        return None
-    if raw.lower().startswith(("http://", "https://")):
-        raise TeamBError("CG26_ADVISORY_DB должен быть локальным файлом, URL запрещён")
-    path = Path(raw).resolve()
-    if not path.is_file():
-        raise TeamBError("CG26_ADVISORY_DB не найден")
-    if path.stat().st_size > _ADVISORY_MAX_BYTES:
-        raise TeamBError("CG26_ADVISORY_DB слишком большой")
-    root = os.getenv("CG26_ADVISORY_ROOT", "").strip()
-    if root:
-        trusted_root = Path(root).resolve()
-        if trusted_root != path and trusted_root not in path.parents:
-            raise TeamBError("CG26_ADVISORY_DB вне CG26_ADVISORY_ROOT")
-    return path
+    warning: Optional[str] = None
+    path: Optional[Path] = PACKAGED_ADVISORY_DB
+    if raw:
+        if raw.lower().startswith(("http://", "https://")):
+            warning = "CG26_ADVISORY_DB URL запрещён; используется встроенный advisory snapshot"
+        else:
+            configured = Path(raw).resolve()
+            root = os.getenv("CG26_ADVISORY_ROOT", "").strip()
+            if root:
+                trusted_root = Path(root).resolve()
+                if trusted_root != configured and trusted_root not in configured.parents:
+                    warning = (
+                        "CG26_ADVISORY_DB вне CG26_ADVISORY_ROOT; "
+                        "используется встроенный advisory snapshot"
+                    )
+                    configured = None
+            if configured is not None and configured.is_file():
+                path = configured
+            elif configured is not None:
+                warning = (
+                    "CG26_ADVISORY_DB не найден; используется встроенный доверенный "
+                    f"advisory snapshot {PACKAGED_ADVISORY_DB.name}"
+                )
+    if path is not None and path.is_file():
+        if path.stat().st_size > _ADVISORY_MAX_BYTES:
+            warning = (
+                "advisory snapshot слишком большой; SCA работает без каталога"
+            )
+            path = None
+        return path, warning
+    return None, (
+        "доверенный advisory snapshot не найден; SCA работает без каталога, "
+        "SECRET/SAST продолжают анализ"
+    )
 
 
 def _require_hmac_environment() -> None:
@@ -161,7 +186,8 @@ def _backend_findings(bundle: Dict[str, Any], category: str) -> List[Finding]:
     return result
 
 
-def _backend_scan_results(bundle: Dict[str, Any], raw_result: Any = None) -> Dict[str, ScanResult]:
+def _backend_scan_results(bundle: Dict[str, Any], raw_result: Any = None,
+                          warnings: tuple[str, ...] = ()) -> Dict[str, ScanResult]:
     raw_by_code: Dict[str, List[Any]] = {}
     for diagnostic in getattr(raw_result, "diagnostics", []) or []:
         raw_by_code.setdefault(str(getattr(diagnostic, "code", "")), []).append(diagnostic)
@@ -170,6 +196,13 @@ def _backend_scan_results(bundle: Dict[str, Any], raw_result: Any = None) -> Dic
         category = str(scan["category"])
         coverage = scan["coverage"]
         diagnostics: List[Diagnostic] = []
+        for warning in warnings:
+            diagnostics.append(Diagnostic(
+                level="warning",
+                message=warning,
+                source="team_b",
+                details={"code": "team_b.config-fallback", "category": category},
+            ))
         for item in scan.get("diagnostics", []):
             code = str(item.get("code", ""))
             candidates = raw_by_code.get(code, [])
@@ -208,6 +241,7 @@ class TeamBAdapter:
     def __init__(self, store: Optional[CodeFactsStore] = None):
         self.store = store or CodeFactsStore()
         self._cache: Dict[str, TeamBPayload] = {}
+        self._failures: Dict[str, str] = {}
         self._lock = threading.Lock()
 
     def scan_category(self, *, run_id: str, artifact_id: str, artifact_row: Dict[str, Any],
@@ -218,26 +252,34 @@ class TeamBAdapter:
         except KeyError as exc:
             raise TeamBError(f"Team B не вернул scan result для {category}") from exc
 
-    def get_bundle(self, run_id: str) -> Optional[Dict[str, Any]]:
-        payload = self._cache.get(run_id)
-        return payload.bundle if payload else None
-
     def release(self, run_id: str) -> None:
         with self._lock:
             self._cache.pop(run_id, None)
+            self._failures.pop(run_id, None)
 
     def _payload(self, run_id: str, artifact_id: str, artifact_row: Dict[str, Any],
                  revision_id: str) -> TeamBPayload:
         with self._lock:
             cached = self._cache.get(run_id)
+            failure = self._failures.get(run_id)
         if cached:
             return cached
+        if failure:
+            raise TeamBError(failure)
         with _BUILD_LOCK:
             with self._lock:
                 cached = self._cache.get(run_id)
+                failure = self._failures.get(run_id)
             if cached:
                 return cached
-            payload = self._build(run_id, artifact_id, artifact_row, revision_id)
+            if failure:
+                raise TeamBError(failure)
+            try:
+                payload = self._build(run_id, artifact_id, artifact_row, revision_id)
+            except Exception as exc:  # noqa: BLE001 - one failed build serves every category
+                with self._lock:
+                    self._failures[run_id] = str(exc)
+                raise
             with self._lock:
                 self._cache[run_id] = payload
             return payload
@@ -245,7 +287,7 @@ class TeamBAdapter:
     def _build(self, run_id: str, artifact_id: str, artifact_row: Dict[str, Any],
                revision_id: str) -> TeamBPayload:
         _require_hmac_environment()
-        advisory = _trusted_advisory_path()
+        advisory, advisory_warning = _trusted_advisory_path()
         extracted_path = artifact_row.get("extracted_path")
         if not extracted_path or not Path(extracted_path).is_dir():
             raise TeamBError("Team B: распакованный артефакт недоступен")
@@ -307,34 +349,12 @@ class TeamBAdapter:
                 part["identity"] = identity
         for policy in bundle.get("codeFacts", {}).get("policyInputs", []):
             policy["workspaceId"] = workspace
-        scan_results = _backend_scan_results(bundle, result)
-        return TeamBPayload(bundle=bundle, scan_results=scan_results, raw_result=result)
-
-
-def persist_team_b_run(*, run_id: str, artifact_id: str, workspace: str,
-                       store: CodeFactsStore, adapter: TeamBAdapter) -> Dict[str, Any]:
-    """Build and persist local map/run artifact; publication stays in executor."""
-    bundle = adapter.get_bundle(run_id)
-    if not bundle:
-        raise TeamBError("Team B bundle не построен для run")
-    mapped = map_from_analysis_bundle(bundle)
-    if not mapped:
-        raise TeamBError("Team B bundle не маппится в SecurityMapDto")
-    payload = {
-        "schemaVersion": "cg-run-facts/1",
-        "internalRunId": run_id,
-        "workspaceId": workspace,
-        "artifactId": artifact_id,
-        "identity": bundle["identity"],
-        "map": mapped["map"],
-        "findings": mapped["findings"],
-        "analysisBundle": bundle,
-        "redactionVersion": "cg-redaction/1",
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "limitations": [
-            "Team B static analyzers; Kotlin/Gradle не исполнялись.",
-            "Общий graph compare остаётся inconclusive при expectedScopesVerified=false.",
-        ],
-    }
-    store.save_run(workspace, bundle["identity"]["runId"], payload)
-    return payload
+        scan_results = _backend_scan_results(
+            bundle, result, (advisory_warning,) if advisory_warning else (),
+        )
+        return TeamBPayload(
+            bundle=bundle,
+            scan_results=scan_results,
+            raw_result=result,
+            warnings=(advisory_warning,) if advisory_warning else (),
+        )

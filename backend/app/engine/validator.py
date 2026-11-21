@@ -48,26 +48,18 @@ class WorkflowValidator:
             ))
 
         scan_kinds = {NodeKind.SECRET_SCAN, NodeKind.SCA_SCAN, NodeKind.KOTLIN_SAST}
-        scan_engines = {}
         for node in draft.nodes:
             if node.kind not in scan_kinds:
                 continue
-            engine = str((node.config or {}).get("engine") or "backend")
-            if engine not in {"backend", "team_b"}:
+            engine = str((node.config or {}).get("engine") or "full")
+            if engine not in {"full", "auto", "backend", "team_b"}:
                 issues.append(WorkflowValidationIssue(
                     level="error", nodeId=node.id,
-                    message=f"Неизвестный engine '{engine}': допустимы backend и team_b",
+                    message=(
+                        f"Неизвестный engine '{engine}': допустимы full, auto, "
+                        "backend и team_b; все они выполняют полный анализ"
+                    ),
                 ))
-            scan_engines[node.id] = engine
-        if len(set(scan_engines.values())) > 1:
-            issues.append(WorkflowValidationIssue(
-                level="error",
-                message=(
-                    "Один run не может смешивать engine сканеров: "
-                    + ", ".join(f"{node_id}={engine}" for node_id, engine in sorted(scan_engines.items()))
-                    + ". Выберите один engine для всех scan nodes."
-                ),
-            ))
 
         # 2. Check edges: source and target existence, port existence and types
         adj = defaultdict(list)
