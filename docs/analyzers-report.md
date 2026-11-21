@@ -111,7 +111,8 @@ SAST, Gradle-файлы для SCA, все текстовые файлы для 
 
 ## Самотест
 
-`python -m analyzers.selftest` — 24 проверки на фиксированных копиях:
+`python -m analyzers.selftest` — 73 проверки: 24 по анализаторам и 49 по
+RAG-хранилищу, на фиксированных копиях:
 
 * перенос строки, комментарии и переименование файла не меняют результат;
 * `YOUR_API_KEY` и `changeme` не считаются секретами;
@@ -126,6 +127,33 @@ SAST, Gradle-файлы для SCA, все текстовые файлы для 
 * `AnalysisBundle`: три семейства, независимый пересчёт `fp/v1`, HMAC только у
   SECRET, совпадение bytes/line координат с файлами, отсутствие значений
   секретов в выгрузке.
+
+## Переиспользование элементов (RAG)
+
+Реляционной БД нет, поэтому память фактов и правок лежит в `rag/`:
+append-only журнал элементов `events.jsonl` + производные векторы
+`vectors.jsonl` + `manifest.json` с embedding spec. Id элемента выводится из
+содержания (`category|fingerprint`, `kind|symbolKey|path`, evidence hash,
+`exampleId`), поэтому повторный скан не создаёт дублей: `new: 0`,
+`reused: 148` на втором прогоне того же bundle.
+
+Векторизация — hashed TF-IDF с BM25-весами (4096 измерений, cosine,
+`local/bm25-hash-tfidf/2`). Она воспроизводима и не требует сети; это
+лексическая модель, а не семантическая, и adapter D подключается заменой
+`Index` при сохранении версии spec. `similar_fixes()` возвращает ровно
+`SimilarFixesResult` из контракта (`status/reason/items`, `SimilarFix` с
+`embeddingSpec`, `distance`, `metric`, `limitations`, `redactedFix`); результат
+проверен AJV (draft 2020-12) и структурными проверками самотеста.
+
+```text
+python -X utf8 -m rag.selftest            # 49 проверок
+python -X utf8 -m analyzers.selftest      # 73 проверки
+python -X utf8 -m rag.cli stats --store .rag/store
+```
+
+Ограничения retrieval вынесены в [rag/README.md](../rag/README.md): нет ANN,
+`idf` пересчитывается на корпус, `distance` не подтверждает применимость
+правки, переименование сущности даёт новый элемент.
 
 ## Честные ограничения
 

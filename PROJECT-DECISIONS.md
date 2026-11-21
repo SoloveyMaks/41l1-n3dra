@@ -4,7 +4,7 @@
 
 ## Выбрано пользователем
 
-- PostgreSQL + pgvector; векторный поиск используется для проверенных примеров исправлений.
+- Реляционной БД нет. Факты анализа и проверенные примеры исправлений хранятся в файловом append-only хранилище `rag/` (журнал элементов + производные векторы); векторный поиск используется для проверенных примеров исправлений.
 - Команда: A — веб/backend/workflow; B — собственные анализаторы и факты кода; C — схема/DTO, карта, сравнение и retrieval; D — AI, валидация ответов и embedding adapter.
 - Направления: общая карта безопасности, доказательства и сравнение до/после, память проверенных исправлений.
 - Общий репозиторий — `SoloveyMaks/41l1-n3dra`; feature-ветки собираем в `dev`, затем готовый кандидат — в `main`.
@@ -22,11 +22,11 @@
 
 Сравнение использует устойчивый anchor/fingerprint, проверяет совместимость версий и покрытие. Удаление файла выделяется отдельно. Потеря покрытия, неоднозначный anchor и смена правил не превращаются в «исправлено».
 
-Память исправлений хранит источник, redacted контекст/правку, rule version, основание проверки и ограничения. Непроверенный совет AI не получает статус vetted. Exact retrieval фильтрует workspace/language/framework/rule family/status и embedding spec; его отказ не ломает основной анализ.
+Память исправлений хранит источник, redacted контекст/правку, rule version, основание проверки и ограничения. Непроверенный совет AI не получает статус vetted. Exact retrieval фильтрует workspace/language/framework/rule family/status и embedding spec; его отказ не ломает основной анализ. Элементы индексируются по содержательному id (fingerprint/symbol/evidence hash), поэтому один и тот же факт переиспользуется между запусками без дублей.
 
 ## Первый объём C
 
-1. Схема PostgreSQL, миграции и DTO для согласования A/B/D.
+1. Схема DTO и миграции — как проверяемое предложение, без runtime-подключения.
 2. Anonymous → pickup export → ранний permitAll → handler → SQL/данные → Finding; источник у каждой стрелки.
 3. Authenticated → ticket reader без доказанного owner-check; policy и пробелы показываем явно. Публичный каталог — локальный безопасный контрпример.
 4. Один SQL-паттерн до/после параметризации после двух настоящих scanner runs.
@@ -42,7 +42,7 @@
 
 ## Что ещё согласовать
 
-Предложенный стек приложения: React/TypeScript/Vite/React Flow, FastAPI/Pydantic, Tree-sitter, SSE. PostgreSQL + pgvector уже выбраны; остальные компоненты требуют подтверждения команды.
+Предложенный стек приложения: React/TypeScript/Vite/React Flow, FastAPI/Pydantic, Tree-sitter, SSE. Реляционная БД не используется: данные хранятся файлами, retrieval — в `rag/`. SQL-миграции в `db/` остаются проверяемым предложением пакета C и к runtime не подключены. Остальные компоненты требуют подтверждения команды.
 
 A подтверждает workspace auth/SQL roles, intake/TTL, masked-source API, workflow schema, publish idempotency и канал доставки. B подтверждает реальные payloads, graph vocabulary, semantic anchors и ожидаемое file/rule coverage. Пользователь и B утверждают источник domain policy для ролей/владения. D выбирает настоящий chat provider и один embedding provider/model/version/dimension/metric с версиями подготовки текста.
 

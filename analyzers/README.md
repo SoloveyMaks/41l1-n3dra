@@ -30,7 +30,8 @@ python -m analyzers.compare analyzers/examples/submission.json `
 
 python -m analyzers.contract_export <snapshot>/training-project `
   --db <snapshot>/vulnerability-database/vulnerabilities.json `
-  --out analyzers/examples/bundle.json
+  --out analyzers/examples/bundle.json `
+  --rag-store .rag/store
 node analyzers/validate_bundle.mjs analyzers/examples/bundle.json <snapshot>/training-project
 
 python -m analyzers.selftest
@@ -154,8 +155,13 @@ production-прогоном. Значения секретов в bundle не п
 findings: 15 ({'SECRET': 5, 'SCA': 5, 'SAST': 5})
 expected: 15, correct: 15, missed: 0, false positives: 0
 controls: 6, control hits: 0
-SELFTEST PASSED: 24 проверок
+SELFTEST PASSED: 73 проверки   # 24 анализатора + 49 RAG
 ```
+
+`--rag-store` дополнительно индексирует выгрузку в файловое хранилище
+`rag/`: элементы получают содержательный id, поэтому второй прогон того же
+кода даёт `new: 0, reused: 148`. Детали и ограничения — в
+[rag/README.md](../rag/README.md).
 
 Сценарии self-test включают:
 

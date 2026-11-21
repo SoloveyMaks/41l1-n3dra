@@ -434,6 +434,18 @@ def main() -> int:
                     mismatched.append(evidence["id"])
         _check(not mismatched, f"bundle: координаты bytes/line расходятся ({len(mismatched)})", failures)
 
+    # Retrieval layer: the same elements must be reused across runs, and no
+    # secret value may reach the index.  Skipped only if the rag package is
+    # absent, so the analyzers still work standalone.
+    try:
+        from rag.selftest import run_checks as run_rag_checks
+    except ImportError:  # pragma: no cover - analyzers-only checkout
+        run_rag_checks = None
+    if run_rag_checks is not None:
+        rag_messages: list[str] = []
+        run_rag_checks(failures, rag_messages)
+        CHECKS.extend(rag_messages)
+
     if failures:
         print("SELFTEST FAILED")
         for failure in failures:
