@@ -112,7 +112,7 @@ OPTIONAL_MARKERS: Dict[str, str] = {
 }
 
 POSTCONDITIONS: Dict[str, str] = {
-    "013_telegram_binding_generation.up.sql": (
+    "016_telegram_binding_generation.up.sql": (
         "to_regprocedure('telegram.binding_epoch_sequence_v1()') IS NOT NULL "
         "AND EXISTS (SELECT 1 FROM pg_sequence "
         "WHERE seqrelid = to_regclass('telegram.binding_epoch_seq') "

@@ -16,7 +16,7 @@ DECLARE
     next_epoch bigint;
 BEGIN
     IF to_regclass('telegram.bindings') IS NULL THEN
-        RAISE EXCEPTION '013: telegram.bindings is required';
+        RAISE EXCEPTION '016: telegram.bindings is required';
     END IF;
 
     FOREACH relation_name IN ARRAY ARRAY['bindings', 'jobs', 'outbox'] LOOP
@@ -29,7 +29,7 @@ BEGIN
              WHERE attrelid = relation_id AND attname = 'binding_epoch'
                AND atttypid = 'bigint'::regtype AND NOT attisdropped
         ) THEN
-            RAISE EXCEPTION '013: telegram.% requires bigint binding_epoch', relation_name;
+            RAISE EXCEPTION '016: telegram.% requires bigint binding_epoch', relation_name;
         END IF;
         -- Also exclude legacy writers that do not yet take the advisory lock
         -- while the persisted maximum is read and the sequence is seeded.
@@ -49,7 +49,7 @@ BEGIN
            AND seqmin = 1 AND seqmax = 9223372036854775807
            AND seqcache = 1 AND NOT seqcycle
     ) THEN
-        RAISE EXCEPTION '013: unexpected binding generation sequence definition';
+        RAISE EXCEPTION '016: unexpected binding generation sequence definition';
     END IF;
     -- ALTER holds the sequence DDL lock until commit, fencing concurrent
     -- nextval while its already reserved high-water mark is inspected.
@@ -59,7 +59,7 @@ BEGIN
       FROM telegram.binding_epoch_seq;
     IF sequence_called AND sequence_last = 9223372036854775807
        OR persisted_max = 9223372036854775807 THEN
-        RAISE EXCEPTION '013: binding generation exhausted; refusing wraparound';
+        RAISE EXCEPTION '016: binding generation exhausted; refusing wraparound';
     END IF;
     next_epoch := greatest(
         persisted_max + 1,
@@ -71,5 +71,5 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION telegram.binding_epoch_sequence_v1() RETURNS text
-LANGUAGE sql IMMUTABLE AS $$ SELECT '013'::text $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT '016'::text $$;
 COMMIT;
