@@ -296,6 +296,26 @@ class WorkflowExecutor:
             "info": policy_result.info_count if policy_result else 0
         }
 
+        # A policy PASS is not a full security verdict: canonical coverage must
+        # also be complete and expected scopes verified. Scanner-runtime
+        # coverage alone cannot prove the skipped/runtime scopes.
+        if final_verdict == SecurityVerdict.PASS:
+            canonical_ok, canonical_reason = self._canonical_coverage_verified(run_id)
+            if not canonical_ok:
+                final_verdict = SecurityVerdict.INCONCLUSIVE
+                if policy_result is not None:
+                    policy_result = policy_result.model_copy(update={
+                        "verdict": final_verdict,
+                        "reasons": [
+                            *(r for r in policy_result.reasons if not r.startswith("Все проверки пройдены")),
+                            canonical_reason,
+                        ],
+                    })
+                if findings_bundle is not None:
+                    self._rewrite_report_verdict(
+                        run_id, workflow_name, findings_bundle, policy_result, explain_result
+                    )
+
         finished_iso = datetime.now(timezone.utc).isoformat()
         # Publish before exposing final status: once the UI sees "succeeded/failed",
         # the published canonical record (or an honest publication=false) already exists.
@@ -795,6 +815,55 @@ class WorkflowExecutor:
 
         else:
             raise ValueError(f"Неизвестный тип ноды для исполнения: {kind}")
+
+    def _canonical_coverage_verified(self, run_id: str) -> Tuple[bool, str]:
+        """Only a complete canonical coverage with verified scopes supports PASS."""
+        try:
+            payload = CodeFactsStore().load_run(workspace_id(), run_uuid(run_id))
+        except Exception as exc:  # noqa: BLE001 - missing canonical facts are not a pass
+            logger.warning("Canonical coverage read failed for %s: %s", run_id, exc)
+            return False, "Canonical coverage недоступно; PASS не подтверждён"
+        if not payload:
+            return False, "Canonical coverage отсутствует; PASS не подтверждён"
+        analysis = payload.get("analysisBundle") or {}
+        coverage = ((analysis.get("codeFacts") or {}).get("coverage") or {})
+        provenance = analysis.get("provenance") or {}
+        status = coverage.get("status")
+        expected = provenance.get("expectedScopesVerified")
+        if status == "complete" and expected is True:
+            return True, ""
+        details = [f"status={status or 'unknown'}"]
+        if expected is not True:
+            details.append("expectedScopesVerified=false")
+        return False, "Canonical coverage неполное: " + ", ".join(details) + "; PASS не подтверждён"
+
+    def _rewrite_report_verdict(self, run_id: str, workflow_name: str, bundle: FindingsBundle,
+                                policy: Optional[PolicyResult],
+                                explain: Optional[ExplainResult]) -> None:
+        """Keep the stored report consistent with the final security verdict."""
+        if policy is None or not self.db.get_report(run_id):
+            return
+        run_row = self.db.get_run(run_id) or {}
+        passport = self.report_builder.build_security_passport(bundle.coverage, policy, bundle.findings)
+        readable = self.report_builder.build_readable_markdown(
+            run_id, workflow_name, passport, policy, bundle.findings, explain,
+        )
+        official = self.report_builder.build_official_json(
+            run_id,
+            str(run_row.get("workflow_id") or "workflow-unknown"),
+            str(run_row.get("revision_id") or "revision-unknown"),
+            passport, policy, bundle.findings, explain,
+        )
+        self.db.save_report(
+            run_id=run_id,
+            verdict=policy.verdict.value,
+            passport=passport.model_dump(),
+            ai_summary=explain.summary if explain else "",
+            ai_items=[item.model_dump() for item in explain.items] if explain else [],
+            ai_status=explain.status if explain else "disabled",
+            readable_markdown=readable,
+            official_json=official,
+        )
 
     def _publish_canonical(self, run_id: str, workflow_id: str, revision_id: str,
                           final_status: Optional[str] = None,
