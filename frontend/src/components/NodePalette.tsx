@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import {
   Play, Clock, FolderArchive, KeyRound, PackageSearch, FileCode2,
   GitMerge, ShieldAlert, GitFork, Sparkles, FileText, Send,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, Plus
 } from 'lucide-react';
 import { NodeKind } from '../types';
+import './NodePalette.css';
 
 const PALETTE_COLLAPSED_KEY = 'nedra.nodePaletteCollapsed';
 
@@ -18,6 +19,8 @@ const readPaletteCollapsed = (): boolean => {
 
 interface NodePaletteProps {
   onAddNode: (kind: NodeKind) => void;
+  onCreateCustomBlock?: () => void;
+  onNodeDragStart?: (event: React.DragEvent<HTMLButtonElement>, kind: NodeKind) => void;
 }
 
 type IconComponent = React.ComponentType<{ size?: number; className?: string }>;
@@ -27,140 +30,135 @@ const PALETTE_ITEMS: Array<{
   items: Array<{ kind: NodeKind; title: string; desc: string; icon: IconComponent; color: string }>;
 }> = [
   {
-    category: '1. Триггеры',
+    category: 'Запуск',
     items: [
-      { kind: 'manual_trigger', title: 'Manual Trigger', desc: 'Запуск по клику', icon: Play, color: 'text-purple-400 border-purple-800/60 bg-purple-950/30' },
-      { kind: 'schedule_trigger', title: 'Schedule Trigger', desc: 'Запуск по расписанию', icon: Clock, color: 'text-purple-400 border-purple-800/60 bg-purple-950/30' },
+      { kind: 'manual_trigger', title: 'Ручной запуск', desc: 'Запуск по клику', icon: Play, color: 'text-purple-400 border-purple-800/60 bg-purple-950/30' },
+      { kind: 'schedule_trigger', title: 'По расписанию', desc: 'Запуск по расписанию', icon: Clock, color: 'text-purple-400 border-purple-800/60 bg-purple-950/30' },
     ],
   },
   {
-    category: '2. Проект',
+    category: 'Исходный проект',
     items: [
-      { kind: 'project_input', title: 'Project Input', desc: 'Привязка ZIP проекта', icon: FolderArchive, color: 'text-blue-400 border-blue-800/60 bg-blue-950/30' },
+      { kind: 'project_input', title: 'Проект для проверки', desc: 'ZIP-архив или репозиторий', icon: FolderArchive, color: 'text-blue-400 border-blue-800/60 bg-blue-950/30' },
     ],
   },
   {
-    category: '3. Собственные анализаторы',
+    category: 'Проверки кода',
     items: [
-      { kind: 'secret_scan', title: 'Secret Scanner', desc: 'Поиск паролей и токенов', icon: KeyRound, color: 'text-amber-400 border-amber-800/60 bg-amber-950/30' },
-      { kind: 'sca_scan', title: 'SCA Dependencies', desc: 'Проверка Gradle/KTS CVE', icon: PackageSearch, color: 'text-orange-400 border-orange-800/60 bg-orange-950/30' },
-      { kind: 'kotlin_sast', title: 'Kotlin SAST', desc: 'Taint-анализ Tree-sitter', icon: FileCode2, color: 'text-rose-400 border-rose-800/60 bg-rose-950/30' },
+      { kind: 'secret_scan', title: 'Поиск секретов', desc: 'Поиск паролей и токенов', icon: KeyRound, color: 'text-amber-400 border-amber-800/60 bg-amber-950/30' },
+      { kind: 'sca_scan', title: 'Зависимости', desc: 'Известные уязвимости Gradle/KTS', icon: PackageSearch, color: 'text-orange-400 border-orange-800/60 bg-orange-950/30' },
+      { kind: 'kotlin_sast', title: 'Анализ Kotlin', desc: 'Пути небезопасных данных', icon: FileCode2, color: 'text-rose-400 border-rose-800/60 bg-rose-950/30' },
     ],
   },
   {
-    category: '4. Агрегация и Политика',
+    category: 'Результаты и правила',
     items: [
-      { kind: 'merge_findings', title: 'Merge Findings', desc: 'Слияние результатов', icon: GitMerge, color: 'text-teal-400 border-teal-800/60 bg-teal-950/30' },
-      { kind: 'policy_gate', title: 'Policy Gate', desc: 'Оценка вердикта (Pass/Fail)', icon: ShieldAlert, color: 'text-emerald-400 border-emerald-800/60 bg-emerald-950/30' },
+      { kind: 'merge_findings', title: 'Объединить находки', desc: 'Слияние результатов', icon: GitMerge, color: 'text-teal-400 border-teal-800/60 bg-teal-950/30' },
+      { kind: 'policy_gate', title: 'Проверить правила', desc: 'Итог по правилам безопасности', icon: ShieldAlert, color: 'text-emerald-400 border-emerald-800/60 bg-emerald-950/30' },
     ],
   },
   {
-    category: '5. Логика графа',
+    category: 'Ветвление сценария',
     items: [
-      { kind: 'condition', title: 'Condition (If/Else)', desc: 'Ветвление логики и regex', icon: GitFork, color: 'text-yellow-400 border-yellow-800/60 bg-yellow-950/30' },
-      { kind: 'branch_merge', title: 'Branch Merge', desc: 'Схождение условных ветвей', icon: GitMerge, color: 'text-indigo-400 border-indigo-800/60 bg-indigo-950/30' },
+      { kind: 'condition', title: 'Условие', desc: 'Развилка по условию или шаблону', icon: GitFork, color: 'text-yellow-400 border-yellow-800/60 bg-yellow-950/30' },
+      { kind: 'branch_merge', title: 'Объединить ветви', desc: 'Продолжить после развилки', icon: GitMerge, color: 'text-indigo-400 border-indigo-800/60 bg-indigo-950/30' },
     ],
   },
   {
-    category: '6. AI и Отчёты',
+    category: 'AI-анализ кода',
     items: [
-      { kind: 'ai_scan', title: 'AI Scan (гипотезы)', desc: 'Гипотезы по redacted-фрагментам', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
-      { kind: 'ai_explain', title: 'AI Explain & Fix', desc: 'Объяснение и рекомендации', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
-      { kind: 'build_report', title: 'Build Report', desc: 'Security Passport и JSON', icon: FileText, color: 'text-cyan-400 border-cyan-800/60 bg-cyan-950/30' },
-      { kind: 'notify', title: 'Notify (Webhook)', desc: 'Отправка оповещения', icon: Send, color: 'text-sky-400 border-sky-800/60 bg-sky-950/30' },
+      { kind: 'ai_scan', title: 'AI: поиск уязвимостей', desc: 'Гипотезы по коду со скрытыми секретами', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
+    ],
+  },
+  {
+    category: 'Объяснения и отчёты',
+    items: [
+      { kind: 'ai_explain', title: 'Объяснить находки', desc: 'Причины и рекомендации по исправлению', icon: Sparkles, color: 'text-fuchsia-400 border-fuchsia-800/60 bg-fuchsia-950/30' },
+      { kind: 'build_report', title: 'Собрать отчёт', desc: 'Паспорт безопасности и JSON', icon: FileText, color: 'text-cyan-400 border-cyan-800/60 bg-cyan-950/30' },
+      { kind: 'notify', title: 'Отправить уведомление', desc: 'Оповещение через вебхук', icon: Send, color: 'text-sky-400 border-sky-800/60 bg-sky-950/30' },
     ],
   },
 ];
 
-export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
+export const NodePalette: React.FC<NodePaletteProps> = ({
+  onAddNode,
+  onCreateCustomBlock,
+  onNodeDragStart,
+}) => {
   const [collapsed, setCollapsed] = useState(readPaletteCollapsed);
+  const listId = useId();
+  const headingId = useId();
 
   const toggleCollapsed = () => {
-    setCollapsed((previous) => {
-      const next = !previous;
-      try {
-        window.localStorage.setItem(PALETTE_COLLAPSED_KEY, next ? '1' : '0');
-      } catch {
-        // Storage unavailable: the choice still works for the current page session.
-      }
-      return next;
-    });
+    const next = !collapsed;
+    setCollapsed(next);
+    try {
+      window.localStorage.setItem(PALETTE_COLLAPSED_KEY, next ? '1' : '0');
+    } catch {
+      // Storage can be blocked; the palette remains usable in this session.
+    }
   };
 
-  const totalItems = PALETTE_ITEMS.reduce((total, category) => total + category.items.length, 0);
+  const toggleLabel = collapsed ? 'Развернуть палитру блоков' : 'Свернуть палитру блоков';
 
   return (
-    <div
-      className={`w-full ${
-        collapsed ? 'md:w-12' : 'md:w-64'
-      } max-h-44 md:max-h-none bg-slate-900/95 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col md:h-full overflow-hidden select-none shrink-0 transition-[width] duration-200`}
+    <aside
+      aria-labelledby={headingId}
+      className={`node-palette${collapsed ? ' node-palette--collapsed' : ''}`}
     >
-      <div className={`p-3.5 md:p-2.5 border-b border-slate-800 flex items-start justify-between gap-2 ${collapsed ? 'md:flex-col md:items-center' : ''}`}>
-        <div className={collapsed ? 'md:hidden' : 'min-w-0'}>
-          <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-            Палитра блоков
-          </h2>
-          <p className="text-[11px] text-slate-500 mt-0.5">
-            Нажмите для добавления на канвас
-          </p>
+      <div className="node-palette__header">
+        <div className="node-palette__intro">
+          <h2 id={headingId}>Палитра блоков</h2>
+          {!collapsed && <p>Нажмите блок, чтобы добавить в сценарий</p>}
         </div>
         <button
           type="button"
           onClick={toggleCollapsed}
+          aria-label={toggleLabel}
           aria-expanded={!collapsed}
-          aria-controls="node-palette-list"
-          title={collapsed ? 'Развернуть палитру блоков' : 'Свернуть палитру блоков'}
-          className="shrink-0 rounded-md border border-slate-700 bg-slate-800 p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+          aria-controls={listId}
+          title={toggleLabel}
+          className="node-palette__toggle"
         >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          {collapsed ? <ChevronRight size={18} aria-hidden="true" /> : <ChevronLeft size={18} aria-hidden="true" />}
         </button>
       </div>
 
-      {!collapsed && (
-        <div id="node-palette-list" className="flex-1 overflow-y-auto p-3 space-y-4">
-          {PALETTE_ITEMS.map((cat, idx) => (
-            <div key={idx} className="space-y-1.5">
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-1">
-                {cat.category}
-              </div>
-              <div className="space-y-1">
-                {cat.items.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.kind}
-                      onClick={() => onAddNode(item.kind)}
-                      className={`w-full text-left p-2 rounded-lg border transition-all duration-150 flex items-start gap-2.5 hover:scale-[1.01] hover:brightness-125 cursor-pointer ${item.color}`}
-                    >
-                      <Icon size={16} className="mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-slate-200 truncate">
-                          {item.title}
-                        </div>
-                        <div className="text-[10px] text-slate-400 truncate">
-                          {item.desc}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+      <div id={listId} hidden={collapsed} className="node-palette__list">
+        {PALETTE_ITEMS.map((cat) => (
+          <section key={cat.category} className="node-palette__category">
+            <h3>{cat.category}</h3>
+            <div className="node-palette__items">
+              {cat.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    type="button"
+                    key={item.kind}
+                    onClick={() => onAddNode(item.kind)}
+                    draggable={Boolean(onNodeDragStart)}
+                    onDragStart={onNodeDragStart ? (event) => onNodeDragStart(event, item.kind) : undefined}
+                    className={`node-palette__item ${item.color}`}
+                  >
+                    <Icon size={16} className="node-palette__item-icon" aria-hidden="true" />
+                    <span className="node-palette__item-copy">
+                      <span className="node-palette__item-title">{item.title}</span>
+                      <span className="node-palette__item-description">{item.desc}</span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-          ))}
-        </div>
-      )}
-
-      {collapsed && (
-        <div className="hidden md:flex flex-1 flex-col items-center gap-2 px-1 py-3 text-slate-600">
-          <span
-            className="text-[10px] font-semibold uppercase tracking-wider text-slate-500"
-            style={{ writingMode: 'vertical-rl' }}
-          >
-            Палитра блоков
-          </span>
-          <span className="text-[10px] font-mono">{totalItems}</span>
-        </div>
-      )}
-    </div>
+          </section>
+        ))}
+        {onCreateCustomBlock && (
+          <button type="button" className="node-palette__custom" onClick={onCreateCustomBlock}>
+            <Plus size={16} aria-hidden="true" />
+            Создать свой блок
+          </button>
+        )}
+      </div>
+      {collapsed && <span className="node-palette__rail-label" aria-hidden="true">Блоки</span>}
+    </aside>
   );
 };
