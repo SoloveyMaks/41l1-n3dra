@@ -33,6 +33,9 @@ INTENT_ALIASES: Dict[str, str] = {
     "ai": "ai_scan",
     "ии": "ai_scan",
     "ai_scan_hypotheses": "ai_scan",
+    "ai_explain": "ai_explain",
+    "explain": "ai_explain",
+    "объяснение": "ai_explain",
     "report": "report",
     "reports": "report",
     "отчёт": "report",
@@ -40,7 +43,6 @@ INTENT_ALIASES: Dict[str, str] = {
     "notify": "notify",
     "notification": "notify",
     "webhook": "notify",
-    "telegram": "notify",
     "уведомление": "notify",
     "schedule": "schedule",
     "scheduled": "schedule",
@@ -53,10 +55,19 @@ KNOWN_INTENTS: Tuple[str, ...] = (
     "dependencies",
     "sast",
     "ai_scan",
+    "ai_explain",
     "report",
     "notify",
     "schedule",
 )
+
+# Requested capabilities with no registered block. They are rejected with a
+# precise message instead of being silently mapped to another delivery path.
+UNSUPPORTED_INTENTS: Dict[str, str] = {
+    "telegram": "Telegram-доставка не поддерживается: доступен только HTTP webhook (intent notify).",
+    "telegram_bot": "Telegram-доставка не поддерживается: доступен только HTTP webhook (intent notify).",
+    "телеграм": "Telegram-доставка не поддерживается: доступен только HTTP webhook (intent notify).",
+}
 
 DEFAULT_INTENTS: Tuple[str, ...] = ("secrets", "dependencies", "sast", "report")
 
@@ -64,7 +75,8 @@ INTENT_TITLES = {
     "secrets": "секреты",
     "dependencies": "зависимости",
     "sast": "Kotlin SAST",
-    "ai_scan": "ИИ-гипотезы",
+    "ai_scan": "ИИ-анализ исходников (гипотезы)",
+    "ai_explain": "ИИ-объяснение готовых находок",
     "report": "отчёт",
     "notify": "уведомление",
     "schedule": "расписание",

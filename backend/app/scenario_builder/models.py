@@ -6,7 +6,7 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-from backend.app.contracts.schemas import WorkflowDraft
+from backend.app.contracts.schemas import WorkflowDraft, WorkflowValidationResult
 
 
 class ScenarioPromptRequest(BaseModel):
@@ -15,6 +15,7 @@ class ScenarioPromptRequest(BaseModel):
 
 class ScenarioPreview(BaseModel):
     draft: WorkflowDraft
+    validation: WorkflowValidationResult
     summary: str
     warnings: List[str] = Field(default_factory=list)
     source: str = "ai"

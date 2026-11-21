@@ -16,6 +16,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+from backend.app.contracts.schemas import WorkflowDraft, WorkflowValidationResult
+from backend.app.engine.validator import WorkflowValidator
 from backend.app.scenario_builder.models import ScenarioPreview, ScenarioPromptRequest
 from backend.app.scenario_builder.service import (
     InvalidDraft,
@@ -42,6 +44,17 @@ def create_scenario_builder_router(
     timeout = max(5.0, min(float(timeout_seconds), 60.0))
     max_inflight = concurrency + queued
     inflight = 0
+    validator = WorkflowValidator()
+
+    @router.post("/validate", response_model=WorkflowValidationResult)
+    def validate_preview_draft(draft: WorkflowDraft) -> WorkflowValidationResult:
+        """Re-run the authoritative validator on a client-received draft.
+
+        The preview response crosses an untrusted boundary (proxy/provider), so
+        the client re-checks the concrete draft here before enabling Apply. This
+        endpoint only validates; it never saves, schedules, notifies or runs.
+        """
+        return validator.validate(draft)
 
     @router.post("/preview", response_model=ScenarioPreview)
     async def preview(payload: ScenarioPromptRequest) -> ScenarioPreview:

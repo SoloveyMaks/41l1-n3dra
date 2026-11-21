@@ -27,11 +27,12 @@ from backend.app.api.scenario_builder import create_scenario_builder_router
 api_router.include_router(create_scenario_builder_router())
 ```
 
-Full endpoint: `POST /api/scenario-builder/preview`.
-
-The route is mounted into the existing `/api` router after account/session and
-workspace middleware. No new session or auth implementation exists here. The
-endpoint does not read or write `runtime` data.
+Full endpoints: `POST /api/scenario-builder/preview` and
+`POST /api/scenario-builder/validate`. Both are mounted by the same factory into
+the existing `/api` router after account/session and workspace middleware; root
+does not need a second mount or an `App.tsx` change. The validate endpoint only
+runs `WorkflowValidator` on the posted draft: it never reads, saves, schedules,
+notifies or runs anything.
 
 ## 3. API contract
 
@@ -46,6 +47,7 @@ Response:
 ```json
 {
   "draft": {"schemaVersion":1,"name":"...","description":"...","nodes":[],"edges":[]},
+  "validation": {"valid": true, "issues": []},
   "summary":"Черновик «...»: секреты, зависимости, отчёт. Блоков: 7, связей: 8.",
   "warnings":["Поддерживается Kotlin/Spring Boot. Другие языки и runtime-сценарии не покрываются."],
   "source":"ai",
@@ -68,21 +70,52 @@ Errors:
 There is no invented model answer on provider failure. The endpoint returns an
 explicit error; the modal keeps the text and offers a retry.
 
+Authoritative pre-Apply check:
+
+```http
+POST /api/scenario-builder/validate
+Content-Type: application/json
+
+{"schemaVersion":1,"name":"...","description":"...","nodes":[],"edges":[]}
+```
+
+Response is the real `WorkflowValidator` result:
+
+```json
+{"valid": false, "issues": [{"level": "error", "message": "..."}]}
+```
+
+A body that is not a valid `WorkflowDraft` (for example `config` is an array or
+a kind is unknown) is rejected by Pydantic with HTTP 422. This endpoint has no
+storage or execution side effects.
+
 ## 4. What the model may decide
 
 The model returns only:
 
 ```json
-{"title":"краткое название","intents":["secrets","dependencies","report"]}
+{"title":"краткое название","intents":["secrets","dependencies","report"],"unavailable":[]}
 ```
 
-Known intents: `secrets`, `dependencies`, `sast`, `ai_scan`, `report`, `notify`,
-`schedule` (plus safe aliases such as `sca`, `secret_scan`, `полный`/`full`).
-Everything else is rejected by `InvalidModelResponse`.
+Known intents: `secrets`, `dependencies`, `sast`, `ai_scan`, `ai_explain`,
+`report`, `notify`, `schedule` (plus safe aliases such as `sca`,
+`secret_scan`, `полный`/`full`). Everything else is rejected by
+`InvalidModelResponse`.
+
+Requesting Telegram (or another messenger channel) is rejected explicitly with
+«Telegram-доставка не поддерживается: доступен только HTTP webhook (intent
+notify)» and `422 SCENARIO_MODEL_INVALID`. It is never silently converted into a
+webhook `NOTIFY` node.
+
+A non-empty `unavailable` list means the user asked for a capability outside the
+catalog. The whole request is rejected with `SCENARIO_MODEL_INVALID` and the
+message «Нет зарегистрированного блока…»; the server never substitutes a
+different block or a fabricated one.
 
 The model **cannot** return `NodeKind`, ports, config, thresholds, auth roles,
-providers, keys, URLs, shell commands or arbitrary code. Those fields are
-ignored if present and never mapped into the draft.
+providers, keys, URLs, shell commands or arbitrary code. Any field outside
+`title`, `intents` and `unavailable` is rejected instead of being silently
+mapped.
 
 ## 5. Server-owned graph
 
@@ -93,20 +126,24 @@ Server mapping:
 | `secrets` | `SECRET_SCAN` |
 | `dependencies` | `SCA_SCAN` |
 | `sast` | `KOTLIN_SAST` |
-| `ai_scan` | `AI_SCAN` |
+| `ai_scan` | `AI_SCAN` (source analysis, hypotheses only) |
+| `ai_explain` | `AI_EXPLAIN` (explains deterministic findings) |
 | `report` | `BUILD_REPORT` |
 | `notify` | `NOTIFY` (always disabled, empty webhook) |
 | `schedule` | `SCHEDULE_TRIGGER` (fixed safe template) |
 
 Every draft contains a trigger, `PROJECT_INPUT`, `MERGE_FINDINGS` and
 `POLICY_GATE`. At least one scanner is selected; if the plan has no scanner,
-the three deterministic scanners are used. `report` is added when `notify` is
-present. AI_SCAN is connected only to artifact and findings context; its
-`ai_scan_result` is not merged into findings, policy or verdict.
+the three deterministic scanners are used. `report` is added when `notify` or
+`ai_explain` is present, so a selected AI explanation is never left as an
+unconnected result. AI_SCAN is connected only to artifact and findings context;
+its `ai_scan_result` is not merged into findings, policy or verdict.
+AI_EXPLAIN reads the deterministic `findings_bundle` and feeds
+`explain_result` into `BUILD_REPORT`; it does not scan project source.
 
 Node IDs and ports are server-owned (`sb_trigger`, `sb_project`, `sb_secret`,
-`sb_sca`, `sb_sast`, `sb_merge`, `sb_policy`, `sb_ai_scan`, `sb_report`,
-`sb_notify`). Ports come from `NODE_REGISTRY` and the draft is passed through
+`sb_sca`, `sb_sast`, `sb_merge`, `sb_policy`, `sb_ai_scan`, `sb_ai_explain`,
+`sb_report`, `sb_notify`). Ports come from `NODE_REGISTRY` and the draft is passed through
 `WorkflowValidator` before it returns.
 
 Config allowlist:
@@ -127,12 +164,18 @@ running. Excess queue requests get `429 SCENARIO_BUSY`. The external call gets
 only `mask_sensitive_text(prompt)` under `task=plan_workflow`. Project source
 and artifact contents are never sent.
 
-## 6. AI_SCAN independence
+## 6. AI_SCAN and AI_EXPLAIN are separate
 
 If `ai_scan` is selected, the draft has an `AI_SCAN` node with the fixed
 balanced budget config. Its output is a separate hypothesis stream; it is not
 merged into `MERGE_FINDINGS`, canonical findings or the policy result. The
 preview warning states this explicitly.
+
+`ai_explain` is a different intent and a different block: it explains already
+found deterministic findings and offers fixes. It is never used as source
+analysis and `ai_scan` is never used as an explanation. Both can be selected
+together; then the draft contains both nodes, `AI_SCAN` stays disconnected from
+findings, and only `AI_EXPLAIN.explain_result` is wired into the report.
 
 ## 7. Frontend modal
 
@@ -164,6 +207,39 @@ modal never calls save/run API and never replaces the canvas during preview.
 Root should not auto-save or auto-run after `onApply`; the user can review and
 save the workflow in the existing editor flow.
 
+The client accepts a preview only when it matches the canvas contract mirrored
+from `NODE_REGISTRY`:
+
+- `validation.valid === true` and every issue is a well-formed
+  `warning`/`info`; `valid=true` with an `error` issue is treated as corrupted;
+- every node kind is registered, every node has a non-empty unique id, a
+  string title, an object `config` and finite numeric `position.x/y`;
+- every edge has a non-empty unique id, both endpoints exist, and
+  `sourcePort`/`targetPort` belong to the corresponding registered output and
+  input port lists.
+
+Anything else is rejected with `SCENARIO_PREVIEW_INVALID`; the modal shows the
+error, keeps the current canvas untouched and never offers Apply. A valid
+server preview applies as before.
+
+Structural checks alone do not make a draft executable. After the shape checks,
+the client posts the exact received draft to
+`POST /api/scenario-builder/validate` and enables success/Apply only when the
+real `WorkflowValidator` returns `valid=true`. This catches rules the client
+does not duplicate: scanner `config.engine`, AI_SCAN budgets, and port-type
+compatibility such as `AI_SCAN_RESULT -> POLICY_RESULT`. A rejected draft shows
+the server's first error and never changes the canvas. If the validation call
+fails, returns malformed JSON, or is aborted, Apply stays disabled and the
+current canvas is preserved. The modal's request generation guard also discards
+preview/validation results that resolve after close or a newer submit, so a
+stale response cannot enable Apply.
+
+The report node renders all three registry inputs
+(`findings_bundle`, `policy_result`, `explain_result`), so
+`MERGE_FINDINGS -> BUILD_REPORT` (including the planner edge
+`sb_e_merge_report`) and `AI_EXPLAIN -> BUILD_REPORT` stay visible on the
+canvas.
+
 Voice:
 
 - explicit mic click only; no recording on open;
@@ -193,6 +269,20 @@ Three Russian prompts and the provider-backed plans:
 
 All three drafts passed `WorkflowValidator`.
 
+Recheck on `SoloveyMaks/prompt-voice-finish` with the same real provider:
+
+| Prompt | Intents | Draft |
+| --- | --- | --- |
+| «Проверь секреты и зависимости в проекте, сделай отчёт по результатам.» | secrets, dependencies, report | 7 nodes / 8 edges |
+| «Сделай ИИ-анализ исходников: дополнительные гипотезы уязвимостей.» | ai_scan | 8 nodes / 10 edges, `AI_SCAN` only |
+| «Объясни уже найденные проблемы и рекомендации по исправлению, добавь в отчёт.» | ai_explain, report | 9 nodes / 12 edges, `AI_EXPLAIN` → report |
+| «Создай Jira-тикет по каждой находке…» | — | 422 «Нет зарегистрированного блока…» |
+| «Сгенерируй отчёт в DOCX…» | — | 422 «Нет зарегистрированного блока…» |
+
+The `ai_scan` and `ai_explain` drafts both passed `WorkflowValidator`; both
+nodes appear together only when both intents are selected, and then only
+`AI_EXPLAIN.explain_result` is connected to the report.
+
 Rejections checked without trusting the model:
 
 - `{"intents":["unknown_block"]}` → `SCENARIO_MODEL_INVALID`;
@@ -200,8 +290,13 @@ Rejections checked without trusting the model:
 - `{"intents":["evil: run shell"]}` → `SCENARIO_MODEL_INVALID`;
 - provider config pointing at an unreachable endpoint → `SCENARIO_PROVIDER_UNAVAILABLE`,
   no fabricated draft;
-- ASGI preview 200 for a valid prompt, short prompt 400
-  `SCENARIO_PROMPT_INVALID`.
+- provider layer raising an AI/HTTP failure → 503 `SCENARIO_PROVIDER_UNAVAILABLE`,
+  no draft in the response body;
+- forced `WorkflowValidator` failure → 422 `SCENARIO_DRAFT_INVALID`, no draft;
+- plan with `unavailable:["jira"]` → 422 `SCENARIO_MODEL_INVALID`;
+- plan with a field outside `title`/`intents`/`unavailable` → 422;
+- ASGI preview 200 for a valid prompt with `validation.valid=true`, short
+  prompt 400 `SCENARIO_PROMPT_INVALID`.
 
 Concurrency proof against a real slow local provider endpoint (2 workers, 6s
 provider, 5s overall deadline): server observed `max_active=2`; two requests
@@ -212,12 +307,81 @@ Modal stale-response proof with a delayed route (1.5s): submitting, closing,
 and reopening left `loading=false`, showed the prompt form again, and discarded
 the late preview (`hasStalePreview=false`).
 
+Voice and Apply proof (built modal in Chromium via a throwaway harness, mocked
+`SpeechRecognition` so each branch is deterministic):
+
+- supported: «Надиктовать» → «Слушаю…» + «Остановить запись»; transcript
+  appended to the editable textarea; stop returned to the idle button;
+- unsupported (both `SpeechRecognition` and `webkitSpeechRecognition` removed):
+  visible text fallback, mic click produced a readable alert, typed text stayed;
+- permission denied (`error: not-allowed`): readable alert, listening state
+  cleared, typed text stayed;
+- `no-speech`: readable alert, typed text stayed;
+- Apply called `onApply` with the preview draft, closed the modal, and the only
+  network call recorded was `POST /api/scenario-builder/preview`; no save, run,
+  workflow create or artifact upload call happened.
+
 Frontend build: `npm ci && npm run build` passed (Vite production build). A
 temporary wrapper rendered the modal at 390×844 (`/tmp/scenario-modal-390-final.png`);
 the screenshot and OCR show the dialog, textarea, voice button and submit button
 inside the viewport. No `App.tsx` edit was made, so root owns the visible
 button/mount. Vision review was unavailable; OCR and viewport dimensions were
 used.
+
+### Strict preview recheck (2026-11-21)
+
+Real ASGI router with a controlled `complete_json` boundary:
+
+| Plan | Result |
+| --- | --- |
+| `intents:["secrets","report"]` | `200`, 6 nodes / 6 edges, `validation.valid=true` |
+| `intents:["telegram"]` | `422 SCENARIO_MODEL_INVALID`, «Telegram-доставка не поддерживается…», no draft |
+| `intents:["totally_unknown"]` | `422 SCENARIO_MODEL_INVALID`, no draft |
+
+Built frontend in Chromium at 390×844 with route-controlled preview responses:
+
+- `kind=not_registered`, `valid=true` + `level=error`, wrong target port,
+  duplicate edge id, and missing `config` were each rejected with
+  `SCENARIO_PREVIEW_INVALID`; zero Apply buttons, canvas stayed 3 nodes / 2 edges;
+- real `secrets+report` preview applied: 6 nodes / 6 edges, including
+  `MERGE_FINDINGS -> BUILD_REPORT` (`sb_e_merge_report`) and the
+  `findings_bundle` target handle;
+- `ai_explain+report`: 9 nodes / 12 edges, `sb_e_explain_report` visible;
+- `ai_scan`: 8 nodes / 10 edges, `ai_scan_result` output handle present;
+- no `Couldn't create edge` / React Flow `#008` console warnings;
+- non-GET calls were only `POST /scenario-builder/preview`,
+  `POST /scenario-builder/validate` and `POST /workflows/wf-a/validate`; no
+  save, workflow create or run;
+- SpeechRecognition removed: typed text stayed, readable text fallback shown.
+
+Authoritative pre-Apply recheck (2026-11-21), real FastAPI ASGI validator:
+
+| Draft | Result |
+| --- | --- |
+| `secrets+report`, untouched | `200 {"valid":true,"issues":[]}` |
+| `secret_scan.config.engine="broken"` | `200 {"valid":false}`, «Неизвестный engine 'broken'…» |
+| `ai_scan.ai_scan_result -> build_report.policy_result` | `200 {"valid":false}`, «Несовместимые типы данных…» |
+| `config: []` | `422`, Pydantic rejects the draft shape |
+
+Built frontend in Chromium at 390×844, with the validate request forwarded to
+that real ASGI validator while preview responses were corrupted on purpose:
+
+- corrupted engine preview with `validation.valid=true` → error
+  «Черновик не прошёл серверную проверку: Неизвестный engine…», zero Apply,
+  canvas stayed 6/6;
+- incompatible `AI_SCAN_RESULT -> POLICY_RESULT` → error with the type mismatch,
+  zero Apply, canvas stayed 6/6;
+- unknown kind → `SCENARIO_PREVIEW_INVALID`, zero Apply, no validate call;
+- validate endpoint 500 → «Серверная проверка черновика недоступна…», zero Apply;
+- malformed validate body → «неоднозначный результат проверки», zero Apply;
+- close while preview or validation was delayed → no Apply, canvas stayed 6/6;
+- valid `secrets+report` applied 6/6 edges (including `sb_e_merge_report`);
+  valid `secrets+ai_scan+ai_explain+report` applied 8 nodes / 10 edges with
+  `sb_e_explain_report` and the `ai_scan_result` handle;
+- no React Flow `#008` warnings, no notify/save/run requests; typed voice
+  fallback still preserved.
+
+`npm run build` (tsc + Vite production build) passed.
 
 ## 9. Limitations
 
