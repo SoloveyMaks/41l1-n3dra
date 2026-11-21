@@ -1,0 +1,128 @@
+/* Файловый граф: только локальная геометрия дерева и карточек. */
+
+.rg-tree-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #1e293b;
+  pointer-events: none;
+}
+
+.rg-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+
+.rg-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.rg-scroll::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.rg-scroll::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+  background-clip: padding-box;
+}
+
+.rg-file-node {
+  width: 212px;
+  min-height: 64px;
+  box-sizing: border-box;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 9px 11px;
+  background: linear-gradient(180deg, #0f172a 0%, #0b1220 100%);
+  box-shadow: 0 1px 0 rgba(148, 163, 184, 0.06) inset, 0 8px 18px rgba(2, 6, 23, 0.35);
+  transition: border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.rg-file-node:hover {
+  border-color: #334155;
+}
+
+.rg-file-node.is-selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px #6366f1, 0 12px 26px rgba(79, 70, 229, 0.22);
+}
+
+.rg-file-node.is-search-match {
+  border-color: #22d3ee;
+}
+
+.rg-file-node.is-search-dimmed {
+  opacity: 0.35;
+}
+
+.rg-file-node.is-dimmed {
+  opacity: 0.3;
+}
+
+.rg-handle {
+  width: 5px;
+  height: 5px;
+  min-width: 5px;
+  min-height: 5px;
+  border: 0;
+  background: #475569;
+  opacity: 0.7;
+}
+
+.rg-handle.is-selected {
+  background: #818cf8;
+}
+
+.rg-graph .react-flow__edge-path {
+  transition: stroke 140ms ease, opacity 140ms ease;
+}
+
+.rg-graph .react-flow__edge.is-dimmed .react-flow__edge-path {
+  opacity: 0.25;
+}
+
+.rg-graph .react-flow__edge.is-active .react-flow__edge-path {
+  stroke: #a5b4fc;
+  opacity: 1;
+}
+
+.rg-graph .react-flow__attribution {
+  color: #475569;
+  background: transparent;
+}
+
+.rg-graph .react-flow__attribution a {
+  color: #64748b;
+}
+
+.rg-graph .react-flow__minimap {
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.rg-graph .react-flow__controls {
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.rg-graph .react-flow__controls-button {
+  background: #0f172a;
+  border-bottom-color: #1e293b;
+  color: #cbd5e1;
+}
+
+.rg-graph .react-flow__controls-button:hover {
+  background: #1e293b;
+}
+
+.rg-graph .react-flow__minimap-mask {
+  fill: rgba(2, 6, 23, 0.6);
+}
