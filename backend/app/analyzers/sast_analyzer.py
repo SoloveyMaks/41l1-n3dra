@@ -299,18 +299,79 @@ class SastAnalyzer(BaseAnalyzer):
             if observation is not None:
                 observation["findings"] += len(findings) - before
 
+    _SQL_STATEMENT = re.compile(r"(?is)\b(?:select|insert|update|delete|merge|call)\b")
+
+    def _local_assignments(self, fn_node: Any, fn_text: str) -> Dict[str, str]:
+        """Map ``val name = expression`` inside one function to its source text."""
+        raw = fn_text.encode("utf-8")
+        assignments: Dict[str, str] = {}
+
+        def visit(node: Any) -> None:
+            if node != fn_node and node.type == "function_declaration":
+                return
+            if node.type == "property_declaration":
+                name = next(
+                    (child for child in node.children if child.type == "variable_declaration"),
+                    None,
+                )
+                children = list(node.children)
+                eq_index = next(
+                    (index for index, child in enumerate(children) if child.type == "="),
+                    None,
+                )
+                if name is not None and eq_index is not None and eq_index + 1 < len(children):
+                    identifier = next(
+                        (child for child in name.children if child.type == "identifier"),
+                        None,
+                    )
+                    if identifier is not None:
+                        key = raw[
+                            identifier.start_byte - fn_node.start_byte:
+                            identifier.end_byte - fn_node.start_byte
+                        ].decode("utf-8", errors="replace")
+                        value_start = children[eq_index + 1].start_byte - fn_node.start_byte
+                        value_end = children[-1].end_byte - fn_node.start_byte
+                        assignments[key] = raw[value_start:value_end].decode("utf-8", errors="replace")
+                return
+            for child in node.children:
+                visit(child)
+
+        visit(fn_node)
+        return assignments
+
+    @classmethod
+    def _resolve_local(cls, expression: str, assignments: Dict[str, str], seen: Optional[Set[str]] = None) -> str:
+        """Follow ``val`` aliases in the same function; cycles stop at the first name."""
+        seen = set() if seen is None else seen
+        candidate = expression.strip()
+        if re.fullmatch(r"[A-Za-z_]\w*", candidate) and candidate in assignments and candidate not in seen:
+            seen.add(candidate)
+            return cls._resolve_local(assignments[candidate], assignments, seen)
+        return expression
+
     def _check_sql_injection_rules(self, rel_path: str, lines: List[str], fn_node: Any,
                                    fn_text: str, user_params: List[Tuple[str, int, int]],
                                    findings: List[Finding]) -> None:
-        sql_sinks = ["jdbcTemplate.query", "jdbcTemplate.execute", "jdbcTemplate.update",
-                     "createNativeQuery", "executeQuery", "executeUpdate"]
+        # Receiver names vary (``jdbc``, ``jdbcTemplate``, injected bean), so the
+        # rule matches the JDBC method name on any receiver.  The SQL keyword
+        # check below keeps unrelated ``query``/``update`` calls out.
+        sql_sinks = [
+            "query", "queryForList", "queryForObject", "queryForMap", "queryForRowSet",
+            "update", "batchUpdate", "execute", "executeQuery", "executeUpdate",
+            "createNativeQuery", "prepareStatement",
+        ]
+        assignments = self._local_assignments(fn_node, fn_text)
 
         for sink, call, args in self._sink_calls(fn_node, fn_text, sql_sinks):
             if args:
+                sql_text = self._resolve_local(args[0], assignments)
+                if not self._SQL_STATEMENT.search(sql_text):
+                    continue
                 # Check if any user parameter is interpolated or concatenated into SQL
                 for p_name, p_line, p_col in user_params:
-                    # Look for string concatenation ("... " + p_name) or interpolation ("... $p_name ...")
-                    if self._argument_uses(args[0], p_name, sql=True):
+                    # Look for string concatenation ("... " + p_name) or interpolation ("... $p_name ..."),
+                    # including an expression assigned to a local val in the same function.
+                    if self._argument_uses(sql_text, p_name, sql=True):
                         sink_line = call.start_point[0] + 1
                         evidence = "".join(lines[sink_line - 1:call.end_point[0] + 1]).strip()
 
@@ -332,7 +393,7 @@ class SastAnalyzer(BaseAnalyzer):
                             severity=Severity.CRITICAL,
                             severityBasis="Пользовательский параметр конкатенируется или интерполируется напрямую в SQL-запрос",
                             confidence=Confidence.CONFIRMED,
-                            confidenceBasis="Входной параметр непосредственно входит в текст SQL-аргумента вызова",
+                            confidenceBasis="Входной параметр входит в текст SQL-аргумента вызова напрямую или через локальный val той же функции",
                             status=FindingStatus.CONFIRMED,
                             primaryLocation=loc_sink,
                             relatedLocations=[loc_source],
@@ -355,7 +416,7 @@ class SastAnalyzer(BaseAnalyzer):
                             ],
                             redactedEvidence=evidence,
                             advisoryIds=[],
-                            coverageWarnings=["Анализ ограничен прямой интерполяцией и конкатенацией в SQL-аргументе; межпроцедурный поток не проверен"]
+                            coverageWarnings=["Анализ ограничен интерполяцией и конкатенацией в SQL-аргументе или локальном val той же функции; межпроцедурный поток не проверен"]
                         )
                         findings.append(finding)
                         break
