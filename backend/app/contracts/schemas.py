@@ -162,6 +162,7 @@ class FindingsBundle(BaseModel):
 class PolicyResult(BaseModel):
     verdict: SecurityVerdict
     reasons: List[str] = Field(default_factory=list)
+    details: Dict[str, Any] = Field(default_factory=dict)
     critical_count: int = 0
     high_count: int = 0
     medium_count: int = 0

@@ -36,27 +36,38 @@ report.verdict=pass
 
 ## Что изменено
 
-Только `engine/executor.py` (документация — этот файл). Canonical coverage,
-scanner statuses, SQL migrations, storage и public DTO не менялись.
+Изменены `engine/executor.py` и поле `details` у `PolicyResult` (документация —
+этот файл). Canonical coverage, scanner statuses, SQL migrations, storage и
+frontend не менялись.
 
-Перед финализацией run:
+Canonical artifact уже создаётся в `MERGE_FINDINGS` до `POLICY_GATE`, поэтому
+проверка применяется **до** downstream condition/AI/report/notify:
 
-1. Policy gate и condition продолжают работать как раньше; при relaxed policy
-   результат policy может остаться `pass`.
-2. Если policy verdict `pass`, проверяется canonical artifact:
+1. Policy gate сначала считает findings-вердикт (`fail` по critical/high/medium
+   сохраняется без изменений).
+2. Если findings дают не `fail`, загружается canonical artifact:
    `coverage.status == "complete"` **и** `provenance.expectedScopesVerified is true`.
-3. Если это не подтверждено, итоговый `security_verdict` становится
-   `inconclusive`; в reasons отчёта добавляется:
-   `Canonical coverage неполное: status=partial, expectedScopesVerified=false;
-   PASS не подтверждён`.
-4. Сохранённый report (если report-node был) пересобирается с финальным
-   verdict, чтобы `run`, `report`, passport и official JSON не расходились.
-5. `execution_status` остаётся честным: `succeeded` означает, что анализ
+3. Если это не подтверждено, policy gate сразу возвращает `inconclusive` —
+   включая `strictCoverageRequired=false`. `strictCoverageRequired` управляет
+   только runtime COVERAGE-требованиями и не может отменить доказательность
+   общего security verdict.
+4. Downstream condition/AI/report/notify получают уже `inconclusive`: condition
+   `equals pass` даёт `false`, webhook/report/SSE/API не расходятся.
+5. Видимая причина на русском:
+   `Полная проверка не подтверждена: покрытие частичное; обязательные scopes не
+   верифицированы; пропущены: runtime-configuration, runtime-guards,
+   binaries-and-archives`.
+   Enum статуса и хэши лежат в `PolicyResult.details.canonicalCoverage`
+   (`coverageStatus`, `expectedScopesVerified`, `skippedScopes`, `bundleHash`,
+   `parserHash`, `rulesHash`, `artifactHash`).
+6. `execution_status` остаётся честным: `succeeded` означает, что анализ
    выполнился, а не что security verdict `pass`.
-6. `fail` не понижается: известные критичные/высокие находки остаются `fail`.
+7. Финальный guard после графа сохранён только как защита от обхода policy или
+   повреждения данных. При нормальном policy-gate он не срабатывает и не
+   пересоздаёт отчёт.
 
-Публикация теперь получает финальный `inconclusive` и проходит canonical
-inconclusive-ветку; `expectedScopesVerified` и `partial` не подделываются.
+Публикация получает `inconclusive` и проходит canonical inconclusive-ветку;
+`expectedScopesVerified` и `partial` не подделываются.
 
 ## Фактические результаты
 
@@ -67,9 +78,10 @@ inconclusive-ветку; `expectedScopesVerified` и `partial` не поддел
 | strict clean | succeeded | inconclusive | partial | inconclusive | true |
 | known findings (13: 8 critical, 4 high) | succeeded | **fail** | partial | fail | fail run not downgraded |
 
-Policy-event внутри run может показывать `pass`: это отдельный результат
-policy gate, а не финальный security verdict. Пользовательские run/report/API
-показывают `inconclusive`.
+Для clean relaxed condition `equals pass` проверен живьём: `decision=false`,
+`actualValue=inconclusive`; webhook body, report, run API и SSE `run_status`
+показывают `inconclusive`. Known fail (13 находок) остаётся `fail` и в policy,
+и в condition/report/webhook.
 
 SQL narrow proof не менялся; на несравнимой паре он по-прежнему отвечает
 контролируемым `422 SQL_PATTERN_REJECTED`, не `500`. Published/unpublished

@@ -300,16 +300,21 @@ class WorkflowExecutor:
         # also be complete and expected scopes verified. Scanner-runtime
         # coverage alone cannot prove the skipped/runtime scopes.
         if final_verdict == SecurityVerdict.PASS:
-            canonical_ok, canonical_reason = self._canonical_coverage_verified(run_id)
-            if not canonical_ok:
+            # Defense only: the policy gate already applies canonical evidence.
+            canonical = self._canonical_coverage_facts(run_id)
+            if not canonical["verified"]:
                 final_verdict = SecurityVerdict.INCONCLUSIVE
                 if policy_result is not None:
                     policy_result = policy_result.model_copy(update={
                         "verdict": final_verdict,
                         "reasons": [
                             *(r for r in policy_result.reasons if not r.startswith("Все проверки пройдены")),
-                            canonical_reason,
+                            canonical["reason"],
                         ],
+                        "details": {
+                            **policy_result.details,
+                            "canonicalCoverage": canonical["details"],
+                        },
                     })
                 if findings_bundle is not None:
                     self._rewrite_report_verdict(
@@ -585,16 +590,23 @@ class WorkflowExecutor:
             if gap_diags:
                 coverage_gaps.append(f"{len(gap_diags)} анализаторов без покрытия")
 
+            canonical = self._canonical_coverage_facts(run_id)
             if verdict != SecurityVerdict.FAIL:
+                # strictCoverageRequired controls runtime requirements only;
+                # canonical evidence is required for every non-fail verdict.
+                if not canonical["verified"]:
+                    verdict = SecurityVerdict.INCONCLUSIVE
+                    reasons.append(canonical["reason"])
                 if strict_cov and coverage_gaps:
                     verdict = SecurityVerdict.INCONCLUSIVE
                     reasons.append("Неполное покрытие: " + "; ".join(coverage_gaps))
-                elif not reasons:
+                if not reasons:
                     reasons.append("Все проверки пройдены: критических находок нет")
 
             pol_res = PolicyResult(
                 verdict=verdict,
                 reasons=reasons,
+                details={"canonicalCoverage": canonical["details"]},
                 critical_count=crit_count,
                 high_count=high_count,
                 medium_count=med_count,
@@ -816,26 +828,52 @@ class WorkflowExecutor:
         else:
             raise ValueError(f"Неизвестный тип ноды для исполнения: {kind}")
 
-    def _canonical_coverage_verified(self, run_id: str) -> Tuple[bool, str]:
-        """Only a complete canonical coverage with verified scopes supports PASS."""
+    def _canonical_coverage_facts(self, run_id: str) -> Dict[str, Any]:
+        """Canonical evidence for a non-fail verdict; never manufactures completeness."""
+        machine: Dict[str, Any] = {
+            "coverageStatus": "unavailable",
+            "expectedScopesVerified": False,
+            "skippedScopes": [],
+            "bundleHash": None,
+            "parserHash": None,
+            "rulesHash": None,
+            "artifactHash": None,
+        }
         try:
             payload = CodeFactsStore().load_run(workspace_id(), run_uuid(run_id))
         except Exception as exc:  # noqa: BLE001 - missing canonical facts are not a pass
             logger.warning("Canonical coverage read failed for %s: %s", run_id, exc)
-            return False, "Canonical coverage недоступно; PASS не подтверждён"
+            return {"verified": False, "details": machine,
+                    "reason": "Полная проверка не подтверждена: данные покрытия недоступны"}
         if not payload:
-            return False, "Canonical coverage отсутствует; PASS не подтверждён"
+            return {"verified": False, "details": machine,
+                    "reason": "Полная проверка не подтверждена: данные покрытия отсутствуют"}
         analysis = payload.get("analysisBundle") or {}
         coverage = ((analysis.get("codeFacts") or {}).get("coverage") or {})
         provenance = analysis.get("provenance") or {}
+        signature = analysis.get("signature") or {}
         status = coverage.get("status")
-        expected = provenance.get("expectedScopesVerified")
-        if status == "complete" and expected is True:
-            return True, ""
-        details = [f"status={status or 'unknown'}"]
-        if expected is not True:
-            details.append("expectedScopesVerified=false")
-        return False, "Canonical coverage неполное: " + ", ".join(details) + "; PASS не подтверждён"
+        if status not in {"complete", "partial", "unavailable"}:
+            status = "unavailable"
+        expected = provenance.get("expectedScopesVerified") is True
+        machine.update({
+            "coverageStatus": status,
+            "expectedScopesVerified": expected,
+            "skippedScopes": list(coverage.get("skippedScopes") or []),
+            "bundleHash": (payload.get("map") or {}).get("bundleHash"),
+            "parserHash": signature.get("parserHash"),
+            "rulesHash": signature.get("rulesHash"),
+            "artifactHash": (payload.get("identity") or {}).get("artifactHash"),
+        })
+        if status == "complete" and expected:
+            return {"verified": True, "details": machine, "reason": ""}
+        bits = ["покрытие частичное" if status == "partial" else "покрытие недоступно"]
+        if not expected:
+            bits.append("обязательные scopes не верифицированы")
+        if machine["skippedScopes"]:
+            bits.append("пропущены: " + ", ".join(machine["skippedScopes"]))
+        return {"verified": False, "details": machine,
+                "reason": "Полная проверка не подтверждена: " + "; ".join(bits)}
 
     def _rewrite_report_verdict(self, run_id: str, workflow_name: str, bundle: FindingsBundle,
                                 policy: Optional[PolicyResult],
