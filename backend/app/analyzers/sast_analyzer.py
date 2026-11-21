@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import tree_sitter
 import tree_sitter_kotlin
 from backend.app.analyzers.base import BaseAnalyzer
+from backend.app.analyzers.file_discovery import prune_scan_dirs
 from backend.app.contracts.schemas import (
     Confidence, Coverage, Diagnostic, Finding, FindingStatus,
     Location, RuleObservation, ScanResult, Severity, TraceStep
@@ -49,7 +50,8 @@ class SastAnalyzer(BaseAnalyzer):
 
         rule_observations: List[RuleObservation] = []
 
-        for root, _, files in os.walk(root_path):
+        for root, dirnames, files in os.walk(root_path):
+            prune_scan_dirs(dirnames)
             for file_name in files:
                 if not file_name.endswith(".kt"):
                     continue

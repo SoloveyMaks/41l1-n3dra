@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from backend.app.analyzers.base import BaseAnalyzer
+from backend.app.analyzers.file_discovery import prune_scan_dirs
 from backend.app.codefacts.source import mask_text
 from backend.app.contracts.schemas import (
     Confidence, Coverage, Diagnostic, Finding, FindingStatus,
@@ -93,7 +94,8 @@ class SecretAnalyzer(BaseAnalyzer):
                 duration_ms=0.0
             )
 
-        for root, _, files in os.walk(root_path):
+        for root, dirnames, files in os.walk(root_path):
+            prune_scan_dirs(dirnames)
             for file_name in files:
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
