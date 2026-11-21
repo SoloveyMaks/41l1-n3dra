@@ -132,6 +132,7 @@ ensure_app() {
     podman start "$NEDRA_APP_CONTAINER" >/dev/null
     say "backend перезапущен"
   else
+    telegram_app_mount_args
     podman run -d \
       --name "$NEDRA_APP_CONTAINER" \
       --hostname nedra-app \
@@ -145,6 +146,7 @@ ensure_app() {
       --env-file "$NEDRA_RUNTIME_ENV" \
       --env NEDRA_ENV=local \
       --volume "${NEDRA_APP_VOLUME}:/app/data:Z" \
+      "${NEDRA_TELEGRAM_APP_ARGS[@]}" \
       --read-only \
       --tmpfs /tmp:rw,noexec,nosuid,size=64m \
       --cap-drop=ALL \

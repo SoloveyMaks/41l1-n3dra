@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import urlsplit
@@ -52,6 +53,24 @@ HELP_TEXT = """NEDRA Telegram
 
 Отправьте HTTPS-ссылку GitHub/GitLab, чтобы импортировать репозиторий и запустить выбранный сценарий."""
 
+BINDING_SUCCESS_TEXT = (
+    "Аккаунт привязан.\n"
+    "Дальше: /settings scenario <id>, затем пришлите HTTPS-ссылку GitHub/GitLab."
+)
+BINDING_CODE_HINT = (
+    "Код не найден, истёк или уже использован. Код действует 10 минут; "
+    "создайте новый в веб-кабинете и отправьте /start <код>."
+)
+BARE_CODE_MISS_TEXT = (
+    "Похоже на код привязки, но он не найден или истёк. "
+    "Создайте новый код в веб-кабинете и отправьте /start <код>."
+)
+UNSUPPORTED_FILE_TEXT = (
+    "Файлы, архивы (ZIP) и изображения пока не поддерживаются. "
+    "Пришлите HTTPS-ссылку на репозиторий GitHub или GitLab — бот импортирует его сам."
+)
+BARE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
 
 class TelegramRuntime:
     def __init__(
@@ -64,6 +83,7 @@ class TelegramRuntime:
         api: Optional[TelegramBotAPI] = None,
         poll_timeout: int = 25,
         outbox_interval: float = 2.0,
+        config_error: Optional[str] = None,
     ):
         self.db = db
         self.executor = executor
@@ -82,6 +102,7 @@ class TelegramRuntime:
         self._recovery_task: Optional[asyncio.Task] = None
         self._external_status = "not_started"
         self._last_error: Optional[str] = None
+        self._config_error = config_error
         self._bot_username: Optional[str] = None
 
     # --- lifecycle -----------------------------------------------------
@@ -96,8 +117,8 @@ class TelegramRuntime:
         )
         if self.api is None:
             self._external_status = "not_configured"
-            self._last_error = "TELEGRAM_BOT_TOKEN не настроен"
-            logger.warning("telegram runtime disabled: token not configured")
+            self._last_error = self._config_error or "TELEGRAM_BOT_TOKEN не настроен"
+            logger.warning("telegram runtime disabled: %s", self._last_error)
             return self.status()
 
         self._external_status = "connecting"
@@ -152,7 +173,8 @@ class TelegramRuntime:
             "externalStatus": self._external_status,
             "botUsername": self._bot_username,
             "proxyConfigured": bool(self.api is not None and self.api.proxy_configured),
-            "lastError": self._last_error,
+            "proxyMode": self.api.proxy_mode if self.api is not None else None,
+            "lastError": self._last_error or self._config_error,
         }
 
     async def _repo(self, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -277,8 +299,15 @@ class TelegramRuntime:
 
         if not await self._repo("claim_update", update_id, chat_id):
             return
+        attachment = any(
+            message.get(kind)
+            for kind in ("document", "photo", "audio", "video", "voice",
+                         "video_note", "animation", "sticker")
+        )
         try:
-            await self._dispatch_text(chat_id, username, text, update_id)
+            await self._dispatch_text(
+                chat_id, username, text, update_id, has_attachment=attachment,
+            )
             await self._repo("finish_update", update_id, "done")
         except asyncio.CancelledError:
             raise
@@ -296,10 +325,14 @@ class TelegramRuntime:
         username: Optional[str],
         text: str,
         update_id: int,
+        *,
+        has_attachment: bool = False,
     ) -> None:
         value = text.strip()
         if not value:
-            await self._reply(chat_id, HELP_TEXT)
+            await self._reply(
+                chat_id, UNSUPPORTED_FILE_TEXT if has_attachment else HELP_TEXT,
+            )
             return
         parts = value.split(maxsplit=1)
         command = parts[0].split("@", 1)[0].lower()
@@ -320,7 +353,27 @@ class TelegramRuntime:
         if self._looks_like_repo_url(value):
             await self._start_repo_job(chat_id, value, update_id)
             return
+        if BARE_CODE_RE.fullmatch(value):
+            await self._handle_bare_code(chat_id, username, value)
+            return
         await self._reply(chat_id, HELP_TEXT)
+
+    async def _handle_bare_code(
+        self,
+        chat_id: int,
+        username: Optional[str],
+        code: str,
+    ) -> None:
+        """A binding code sent as plain text is consumed instead of ignored."""
+        binding = await self._repo("get_binding", chat_id)
+        if binding is not None:
+            await self._reply(chat_id, "Аккаунт уже привязан.\n\n" + HELP_TEXT)
+            return
+        bound = await self._repo("consume_binding_code", code, chat_id, username)
+        if bound is None:
+            await self._reply(chat_id, BARE_CODE_MISS_TEXT)
+            return
+        await self._reply(chat_id, BINDING_SUCCESS_TEXT)
 
     async def _handle_start(
         self,
@@ -332,15 +385,9 @@ class TelegramRuntime:
         if argument:
             bound = await self._repo("consume_binding_code", argument, chat_id, username)
             if bound is None:
-                await self._reply(
-                    chat_id,
-                    "Код не найден, истёк или уже использован. Создайте новый код в веб-кабинете.",
-                )
+                await self._reply(chat_id, BINDING_CODE_HINT)
                 return
-            await self._reply(
-                chat_id,
-                "Аккаунт привязан. Дальше: /settings scenario <id>, затем отправьте HTTPS-ссылку репозитория.",
-            )
+            await self._reply(chat_id, BINDING_SUCCESS_TEXT)
             return
         if binding is None:
             await self._reply(
@@ -888,13 +935,16 @@ def create_telegram_runtime(
     api: Optional[TelegramBotAPI] = None,
 ) -> TelegramRuntime:
     """Factory: token absence disables polling but keeps the HTTP binding API usable."""
+    config_error = None
     if api is None:
         try:
             api = TelegramBotAPI.from_runtime()
-        except TelegramConfigError:
+        except TelegramConfigError as exc:
             api = None
+            config_error = redact_telegram_text(exc)
     return TelegramRuntime(
         db, executor, importer,
         repository=repository or TelegramRepository(),
         api=api,
+        config_error=config_error,
     )

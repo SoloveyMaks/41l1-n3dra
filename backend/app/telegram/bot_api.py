@@ -8,6 +8,7 @@ client.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -19,8 +20,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from backend.app.telegram.proxy_bridge import UnixSocketProxyBridge
+
 TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TOKEN_FILE_ENV = "TELEGRAM_BOT_TOKEN_FILE"
+PROXY_SOCKET_ENV = "TELEGRAM_PROXY_SOCKET"
 RUNTIME_ENV = Path.home() / ".config" / "nedra" / "runtime.env"
 DEFAULT_TOKEN_FILE = Path.home() / ".config" / "nedra" / "telegram-bot.token"
 DEFAULT_API_BASE = "https://api.telegram.org"
@@ -33,18 +37,29 @@ _URL_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 _TELEGRAM_URL_RE = re.compile(r"https?://[^\s\"']*api\.telegram\.org[^\s\"']*")
 
 
+def _redact_log_text(value: str) -> str:
+    value = _URL_TOKEN_RE.sub("bot***", value)
+    return _TELEGRAM_URL_RE.sub("https://api.telegram.org/***", value)
+
+
 class _TelegramLogFilter(logging.Filter):
-    """Keep httpx's request-line logs from exposing a bot token."""
+    """Keep httpx's request-line logs from exposing a bot token.
+
+    httpx passes an ``httpx.URL`` object in ``record.args``; filtering only raw
+    string arguments let the renderer print the full tokenised URL. Render the
+    record first, redact, and drop the arguments when anything changed.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
-            if isinstance(record.msg, str):
-                record.msg = _URL_TOKEN_RE.sub("bot***", record.msg)
-            if record.args:
-                record.args = tuple(
-                    _URL_TOKEN_RE.sub("bot***", item) if isinstance(item, str) else item
-                    for item in record.args
-                )
+            if isinstance(record.msg, str) and not record.args:
+                record.msg = _redact_log_text(record.msg)
+                return True
+            message = record.getMessage()
+            redacted = _redact_log_text(message)
+            if redacted != message:
+                record.msg = redacted
+                record.args = ()
         except Exception:  # noqa: BLE001 - logging must never fail the request
             pass
         return True
@@ -77,6 +92,7 @@ class TelegramBotSettings:
     base_url: str = DEFAULT_API_BASE
     bot_key: str = DEFAULT_BOT_KEY
     proxy_url: Optional[str] = field(default=None, repr=False)
+    proxy_socket: Optional[str] = field(default=None, repr=False)
 
     @property
     def safe_base_url(self) -> str:
@@ -100,6 +116,15 @@ def _validate_proxy_url(value: str) -> str:
         host = f"[{host}]"
     default_port = 443 if parts.scheme == "https" else 80
     return f"{parts.scheme}://{host}:{port or default_port}"
+
+
+def _validate_proxy_socket(value: str) -> str:
+    if "\x00" in value or not value.startswith("/"):
+        raise TelegramConfigError("TELEGRAM_PROXY_SOCKET must be an absolute path")
+    normalized = os.path.normpath(value)
+    if normalized in ("/", "//"):
+        raise TelegramConfigError("TELEGRAM_PROXY_SOCKET must name a socket file")
+    return normalized
 
 
 def _read_secret_file(path: Path) -> str:
@@ -166,9 +191,16 @@ def load_bot_settings() -> TelegramBotSettings:
     if len(bot_key) > 128:
         raise TelegramConfigError("TELEGRAM_BOT_KEY is too long")
     proxy_raw = os.getenv("TELEGRAM_PROXY_URL", "").strip()
+    socket_raw = os.getenv(PROXY_SOCKET_ENV, "").strip()
+    if proxy_raw and socket_raw:
+        raise TelegramConfigError(
+            "set only one of TELEGRAM_PROXY_URL or TELEGRAM_PROXY_SOCKET"
+        )
     proxy_url = _validate_proxy_url(proxy_raw) if proxy_raw else None
+    proxy_socket = _validate_proxy_socket(socket_raw) if socket_raw else None
     return TelegramBotSettings(
         token=token, base_url=base, bot_key=bot_key, proxy_url=proxy_url,
+        proxy_socket=proxy_socket,
     )
 
 
@@ -190,18 +222,66 @@ def redact_telegram_text(
 class TelegramBotAPI:
     def __init__(self, settings: TelegramBotSettings):
         self._settings = settings
+        self._client: Optional[httpx.AsyncClient] = None
+        self._bridge: Optional[UnixSocketProxyBridge] = None
+        self._client_lock = asyncio.Lock()
+        self._closed = False
+        self.bot_username: Optional[str] = None
+        if settings.proxy_url:
+            self._client = self._make_client(settings.proxy_url)
+
+    def _make_client(self, proxy_url: Optional[str] = None) -> httpx.AsyncClient:
         client_kwargs: Dict[str, Any] = {
             "timeout": httpx.Timeout(35.0, connect=15.0),
             "follow_redirects": False,
             "headers": {"Accept": "application/json"},
-            # Only TELEGRAM_PROXY_URL is used for Bot API; global HTTP(S)_PROXY
-            # and LLM httpx settings must not leak into Telegram traffic.
+            # Only the Telegram proxy setting is used for Bot API; global
+            # HTTP(S)_PROXY and LLM httpx settings must not leak into it.
             "trust_env": False,
         }
-        if settings.proxy_url:
-            client_kwargs["proxy"] = settings.proxy_url
-        self._client = httpx.AsyncClient(**client_kwargs)
-        self.bot_username: Optional[str] = None
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        return httpx.AsyncClient(**client_kwargs)
+
+    async def _require_client(self) -> httpx.AsyncClient:
+        if self._closed:
+            raise TelegramUnavailable("telegram client is closed")
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._closed:
+                raise TelegramUnavailable("telegram client is closed")
+            if self._client is not None:
+                return self._client
+            socket_path = self._settings.proxy_socket
+            if socket_path is None:
+                self._client = self._make_client()
+                return self._client
+            bridge = UnixSocketProxyBridge(socket_path)
+            try:
+                info = os.stat(socket_path)
+            except OSError:
+                raise TelegramUnavailable(
+                    f"telegram proxy socket unavailable: {socket_path}"
+                ) from None
+            if not stat.S_ISSOCK(info.st_mode):
+                raise TelegramUnavailable(
+                    f"telegram proxy socket unavailable: {socket_path} is not a socket"
+                )
+            try:
+                try:
+                    port = await bridge.start()
+                except OSError as exc:
+                    raise TelegramUnavailable(
+                        f"telegram proxy socket unavailable: {exc.strerror or 'connect failed'}"
+                    ) from None
+                client = self._make_client(f"http://127.0.0.1:{port}")
+                self._client = client
+                self._bridge = bridge
+            except BaseException:
+                await bridge.close()
+                raise
+            return self._client
 
     def __repr__(self) -> str:
         return "TelegramBotAPI(<redacted>)"
@@ -212,7 +292,15 @@ class TelegramBotAPI:
 
     @property
     def proxy_configured(self) -> bool:
-        return bool(self._settings.proxy_url)
+        return bool(self._settings.proxy_url or self._settings.proxy_socket)
+
+    @property
+    def proxy_mode(self) -> Optional[str]:
+        if self._settings.proxy_socket:
+            return "socket"
+        if self._settings.proxy_url:
+            return "url"
+        return None
 
     def redact(self, text: Any) -> str:
         return redact_telegram_text(
@@ -224,7 +312,16 @@ class TelegramBotAPI:
         return cls(load_bot_settings())
 
     async def close(self) -> None:
-        await self._client.aclose()
+        async with self._client_lock:
+            self._closed = True
+            client, self._client = self._client, None
+            bridge, self._bridge = self._bridge, None
+        try:
+            if client is not None:
+                await client.aclose()
+        finally:
+            if bridge is not None:
+                await bridge.close()
 
     async def _call(
         self,
@@ -234,8 +331,9 @@ class TelegramBotAPI:
         timeout: Optional[float] = None,
     ) -> Any:
         url = f"{self._settings.safe_base_url}/bot{self._settings.token}/{method}"
+        client = await self._require_client()
         try:
-            response = await self._client.post(
+            response = await client.post(
                 url,
                 json=payload or {},
                 timeout=timeout,
@@ -333,8 +431,9 @@ class TelegramBotAPI:
         if not safe_name or safe_name != str(filename) or len(safe_name) > 120:
             safe_name = "nedra-report.jsonc"
         url = f"{self._settings.safe_base_url}/bot{self._settings.token}/sendDocument"
+        client = await self._require_client()
         try:
-            response = await self._client.post(
+            response = await client.post(
                 url,
                 data={"chat_id": str(int(chat_id)), "caption": (caption or "")[:1024]},
                 files={"document": (safe_name, content, "application/json")},

@@ -1,106 +1,199 @@
-# Telegram deployment: Bot API route из `nedra-app`
+# Telegram runtime в production: причина молчания и готовый route
 
-Проверка read-only: контейнеры/сеть/прокси не менялись, Telegram polling и
-send не запускались. Токен читался только внутри скрипта из 0600-файла и не
-печатался/не передавался в argv; выполнялся только `getMe`.
+Проверка 2026-11-21 в worktree `telegram-live-fix` от `d23a68d`. Production
+read-only: контейнеры, env, сеть, firewall, общий proxy не менялись; polling,
+`getUpdates`, `sendMessage` не запускались. Токен читался только внутри
+процесса/контейнера и не попадал в argv, логи или чат.
 
 ## Итог
 
-Существующего безопасного route из контейнера `nedra-app` к Bot API через
-`127.0.0.1:14600` **нет**. Host-side прокси исправен, но слушает только host
-loopback; rootless-контейнер до него не достаёт. В контейнере также нет
-Telegram env вообще, а его config hash отличается от текущего `runtime.env`.
+Бот не отвечал по двум независимым причинам:
+
+1. **Runtime вообще не запускался.** В production env нет `TELEGRAM_ENABLED`,
+   а `backend/app/main.py` создаёт задачу `telegram_runtime.start()` только
+   при `TELEGRAM_ENABLED=1`. Ни `getMe`, ни polling, ни ответов не было.
+2. **У контейнера нет маршрута к Bot API.** Токен в контейнере есть, но
+   `TELEGRAM_PROXY_URL` не задан; прямой egress к `api.telegram.org` из
+   контейнера не работает, а host-прокси `127.0.0.1:14600` слушает только
+   host loopback и из контейнера недоступен.
+
+Готовый минимальный route: **host-релей на UNIX-сокете → один upstream
+`127.0.0.1:14600`; каталог с сокетом монтируется в app-контейнер; приложение
+поднимает loopback TCP→UNIX bridge внутри своего netns.** Каталог, а не inode
+сокета: релей при рестарте удаляет и создаёт сокет заново, и mount файла
+навсегда прибивал бы мёртвый inode. Ни host network, ни публичного порта, ни
+изменения `zen-proxy` и firewall не требуется.
 
 ## Измеренные факты
 
-Host (baseline, токен не выводился):
+Production-контейнер `nedra-app`, образ `localhost/nedra-app:incident-d23a68d`:
 
 ```text
-host-proxy-14600 status 200 ok True
+TELEGRAM_BOT_TOKEN     present
+TELEGRAM_ENABLED       absent
+TELEGRAM_PROXY_URL     absent
+network                nedra (10.89.1.0/24), gw 10.89.1.1
 ```
 
-Контейнер `nedra-app` (без внешних send/polling):
+`podman logs nedra-app` не содержит ни одной строки Telegram: runtime не
+стартовал. Host-прокси `127.0.0.1:14600` отвечает (HTTP 302 на
+`https://api.telegram.org/`), поддерживает CONNECT.
+
+Проверенные варианты маршрута:
+
+| Вариант | Результат |
+| --- | --- |
+| `host.containers.internal:14600` (netavark) | недоступен (ConnectError/timeout): прокси слушает только loopback |
+| `pasta:--map-host-loopback,169.254.1.2` | TCP до `169.254.1.2:14600` — **ok** |
+| `--network nedra --network pasta:...` | podman: `selected mode pasta conflicts with bridge` — неприменимо вместе с БД |
+| `slirp4netns` | не установлен на хосте |
+| UNIX-сокет-релей + `--group-add keep-groups` | CONNECT 200, TLS 1.3, `getMe` — **ok** |
+
+Живая проверка нового кода в контейнере (образ production, backend смонтирован
+из worktree, токен через `--env-file`):
 
 ```text
-container-local-127     error ConnectError
-host-gw-10.89.1.1       error ConnectError
-host.containers.internal error ConnectTimeout
-container-direct        error ConnectError
+settings proxy_mode: socket
+getMe ok: chilli_nedra_bot id: 9239629524
+webhook url: '' pending: 5 last_error: None
+runtime proxyMode: socket botUsername: chilli_nedra_bot
 ```
 
-Сеть:
+`getWebhookInfo` безвреден: webhook не установлен (`url=""`), long polling
+корректен. `pending_update_count=5` — у Telegram уже лежат недоставленные
+апдейты, включая сообщение пользователя; они не съедены, пока не вызван
+`getUpdates`.
 
-- rootless podman, backend `netavark`;
-- сеть `nedra`: `10.89.1.0/24`, gateway `10.89.1.1`,
-  `nedra-app` = `10.89.1.138`;
-- `/etc/hosts` контейнера: `169.254.1.2 host.containers.internal`, но TCP до
-  `169.254.1.2:14600` — timeout;
-- `zen-proxy` слушает `127.0.0.1:14600` (только loopback) и supports CONNECT;
-- контейнерный direct egress к `api.telegram.org` — ConnectError.
-
-Env:
-
-- `podman inspect nedra-app`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PROXY_URL`,
-  `TELEGRAM_ENABLED` отсутствуют;
-- `~/.config/nedra/runtime.env` (0600) содержит `TELEGRAM_BOT_TOKEN`, но не
-  `TELEGRAM_PROXY_URL`; `TELEGRAM_ENABLED` тоже нет;
-- config hash контейнера не совпадает с текущим `runtime.env`, то есть
-  `nedra-up.sh` без `--recreate-app` не применит новые env.
-
-## Скрипты
-
-- `scripts/nedra-up.sh` передаёт app `--env-file runtime.env`, публикует только
-  `127.0.0.1:18080:18080`; Telegram proxy не публикует и не настраивает.
-- `scripts/nedra-lib.sh` загружает runtime.env парами KEY/VALUE, обязательными
-  считает только core-ключи (`DATABASE_URL`, `CG_*`); Telegram-ключи не
-  валидирует.
-- `scripts/nedra_env.py` умеет читать один ключ, но в `nedra-up.sh` для
-  Telegram не используется.
-- Вывод: route/proxy wiring в deployment-скриптах отсутствует; всё, что нужно
-  для Bot API, сейчас должно приходить из env и host-прокси.
-
-## Минимальные варианты (не применены)
-
-### A. Rootless pasta host-loopback (предпочтительный по изоляции)
-
-Оставить app на сети `nedra` и добавить pasta-интерфейс с пробросом host
-loopback-порта, например:
+Проверка ошибки без релея:
 
 ```text
---network nedra --network pasta:-T,14600
-TELEGRAM_PROXY_URL=http://127.0.0.1:14600
+blocked: telegram proxy socket unavailable: /run/nedra/missing.sock
 ```
 
-`pasta:-T,14600` по man podman-run предназначен для forwarding TCP-порта из
-контейнера к host через loopback. Плюс: никаких публичных портов, host-прокси
-остаётся на `127.0.0.1`. Минус/риск: надо проверить в throwaway-контейнере, что
-multi-network `nedra`+pasta сохраняет DNS/маршрут к `nedra-db` и health backend;
-при неудаче — не применять. Требуется `--recreate-app`, т.к. меняется network
-и env.
+## Исправления после ревью
 
-### B. Bind proxy на host IP + source-filter
+- **Гонка `_require_client`/`close` и отмена bind.** `close()` берёт тот же
+  `_client_lock`, выставляет `_closed` и забирает client/bridge под локом.
+  `UnixSocketProxyBridge.start()` запускает `asyncio.start_server` в shielded
+  task: при отмене ждёт bind, закрывает listener и только потом пробрасывает
+  `CancelledError`. Живой прогон 400 отмен в production-образе: 302 cancelled /
+  98 completed, **0** оставшихся loopback-listener'ов (все порты connect
+  refused). Комбинированный прогон 400 cancel+close: outcomes
+  `AsyncClient+None` 200, `CancelledError+None` 100,
+  `CancelledError+CancelledError` 100, снова 0 listener'ов и
+  `_client/_bridge=None`.
+- **Bind mount inode.** Монтируется каталог
+  `/run/user/1000/nedra/telegram-proxy` → `/run/nedra/telegram-proxy:ro`.
+  Живой прогон: `FIRST_OK` через релей (11.9s), релей остановлен и запущен
+  заново (inode `249352` → `249489`), тот же API/bridge в контейнере uid 10001 +
+  `keep-groups` дал `SECOND_OK` (3.4s) без перезапуска приложения.
+- **Строгий upstream.** У релея больше нет `--upstream`: host и порт
+  зашиты (`127.0.0.1:14600`); `--upstream 127.0.0.1:14601` отклоняется
+  argparse с exit 2. Другие host-порты сконфигурировать нельзя.
+- **Токен в httpx INFO.** Фильтр сначала рендерит запись, затем редактит
+  `record.msg` и сбрасывает `record.args`. Живая проверка с фейковым токеном и
+  `httpx.URL` в args: `token_leaked: False`,
+  строка `HTTP Request: GET https://api.telegram.org/*** "HTTP/1.1" 200 OK`;
+  обычные `%d`-записи форматируются как раньше.
 
-Разрешить `zen-proxy` слушать дополнительный адрес (`0.0.0.0` или host LAN IP)
-и добавить nftables-правило: порт 14600 только из `10.89.1.0/24`, drop для
-остальных. Затем `TELEGRAM_PROXY_URL=http://10.89.1.1:14600` (если rootless
-bridge доставляет до host listener). Плюс: app network/DB не меняется. Минус:
-меняется общий zen-proxy и firewall, порт виден локальной сети до фильтра;
-root должен подтвердить, что rootless netavark gateway действительно доставляет
-до host listener.
+Важно про scope: релей — обычный HTTP proxy hop, а не фильтр целей. Клиент с
+доступом к сокету может отправить CONNECT на любой хост, который разрешает
+upstream. Граница — один upstream `127.0.0.1:14600` плюс права UNIX-сокета;
+target allowlist здесь не заявлен и не реализован.
 
-### C. Host network для app
+## Что реализовано
 
-`--network=host` даст доступ к `127.0.0.1:14600` напрямую, но убирает сетевую
-изоляцию контейнера и меняет DB-маршрут; для production не рекомендуется.
+| Файл | Назначение |
+| --- | --- |
+| `scripts/deploy/nedra-telegram-proxy.py` | host-релей: UNIX-сокет → зашитый loopback `127.0.0.1:14600`; upstream не настраивается |
+| `deploy/systemd/nedra-telegram-proxy.service.in` | user unit, каталог `%t/nedra/telegram-proxy/`, сокет `proxy.sock` |
+| `backend/app/telegram/proxy_bridge.py` | в контейнере: `127.0.0.1:<ephemeral>` → смонтированный UNIX-сокет, splice байтов |
+| `backend/app/telegram/bot_api.py` | `TELEGRAM_PROXY_SOCKET`, ленивый httpx-клиент, lock-fenced close, redaction rendered logs |
+| `scripts/nedra-up.sh` | preflight сокета, mount каталога сокета, `--group-add keep-groups` в rootless |
+| `deploy/systemd/nedra-app.service.in` | app unit поднимает релей (`Wants/After`) |
+| `scripts/nedra-systemd-install.sh` | рендерит и (при `--enable`) включает unit релея |
 
-## Что нужно root
+Правила конфигурации:
 
-1. Выбрать A или B (A предпочтительнее, если pasta multi-network проходит
-   проверку).
-2. Добавить в `runtime.env` `TELEGRAM_PROXY_URL` и `TELEGRAM_ENABLED=1`
-   (токен там уже есть; при использовании файла — `TELEGRAM_BOT_TOKEN_FILE`).
-3. Пересоздать только `nedra-app` по штатному пути `scripts/nedra-up.sh
-   --recreate-app` после теста сети.
-4. Проверить тем же безопасным `getMe` (не polling/send) и `/api/telegram/me`.
+- `TELEGRAM_PROXY_URL` и `TELEGRAM_PROXY_SOCKET` взаимоисключающие; оба
+  заданные — `TelegramConfigError`, runtime не стартует.
+- `TELEGRAM_PROXY_SOCKET` — абсолютный путь **внутри контейнера**.
+- `TELEGRAM_PROXY_SOCKET_HOST` — абсолютный путь сокета на хосте; по умолчанию
+  `${XDG_RUNTIME_DIR}/nedra/telegram-proxy/proxy.sock`. Монтируется только его
+  каталог; имена файла host/container обязаны совпадать.
+- Сокет: режим `0660`, выделенный каталог `0750`; контейнер получает группу
+  владельца через `--group-add keep-groups` (только rootless). Другие
+  host-пути не монтируются, host-порты не публикуются.
 
-Никаких публичных портов/туннелей/Cloudflare/Brigada не требуется.
+## План root (после одобрения)
+
+1. Установить/включить релей (user systemd, без root-firewall):
+
+   ```bash
+   scripts/nedra-systemd-install.sh
+   systemctl --user enable --now nedra-telegram-proxy.service
+   ls -l "${XDG_RUNTIME_DIR}/nedra/telegram-proxy/proxy.sock"   # srw-rw----
+   ```
+
+2. В `~/.config/nedra/runtime.env` (0600) добавить, не трогая токен:
+
+   ```dotenv
+   TELEGRAM_ENABLED=1
+   TELEGRAM_PROXY_SOCKET=/run/nedra/telegram-proxy/proxy.sock
+   TELEGRAM_PROXY_SOCKET_HOST=/run/user/1000/nedra/telegram-proxy/proxy.sock
+   ```
+
+   `TELEGRAM_PROXY_URL` убрать, если он появился: два маршрута одновременно
+   запрещены. `TELEGRAM_PROXY_SOCKET_HOST` подставить реальный
+   `XDG_RUNTIME_DIR` пользователя, от которого работает rootless podman.
+   `TELEGRAM_ENABLED=1` включать только на одном контейнере с этим токеном:
+   второй poller получит 409 Conflict от Telegram.
+
+3. Пересобрать образ (в нём новый bridge) и пересоздать только app:
+
+   ```bash
+   scripts/nedra-build.sh
+   scripts/nedra-up.sh --app-only --recreate-app
+   ```
+
+4. Проверить без send/polling:
+
+   ```bash
+   podman exec nedra-app python -c \
+     "import asyncio; from backend.app.telegram.bot_api import TelegramBotAPI; \
+      print(asyncio.run(TelegramBotAPI.from_runtime().get_me())['username'])"
+   podman logs --tail 20 nedra-app | grep -i telegram
+   ```
+
+   Ожидается `chilli_nedra_bot` и `telegram runtime started as @chilli_nedra_bot`.
+   `GET /api/telegram/me` под account-сессией должен вернуть
+   `externalStatus="ready"`, `proxyMode="socket"`.
+
+5. Пользователю: старый код привязки живёт 600 секунд. Если он истёк, пока
+   runtime не работал, создать новый код в веб-кабинете и отправить
+   `/start <код>` **или просто `<код>`** — оба варианта поддержаны.
+
+## Откат
+
+```bash
+systemctl --user disable --now nedra-telegram-proxy.service
+# убрать TELEGRAM_ENABLED/TELEGRAM_PROXY_SOCKET* из runtime.env
+scripts/nedra-up.sh --app-only --recreate-app
+```
+
+Никаких изменений DNS, firewall, публичных портов или общего `zen-proxy` нет,
+поэтому откат — только env + app-контейнер + unit релея.
+
+## Ограничения
+
+- `zen-proxy` крутит upstream-выходы; доступность Telegram зависит от него.
+  Runtime честно уходит в `blocked` и ретраит, но не подменяет ошибку успехом.
+- Релей не фильтрует цели CONNECT: это обычный HTTP proxy hop к
+  `127.0.0.1:14600`. Клиент с доступом к сокету может ходить на любой хост,
+  который разрешает upstream; allowlist целей не реализован.
+- Верификация делала только `getMe`/`getWebhookInfo`; реальные `sendMessage`/
+  `sendDocument` и `getUpdates` не запускались, чтобы не съесть сообщения.
+- Старый код привязки мог истечь за время простоя; это UX-случай, не баг
+  маршрута.
+- ZIP/файлы боту не поддержаны: теперь бот явно отвечает, что нужна
+  HTTPS-ссылка на GitHub/GitLab, вместо молчания.
