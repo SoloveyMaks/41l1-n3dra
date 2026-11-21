@@ -164,6 +164,25 @@ def _row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _server_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Строка для server-only scheduler: workspace_id остаётся, UUID -> str.
+
+    Эти методы никогда не вызываются из HTTP-хендлеров с клиентским вводом;
+    workspace_id нужен только чтобы выставить ContextVar перед обработкой.
+    """
+    if row is None:
+        return None
+    result: Dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, datetime):
+            result[key] = value.isoformat()
+        elif isinstance(value, uuid.UUID):
+            result[key] = str(value)
+        else:
+            result[key] = value
+    return result
+
+
 def _json_text(value: Any) -> Optional[str]:
     """Совместимость: *_json поля раньше отдавались строкой."""
     if value is None:
@@ -803,6 +822,85 @@ class DatabaseRepository:
             ).fetchall()
             return [_row(r) for r in rows]
 
+    def claim_due_schedules_server(self, limit: int,
+                                   lease_seconds: int) -> List[Dict[str, Any]]:
+        """Lease due schedules across all workspaces; returns workspace_id.
+
+        ``next_fire_at`` temporarily becomes a lease deadline. If the process
+        dies before settling, the row becomes due again after the lease and the
+        run is recovered by ``list_queued_schedule_runs_server``.
+        """
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                WITH due AS (
+                    SELECT workspace_id, id
+                      FROM runtime.schedules
+                     WHERE enabled = 1
+                       AND (next_fire_at IS NULL OR next_fire_at <= now())
+                     ORDER BY COALESCE(next_fire_at, created_at)
+                     LIMIT %s
+                     FOR UPDATE SKIP LOCKED
+                )
+                UPDATE runtime.schedules s
+                   SET next_fire_at = now() + make_interval(secs => %s)
+                  FROM due
+                 WHERE s.workspace_id = due.workspace_id AND s.id = due.id
+                 RETURNING s.*
+                """,
+                (limit, lease_seconds),
+            ).fetchall()
+            return [_server_row(r) for r in rows]
+
+    def create_scheduled_run(self, run_id: str, schedule_id: str,
+                             workflow_id: str, revision_id: str,
+                             artifact_id: str, last_run_at: str,
+                             next_fire_at: str) -> bool:
+        """Insert queued run and settle the claimed schedule in one transaction."""
+        with get_pool().connection() as conn:
+            settled = conn.execute(
+                """
+                UPDATE runtime.schedules
+                   SET last_run_at = NULLIF(%s, '')::timestamptz,
+                       next_fire_at = NULLIF(%s, '')::timestamptz
+                 WHERE workspace_id = %s AND id = %s AND enabled = 1
+                 RETURNING id
+                """,
+                (last_run_at, next_fire_at, self.workspace_id, schedule_id),
+            ).fetchone()
+            if settled is None:
+                return False
+            conn.execute(
+                """
+                INSERT INTO runtime.runs (
+                    workspace_id, id, workflow_id, revision_id, artifact_id, trigger_type,
+                    execution_status, security_verdict, created_at
+                ) VALUES (%s, %s, %s, %s, %s, 'schedule', 'queued', 'pending', %s)
+                """,
+                (self.workspace_id, run_id, workflow_id, revision_id,
+                 artifact_id, _now()),
+            )
+            return True
+
+    def list_queued_schedule_runs_server(self, limit: int,
+                                         older_than_seconds: int = 5) -> List[Dict[str, Any]]:
+        """Queued schedule runs across all workspaces for crash recovery."""
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT workspace_id, id, workflow_id, revision_id, artifact_id,
+                       trigger_type, created_at
+                  FROM runtime.runs
+                 WHERE execution_status = 'queued'
+                   AND trigger_type = 'schedule'
+                   AND created_at <= now() - make_interval(secs => %s)
+                 ORDER BY created_at
+                 LIMIT %s
+                """,
+                (older_than_seconds, limit),
+            ).fetchall()
+            return [_server_row(r) for r in rows]
+
     def update_schedule_run_time(self, schedule_id: str, last_run: str, next_fire: str) -> None:
         with get_pool().connection() as conn:
             conn.execute(
@@ -856,6 +954,19 @@ class DatabaseRepository:
             ).fetchone()
             return _row(row)
 
+    def find_repository_watches_by_id_server(self, watch_id: str) -> List[Dict[str, Any]]:
+        """Resolve a public hook id without a cookie; server-only.
+
+        The id is not globally unique in the schema (PK is workspace+id), so the
+        caller must reject ambiguous results instead of guessing a tenant.
+        """
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM runtime.repository_watches WHERE id = %s LIMIT 2",
+                (watch_id,),
+            ).fetchall()
+            return [_server_row(r) for r in rows]
+
     def list_repository_watches(self) -> List[Dict[str, Any]]:
         with get_pool().connection() as conn:
             rows = conn.execute(
@@ -899,17 +1010,20 @@ class DatabaseRepository:
             ).fetchone()
             return _row(row)
 
-    def claim_due_repository_watches(self, limit: int, token: str,
-                                     timeout_seconds: int) -> List[Dict[str, Any]]:
-        """Claim due watches atomically; parallel processes use SKIP LOCKED."""
+    def claim_due_repository_watches_server(self, limit: int, token: str,
+                                            timeout_seconds: int) -> List[Dict[str, Any]]:
+        """Claim due watches across all workspaces; server-only scheduler entry.
+
+        Returns ``workspace_id`` so the caller can set ContextVar per row before
+        any tenant-scoped read/write.
+        """
         with get_pool().connection() as conn:
             rows = conn.execute(
                 """
                 WITH due AS (
                     SELECT workspace_id, id
                       FROM runtime.repository_watches
-                     WHERE workspace_id = %s
-                       AND enabled
+                     WHERE enabled
                        AND trigger_mode = 'poll'
                        AND (next_check_at IS NULL OR next_check_at <= now())
                        AND (claimed_until IS NULL OR claimed_until < now())
@@ -925,9 +1039,9 @@ class DatabaseRepository:
                  WHERE w.workspace_id = due.workspace_id AND w.id = due.id
                  RETURNING w.*
                 """,
-                (self.workspace_id, limit, token, timeout_seconds),
+                (limit, token, timeout_seconds),
             ).fetchall()
-            return [_row(r) for r in rows]
+            return [_server_row(r) for r in rows]
 
     def finish_repository_watch_unchanged(self, watch_id: str, token: str,
                                           checked_at: str, next_check_at: str,
@@ -1170,28 +1284,28 @@ class DatabaseRepository:
                 (error[:500] if error else None, self.workspace_id, run_id, token),
             )
 
-    def recover_repository_watch_dispatches(self, limit: int) -> List[Dict[str, Any]]:
+    def recover_repository_watch_dispatches_server(self, limit: int) -> List[Dict[str, Any]]:
+        """Queued/stale watch runs across all workspaces, with workspace_id."""
         with get_pool().connection() as conn:
             rows = conn.execute(
                 """
-                SELECT c.run_id, c.watch_id, c.commit_sha, c.state
+                SELECT c.workspace_id, c.run_id, c.watch_id, c.commit_sha, c.state
                   FROM runtime.repository_watch_commits c
                   JOIN runtime.runs r
                     ON r.workspace_id = c.workspace_id AND r.id = c.run_id
-                 WHERE c.workspace_id = %s
-                   AND (c.state = 'queued'
+                 WHERE (c.state = 'queued'
                         OR (c.state = 'running'
                             AND (c.claimed_until IS NULL OR c.claimed_until < now())))
                    AND r.execution_status = 'queued'
                  ORDER BY c.created_at
                  LIMIT %s
                 """,
-                (self.workspace_id, limit),
+                (limit,),
             ).fetchall()
-            return [_row(r) for r in rows]
+            return [_server_row(r) for r in rows]
 
-    def release_stale_repository_claims(self) -> List[Dict[str, Any]]:
-        """Bounded timeout recovery for crashed checks/dispatches."""
+    def release_stale_repository_claims_server(self) -> List[Dict[str, Any]]:
+        """Bounded timeout recovery for crashed checks/dispatches, all tenants."""
         with get_pool().connection() as conn:
             stale = conn.execute(
                 """
@@ -1202,7 +1316,7 @@ class DatabaseRepository:
                            claimed_until = NULL,
                            error = COALESCE(error, 'Проверка прервана'),
                            updated_at = now()
-                     WHERE workspace_id = %s AND state = 'processing'
+                     WHERE state = 'processing'
                        AND (claimed_until IS NULL OR claimed_until < now())
                      RETURNING workspace_id, watch_id
                 ), marked AS (
@@ -1217,7 +1331,6 @@ class DatabaseRepository:
                 )
                 SELECT workspace_id, watch_id FROM stale
                 """,
-                (self.workspace_id,),
             ).fetchall()
             conn.execute(
                 """
@@ -1226,12 +1339,10 @@ class DatabaseRepository:
                        claimed_until = NULL,
                        last_error = COALESCE(last_error, 'Проверка прервана'),
                        updated_at = now()
-                 WHERE workspace_id = %s
-                   AND claimed_until IS NOT NULL AND claimed_until < now()
+                 WHERE claimed_until IS NOT NULL AND claimed_until < now()
                 """,
-                (self.workspace_id,),
             )
-            return [_row(r) for r in stale]
+            return [_server_row(r) for r in stale]
 
     # Push deliveries (runtime v5)
     def set_repository_watch_webhook_nonce(self, watch_id: str,
@@ -1289,17 +1400,16 @@ class DatabaseRepository:
             ).fetchone()
             return row is not None
 
-    def claim_repository_hook_deliveries(self, limit: int, token: str,
-                                         lease_seconds: int) -> List[Dict[str, Any]]:
-        """Lease due deliveries; expired leases are retaken, never duplicated."""
+    def claim_repository_hook_deliveries_server(self, limit: int, token: str,
+                                                lease_seconds: int) -> List[Dict[str, Any]]:
+        """Lease due deliveries across all workspaces; returns workspace_id."""
         with get_pool().connection() as conn:
             rows = conn.execute(
                 """
                 WITH due AS (
                     SELECT workspace_id, id
                       FROM runtime.repository_hook_deliveries
-                     WHERE workspace_id = %s
-                       AND (
+                     WHERE (
                            (state = 'pending'
                             AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
                            OR (state = 'processing'
@@ -1318,9 +1428,9 @@ class DatabaseRepository:
                  WHERE d.workspace_id = due.workspace_id AND d.id = due.id
                  RETURNING d.*
                 """,
-                (self.workspace_id, limit, token, lease_seconds),
+                (limit, token, lease_seconds),
             ).fetchall()
-            return [_row(r) for r in rows]
+            return [_server_row(r) for r in rows]
 
     def finish_repository_hook_delivery(self, delivery_id: str, token: str,
                                         state: str, run_id: Optional[str],

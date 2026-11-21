@@ -23,6 +23,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from backend.app.codefacts.identity import workspace_scope
+
 
 logger = logging.getLogger("RepositoryHooks")
 
@@ -181,16 +183,31 @@ def _parse_push(provider: str, payload: Any, watch: Dict[str, Any]
     return after, ref, canonical
 
 
-async def _handle_hook(db: Any, workspace: str, watch_id: str,
+async def _handle_hook(db: Any, watch_id: str,
                        request: Request) -> JSONResponse:
+    """Resolve tenant by opaque watch id, then scope everything before effects."""
     body = await _read_body(request)
     try:
-        watch = await asyncio.to_thread(db.get_repository_watch, watch_id)
+        matches = await asyncio.to_thread(
+            db.find_repository_watches_by_id_server, watch_id
+        )
     except Exception as exc:  # noqa: BLE001 - DSN/текст драйвера не наружу
         logger.warning("Repository hook lookup failed: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Хранилище недоступно") from None
-    if not watch:
+    if len(matches) != 1:
+        # Амбициозный/несуществующий id не должен угадывать tenant.
         raise HTTPException(status_code=404, detail="Вебхук не найден")
+    watch = matches[0]
+    workspace = watch.get("workspace_id")
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Вебхук не найден")
+    with workspace_scope(str(workspace)):
+        return await _handle_scoped_hook(db, watch, str(workspace), body, request)
+
+
+async def _handle_scoped_hook(db: Any, watch: Dict[str, Any], workspace: str,
+                              body: bytes, request: Request) -> JSONResponse:
+    watch_id = watch["id"]
     if watch.get("trigger_mode") != "webhook" or not watch.get("webhook_nonce"):
         raise HTTPException(status_code=409, detail="Вебхук для расписания не настроен")
     if not webhook_key_available():
@@ -280,7 +297,6 @@ async def _handle_hook(db: Any, workspace: str, watch_id: str,
 
 def create_repository_hook_router(db: Any) -> APIRouter:
     router = APIRouter()
-    workspace = str(getattr(db, "workspace_id", ""))
 
     @router.post("/repository-hooks/{watch_id}")
     async def receive_repository_hook(watch_id: str, request: Request) -> JSONResponse:
@@ -291,7 +307,7 @@ def create_repository_hook_router(db: Any) -> APIRouter:
             # может раздувать память/соединения сверх MAX_CONCURRENCY.
             async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
                 async with _HOOK_SEM:
-                    return await _handle_hook(db, workspace, watch_id, request)
+                    return await _handle_hook(db, watch_id, request)
         except TimeoutError:
             logger.warning("Repository hook timed out")
             raise HTTPException(
