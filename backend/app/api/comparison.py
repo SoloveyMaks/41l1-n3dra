@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from backend.app.codefacts.identity import run_uuid
-from backend.app.codefacts.publish import get_published_envelope
+from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope
 from backend.app.codefacts.store import CodeFactsStore
 
 
@@ -57,7 +57,10 @@ def _published_envelope(workspace: str, run_id: str, run_row: Dict[str, Any],
     snapshot_id = _snapshot_id_for_run(workspace=workspace, run_id=run_id, run_row=run_row, store=store)
     if not snapshot_id:
         raise ComparisonError(409, "SNAPSHOT_UNKNOWN", f"Не найден snapshot для run {run_id}")
-    published = get_published_envelope(workspace, run_uuid(run_id), snapshot_id)
+    try:
+        published = get_published_envelope(workspace, run_uuid(run_id), snapshot_id)
+    except PublishedHashMissing as exc:
+        raise ComparisonError(409, "PUBLISHED_HASH_MISSING", str(exc)) from exc
     if not published:
         raise ComparisonError(
             409,
