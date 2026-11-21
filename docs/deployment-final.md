@@ -61,3 +61,58 @@ not fixed by editing the production ledger or checksum.
   previous asset.
 - Public live regression was not run on the candidate because the app did not
   start. Production old build remains healthy.
+## Successful deploy of 63ca8c1
+
+The historical failed `c7057ee` attempt above is retained. The forward migration
+was then accepted and the exact combined source
+`63ca8c129181e76a93d0000928db5f98b800f7c1` was deployed.
+
+### Preflight and image
+
+- Production before deploy: `9862e19`, healthy; rollback tag
+  `localhost/nedra-app:rollback-9862e19`.
+- DB backup: `/tmp/nedra-db-pre-63ca8c1.sql` mode 600.
+- Runtime env backup: `/tmp/nedra-runtime-pre-63ca8c1.env` mode 600.
+- Predeploy metadata: `/tmp/nedra-prod-predeploy-63ca8c1.json` mode 600,
+  including the existing 006 checksum/applied_at and counts.
+- Built image: `localhost/nedra-app:local` =
+  `d9507494f8c771a5dd1f7e0c811982b34cb8ddb81febf36df79de47891b4ddd1`,
+  revision `63ca8c1`; asset `index-DA9FQkXU.js`.
+
+### Migration result
+
+`007_snapshot_origin_guards.up.sql` was applied by normal backend startup; no
+manual SQL or ledger edit. Ledger has 6 rows. The historical 006 row is
+byte-for-byte unchanged:
+
+- 006 checksum `4956db3112a2a61e85fec353c25236859191f9f64dcb91319b45279b85e87d19`
+- 006 applied_at `2026-11-21 02:51:59.450838+00`
+- 007 applied_at `2026-11-21 05:02:02.624414+00`
+
+Production counts moved from artifacts/runs/findings/origins
+`13/177/2201/5` to `15/183/2279/7`. One sample artifact and one smoke run
+(`0f9613c4-a83f-423b-90b2-fc05d9f02778`) account for one artifact/run; the
+remaining deltas are scheduled runs/artifacts on the existing workspace. No
+deletions or volume changes.
+
+### Public checks
+
+- `https://nedra.soloveyka.bond/api/health` 200; HTML `cache-control:
+  no-cache, must-revalidate`; asset `index-DA9FQkXU.js` immutable; missing
+  asset 404.
+- User login role `user`, admin overview 403; admin login role `admin`,
+  overview 200.
+- Smoke run: 13 findings, 4 redaction markers; map 10 nodes/9 edges/26
+  evidence; SSE saw 11 events with the correct run ID.
+- `official.json` 200; `readable.md` 200 with no `100%` and
+  “Полнота проверки не установлена” + translated skipped scopes.
+- Existing published comparison `c8b41afe`/`52efd83f`: 200,
+  `comparable=false`, SQL `pattern_disappeared`; no new comparison fixtures
+  fabricated.
+- Review `18082` remained `b6abde4` and untouched. Production `18080` now
+  serves `63ca8c1` asset `index-DA9FQkXU.js`.
+
+### Limitations
+
+No full UI audit was repeated. Smoke intentionally added one sample/run and
+scheduled maintenance added other runs; no destructive recovery was needed.
