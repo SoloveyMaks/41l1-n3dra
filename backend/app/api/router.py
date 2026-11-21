@@ -1020,12 +1020,14 @@ from backend.app.api.reference_checks_mount import mount_reference_checks
 from backend.app.api.report_exports import create_report_exports_router
 from backend.app.api.responsibility import create_responsibility_router
 from backend.app.api.scenario_builder import create_scenario_builder_router
+from backend.app.api.custom_checks import create_custom_checks_router
 
 api_router.include_router(create_auth_router())
 api_router.include_router(create_profile_router())
 api_router.include_router(create_report_exports_router(db_repo))
 api_router.include_router(create_responsibility_router(db_repo, codefacts_store))
 api_router.include_router(create_scenario_builder_router())
+api_router.include_router(create_custom_checks_router(db_repo))
 api_router.include_router(create_repository_watch_router(db_repo, executor))
 api_router.include_router(create_repository_hook_router(db_repo))
 # Defaults: server-owned registry, canonical loaders, require_workspace_actor.

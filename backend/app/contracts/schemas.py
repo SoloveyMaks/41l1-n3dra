@@ -15,6 +15,7 @@ class PortType(str, Enum):
     REPORT = "report"
     CONDITION_BRANCH = "condition_branch"
     DELIVERY_RESULT = "delivery_result"
+    CUSTOM_FINDINGS = "custom_findings"
 
 
 class NodeKind(str, Enum):
@@ -32,6 +33,7 @@ class NodeKind(str, Enum):
     AI_SCAN = "ai_scan"
     BUILD_REPORT = "build_report"
     NOTIFY = "notify"
+    CUSTOM_CHECK = "custom_check"
 
 
 class Severity(str, Enum):

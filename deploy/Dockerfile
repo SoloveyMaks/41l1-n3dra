@@ -41,6 +41,15 @@ COPY deploy/requirements.txt /tmp/requirements.txt
 COPY --from=python-wheels /wheels /wheels
 RUN python -m pip install --no-index --find-links=/wheels -r /tmp/requirements.txt \
     && rm -rf /wheels /tmp/requirements.txt
+# Custom checks run user Python only inside bubblewrap with prlimit limits.
+# Verified in the rootless podman runtime (read-only rootfs, cap-drop=ALL):
+# bwrap starts a nested namespace and blocks network/`/etc` access, see
+# docs/custom-checks.md. Without bwrap the API reports the runner unavailable
+# and refuses to execute user code on the host.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap util-linux \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 COPY backend ./backend
 COPY analyzers ./analyzers
 COPY db ./db
