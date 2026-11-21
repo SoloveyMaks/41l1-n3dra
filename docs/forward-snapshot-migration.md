@@ -49,12 +49,14 @@ forward validation.
 `migrate.py` содержит узкую таблицу:
 
 ```text
-006 + 273cd694... -> принимается только при полной фактической guard-схеме
+006 + stored 273cd694... + current target 4956db31... + full guard schema
 ```
 
-Она не меняет ledger, checksum или `applied_at`. Unknown checksum для 006
-падает; общий ignore checksum отсутствует. Исторический 006 с checksum
-`4956...` принимается обычным точным сравнением.
+Alias срабатывает только при точном совпадении **пары**: stored checksum
+`273c...` и текущий файл `4956...`. Если 006 снова изменят, при том же stored
+`273c...` migration упадёт по target checksum. Она не меняет ledger, checksum
+или `applied_at`; unknown stored/current checksum падает, общего ignore нет.
+Исторический 006 с checksum `4956...` принимается обычным точным сравнением.
 
 ## Пути
 

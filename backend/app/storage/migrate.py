@@ -94,11 +94,15 @@ MARKERS: Dict[str, str] = {
 }
 
 # Review DB has a legitimately finalized 006 file (3f56903) whose ledger
-# checksum is immutable. Accept only that exact checksum, and only while the
-# full guard schema is actually present. No other unknown checksum is ignored.
-CHECKSUM_ALIASES: Dict[str, Dict[str, str]] = {
+# checksum is immutable. Accept only that exact stored checksum AND only while
+# the on-disk historical 006 is exactly the target 4956 checksum. A future
+# accidental 006 edit must fail, even if the review schema still has guards.
+CHECKSUM_ALIASES: Dict[str, Dict[str, Dict[str, str]]] = {
     "006_snapshot_origins.up.sql": {
-        "273cd694c6d1fc91e2520bb66cdc9217fdd8415a99833bcf403d4bdca7c068d7": _SNAPSHOT_GUARD_SCHEMA_MARKER,
+        "273cd694c6d1fc91e2520bb66cdc9217fdd8415a99833bcf403d4bdca7c068d7": {
+            "target": "4956db3112a2a61e85fec353c25236859191f9f64dcb91319b45279b85e87d19",
+            "marker": _SNAPSHOT_GUARD_SCHEMA_MARKER,
+        },
     },
 }
 
@@ -169,10 +173,16 @@ def _apply_with_ledger(dsn: str, files: List[Path], markers: Dict[str, str],
             if known is not None:
                 if known == checksum:
                     continue
-                alias_marker = CHECKSUM_ALIASES.get(path.name, {}).get(known)
-                if alias_marker is not None:
+                alias = CHECKSUM_ALIASES.get(path.name, {}).get(known)
+                if alias is not None:
+                    if checksum != alias["target"]:
+                        raise MigrationError(
+                            f"Ledger {path.name} содержит известный stored checksum, "
+                            "но текущий файл не совпадает с exact target checksum; "
+                            "alias запрещён"
+                        )
                     alias_present = conn.execute(
-                        f"SELECT {alias_marker} AS present"
+                        f"SELECT {alias['marker']} AS present"
                     ).fetchone()["present"]
                     if alias_present:
                         logger.warning(
