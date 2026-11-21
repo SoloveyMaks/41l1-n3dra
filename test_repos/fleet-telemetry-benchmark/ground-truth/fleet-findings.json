@@ -1,0 +1,377 @@
+{
+  "dataset": "fleet-telemetry",
+  "formatVersion": 1,
+  "findings": [
+    {
+      "id": "F-SEC-01",
+      "category": "SECRET",
+      "class": "password",
+      "classAliases": [
+        "hardcoded-password",
+        "CWE-259",
+        "CWE-798"
+      ],
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/fleet/integration/MqttBrokerSettings.kt",
+      "line": 4,
+      "endLine": 4,
+      "alternateLocations": [],
+      "description": "integration/MqttBrokerSettings.kt, brokerAuthPassword содержит пароль сервисной учетной записи брокера MQTT.",
+      "difficultyRationale": "Прямой строковый литерал в параметре с явной ролью пароля.",
+      "expectedDetection": "Прямой строковый литерал в параметре с явной ролью пароля.",
+      "remediation": "Использовать безопасное хранение секрета в переменных окружения.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SEC-02",
+      "category": "SECRET",
+      "class": "api-key",
+      "classAliases": [
+        "hardcoded-api-key",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "EASY",
+      "severity": "MEDIUM",
+      "path": "src/main/kotlin/com/fleet/integration/GpsRoutingClient.kt",
+      "line": 7,
+      "endLine": 7,
+      "alternateLocations": [],
+      "description": "integration/GpsRoutingClient.kt, mapboxRoutingApiKey напрямую подставляется в заголовок X-Api-Key.",
+      "difficultyRationale": "Найти литерал apiKey в кодовой базе.",
+      "expectedDetection": "Найти литерал apiKey в кодовой базе.",
+      "remediation": "Внедрять секрет через конфигурационные свойства.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SEC-03",
+      "category": "SECRET",
+      "class": "configuration-token",
+      "classAliases": [
+        "token",
+        "hardcoded-token",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/resources/application.yml",
+      "line": 14,
+      "endLine": 14,
+      "alternateLocations": [],
+      "description": "src/main/resources/application.yml, telematics.ingest.authorization содержит Bearer токен приема телеметрии.",
+      "difficultyRationale": "Разобрать вложенную YAML структуру.",
+      "expectedDetection": "Разобрать вложенную YAML структуру.",
+      "remediation": "Использовать плейсхолдер ${TELEMATICS_INGEST_TOKEN} без дефолтного секрета.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SEC-04",
+      "category": "SECRET",
+      "class": "secret-fallback",
+      "classAliases": [
+        "hardcoded-secret",
+        "fallback-secret",
+        "CWE-798"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "MEDIUM",
+      "path": "src/main/kotlin/com/fleet/integration/CanBusDecoderClient.kt",
+      "line": 8,
+      "endLine": 8,
+      "alternateLocations": [],
+      "description": "integration/CanBusDecoderClient.kt, встроенная строка используется как fallback токена адаптера CAN-шины.",
+      "difficultyRationale": "Опознать жестко зашитое дефолтное значение секрета в вызове getenv.",
+      "expectedDetection": "Опознать жестко зашитое дефолтное значение секрета в вызове getenv.",
+      "remediation": "Удалить встроенное значение по умолчанию.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SEC-05",
+      "category": "SECRET",
+      "class": "recoverable-token",
+      "classAliases": [
+        "assembled-secret",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/fleet/integration/DispatchAuthHeaders.kt",
+      "line": 7,
+      "endLine": 10,
+      "alternateLocations": [],
+      "description": "integration/DispatchAuthHeaders.kt, токен диспетчерской службы склеивается из двух строковых переменных.",
+      "difficultyRationale": "Сборка токена из частей перед отправкой запроса.",
+      "expectedDetection": "Сборка токена из частей перед отправкой запроса.",
+      "remediation": "Устранить хранение секретных частей в исходном коде.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SCA-01",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "EASY",
+      "severity": "MEDIUM",
+      "path": "build.gradle.kts",
+      "line": 31,
+      "endLine": 31,
+      "group": "org.apache.commons",
+      "artifact": "commons-compress",
+      "version": "1.24.0",
+      "advisoryIds": [
+        "CVE-2024-25710",
+        "GHSA-4g9r-vxhx-9pgx"
+      ],
+      "description": "org.apache.commons:commons-compress:1.24.0 приводит к бесконечному циклу при чтении поврежденных DUMP-архивов (CVE-2024-25710).",
+      "remediation": "Обновить commons-compress до версии 1.26.0 или новее.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "F-SCA-02",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 32,
+      "endLine": 32,
+      "group": "com.hazelcast",
+      "artifact": "hazelcast",
+      "version": "5.1.2",
+      "advisoryIds": [
+        "CVE-2022-36437",
+        "GHSA-c5hg-mr8r-f6jp"
+      ],
+      "description": "com.hazelcast:hazelcast:5.1.2 позволяет обойти аутентификацию в кластере (CVE-2022-36437).",
+      "remediation": "Обновить hazelcast до версии 5.1.3 или 5.2.0.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "F-SCA-03",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "MEDIUM",
+      "severity": "CRITICAL",
+      "path": "build.gradle.kts",
+      "line": 33,
+      "endLine": 33,
+      "group": "com.thoughtworks.xstream",
+      "artifact": "xstream",
+      "version": "1.4.15",
+      "advisoryIds": [
+        "CVE-2021-39149",
+        "GHSA-3ccq-5vw3-2p6x"
+      ],
+      "description": "com.thoughtworks.xstream:xstream:1.4.15 содержит критическую уязвимость удаленного выполнения кода при десериализации (CVE-2021-39149).",
+      "remediation": "Обновить xstream до версии 1.4.18 или новее.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "F-SCA-04",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 36,
+      "endLine": 36,
+      "group": "org.mybatis",
+      "artifact": "mybatis",
+      "version": "3.5.5",
+      "advisoryIds": [
+        "CVE-2020-26945",
+        "GHSA-qq48-m4jx-xqh8"
+      ],
+      "description": "org.mybatis:mybatis:3.5.5 уязвим к RCE при десериализации в кэше второго уровня (CVE-2020-26945).",
+      "remediation": "Обновить mybatis до версии 3.5.6 или выше.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "F-SCA-05",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 38,
+      "endLine": 38,
+      "group": "org.json",
+      "artifact": "json",
+      "version": "20230227",
+      "advisoryIds": [
+        "CVE-2023-5072",
+        "GHSA-4jq9-2xhw-jpx7"
+      ],
+      "description": "org.json:json:20230227 исчерпывает память при разборе составных JSON ключей (CVE-2023-5072).",
+      "remediation": "Обновить org.json до версии 20231013.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "F-SAST-01",
+      "category": "SAST",
+      "class": "sql-injection",
+      "classAliases": [
+        "CWE-89"
+      ],
+      "difficulty": "EASY",
+      "severity": "CRITICAL",
+      "path": "src/main/kotlin/com/fleet/telemetry/TelemetrySearchController.kt",
+      "line": 13,
+      "endLine": 14,
+      "description": "Параметр sensorSerial интерполируется в строку запроса jdbcTemplate без параметризации.",
+      "remediation": "Использовать позиционные параметры ? в запросах.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    },
+    {
+      "id": "F-SAST-02",
+      "category": "SAST",
+      "class": "tls-verification",
+      "classAliases": [
+        "CWE-295"
+      ],
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/fleet/integration/OtaFirmwareClient.kt",
+      "line": 14,
+      "endLine": 20,
+      "description": "Клиент доставки прошивок использует TrustManager, не проверяющий сертификаты сервера.",
+      "remediation": "Включить строгую проверку TLS сертификатов.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SAST-03",
+      "category": "SAST",
+      "class": "credentialed-cors",
+      "classAliases": [
+        "CWE-942"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/fleet/config/FleetCorsConfig.kt",
+      "line": 13,
+      "endLine": 14,
+      "description": "Разрешен wildcard origin с передачей куки авторизации к эндпоинтам телеметрии.",
+      "remediation": "Указать конкретный домен в allowedOrigins.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "F-SAST-04",
+      "category": "SAST",
+      "class": "route-authorization",
+      "classAliases": [
+        "CWE-285",
+        "CWE-306"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/fleet/config/FleetSecurityConfig.kt",
+      "line": 18,
+      "endLine": 18,
+      "description": "Эндпоинт /api/telemetry/raw-dump открыт для публичного доступа без аутентификации.",
+      "remediation": "Ограничить доступ ролью DISPATCHER или требовать аутентификации.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    },
+    {
+      "id": "F-SAST-05",
+      "category": "SAST",
+      "class": "object-authorization",
+      "classAliases": [
+        "CWE-639",
+        "IDOR"
+      ],
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/fleet/telemetry/DiagnosticLogReader.kt",
+      "line": 10,
+      "endLine": 11,
+      "description": "Чтение диагностического лога не сопоставляет запись с tenant_id текущего клиента.",
+      "remediation": "Проверять tenant_id текущего контекста безопасности в запросе.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    }
+  ],
+  "controls": [
+    {
+      "id": "F-CTRL-01",
+      "category": "SECRET",
+      "class": "documentation-pattern",
+      "expectedFinding": false,
+      "path": "README.md",
+      "line": 6,
+      "endLine": 6,
+      "reason": "Плейсхолдер токена приведен в документации для иллюстрации формата."
+    },
+    {
+      "id": "F-CTRL-02",
+      "category": "SECRET",
+      "class": "safe-config-property",
+      "expectedFinding": false,
+      "path": "src/main/resources/application.yml",
+      "line": 18,
+      "endLine": 18,
+      "reason": "Параметр TELEMETRY_PORT не является конфиденциальным значением."
+    },
+    {
+      "id": "F-CTRL-03",
+      "category": "SCA",
+      "class": "safe-dependency",
+      "expectedFinding": false,
+      "path": "build.gradle.kts",
+      "line": 39,
+      "endLine": 39,
+      "group": "org.apache.commons",
+      "artifact": "commons-text",
+      "version": "1.10.0",
+      "advisoryIds": [
+        "GHSA-599f-7c49-w659"
+      ],
+      "reason": "Версия 1.10.0 является исправленной и безопасной (fixed: 1.10.0)."
+    },
+    {
+      "id": "F-CTRL-04",
+      "category": "SAST",
+      "class": "parameterized-query",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/fleet/telemetry/TelemetrySearchController.kt",
+      "line": 17,
+      "endLine": 18,
+      "reason": "Запрос findByTripCode использует параметризацию через позиционный плейсхолдер ?."
+    },
+    {
+      "id": "F-CTRL-05",
+      "category": "SAST",
+      "class": "legitimate-public-route",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/fleet/config/FleetSecurityConfig.kt",
+      "line": 17,
+      "endLine": 17,
+      "reason": "Маршрут /api/public/stations-map является общедоступной картой зарядных станций."
+    },
+    {
+      "id": "F-CTRL-06",
+      "category": "SAST",
+      "class": "safe-tls-client",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/fleet/integration/WeatherAlertHttpsClient.kt",
+      "line": 7,
+      "endLine": 10,
+      "reason": "Клиент погодных предупреждений использует стандартный защищенный SSLContext."
+    }
+  ]
+}
