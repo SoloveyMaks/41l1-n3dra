@@ -206,8 +206,9 @@ def select_sources(
         candidates.append((_source_priority(path), path))
 
     det_windows = _deterministic_windows(findings)
+    eligible_paths = {path for _, path in candidates}
     for path in det_windows:
-        if path in sources and _allowed_path(path):
+        if path in eligible_paths:
             candidates.append((0, path))
     candidates = [(rank, path) for rank, path in candidates]
     best_rank: Dict[str, int] = {}
