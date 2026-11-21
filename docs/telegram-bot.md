@@ -1,24 +1,27 @@
-# Telegram bot: binding, repository runs and JSONC delivery
+# Telegram bot: buttons, Mini App, binding and repository runs
 
-**Status:** implemented on branch `SoloveyMaks/ai-scanner-plan`; router/startup
-integration is left to root. Direct Telegram Bot API is blocked in this
-environment; an existing HTTP proxy on `127.0.0.1:14600` was confirmed to reach
-`getMe` (`@chilli_nedra_bot`, bot id `9239629524`). No token value was printed,
-copied or committed.
+**Status:** runtime, menus and regression checks are implemented on this
+isolated branch; deployment is performed by the coordinator. Direct Telegram
+Bot API is blocked in this environment; an existing HTTP proxy on
+`127.0.0.1:14600` was confirmed to reach `getMe` (`@chilli_nedra_bot`, bot id
+`9239629524`). No token value was printed, copied or committed.
 
 ## 1. Files
 
 | File | Purpose |
 | --- | --- |
 | `db/migrations/010_telegram.up.sql` | `telegram` schema: bindings, one-time codes, settings, jobs, outbox, cursor, update dedupe |
+| `db/migrations/011_telegram_rebind.up.sql` | binding epochs, owner-scoped outbox/jobs |
+| `db/migrations/012_telegram_job_recovery.up.sql` | job leases and crash recovery |
 | `backend/app/storage/telegram.py` | PostgreSQL repository; no transport, no token |
-| `backend/app/telegram/bot_api.py` | httpx Bot API client; token from env/0600 file; `TELEGRAM_PROXY_URL` or UNIX-socket proxy; redacted errors |
+| `backend/app/telegram/bot_api.py` | httpx Bot API client; token from env/0600 file; `TELEGRAM_PROXY_URL` or UNIX-socket proxy; redacted errors; messages, callbacks, commands, menu button |
+| `backend/app/telegram/menus.py` | public URL policy, signed 64-byte callback data, inline keyboards, Mini App menu payload |
 | `backend/app/telegram/proxy_bridge.py` | loopback TCP→UNIX-socket bridge for `TELEGRAM_PROXY_SOCKET`; no external listener |
-| `backend/app/telegram/runtime.py` | polling, commands, repo jobs, workspace scope adapter usage, outbox worker |
+| `backend/app/telegram/runtime.py` | polling, commands/buttons, repo jobs, workspace scope usage, outbox worker |
 | `backend/app/telegram/report.py` | redacted JSONC-compatible report + JSONC file writer |
 | `backend/app/telegram/router.py` | DI router factory for binding/settings endpoints |
 | `backend/app/telegram/workspace.py` | delegates to auth-owner `workspace_scope`; no copied auth/context |
-| `backend/app/telegram/__init__.py` | exports |
+| `backend/tests/test_telegram_buttons.py` | disposable-DB/fake-transport regression checks for buttons, callbacks, URLs and epoch guards |
 
 Not touched: frontend, `api/router.py`, `main.py`, `session.py`, auth storage,
 `database.py`, scheduler, reports, AI engine/contracts.
@@ -103,6 +106,50 @@ proxy was already running. Outbound `sendMessage`/`sendDocument` to a real chat
 was not exercised (no authorized live chat was available); the outbox retry path
 was verified against an unreachable local endpoint.
 
+### Mini App and cabinet URLs
+
+| Variable | Default | Rule |
+| --- | --- | --- |
+| `TELEGRAM_MINI_APP_URL` | `https://nedra.soloveyka.bond/miniapp` | HTTPS only; host required; no credentials, query string or fragment |
+| `TELEGRAM_WEB_CABINET_URL` | `https://nedra.soloveyka.bond/` | Same policy; used in unbound binding instructions |
+
+Both are read by `load_menu_config()` in `backend/app/telegram/menus.py`. An
+invalid `TELEGRAM_MINI_APP_URL` disables only the `web_app` button and chat menu
+button and is reported through `status().menuError`; polling, bindings, jobs and
+the outbox keep working. An invalid cabinet override falls back to the known
+public base so an unbound user still gets a safe link. The runtime publishes
+`setMyCommands` and `setChatMenuButton` once after a successful `getMe`, in a
+background task; a failed publish is logged and never stops polling.
+
+Manual publication without putting the token in argv or output (reads the
+token from the existing 0600 env/file source inside the process):
+
+```bash
+TELEGRAM_BOT_TOKEN_FILE="$HOME/.config/nedra/telegram-bot.token" \
+TELEGRAM_MINI_APP_URL="https://nedra.soloveyka.bond/miniapp" \
+/tmp/nedra-venv/bin/python - <<'PY'
+import asyncio
+from backend.app.telegram.bot_api import TelegramBotAPI
+from backend.app.telegram.menus import BOT_COMMANDS, load_menu_config, menu_button
+
+async def publish() -> None:
+    api = TelegramBotAPI.from_runtime()
+    try:
+        await api.set_my_commands(BOT_COMMANDS)
+        button = menu_button(load_menu_config())
+        if button is not None:
+            await api.set_chat_menu_button(button)
+    finally:
+        await api.close()
+    print("public bot config published")
+
+asyncio.run(publish())
+PY
+```
+
+This changes public bot config only (command list and menu button); it does not
+send messages to users.
+
 ## 4. HTTP endpoints
 
 Factory prefix `/telegram`; when included into `api_router` they become
@@ -123,23 +170,60 @@ Example binding response:
  "instructions":"Откройте Telegram и отправьте /start <код> боту."}
 ```
 
-## 5. Bot commands
+## 5. Bot commands and buttons
 
-- `/start <code>` — consume one-time code, bind this private chat to the
-  account's `userId`/`workspaceId`.
-- `<code>` без команды — код привязки, отправленный голым текстом, тоже
-  принимается, если чат ещё не привязан; ответ тот же, что у `/start <code>`.
-- `/start` — show binding/help; unbound users are told to create a code in the
-  web cabinet.
-- `/help` — commands.
-- `/settings` — delivery mode, selected scenario and available scenario IDs.
-- `/settings alerts|jsonc|both` — delivery mode.
-- `/settings scenario <workflow_id>` — select workflow; validated in the
-  account workspace.
-- `/status` — binding, delivery mode, scenario, last jobs and last five runs
-  from the bound workspace only.
+Private chat only. Every reply that needs action carries an inline keyboard:
+
+- `/start` (unbound) — honest binding instructions: open the web cabinet
+  (`TELEGRAM_WEB_CABINET_URL`), sign in, Настройки → Telegram → «Создать код»,
+  then send `/start <код>`. The cabinet is a URL button; the bot never pretends
+  the account was bound automatically.
+- `/start` (bound) — short status (delivery mode, scenario) and the main menu:
+  `Открыть NEDRA` (`web_app` → `/miniapp`), `Проверки`, `Настройки`, `Помощь`.
+- `/start <code>` — consume the one-time code and bind the chat.
+- `<code>` без команды — a binding code sent as bare text is still consumed when
+  the chat is unbound; existing clients keep working.
+- `/help` — command reference plus menu.
+- `/settings` — buttons: `Кратко` / `JSON` / `Оба` (selected mode is marked
+  `✓`), scenario buttons by real workflow name, bounded pages of
+  `SCENARIO_PAGE_SIZE=6`, `‹ Назад` / `Ещё ›`, `В меню`.
+- `/settings alerts|jsonc|both` — legacy text mode, still supported.
+- `/settings scenario <workflow_id>` — legacy text scenario selection, still
+  supported; validated in the bound workspace.
+- `/status` (and the `Проверки` button) — binding state, delivery mode, selected
+  scenario, Bot API status, last jobs and last five runs from the bound
+  workspace, with `Обновить`, `Настройки`, `В меню` and the Mini App entry.
 - A private-chat HTTPS GitHub/GitLab URL — create an idempotent repo job. The
   bot replies with the job id, then imports and runs in the background.
+
+### Callback safety
+
+`telegram.menus` encodes each button as
+`n1.<action>[.<arg>].<binding_epoch>.<signature>` (≤ 64 bytes). The signature is
+HMAC-SHA256 over the action, argument, epoch, Telegram sender id and private
+chat id, keyed by a value derived from the bot token. A copied/forwarded button
+from another user or chat fails signature verification.
+
+On `callback_query` the runtime:
+
+1. Rejects non-private chats, bots and `from.id != chat.id` before claiming the
+   update. Group/foreign manipulation never reaches settings.
+2. Claims `update_id` in `telegram.updates` (same dedupe as messages), so a
+   redelivered callback cannot write twice.
+3. Verifies the signature, length and action.
+4. Answers `answerCallbackQuery` before DB work and again in `finally` if the
+   first attempt was skipped — no spinner is left behind.
+5. Requires the current binding epoch to match the signed epoch. A stale button
+   is answered politely and the menu is re-rendered with fresh buttons.
+6. Re-fetches scenarios from the *bound* workspace; selection uses a short
+   fingerprint of the real workflow id, then verifies the workflow exists before
+   `set_settings`. The client cannot choose a workspace, chat or scenario id.
+7. Edits the existing message (`editMessageText`) and falls back to a new
+   message if Telegram refuses the edit. `message is not modified` is treated as
+   success.
+
+Delivery labels are `Кратко` = alerts only, `JSON` = JSONC only, `Оба` =
+alerts + JSONC. Stored values remain `alerts` / `jsonc` / `both`.
 
 Group chats and bots are ignored. Files, archives (ZIP) and images are not
 supported: the bot replies explicitly with the HTTPS repository-link instruction
@@ -217,7 +301,30 @@ secrets are added by Telegram code.
 File path: `CG_DATA_DIR/telegram/reports/<workspace-uuid>/<run-id>.jsonc`,
 directory 0700, file 0600, atomic replace, bounded to 10 MiB before send.
 
-## 8. Live evidence (local temp PostgreSQL, 2026-11-21)
+## 8. Button/callback regression checks (2026-11-22)
+
+`backend/tests/test_telegram_buttons.py` is a plain Python suite (no pytest
+dependency) with a recording fake Bot API: no external Telegram call is made.
+
+- 82 checks without a database cover URL policy, callback signing, foreign
+  sender/group rejection, invalid/oversized data, stale epoch, mode and
+  scenario selection, shifted scenario fingerprints, duplicate updates,
+  `editMessageText` fallback, startup command/menu publishing, legacy commands
+  and bare-code binding.
+- 4 additional checks use a disposable PostgreSQL database
+  (`nedra_tg_buttons_probe`, local container, migrations 010–012): the current
+  binding epoch writes, a stale epoch is rejected with
+  `SettingsOwnershipLost`, the accepted value is still stored, and a
+  pre-rebind epoch is rejected after `binding_epoch` moves to 3.
+- Run: `/tmp/nedra-venv/bin/python backend/tests/test_telegram_buttons.py`
+  (add `TELEGRAM_TEST_DATABASE_URL=...` for the DB probe). The probe refuses a
+  database name that does not start with `nedra_tg_buttons_`.
+- Result on this commit: **86/86 checks passed** (82/menu-level + 4/DB).
+  `start`, bundled code binding, `/status`, `/settings`, `/settings alerts`,
+  `/help` and unknown-text fallback were exercised through the same handler
+  entry point as polling.
+
+## 9. Live evidence (local temp PostgreSQL, 2026-11-21)
 
 No production service, push or main was touched. Bot token stayed in env/0600
 files and was never printed.
@@ -263,7 +370,7 @@ files and was never printed.
   `pending`, `attempts=1`, sanitized error `All connection attempts failed`;
   the run itself was already `succeeded`.
 
-## 9. Honest limitations
+## 10. Honest limitations
 
 - Direct Bot API is blocked; the app container cannot reach host loopback, so
   production needs the scoped UNIX-socket relay (`docs/telegram-deployment.md`).
@@ -286,11 +393,20 @@ files and was never printed.
 - On a pre-auth checkout, `telegram_workspace_scope` refuses a workspace other
   than the process workspace. Multi-workspace behavior is available only after
   the auth-owner `workspace_scope` is integrated.
+- `Открыть NEDRA` and the chat menu button point at the public `/miniapp` URL;
+  the frontend route is owned by another team and was not added here. The
+  default URL is valid policy-wise, but a real Mini App open was not exercised
+  locally.
+- Real Telegram callback delivery was not exercised (no authorized live chat).
+  Callback handling is covered by the fake transport and a disposable DB;
+  production publication happens on coordinator deployment.
 - No frontend panel or report integration was added; the HTTP router factory
   and runtime are ready for root to mount.
 
-**Final status: implemented and live-checked where the local network allows;
-not pushed, not merged into main, not deployed.**
+**Final status: implemented and checked with fake transport plus a disposable
+PostgreSQL; not pushed, not merged into main, not deployed, no Telegram
+messages or bot config published from this worktree.**
+
 ## Интеграция приложения
 
 `api/router.py` монтирует binding/settings через проверенную account-сессию.
