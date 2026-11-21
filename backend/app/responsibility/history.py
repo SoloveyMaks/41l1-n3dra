@@ -201,20 +201,37 @@ async def _read_limited_json_body(response: httpx.Response) -> Tuple[str, Option
             while pending:
                 remaining = MAX_RESPONSE_BYTES - len(decoded)
                 if remaining <= 0:
-                    return "failed", None, "Ответ provider превысил допустимый размер."
+                    # At the exact cap, consume the compressed trailer but
+                    # probe for any extra decoded byte. Decoding exactly the
+                    # allowed size must not fail just because no room remains.
+                    probe = decoder.decompress(pending, 1)
+                    if probe:
+                        return "failed", None, "Ответ provider превысил допустимый размер."
+                    next_pending = decoder.unconsumed_tail
+                    if next_pending == pending:
+                        break
+                    pending = next_pending
+                    continue
                 part = decoder.decompress(pending, min(remaining, 65536) + 1)
                 if len(part) > remaining:
                     return "failed", None, "Ответ provider превысил допустимый размер."
                 decoded.extend(part)
                 pending = decoder.unconsumed_tail
         if decoder is not None:
-            remaining = MAX_RESPONSE_BYTES - len(decoded)
-            if remaining <= 0:
-                return "failed", None, "Ответ provider превысил допустимый размер."
-            tail = decoder.flush()
-            if len(tail) > remaining:
-                return "failed", None, "Ответ provider превысил допустимый размер."
-            decoded.extend(tail)
+            # Drain only with a bounded max_length; never flush unbounded.
+            while True:
+                remaining = MAX_RESPONSE_BYTES - len(decoded)
+                if remaining <= 0:
+                    extra = decoder.decompress(b"", 1)
+                    if extra:
+                        return "failed", None, "Ответ provider превысил допустимый размер."
+                    break
+                part = decoder.decompress(b"", min(remaining, 65536) + 1)
+                if len(part) > remaining:
+                    return "failed", None, "Ответ provider превысил допустимый размер."
+                decoded.extend(part)
+                if not part:
+                    break
             if not decoder.eof:
                 return "failed", None, "Provider вернул повреждённый Content-Encoding."
         return "ok", bytes(decoded), ""
