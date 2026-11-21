@@ -123,12 +123,30 @@ class _AdmissionSlot:
             return
         self.released = True
         sync_future = self.sync_future
-        if sync_future is not None and not sync_future.done():
+        if sync_future is None:
+            self._schedule_release()
+        elif sync_future.done():
+            self._consume_sync_exception(sync_future)
+            self._schedule_release()
+        else:
             # A cancelled/timed-out caller must not free a slot while the
             # thread is still inside PG/CPU. Release only after actual end.
-            sync_future.add_done_callback(lambda _future: self._schedule_release())
-        else:
-            self._schedule_release()
+            sync_future.add_done_callback(self._on_sync_done)
+
+    @staticmethod
+    def _consume_sync_exception(future: asyncio.Future) -> None:
+        if future.cancelled():
+            return
+        try:
+            future.exception()
+        except BaseException:
+            pass
+
+    def _on_sync_done(self, future: asyncio.Future) -> None:
+        # This callback may be the only reader when the HTTP waiter already
+        # timed out/cancelled; consume the exception before releasing.
+        self._consume_sync_exception(future)
+        self._schedule_release()
 
     def _schedule_release(self) -> None:
         self._schedule(_ADMISSION.release)
