@@ -7,20 +7,16 @@
 
 ## Статус
 
-- Публичный стенд [nedra.soloveyka.bond](https://nedra.soloveyka.bond) собран из
-  `9862e19`: там ещё старый интерфейс, один общий код и нет user/admin-разделения.
-- Локальная `dev` (`b6abde4`) содержит user/admin и принятые исправления:
-  `006`/происхождение снимков, один артефакт на проверку, защита канонического
-  вердикта, фактический статус выполнения и каноническая полнота отчёта.
-- Три независимых Sol-отчёта имеют AFTER85: logic закрыл artifact A/B и
-  failed-report, visual — основные мобильные блокеры, structure — 4 из 6.
-  Два остатка structure исправлены в `b6abde4`: Markdown-полнота `9bcb5fa`,
-  свежесть/авторизация админки `6a9dd99`.
-- Review стенда 18082 на точном `b6abde4` — READY; structure выполняет узкий
-  независимый FINAL этих двух исправлений. Root build PASS.
-- **Финальная приёмка не заявлена.** Новый UI ещё не опубликован; «все проверки
-  пройдены» не говорим.
-- `main` — после приёмки; merge/push делает координатор, не worker.
+- Exact candidate `c7057ee` запушен в `origin/dev`; app source не менялся после
+  `b6abde4`. FINAL Sol structure `8d8e0ca` принят.
+- Три независимых review приняты: logic, visual, structure FINAL. Все шесть
+  исходных структурных препятствий закрыты в проверенных путях; это не полный
+  аудит и не release-wide approval.
+- FINAL продукта принят. Deploy `c705` **остановлен checksum mismatch** для
+  applied 006 и безопасно откатан на `9862e19`; public updated не заявлен,
+  public smoke pending. Новая попытка — pending forward `007` и проверки
+  проверки восстановленной копии; детали в [deployment final](docs/deployment-final.md).
+- Root build PASS. `main` и финальная приёмка ещё pending.
 
 ## Проверить проект за 3 шага
 
@@ -54,9 +50,9 @@
 - [Release handoff](docs/RELEASE-HANDOFF.md)
 - [Сценарий показа для жюри](docs/JURY-WALKTHROUGH.md)
 - [Словарь продукта](docs/PRODUCT-GLOSSARY.md)
-- [Sol logic: AFTER85](docs/reviews/sol-logic.md) — artifact A/B и failed-report
-- [Sol visual: AFTER85](docs/reviews/sol-visual.md) — мобильные блокеры
-- [Sol structure: AFTER85](docs/reviews/sol-structure.md) — 4 из 6 и остатки
+- [Sol logic](docs/reviews/sol-logic.md) — принят AFTER85
+- [Sol visual](docs/reviews/sol-visual.md) — принят AFTER85
+- [Sol structure](docs/reviews/sol-structure.md) — принят FINAL
 - [Report coverage](docs/report-coverage.md) — каноническая полнота отчёта
 - [Контракты данных](docs/data-contracts/README.md), [SQL ↔ DTO](docs/data-contracts/mapping.md)
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
@@ -113,15 +109,13 @@ cd frontend && npm ci && npm run build       # production build
 
 ## Ограничения
 
-Публичный стенд `9862e19` старый: новый UI ещё не public, после пересборки
-нужен отдельный публичный smoke. AFTER85 закрыл artifact A/B, failed-report и
-основные мобильные блокеры. Два остатка structure — Markdown-полнота `9bcb5fa`
-и admin freshness/auth `6a9dd99` — уже в `b6abde4`; их узкий FINAL ещё идёт.
-Неблокирующие visual-остатки: короткие edge labels, часть comparison-текста на
-390, конструктор на 390 повторно не проверялся.
+Публичный deploy `c705` не подтверждён: попытка остановлена checksum mismatch,
+выполнен безопасный откат на `9862e19` (healthy 200, старый asset). Новая
+попытка pending `007`; public smoke ещё не выполнялся. Неблокирующие
+visual-остатки — короткие edge labels, часть comparison-текста на 390;
+конструктор на 390 повторно не проверялся. Полные ограничения, три review и
+чеклист deploy/public smoke — в [release handoff](docs/RELEASE-HANDOFF.md).
 
 Хост публичного стенда — локальный ПК; `Linger=no`, после reboot нужен
-пользовательский login. Полные ограничения и честные статусы — в
-[release handoff](docs/RELEASE-HANDOFF.md)
-и [словаре](docs/PRODUCT-GLOSSARY.md). Production readiness и полное покрытие не
+пользовательский login. Production readiness, полный аудит и полное покрытие не
 заявляются.

@@ -40,10 +40,12 @@ React + Vite SPA для проверки безопасности Kotlin/Spring 
   не являются работающим ограничением.
 - Общее сравнение остаётся `inconclusive`; проверка SQL узкая. Синтетический
   источник не даёт `comparable=true`.
-- Публичный стенд `9862e19` пока старый. Локальная `dev` (`b6abde4`) содержит
-  user/admin. AFTER85 закрыл artifact A/B, failed-report и основные мобильные
-  блокеры; два остатка structure закрыты в `b6abde4`, но узкий FINAL ещё идёт.
-  Новый UI ещё не опубликован; финальная приёмка не заявлена.
+- FINAL structure принят; три review приняты, шесть исходных структурных
+  препятствий закрыты в проверенных путях. Deploy `c705` остановлен checksum
+  mismatch и безопасно откатан на `9862e19`; **public updated не заявлен**.
+  Новая попытка pending `007`, public smoke ещё не выполнялся. Это не полный
+  аудит; полный статус — в [deployment final](../docs/deployment-final.md) и
+  [release handoff](../docs/RELEASE-HANDOFF.md).
 
 ## Сборка
 
