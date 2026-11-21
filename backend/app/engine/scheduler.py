@@ -430,6 +430,7 @@ class RepositoryWatchService:
                     "status": "busy",
                     "commitSha": commit_sha,
                     "detail": "Тот же коммит уже проверяется",
+                    "leaseUntil": fresh.get("claimed_until"),
                 }
             if fresh and fresh.get("state") in ("queued", "running", "done"):
                 if next_at is not None:
@@ -481,10 +482,12 @@ class RepositoryWatchService:
             next_at.isoformat() if next_at else None,
         )
         if not committed:
+            fresh = await self._db("get_repository_watch_commit", watch["id"], commit_sha)
             return {
                 "status": "busy",
                 "commitSha": commit_sha,
                 "detail": "Проверку перехватил другой процесс",
+                "leaseUntil": (fresh or {}).get("claimed_until"),
             }
         self._schedule_dispatch(run_id)
         return {"status": "started", "runId": run_id, "commitSha": commit_sha}
@@ -607,40 +610,65 @@ class RepositoryWatchService:
             return await self._retry_delivery(
                 row, token, result.get("detail") or "Импорт коммита не удался",
             )
-        return await self._retry_delivery(
+        return await self._defer_delivery(
             row, token, result.get("detail") or "Коммит уже проверяется",
+            result.get("leaseUntil"),
         )
 
     async def _finish_delivery(self, delivery_row_id: str, token: str,
                                state: str, run_id: Optional[str],
-                               detail: str, error: Optional[str]) -> None:
+                               detail: str, error: Optional[str],
+                               attempt: Optional[int] = None) -> None:
         try:
             await self._db(
                 "finish_repository_hook_delivery",
-                delivery_row_id, token, state, run_id, detail, error,
+                delivery_row_id, token, state, run_id, detail, error, attempt,
             )
         except Exception as exc:  # noqa: BLE001 - lease всё равно истечёт
             logger.warning("Failed to finish hook delivery: %s", type(exc).__name__)
 
+    async def _defer_delivery(self, row: Dict[str, Any], token: str,
+                              detail: str, lease_until: Any) -> None:
+        """Busy ledger is not a failure: wait for its lease, keep the retry budget."""
+        safe_detail = _safe_error_text(detail, "Коммит уже проверяется")
+        next_at = datetime.now(timezone.utc) + timedelta(seconds=WEBHOOK_RETRY_SECONDS)
+        if isinstance(lease_until, str) and lease_until:
+            try:
+                lease_at = datetime.fromisoformat(lease_until)
+                if lease_at.tzinfo is None:
+                    lease_at = lease_at.replace(tzinfo=timezone.utc)
+                if lease_at > next_at:
+                    next_at = lease_at + timedelta(seconds=1)
+            except ValueError:
+                pass
+        try:
+            await self._db(
+                "defer_repository_hook_delivery",
+                row.get("id"), token, safe_detail, next_at.isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001 - истёкший lease вернёт доставку
+            logger.warning("Failed to defer hook delivery: %s", type(exc).__name__)
+        await self._watch_delivery(row.get("watch_id"), "processing", None)
+
     async def _retry_delivery(self, row: Dict[str, Any], token: str,
                               detail: str) -> None:
         safe_detail = _safe_error_text(detail, "Push-событие не обработано")
-        attempt = int(row.get("attempt") or 0)
-        if attempt >= WEBHOOK_MAX_ATTEMPTS:
+        failures = int(row.get("attempt") or 0) + 1
+        if failures >= WEBHOOK_MAX_ATTEMPTS:
             await self._finish_delivery(
                 row.get("id"), token, "failed", None,
-                "Повторы исчерпаны", safe_detail,
+                "Повторы исчерпаны", safe_detail, failures,
             )
             await self._watch_delivery(row.get("watch_id"), "failed", safe_detail)
             return
         try:
             next_at = (
                 datetime.now(timezone.utc)
-                + timedelta(seconds=WEBHOOK_RETRY_SECONDS * max(1, attempt))
+                + timedelta(seconds=WEBHOOK_RETRY_SECONDS * max(1, failures))
             ).isoformat()
             await self._db(
                 "retry_repository_hook_delivery",
-                row.get("id"), token, safe_detail, next_at,
+                row.get("id"), token, safe_detail, next_at, failures,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to retry hook delivery: %s", type(exc).__name__)

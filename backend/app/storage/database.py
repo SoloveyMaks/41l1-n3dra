@@ -1297,7 +1297,6 @@ class DatabaseRepository:
                    SET state = 'processing',
                        claim_token = %s,
                        claimed_until = now() + make_interval(secs => %s),
-                       attempt = attempt + 1,
                        updated_at = now()
                   FROM due
                  WHERE d.workspace_id = due.workspace_id AND d.id = due.id
@@ -1310,7 +1309,8 @@ class DatabaseRepository:
     def finish_repository_hook_delivery(self, delivery_id: str, token: str,
                                         state: str, run_id: Optional[str],
                                         detail: Optional[str],
-                                        error: Optional[str] = None) -> None:
+                                        error: Optional[str] = None,
+                                        attempt: Optional[int] = None) -> None:
         with get_pool().connection() as conn:
             conn.execute(
                 """
@@ -1319,6 +1319,7 @@ class DatabaseRepository:
                        claim_token = NULL,
                        claimed_until = NULL,
                        next_attempt_at = NULL,
+                       attempt = COALESCE(%s, attempt),
                        run_id = COALESCE(%s, run_id),
                        detail = %s,
                        error = %s,
@@ -1326,13 +1327,14 @@ class DatabaseRepository:
                  WHERE workspace_id = %s AND id = %s
                    AND state = 'processing' AND claim_token = %s
                 """,
-                (state, run_id, detail[:500] if detail else None,
+                (state, attempt, run_id, detail[:500] if detail else None,
                  error[:500] if error else None,
                  self.workspace_id, delivery_id, token),
             )
 
-    def retry_repository_hook_delivery(self, delivery_id: str, token: str,
-                                       error: str, next_attempt_at: str) -> None:
+    def defer_repository_hook_delivery(self, delivery_id: str, token: str,
+                                       detail: str, next_attempt_at: str) -> None:
+        """Return a busy delivery to pending without spending a failure attempt."""
         with get_pool().connection() as conn:
             conn.execute(
                 """
@@ -1341,12 +1343,34 @@ class DatabaseRepository:
                        claim_token = NULL,
                        claimed_until = NULL,
                        next_attempt_at = %s,
+                       detail = %s,
+                       error = NULL,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                   AND state = 'processing' AND claim_token = %s
+                """,
+                (next_attempt_at, detail[:500], self.workspace_id,
+                 delivery_id, token),
+            )
+
+    def retry_repository_hook_delivery(self, delivery_id: str, token: str,
+                                       error: str, next_attempt_at: str,
+                                       attempt: int) -> None:
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_hook_deliveries
+                   SET state = 'pending',
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       next_attempt_at = %s,
+                       attempt = %s,
                        error = %s,
                        updated_at = now()
                  WHERE workspace_id = %s AND id = %s
                    AND state = 'processing' AND claim_token = %s
                 """,
-                (next_attempt_at, error[:500], self.workspace_id,
+                (next_attempt_at, attempt, error[:500], self.workspace_id,
                  delivery_id, token),
             )
 
