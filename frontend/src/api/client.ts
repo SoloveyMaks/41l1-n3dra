@@ -8,6 +8,7 @@ import {
   NodeDefinition,
   NodeRunRecord,
   ProfileData,
+  ProfileHistoryResponse,
   ReportData,
   ResponsibilityData,
   RepositoryCheckResult,
@@ -114,6 +115,14 @@ export const apiClient = {
 
   async getProfile(): Promise<ProfileData> {
     return (await request('/profile')).json();
+  },
+
+  async getProfileHistory(filters: Record<string, string | number | undefined> = {}): Promise<ProfileHistoryResponse> {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    });
+    return (await request(`/profile/history${query.toString() ? `?${query}` : ''}`)).json();
   },
 
   async downloadReportExport(

@@ -207,6 +207,14 @@ export const AccessGate: React.FC<AccessGateProps> = ({
           </p>
         )}
 
+        {mode === 'demo' && (
+          <p className="mt-3 rounded-lg border border-amber-900/70 bg-amber-950/30 px-3 py-2 text-[11px] leading-relaxed text-amber-200/90">
+            <strong className="text-amber-200">Общий demo-режим.</strong>{' '}
+            Проекты, запуски и история видны всем, кто входит по demo-коду. Это не личный кабинет:
+            для своей истории создайте аккаунт.
+          </p>
+        )}
+
         <button
           type="submit"
           disabled={busy || !canSubmit}

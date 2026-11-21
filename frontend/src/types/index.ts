@@ -390,6 +390,21 @@ export interface RunHistoryItem {
   started_at?: string | null;
   finished_at?: string | null;
   created_at: string;
+  workflow_name?: string | null;
+  project_name?: string | null;
+}
+
+export interface ProfileHistoryResponse {
+  mode: SessionMode;
+  userId?: string | null;
+  sharedDemoWorkspace: boolean;
+  items: RunHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  projects: { id: string | null; name: string | null }[];
+  workflows: { id: string; name: string | null }[];
+  statuses: string[];
 }
 
 export interface HistoryResponse {
