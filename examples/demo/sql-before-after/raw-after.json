@@ -22,10 +22,10 @@
   "identity": {
     "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
     "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-    "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+    "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
     "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
-    "snapshotManifestHash": "60f2d00df6fbf0a279d81ef0547d9cbf64b76c4ad9d72c09e1886a42060c39cc",
-    "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+    "snapshotManifestHash": "3efa16db0c2621dbcd7aa00bb0e075b410c15ee5429c358f0658f6c4e317f24d",
+    "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
   },
   "signature": {
     "parserVersion": "cg-codefacts/1.0.0",
@@ -33,7 +33,7 @@
     "advisoryVersion": "cg-advisories/1",
     "configVersion": "cg-config/1",
     "hmacKeyVersion": "cg-anchor-hmac/v1",
-    "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+    "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
     "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
     "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
     "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -47,10 +47,10 @@
       "identity": {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
-        "snapshotManifestHash": "60f2d00df6fbf0a279d81ef0547d9cbf64b76c4ad9d72c09e1886a42060c39cc",
-        "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        "snapshotManifestHash": "3efa16db0c2621dbcd7aa00bb0e075b410c15ee5429c358f0658f6c4e317f24d",
+        "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
       },
       "signature": {
         "parserVersion": "cg-codefacts/1.0.0",
@@ -58,7 +58,7 @@
         "advisoryVersion": "cg-advisories/1",
         "configVersion": "cg-config/1",
         "hmacKeyVersion": "cg-anchor-hmac/v1",
-        "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+        "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
         "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
         "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
         "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -97,10 +97,10 @@
       "identity": {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
-        "snapshotManifestHash": "60f2d00df6fbf0a279d81ef0547d9cbf64b76c4ad9d72c09e1886a42060c39cc",
-        "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        "snapshotManifestHash": "3efa16db0c2621dbcd7aa00bb0e075b410c15ee5429c358f0658f6c4e317f24d",
+        "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
       },
       "signature": {
         "parserVersion": "cg-codefacts/1.0.0",
@@ -108,7 +108,7 @@
         "advisoryVersion": "cg-advisories/1",
         "configVersion": "cg-config/1",
         "hmacKeyVersion": "cg-anchor-hmac/v1",
-        "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+        "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
         "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
         "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
         "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -142,10 +142,10 @@
       "identity": {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
-        "snapshotManifestHash": "60f2d00df6fbf0a279d81ef0547d9cbf64b76c4ad9d72c09e1886a42060c39cc",
-        "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        "snapshotManifestHash": "3efa16db0c2621dbcd7aa00bb0e075b410c15ee5429c358f0658f6c4e317f24d",
+        "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
       },
       "signature": {
         "parserVersion": "cg-codefacts/1.0.0",
@@ -153,7 +153,7 @@
         "advisoryVersion": "cg-advisories/1",
         "configVersion": "cg-config/1",
         "hmacKeyVersion": "cg-anchor-hmac/v1",
-        "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+        "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
         "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
         "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
         "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -182,7 +182,7 @@
             "ruleId": "KOTLIN-SQL-INJECTION",
             "category": "SAST",
             "status": "checked",
-            "reason": "Observed real SastAnalyzer._check_sql_injection invocation; findings=0"
+            "reason": "Правило вызвано и завершилось без ошибки; findings=0."
           }
         ],
         "skippedScopes": [],
@@ -198,10 +198,10 @@
     "identity": {
       "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
       "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-      "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+      "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
       "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
-      "snapshotManifestHash": "60f2d00df6fbf0a279d81ef0547d9cbf64b76c4ad9d72c09e1886a42060c39cc",
-      "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+      "snapshotManifestHash": "3efa16db0c2621dbcd7aa00bb0e075b410c15ee5429c358f0658f6c4e317f24d",
+      "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
     },
     "signature": {
       "parserVersion": "cg-codefacts/1.0.0",
@@ -209,7 +209,7 @@
       "advisoryVersion": "cg-advisories/1",
       "configVersion": "cg-config/1",
       "hmacKeyVersion": "cg-anchor-hmac/v1",
-      "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+      "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
       "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
       "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
       "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -221,7 +221,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "b8b7daef-a9e2-5a24-8ee0-c5f703d4c9a5",
         "kind": "actor",
         "symbolKey": "actor:role:STAFF",
@@ -234,7 +234,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "f99e950f-6a83-5c53-8b99-4e4000b7555c",
         "kind": "function",
         "symbolKey": "function:demo.RepairLookupController.findByFrameTag",
@@ -248,7 +248,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "aa969425-b8bb-5f6f-89f8-d27459999580",
         "kind": "guard",
         "symbolKey": "guard:role:STAFF:/api/customer/search/frame",
@@ -261,7 +261,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "2841e35f-d03a-5cd3-8f72-e33c351afdf4",
         "kind": "matcher",
         "symbolKey": "matcher:ANY:/api/customer/search/frame",
@@ -274,7 +274,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "b64e9805-1528-5072-a59f-49a96590ef83",
         "kind": "route",
         "symbolKey": "route:GET:/api/customer/search/frame",
@@ -289,7 +289,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "e427a68d-c1a7-5f5f-b6a0-b78c4bcf3103",
         "fromId": "b64e9805-1528-5072-a59f-49a96590ef83",
         "toId": "f99e950f-6a83-5c53-8b99-4e4000b7555c",
@@ -307,7 +307,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "2387a0be-0b19-5193-8bdb-ea62601c619c",
         "fromId": "b8b7daef-a9e2-5a24-8ee0-c5f703d4c9a5",
         "toId": "2841e35f-d03a-5cd3-8f72-e33c351afdf4",
@@ -324,7 +324,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "b33b3957-4834-54ca-8211-9831754a56c9",
         "fromId": "2841e35f-d03a-5cd3-8f72-e33c351afdf4",
         "toId": "aa969425-b8bb-5f6f-89f8-d27459999580",
@@ -341,7 +341,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "8cc936d3-0e64-5cc9-9d0a-83a30d05f06d",
         "fromId": "aa969425-b8bb-5f6f-89f8-d27459999580",
         "toId": "b64e9805-1528-5072-a59f-49a96590ef83",
@@ -361,7 +361,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "40fbd223-6359-58bd-a08b-d39dd836f737",
         "location": {
           "path": "src/main/kotlin/demo/RepairLookupController.kt",
@@ -380,7 +380,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "5f99cfd3-0ddc-5154-818f-69917a2081a9",
         "location": {
           "path": "src/main/kotlin/demo/SecurityConfig.kt",
@@ -399,7 +399,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "7af4a0e5-d427-55e4-b1ba-120553c9cfaf",
         "location": {
           "path": "src/main/kotlin/demo/RepairLookupController.kt",
@@ -451,7 +451,7 @@
       {
         "workspaceId": "bcb5c1a3-cfe4-5429-a219-a931a1360d8d",
         "runId": "8352fc46-2df1-5e1a-87dc-4b570568c73a",
-        "snapshotId": "e9cdee7e-b4fd-5f08-a2ac-58dae58555aa",
+        "snapshotId": "430da6b7-de5c-59fb-a3c9-c05fe85100af",
         "id": "7831a963-aa41-5722-9f67-8c6c38aadbcc",
         "category": "SAST",
         "code": "CF-STATIC-ONLY",
@@ -463,17 +463,43 @@
     "findingNodeLinks": []
   },
   "observations": {
-    "sastSqlRule": {
-      "src/main/kotlin/demo/RepairLookupController.kt": {
-        "invoked": 1,
-        "findings": 0
+    "sastRuleObservations": [
+      {
+        "rule_id": "KOTLIN-SQL-INJECTION",
+        "rule_version": "1.0.0",
+        "path": "src/main/kotlin/demo/RepairLookupController.kt",
+        "status": "checked",
+        "invocations": 1,
+        "findings": 0,
+        "reason": "Правило вызвано и завершилось без ошибки; findings=0."
+      },
+      {
+        "rule_id": "KOTLIN-SQL-INJECTION",
+        "rule_version": "1.0.0",
+        "path": "src/main/kotlin/demo/SecurityConfig.kt",
+        "status": "not_applicable",
+        "invocations": 0,
+        "findings": 0,
+        "reason": "Правило не вызывалось: в файле нет пользовательского источника для SQL-правила."
       }
-    },
+    ],
     "expectedSqlPaths": [
       "src/main/kotlin/demo/RepairLookupController.kt"
     ],
     "observedSqlPaths": [
       "src/main/kotlin/demo/RepairLookupController.kt"
+    ],
+    "sastSkipped": [],
+    "sastNotApplicable": [
+      {
+        "rule_id": "KOTLIN-SQL-INJECTION",
+        "rule_version": "1.0.0",
+        "path": "src/main/kotlin/demo/SecurityConfig.kt",
+        "status": "not_applicable",
+        "invocations": 0,
+        "findings": 0,
+        "reason": "Правило не вызывалось: в файле нет пользовательского источника для SQL-правила."
+      }
     ],
     "sastFindings": 0,
     "sastParserErrors": 0,

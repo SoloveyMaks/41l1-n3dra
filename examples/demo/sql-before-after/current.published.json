@@ -7,7 +7,7 @@
       "snapshotId": "61d4debb-611e-876f-975d-030f61196220",
       "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
       "snapshotManifestHash": "c484c5600013b5c2ff306039ac5c46d64953fa0e7fae4f15a7850577add5fd98",
-      "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+      "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
     },
     "signature": {
       "parserVersion": "cg-codefacts/1.0.0",
@@ -15,7 +15,7 @@
       "advisoryVersion": "cg-advisories/1",
       "configVersion": "cg-config/1",
       "hmacKeyVersion": "cg-anchor-hmac/v1",
-      "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+      "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
       "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
       "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
       "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -32,7 +32,7 @@
           "snapshotId": "61d4debb-611e-876f-975d-030f61196220",
           "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
           "snapshotManifestHash": "c484c5600013b5c2ff306039ac5c46d64953fa0e7fae4f15a7850577add5fd98",
-          "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+          "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
         },
         "signature": {
           "parserVersion": "cg-codefacts/1.0.0",
@@ -40,7 +40,7 @@
           "advisoryVersion": "cg-advisories/1",
           "configVersion": "cg-config/1",
           "hmacKeyVersion": "cg-anchor-hmac/v1",
-          "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+          "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
           "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
           "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
           "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -82,7 +82,7 @@
           "snapshotId": "61d4debb-611e-876f-975d-030f61196220",
           "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
           "snapshotManifestHash": "c484c5600013b5c2ff306039ac5c46d64953fa0e7fae4f15a7850577add5fd98",
-          "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+          "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
         },
         "signature": {
           "parserVersion": "cg-codefacts/1.0.0",
@@ -90,7 +90,7 @@
           "advisoryVersion": "cg-advisories/1",
           "configVersion": "cg-config/1",
           "hmacKeyVersion": "cg-anchor-hmac/v1",
-          "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+          "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
           "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
           "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
           "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -127,7 +127,7 @@
           "snapshotId": "61d4debb-611e-876f-975d-030f61196220",
           "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
           "snapshotManifestHash": "c484c5600013b5c2ff306039ac5c46d64953fa0e7fae4f15a7850577add5fd98",
-          "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+          "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
         },
         "signature": {
           "parserVersion": "cg-codefacts/1.0.0",
@@ -135,7 +135,7 @@
           "advisoryVersion": "cg-advisories/1",
           "configVersion": "cg-config/1",
           "hmacKeyVersion": "cg-anchor-hmac/v1",
-          "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+          "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
           "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
           "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
           "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -164,7 +164,7 @@
               "ruleId": "KOTLIN-SQL-INJECTION",
               "category": "SAST",
               "status": "checked",
-              "reason": "Observed real SastAnalyzer._check_sql_injection invocation; findings=0"
+              "reason": "Правило вызвано и завершилось без ошибки; findings=0."
             }
           ],
           "skippedScopes": [],
@@ -183,7 +183,7 @@
         "snapshotId": "61d4debb-611e-876f-975d-030f61196220",
         "artifactHash": "5fe6d3cc6ad9fd51bf2709a8b97d61360329bdb2ca7e49bf78869f052d00abf4",
         "snapshotManifestHash": "c484c5600013b5c2ff306039ac5c46d64953fa0e7fae4f15a7850577add5fd98",
-        "workflowRevisionId": "ecb41d18-d4dc-5447-9186-967daa80c650"
+        "workflowRevisionId": "b103d1ed-9333-5db1-91fb-2054450eca7d"
       },
       "signature": {
         "parserVersion": "cg-codefacts/1.0.0",
@@ -191,7 +191,7 @@
         "advisoryVersion": "cg-advisories/1",
         "configVersion": "cg-config/1",
         "hmacKeyVersion": "cg-anchor-hmac/v1",
-        "parserHash": "358acb37eea449274330c77a88050f3ac4129aa8a1f0601f05470e4c3a821614",
+        "parserHash": "d94f82acc77e9bacaadbd607562207c6bf5a55167ccab23c990321185e7cdf25",
         "rulesHash": "07234b327d50d7492c7d58abb2e979d988afdc42736f94d0a1219420ca5c253e",
         "advisoryHash": "5ce7c2a3f6dce31253b7771f0026c9761cd6b24a93cf82b459cb8f8ae266535a",
         "scanConfigHash": "aec550204d06b9bbb1048c2c86ecf037657ebab15f06c665b5a31673aa837636",
@@ -467,7 +467,7 @@
   },
   "provenance": {
     "published": true,
-    "bundleHash": "95b45aef1e530220f8863a88e0c972d15318a0d5461181415cd91cba36edf226",
+    "bundleHash": "de99cbba83631200807746af6d1ab50e5c9cdad7b17cdd5ca573632ecfbd87e7",
     "normalizationVersion": "sql-before-after/harness/1",
     "origin": "scanner",
     "expectedScopesVerified": true,
