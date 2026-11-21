@@ -24,6 +24,7 @@ from backend.app.codefacts.store import CodeFactsStore
 from backend.app.engine.notify_policy import validate_webhook_url
 from backend.app.engine.sse import SSEBroker
 from backend.app.engine.validator import WorkflowValidator
+from backend.app.integrations.team_b import TeamBAdapter, persist_team_b_run
 from backend.app.notifications.webhook import WebhookNotifier
 from backend.app.reports.builder import ReportBuilder
 from backend.app.storage.database import DatabaseRepository
@@ -44,6 +45,7 @@ class WorkflowExecutor:
         self.ai_service = AiService()
         self.report_builder = ReportBuilder()
         self.notifier = WebhookNotifier()
+        self.team_b = TeamBAdapter()
 
     async def execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                           trigger_type: str = "manual", workflow_id: Optional[str] = None,
@@ -54,6 +56,7 @@ class WorkflowExecutor:
         revision_id = revision_id or str(run_row.get("revision_id") or "revision-unknown")
         workflow = self.db.get_workflow(workflow_id) or {}
         workflow_name = str(workflow.get("name") or "Security Scan")
+        engine = self._engine_for_draft(draft)
         self.db.update_run_status(run_id, execution_status="running", started_at=start_time_iso)
         await self.sse.emit_event(run_id, "run_status", {"status": "running", "trigger": trigger_type})
 
@@ -160,7 +163,7 @@ class WorkflowExecutor:
                 outputs, branch_decision = await self._run_node_logic(
                     run_id, curr_node, node_inputs, artifact_id, trigger_type,
                     findings_bundle, policy_result, explain_result,
-                    workflow_id, revision_id, workflow_name,
+                    workflow_id, revision_id, workflow_name, engine,
                 )
 
                 duration_ms = (time.time() - node_start_time) * 1000
@@ -285,6 +288,7 @@ class WorkflowExecutor:
             "verdict": final_verdict.value,
             "findings_summary": counts
         })
+        self.team_b.release(run_id)
 
     async def _run_node_logic(self, run_id: str, node: WorkflowNode, inputs: Dict[str, Any],
                              default_artifact_id: Optional[str], trigger_type: str,
@@ -292,7 +296,7 @@ class WorkflowExecutor:
                              current_policy: Optional[PolicyResult],
                              current_explain: Optional[ExplainResult],
                              workflow_id: str, revision_id: str,
-                             workflow_name: str) -> Tuple[Dict[str, Any], Optional[bool]]:
+                             workflow_name: str, engine: str) -> Tuple[Dict[str, Any], Optional[bool]]:
         kind = node.kind
         config = node.config or {}
 
@@ -336,8 +340,24 @@ class WorkflowExecutor:
                 NodeKind.KOTLIN_SAST: "sast",
             }[kind]
             try:
-                # Сканеры CPU/IO-bound; не держим event loop.
-                scan_res = await asyncio.to_thread(lambda: analyzer_cls().analyze(artifact_path))
+                if engine == "team_b":
+                    category = {
+                        NodeKind.SECRET_SCAN: "SECRET",
+                        NodeKind.SCA_SCAN: "SCA",
+                        NodeKind.KOTLIN_SAST: "SAST",
+                    }[kind]
+                    artifact_row = self.db.get_artifact(art["artifactId"])
+                    scan_res = await asyncio.to_thread(
+                        self.team_b.scan_category,
+                        run_id=run_id,
+                        artifact_id=art["artifactId"],
+                        artifact_row=artifact_row,
+                        revision_id=revision_id,
+                        category=category,
+                    )
+                else:
+                    # Сканеры CPU/IO-bound; не держим event loop.
+                    scan_res = await asyncio.to_thread(lambda: analyzer_cls().analyze(artifact_path))
             except Exception as e:
                 scan_res = ScanResult(
                     analyzer=analyzer_name,
@@ -403,9 +423,14 @@ class WorkflowExecutor:
             map_error = None
             if artifact_id:
                 try:
-                    all_findings, codefacts_facts, map_error = await asyncio.to_thread(
-                        self._integrate_codefacts, run_id, artifact_id, all_findings, scan_results,
-                    )
+                    if engine == "team_b":
+                        all_findings, codefacts_facts, map_error = await asyncio.to_thread(
+                            self._integrate_team_b, run_id, artifact_id, all_findings,
+                        )
+                    else:
+                        all_findings, codefacts_facts, map_error = await asyncio.to_thread(
+                            self._integrate_codefacts, run_id, artifact_id, all_findings, scan_results,
+                        )
                 except Exception as exc:  # noqa: BLE001 - карта не должна скрывать находки
                     logger.warning("Code facts integration failed for %s: %s", run_id, exc)
                     map_error = str(exc)
@@ -790,6 +815,32 @@ class WorkflowExecutor:
         if not path or not Path(path).is_dir():
             raise ValueError("Распакованный артефакт недоступен")
         return str(path)
+
+    def _engine_for_draft(self, draft: WorkflowDraft) -> str:
+        engines = {
+            str((node.config or {}).get("engine") or "backend")
+            for node in draft.nodes
+            if node.kind in (NodeKind.SECRET_SCAN, NodeKind.SCA_SCAN, NodeKind.KOTLIN_SAST)
+        }
+        if len(engines) > 1:
+            raise ValueError("Смешанные engine сканеров запрещены: один run — один engine")
+        return next(iter(engines), "backend")
+
+    def _integrate_team_b(self, run_id: str, artifact_id: str,
+                          findings: List[Finding]) -> Tuple[List[Finding], Any, Optional[str]]:
+        artifact = self.db.get_artifact(artifact_id)
+        if not artifact:
+            return findings, None, "artifact missing"
+        workspace = workspace_id()
+        try:
+            persist_team_b_run(
+                run_id=run_id, artifact_id=artifact_id, workspace=workspace,
+                store=self.team_b.store, adapter=self.team_b,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Team B bundle persistence failed for %s: %s", run_id, exc)
+            return findings, None, str(exc)
+        return findings, None, None
 
     def _integrate_codefacts(self, run_id: str, artifact_id: str,
                              findings: List[Finding],

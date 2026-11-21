@@ -90,9 +90,15 @@ def build_publish_kwargs(*, workspace: str, run_artifact: Dict[str, Any],
         "document_hash": signature,
         "provenance": {
             "origin": "scanner",
-            "normalizationVersion": EXTRACTOR_VERSION,
+            "normalizationVersion": str(
+                (envelope.get("signature") or {}).get("parserVersion") or EXTRACTOR_VERSION
+            ),
             "expectedScopesVerified": False,
-            "domainPolicyApplicability": "not_applicable",
+            "domainPolicyApplicability": (
+                "unknown"
+                if (envelope.get("signature") or {}).get("domainPolicyRevisionId")
+                else "not_applicable"
+            ),
         },
         "artifact": {
             "artifact_id": artifact_id,
@@ -228,6 +234,10 @@ def map_from_analysis_bundle(bundle: Dict[str, Any]) -> Optional[Dict[str, Any]]
     try:
         code_facts = bundle["codeFacts"]
         findings = [finding for scan in bundle["scanResults"] for finding in scan["findings"]]
+        evidence_by_id: Dict[str, Any] = {}
+        for part in [*bundle["scanResults"], code_facts]:
+            for item in part.get("evidence", []):
+                evidence_by_id[item["id"]] = item
         links = [
             {"findingId": finding["id"], "nodeId": node_id}
             for finding in findings
@@ -239,7 +249,7 @@ def map_from_analysis_bundle(bundle: Dict[str, Any]) -> Optional[Dict[str, Any]]
             "signature": bundle["signature"],
             "nodes": code_facts["nodes"],
             "edges": code_facts["edges"],
-            "evidence": code_facts["evidence"],
+            "evidence": [evidence_by_id[evidence_id] for evidence_id in sorted(evidence_by_id)],
             "coverage": code_facts["coverage"],
             "policyInputs": code_facts.get("policyInputs", []),
             "diagnostics": code_facts.get("diagnostics", []),
