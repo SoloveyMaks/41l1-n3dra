@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -787,16 +786,17 @@ class TelegramRepository:
             ).fetchone()
         return row is not None
 
-    @contextmanager
-    def delivery_guard(self, item: OutboxItem):
-        """Serialize send with re-bind by locking the binding row.
+    def acquire_delivery_guard(self, item: OutboxItem):
+        """Open a transaction and lock the binding row; caller must release.
 
-        Re-bind uses ``SELECT ... FOR UPDATE`` on the same row, so an old-owner
-        message either sends before the re-bind commits (old owner was current
-        then) or observes the new epoch and is cancelled. No scope is taken from
-        the current binding for the payload itself.
+        This is deliberately sync: the async runtime calls it in
+        ``asyncio.to_thread`` so waiting for a concurrent re-bind never blocks
+        the event loop. The returned connection must be released in a worker
+        thread via ``release_delivery_guard``.
         """
-        with get_pool().connection() as conn:
+        pool = get_pool()
+        conn = pool.getconn()
+        try:
             row = conn.execute(
                 """
                 SELECT 1 AS ok FROM telegram.bindings
@@ -808,7 +808,19 @@ class TelegramRepository:
                  _uuid(item.workspace_id, "workspaceId"),
                  int(item.binding_epoch)),
             ).fetchone()
-            yield row is not None
+            return conn, row is not None
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                pool.putconn(conn)
+            raise
+
+    def release_delivery_guard(self, conn: Any) -> None:
+        try:
+            conn.rollback()
+        finally:
+            get_pool().putconn(conn)
 
     def delivery_is_current(self, item: OutboxItem) -> bool:
         with get_pool().connection() as conn:
