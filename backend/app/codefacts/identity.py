@@ -24,6 +24,10 @@ DEFAULT_WORKSPACE_ID = str(uuid.uuid5(NS_URL, DEFAULT_WORKSPACE_SEED))
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
 
 
+class WorkspaceConfigError(RuntimeError):
+    """CG_WORKSPACE_ID/RUNTIME_WORKSPACE_ID конфликтуют или заданы неверно."""
+
+
 def data_root() -> Path:
     """Корень локальных данных. Позволяет уводить smoke-прогоны во временную папку."""
     return Path(os.getenv("CG_DATA_DIR", str(DEFAULT_DATA_ROOT))).resolve()
@@ -37,14 +41,51 @@ def _is_uuid(value: str) -> bool:
         return False
 
 
-def workspace_id(seed: str | None = None) -> str:
-    """UUID workspace. `CG_WORKSPACE_ID` может быть UUID или произвольным seed."""
-    raw = (seed or os.getenv("CG_WORKSPACE_ID") or os.getenv("RUNTIME_WORKSPACE_ID") or "").strip()
-    if not raw:
-        return DEFAULT_WORKSPACE_ID
+def _cg_workspace(raw: str) -> str:
+    """CG_WORKSPACE_ID: UUID as-is, otherwise a stable uuid5 seed."""
     if _is_uuid(raw):
         return str(uuid.UUID(raw))
     return str(uuid.uuid5(NS_URL, f"cg-workspace:{raw}"))
+
+
+def _runtime_workspace(raw: str) -> str:
+    """RUNTIME_WORKSPACE_ID is the storage contract and must already be a UUID."""
+    if not _is_uuid(raw):
+        raise WorkspaceConfigError(
+            "RUNTIME_WORKSPACE_ID должен быть UUID; seed допустим только в CG_WORKSPACE_ID"
+        )
+    return str(uuid.UUID(raw))
+
+
+def workspace_id(seed: str | None = None) -> str:
+    """One workspace UUID for codefacts and runtime storage.
+
+    Compatibility: CG_WORKSPACE_ID accepts a UUID or a seed (uuid5), while
+    RUNTIME_WORKSPACE_ID accepts only a UUID. If both names are set, they must
+    resolve to the same UUID; a silent split would put maps and runtime rows in
+    different workspaces, so startup fails instead.
+    """
+    if seed is not None:
+        raw = seed.strip()
+        if not raw:
+            return DEFAULT_WORKSPACE_ID
+        return _cg_workspace(raw)
+    cg = os.getenv("CG_WORKSPACE_ID", "").strip()
+    runtime = os.getenv("RUNTIME_WORKSPACE_ID", "").strip()
+    if cg and runtime:
+        cg_id = _cg_workspace(cg)
+        runtime_id = _runtime_workspace(runtime)
+        if cg_id != runtime_id:
+            raise WorkspaceConfigError(
+                "CG_WORKSPACE_ID и RUNTIME_WORKSPACE_ID указывают разные workspace UUID; "
+                "задайте один источник или одинаковое значение"
+            )
+        return runtime_id
+    if cg:
+        return _cg_workspace(cg)
+    if runtime:
+        return _runtime_workspace(runtime)
+    return DEFAULT_WORKSPACE_ID
 
 
 def run_uuid(internal_run_id: str, workspace: str | None = None) -> str:

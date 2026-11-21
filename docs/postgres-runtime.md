@@ -8,11 +8,18 @@
 | Переменная | Обязательна | Смысл |
 |---|---|---|
 | `DATABASE_URL` | да | `postgresql://user:password@host:5432/db` |
-| `RUNTIME_WORKSPACE_ID` | нет | UUID workspace; по умолчанию `93486ede-5bf9-58ff-87fe-062e7b47d748` (`uuid5(NAMESPACE_URL, "41l1-n3dra/default-workspace")`) |
+| `CG_WORKSPACE_ID` | нет | UUID или seed (`uuid5(NAMESPACE_URL, "cg-workspace:<seed>")`); раньше использовался слоем codefacts |
+| `RUNTIME_WORKSPACE_ID` | нет | только UUID, совместимость storage-контракта |
 
 API пока не принимает workspace в запросах: процесс работает в одном workspace,
-и чтение по id из чужого workspace возвращает `None`, а не чужие данные.
-Секреты — только в локальном окружении, не в репозитории.
+и чтение по id из чужого workspace возвращает `None`/404, а не чужие данные.
+Оба имени переменных читаются одним resolver-ом в
+`backend/app/codefacts/identity.py`; по умолчанию оба дают
+`93486ede-5bf9-58ff-87fe-062e7b47d748`
+(`uuid5(NAMESPACE_URL, "41l1-n3dra/default-workspace")`). Если `CG_WORKSPACE_ID` и
+`RUNTIME_WORKSPACE_ID` заданы и разрешаются в разные UUID, старт падает с
+понятной ошибкой вместо silent split; задайте один источник или одинаковое
+значение. Секреты — только в локальном окружении, не в репозитории.
 
 ## Что делает старт
 
@@ -22,8 +29,10 @@ API пока не принимает workspace в запросах: процес
    `db/optional/003_exact_vector.up.sql` через тот же ledger и проверяет
    `pg_available_extensions`. Без флага optional не применяется; повторный старт
    SQL не повторяет. Registry остаётся `pending`, fake vectors не создаются.
-3. Заводит identity-строку workspace в `data_contract.workspaces`
-   (`runtime:<uuid>`), если её нет. Других записей в C-схему runtime не делает.
+3. Под `pg_advisory_xact_lock` заводит identity-строку workspace в
+   `data_contract.workspaces` (`runtime:<uuid>`), если её нет, и создаёт/обновляет
+   runtime DDL. Lock сериализует параллельные старты на пустой БД; других записей
+   в C-схему runtime не делает.
 4. Проверяет `runtime.schema_meta` и приводит runtime schema к версии 3:
    старая схема без workspace-колонок обновляется с сохранением строк,
    версия 2 дополняется immutability-триггерами.

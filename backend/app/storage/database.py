@@ -16,6 +16,7 @@ finding/node_run/report/event — ещё и к run.
 """
 
 import atexit
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from backend.app.codefacts.identity import WorkspaceConfigError, workspace_id as identity_workspace_id
 from backend.app.storage.migrate import ensure_contract_schema, ensure_optional_schema
 
 logger = logging.getLogger("RuntimeSchema")
@@ -34,7 +36,9 @@ RUNTIME_SCHEMA_PATH = Path(__file__).with_name("runtime_schema.sql")
 RUNTIME_GUARDS_PATH = Path(__file__).with_name("runtime_guards.sql")
 RUNTIME_SCHEMA_VERSION = 3
 LEGACY_RUNTIME_SCHEMA = "runtime_legacy_v1"
-DEFAULT_WORKSPACE_ID = uuid.uuid5(uuid.NAMESPACE_URL, "41l1-n3dra/default-workspace")
+RUNTIME_DDL_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"41l1-n3dra/runtime-ddl").digest()[:8], "big", signed=True
+)
 
 _driver: Optional[SimpleNamespace] = None
 _pool: Any = None
@@ -71,15 +75,12 @@ def _dsn() -> str:
 
 
 def _workspace_id() -> uuid.UUID:
-    raw = os.environ.get("RUNTIME_WORKSPACE_ID", "").strip()
-    if not raw:
-        return DEFAULT_WORKSPACE_ID
     try:
-        return uuid.UUID(raw)
-    except ValueError as exc:
-        raise DatabaseUnavailable(
-            f"RUNTIME_WORKSPACE_ID должен быть UUID, получено: {raw!r}"
-        ) from exc
+        return uuid.UUID(identity_workspace_id())
+    except WorkspaceConfigError as exc:
+        raise DatabaseUnavailable(str(exc)) from exc
+    except ValueError as exc:  # pragma: no cover - identity returns a valid UUID
+        raise DatabaseUnavailable("workspace UUID не разобран") from exc
 
 
 def _load_driver() -> SimpleNamespace:
@@ -252,6 +253,8 @@ def init_db(workspace_id: uuid.UUID) -> None:
     ensure_contract_schema(_dsn())
     ensure_optional_schema(_dsn())
     with pool.connection() as conn:
+        # Serialize runtime workspace row + DDL for parallel startups on an empty DB.
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (RUNTIME_DDL_LOCK_KEY,))
         # Идентичность workspace живёт в C-схеме; runtime пишет только эту строку.
         conn.execute(
             "INSERT INTO data_contract.workspaces (workspace_id, name) VALUES (%s, %s) "

@@ -391,11 +391,15 @@ def get_run(run_id: str):
 
 @api_router.get("/runs/{run_id}/nodes")
 def get_run_nodes(run_id: str):
+    if not db_repo.get_run(run_id):
+        raise HTTPException(status_code=404, detail="Запуск не найден")
     return _strip_private_paths(db_repo.get_node_runs(run_id))
 
 
 @api_router.get("/runs/{run_id}/findings")
 def get_run_findings(run_id: str):
+    if not db_repo.get_run(run_id):
+        raise HTTPException(status_code=404, detail="Запуск не найден")
     return _strip_private_paths(db_repo.get_findings(run_id))
 
 
