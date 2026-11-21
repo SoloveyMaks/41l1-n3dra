@@ -69,11 +69,18 @@ map-worker. Backend в этом worktree не менялся.
 - Админ 1440 и 390: неверный админ-код → ошибка; верный → обзор с реальными
   счётчиками (проекты/проверки из `/admin/overview`, модель
   `deepseek-v4.1-flash-1017`, vector `disabled`), конструктор, расписание pause/resume.
-- Локальный backend — latest dev 385ee (role API 4012fb5 + migration 006)
+- Локальный backend — latest dev 9be2d3b (role API 4012fb5 + migration 006 + policy 9083f04)
   на 18082; migration ledger 5 записей. Публичный образ 9862e19 ещё без
   role API, после merge/rebuild проверить admin на публичном HTTPS.
 - Не проверено в этом worktree: публичный admin login до пересборки backend,
   полный CRUD проектов/пользователей (его и нет в контракте).
+
+## Скриншоты и коммиты
+
+- `artifacts/ui-user-check-2026-11-21.png` — user, 1440.
+- `artifacts/ui-admin-overview-2026-11-21.png` — admin overview.
+- `artifacts/ui-admin-schedule-2026-11-21.png` — admin schedule.
+- UI commits: `c09f887`, `1587294`; merge latest dev: `c96e606`, `a9c7495`.
 
 ## Ограничения
 
