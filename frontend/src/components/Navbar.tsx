@@ -20,24 +20,41 @@ interface NavbarProps {
   onSelectRun: (runId: string) => void;
   onRefreshRuns: () => void;
   onLogout: () => void;
+  isAdmin?: boolean;
 }
 
 const TAB_ITEMS: Array<{ id: AppTab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'editor', label: 'Редактор', icon: Layers },
-  { id: 'live', label: 'Живое выполнение', icon: Play },
+  { id: 'live', label: 'Ход проверки', icon: Play },
   { id: 'findings', label: 'Проблемы', icon: Bug },
-  { id: 'map', label: 'Карта безопасности', icon: Network },
+  { id: 'map', label: 'Карта доступа', icon: Network },
   { id: 'report', label: 'Отчёт', icon: FileText },
   { id: 'comparison', label: 'Сравнение', icon: GitCompare },
   { id: 'schedule', label: 'Расписание', icon: Clock },
 ];
+
+const STATUS_LABEL: Record<RunSummary['execution_status'], string> = {
+  queued: 'В очереди',
+  running: 'Выполняется',
+  succeeded: 'Завершена',
+  failed: 'Ошибка',
+  interrupted: 'Остановлена',
+  cancelled: 'Отменена',
+};
+
+const VERDICT_LABEL: Record<RunSummary['security_verdict'], string> = {
+  pending: 'Ожидает',
+  pass: 'Нет блокирующих',
+  fail: 'Есть проблемы',
+  inconclusive: 'Неполная',
+};
 
 const shortRun = (run: RunSummary) => {
   const when = new Date(run.created_at);
   const stamp = Number.isNaN(when.getTime())
     ? '—'
     : `${when.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })} ${when.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
-  return `${run.id.slice(0, 8)} · ${run.execution_status} · ${run.security_verdict} · ${stamp}`;
+  return `${STATUS_LABEL[run.execution_status] || run.execution_status} · ${VERDICT_LABEL[run.security_verdict] || run.security_verdict} · ${stamp}`;
 };
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -55,7 +72,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectRun,
   onRefreshRuns,
   onLogout,
+  isAdmin = true,
 }) => {
+  const visibleTabs = TAB_ITEMS.filter((item) => isAdmin || item.id !== 'schedule');
   return (
     <header className="min-h-14 bg-slate-900 border-b border-slate-800 px-3 sm:px-4 py-2 flex flex-wrap xl:flex-nowrap items-center gap-2 xl:gap-3 z-20 select-none">
       <div className="flex items-center gap-2.5 min-w-0">
@@ -78,7 +97,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
 
       <nav className="order-3 xl:order-none w-full xl:w-auto flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800 overflow-x-auto shrink-0">
-        {TAB_ITEMS.map((item) => {
+        {visibleTabs.map((item) => {
           const Icon = item.icon;
           return (
             <button
@@ -120,7 +139,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       <div className="order-2 xl:order-none ml-auto flex items-center gap-1.5 sm:gap-2 min-w-0">
         <div className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/60 px-1.5 py-1 min-w-0">
-          <span className="hidden 2xl:inline text-[10px] text-slate-500 whitespace-nowrap">Запуск</span>
+          <span className="hidden 2xl:inline text-[10px] text-slate-500 whitespace-nowrap">История</span>
           <select
             aria-label="История запусков"
             value={currentRunId || ''}
@@ -146,22 +165,24 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         </div>
 
-        <button
-          onClick={onOpenAiTest}
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-fuchsia-950/60 hover:bg-fuchsia-900 border border-fuchsia-800/80 text-fuchsia-300 text-xs font-medium transition cursor-pointer"
-          title="Синтетический тест валидатора AI для жюри"
-        >
-          <Sparkles size={13} />
-          <span className="hidden lg:inline">Тест AI</span>
-        </button>
+        {isAdmin && (
+          <button
+            onClick={onOpenAiTest}
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-fuchsia-950/60 hover:bg-fuchsia-900 border border-fuchsia-800/80 text-fuchsia-300 text-xs font-medium transition cursor-pointer"
+            title="Синтетический тест валидатора AI для жюри"
+          >
+            <Sparkles size={13} />
+            <span className="hidden lg:inline">Тест AI</span>
+          </button>
+        )}
 
         <button
           onClick={onOpenUpload}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
-          title="Загрузить ZIP проекта"
+          title="ZIP или публичный репозиторий"
         >
           <Upload size={13} />
-          <span className="hidden sm:inline">Загрузить ZIP</span>
+          <span className="hidden sm:inline">ZIP или репозиторий</span>
         </button>
 
         <button
@@ -174,7 +195,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           }`}
         >
           <Play size={13} fill="currentColor" />
-          <span>{isRunning ? 'Выполняется...' : 'Запустить'}</span>
+          <span>{isRunning ? 'Выполняется…' : 'Запустить проверку'}</span>
         </button>
 
         <button
