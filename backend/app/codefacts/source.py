@@ -31,8 +31,9 @@ _PEM_RE = re.compile(
     re.DOTALL,
 )
 _SECRET_ASSIGN_RE = re.compile(
-    r"(?i)(?P<key>\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|"
-    r"private[_-]?key|access[_-]?key)\b\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\s\"',;]+)"
+    r"(?i)(?P<key>\b[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|"
+    r"private[_-]?key|access[_-]?key)[\w.-]*(?:[\"'])?\s*(?::\s*[\w.<>?]+\s*)?[:=]\s*)"
+    r"(?P<quote>[\"']?)(?P<value>[^\s\"',;]+)"
 )
 _ENV_DEFAULT_RE = re.compile(
     r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*):(?P<value>[^}]*)\}"
@@ -68,6 +69,11 @@ def mask_text(text: str) -> str:
         return ""
     text = _PEM_RE.sub("[REDACTED PRIVATE KEY]", text)
     text = mask_uri_credentials(text)
+    text = re.sub(
+        r'''(?i)(\b[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[\w.-]*(?:["'])?\s*(?::\s*[\w.<>?]+\s*)?[:=]\s*)(["'])([^\r\n]*?)\2''',
+        lambda m: f"{m.group(1)}{m.group(2)}{mask_token(m.group(3))}{m.group(2)}",
+        text,
+    )
     text = _SECRET_ASSIGN_RE.sub(
         lambda m: f"{m.group('key')}{m.group('quote')}{mask_token(m.group('value'))}",
         text,
