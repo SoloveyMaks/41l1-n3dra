@@ -243,6 +243,17 @@ complete. Новые публикации сразу пишут обе копи�
 `canonicalHash` (это hash jsonb-копии). UI/validator должны валидировать только
 форму hash и брать значение из storage, а не recompute из coverage.
 
+Не путать три независимых hash:
+
+- `provenance.bundleHash` — SQL `analysis_bundles.bundle_hash` (published facts;
+  storage authority).
+- `canonicalHash` / `envelopeHash` — jsonb-hash canonical/source envelope.
+- `SecurityMapDto.bundleHash` — внутренний hash backend codefacts:
+  `sha256(canonical_json(map_dto без поля bundleHash, sort_keys=True))`. Storage
+  его не производит и не подменяет SQL hash. Если API заменил coverage на
+  canonical после построения map, внутренний hash нужно пересчитать этим
+  recipe, иначе map вернёт старый hash.
+
 ## Секреты в ошибках
 
 Публичный отказ подключения содержит только тип причины
