@@ -124,6 +124,60 @@ export interface NodeDefinition {
   default_config: Record<string, any>;
 }
 
+export type ComparisonStatus =
+  | 'persistent' | 'introduced' | 'changed' | 'resolved'
+  | 'inconclusive' | 'file_deleted';
+
+export interface ComparisonItem {
+  id: string;
+  baselineFindingId: string | null;
+  currentFindingId: string | null;
+  status: ComparisonStatus;
+  matchingBasis: 'unique_anchor' | 'ambiguous' | 'none';
+  reason: string;
+}
+
+export interface DeletedFile {
+  path: string;
+  baselineSourceHash: string;
+  reason: string;
+}
+
+export type SqlPatternStatus =
+  | 'persistent' | 'changed' | 'pattern_disappeared'
+  | 'inconclusive' | 'file_deleted';
+
+export interface SqlPatternResult {
+  scope?: string;
+  status?: SqlPatternStatus;
+  reason?: string;
+  ruleId?: string;
+  path?: string;
+  baselineRunId?: string;
+  currentRunId?: string;
+  [key: string]: any;
+}
+
+export interface ComparisonDto {
+  workspaceId: string;
+  id: string;
+  baselineRunId: string;
+  baselineSnapshotId: string;
+  currentRunId: string;
+  currentSnapshotId: string;
+  comparable: boolean;
+  reasons: string[];
+  items: ComparisonItem[];
+  deletedFiles: DeletedFile[];
+}
+
+export interface SessionState {
+  authenticated: boolean;
+  authRequired: boolean;
+  workspaceId: string;
+  expiresInSec: number;
+}
+
 export interface ArtifactManifest {
   id: string;
   filename: string;
@@ -187,4 +241,4 @@ export interface ReportData {
   created_at: string;
 }
 
-export type AppTab = 'editor' | 'live' | 'findings' | 'map' | 'report' | 'schedule';
+export type AppTab = 'editor' | 'live' | 'findings' | 'map' | 'report' | 'comparison' | 'schedule';

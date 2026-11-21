@@ -1,5 +1,5 @@
 from collections import defaultdict, deque
-from typing import Dict, List, Set
+from typing import List
 
 from backend.app.contracts.node_registry import NODE_REGISTRY
 from backend.app.contracts.schemas import (
@@ -45,6 +45,28 @@ class WorkflowValidator:
             issues.append(WorkflowValidationIssue(
                 level="error",
                 message="В сценарии отсутствует нода запуска (Manual Trigger или Schedule Trigger)"
+            ))
+
+        scan_kinds = {NodeKind.SECRET_SCAN, NodeKind.SCA_SCAN, NodeKind.KOTLIN_SAST}
+        scan_engines = {}
+        for node in draft.nodes:
+            if node.kind not in scan_kinds:
+                continue
+            engine = str((node.config or {}).get("engine") or "backend")
+            if engine not in {"backend", "team_b"}:
+                issues.append(WorkflowValidationIssue(
+                    level="error", nodeId=node.id,
+                    message=f"Неизвестный engine '{engine}': допустимы backend и team_b",
+                ))
+            scan_engines[node.id] = engine
+        if len(set(scan_engines.values())) > 1:
+            issues.append(WorkflowValidationIssue(
+                level="error",
+                message=(
+                    "Один run не может смешивать engine сканеров: "
+                    + ", ".join(f"{node_id}={engine}" for node_id, engine in sorted(scan_engines.items()))
+                    + ". Выберите один engine для всех scan nodes."
+                ),
             ))
 
         # 2. Check edges: source and target existence, port existence and types

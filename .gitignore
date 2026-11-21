@@ -23,7 +23,7 @@ data/
 secrets/
 tools_local/
 research/
-artifacts/
+/artifacts/
 
 # OS files
 .DS_Store

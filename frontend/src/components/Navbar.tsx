@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   ShieldCheck, Play, Upload, Clock, FileText, Bug,
-  Sparkles, CheckCircle2, AlertTriangle, Layers, Network
+  Sparkles, CheckCircle2, AlertTriangle, Layers, Network, GitCompare
 } from 'lucide-react';
 import { AppTab, SecurityVerdict } from '../types';
 
@@ -129,6 +129,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               {latestVerdict}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab('comparison')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+            activeTab === 'comparison'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <GitCompare size={14} />
+          <span>Сравнение</span>
         </button>
 
         <button

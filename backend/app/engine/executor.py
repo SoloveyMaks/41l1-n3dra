@@ -1,25 +1,36 @@
 import asyncio
-import json
+import logging
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from backend.app.ai.service import AiService
 from backend.app.analyzers.sast_analyzer import SastAnalyzer
 from backend.app.analyzers.sca_analyzer import ScaAnalyzer
 from backend.app.analyzers.secret_analyzer import SecretAnalyzer
-from backend.app.contracts.node_registry import NODE_REGISTRY
 from backend.app.contracts.schemas import (
     Coverage, DeliveryResult, Diagnostic, ExecutionStatus, ExplainResult,
     Finding, FindingsBundle, NodeKind, NodeRunStatus, PolicyResult,
-    ScanResult, SecurityPassport, SecurityVerdict, Severity, WorkflowDraft, WorkflowNode
+    ScanResult, SecurityVerdict, Severity, WorkflowDraft, WorkflowNode
 )
+from backend.app.codefacts.extractor import RULE_DEFINITIONS, extract_facts
+from backend.app.codefacts.identity import run_uuid, workspace_id
+from backend.app.codefacts.map_builder import build_run_map, ensure_artifact_meta
+from backend.app.codefacts.publish import publish_run_artifact
+from backend.app.codefacts.source import load_snapshot_sources
+from backend.app.codefacts.store import CodeFactsStore
+from backend.app.engine.notify_policy import validate_webhook_url
 from backend.app.engine.sse import SSEBroker
 from backend.app.engine.validator import WorkflowValidator
+from backend.app.integrations.team_b import TeamBAdapter, persist_team_b_run
 from backend.app.notifications.webhook import WebhookNotifier
 from backend.app.reports.builder import ReportBuilder
 from backend.app.storage.database import DatabaseRepository
+
+
+logger = logging.getLogger("WorkflowExecutor")
 
 
 class ConditionEvaluationError(Exception):
@@ -34,10 +45,18 @@ class WorkflowExecutor:
         self.ai_service = AiService()
         self.report_builder = ReportBuilder()
         self.notifier = WebhookNotifier()
+        self.team_b = TeamBAdapter()
 
     async def execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
-                          trigger_type: str = "manual") -> None:
+                          trigger_type: str = "manual", workflow_id: Optional[str] = None,
+                          revision_id: Optional[str] = None) -> None:
         start_time_iso = datetime.now(timezone.utc).isoformat()
+        run_row = self.db.get_run(run_id) or {}
+        workflow_id = workflow_id or str(run_row.get("workflow_id") or "workflow-unknown")
+        revision_id = revision_id or str(run_row.get("revision_id") or "revision-unknown")
+        workflow = self.db.get_workflow(workflow_id) or {}
+        workflow_name = str(workflow.get("name") or "Security Scan")
+        engine = self._engine_for_draft(draft)
         self.db.update_run_status(run_id, execution_status="running", started_at=start_time_iso)
         await self.sse.emit_event(run_id, "run_status", {"status": "running", "trigger": trigger_type})
 
@@ -72,7 +91,6 @@ class WorkflowExecutor:
         findings_bundle: Optional[FindingsBundle] = None
         policy_result: Optional[PolicyResult] = None
         explain_result: Optional[ExplainResult] = None
-        security_passport: Optional[SecurityPassport] = None
 
         # Topological execution loop
         while True:
@@ -144,7 +162,8 @@ class WorkflowExecutor:
             try:
                 outputs, branch_decision = await self._run_node_logic(
                     run_id, curr_node, node_inputs, artifact_id, trigger_type,
-                    findings_bundle, policy_result, explain_result
+                    findings_bundle, policy_result, explain_result,
+                    workflow_id, revision_id, workflow_name, engine,
                 )
 
                 duration_ms = (time.time() - node_start_time) * 1000
@@ -158,9 +177,6 @@ class WorkflowExecutor:
                     policy_result = outputs["policy_result"]
                 if "explain_result" in outputs:
                     explain_result = outputs["explain_result"]
-                if "passport" in outputs:
-                    security_passport = outputs["passport"]
-
                 # Handle outgoing edges
                 for out_e in outgoing_edges[ready_node_id]:
                     if curr_node.kind == NodeKind.CONDITION:
@@ -225,9 +241,19 @@ class WorkflowExecutor:
                     edge_active_states[out_e.id] = False
 
         # Finalize run status and verdict
-        final_verdict = policy_result.verdict if policy_result else SecurityVerdict.INCONCLUSIVE
-        has_failed_nodes = any(s == NodeRunStatus.FAILED for s in node_statuses.values())
-        final_exec_status = ExecutionStatus.FAILED if has_failed_nodes and not findings_bundle else ExecutionStatus.SUCCEEDED
+        if findings_bundle is None:
+            final_verdict = SecurityVerdict.INCONCLUSIVE
+        else:
+            final_verdict = policy_result.verdict if policy_result else SecurityVerdict.INCONCLUSIVE
+        analysis_failed = any(
+            status == NodeRunStatus.FAILED and node_map[node_id].kind != NodeKind.NOTIFY
+            for node_id, status in node_statuses.items()
+        )
+        final_exec_status = (
+            ExecutionStatus.FAILED
+            if findings_bundle is None or analysis_failed
+            else ExecutionStatus.SUCCEEDED
+        )
 
         counts = {
             "total": len(findings_bundle.findings) if findings_bundle else 0,
@@ -239,6 +265,16 @@ class WorkflowExecutor:
         }
 
         finished_iso = datetime.now(timezone.utc).isoformat()
+        # Publish before exposing final status: once the UI sees "succeeded/failed",
+        # the published canonical record (or an honest publication=false) already exists.
+        try:
+            await asyncio.to_thread(
+                self._publish_canonical, run_id, workflow_id, revision_id,
+                final_exec_status.value, final_verdict.value,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Canonical publish failed for %s: %s", run_id, exc)
+
         self.db.update_run_status(
             run_id,
             execution_status=final_exec_status.value,
@@ -252,15 +288,17 @@ class WorkflowExecutor:
             "verdict": final_verdict.value,
             "findings_summary": counts
         })
+        self.team_b.release(run_id)
 
     async def _run_node_logic(self, run_id: str, node: WorkflowNode, inputs: Dict[str, Any],
                              default_artifact_id: Optional[str], trigger_type: str,
                              current_bundle: Optional[FindingsBundle],
                              current_policy: Optional[PolicyResult],
-                             current_explain: Optional[ExplainResult]) -> Tuple[Dict[str, Any], Optional[bool]]:
+                             current_explain: Optional[ExplainResult],
+                             workflow_id: str, revision_id: str,
+                             workflow_name: str, engine: str) -> Tuple[Dict[str, Any], Optional[bool]]:
         kind = node.kind
         config = node.config or {}
-        branch_decision = None
 
         if kind in (NodeKind.MANUAL_TRIGGER, NodeKind.SCHEDULE_TRIGGER):
             return {
@@ -278,56 +316,58 @@ class WorkflowExecutor:
             artifact = self.db.get_artifact(art_id)
             if not artifact:
                 raise ValueError(f"Project Input: Артефакт '{art_id}' не найден в хранилище")
+            # Наружу уходит только публичный id/имя. extracted_path остаётся на сервере.
             return {
                 "artifact": {
                     "artifactId": art_id,
-                    "extractedPath": artifact["extracted_path"],
-                    "filename": artifact["filename"]
+                    "filename": artifact["filename"],
                 }
             }, None
 
-        elif kind == NodeKind.SECRET_SCAN:
+        elif kind in (NodeKind.SECRET_SCAN, NodeKind.SCA_SCAN, NodeKind.KOTLIN_SAST):
             art = inputs.get("artifact")
-            if not art or "extractedPath" not in art:
-                raise ValueError("Secret Scan: Отсутствует входной артефакт проекта")
+            if not art or not art.get("artifactId"):
+                raise ValueError("Сканер: отсутствует входной артефакт проекта")
+            artifact_path = self._resolve_artifact_path(art["artifactId"])
+            analyzer_cls = {
+                NodeKind.SECRET_SCAN: SecretAnalyzer,
+                NodeKind.SCA_SCAN: ScaAnalyzer,
+                NodeKind.KOTLIN_SAST: SastAnalyzer,
+            }[kind]
+            analyzer_name = {
+                NodeKind.SECRET_SCAN: "secret",
+                NodeKind.SCA_SCAN: "sca",
+                NodeKind.KOTLIN_SAST: "sast",
+            }[kind]
             try:
-                scan_res = SecretAnalyzer().analyze(art["extractedPath"])
+                if engine == "team_b":
+                    category = {
+                        NodeKind.SECRET_SCAN: "SECRET",
+                        NodeKind.SCA_SCAN: "SCA",
+                        NodeKind.KOTLIN_SAST: "SAST",
+                    }[kind]
+                    artifact_row = self.db.get_artifact(art["artifactId"])
+                    scan_res = await asyncio.to_thread(
+                        self.team_b.scan_category,
+                        run_id=run_id,
+                        artifact_id=art["artifactId"],
+                        artifact_row=artifact_row,
+                        revision_id=revision_id,
+                        category=category,
+                    )
+                else:
+                    # Сканеры CPU/IO-bound; не держим event loop.
+                    scan_res = await asyncio.to_thread(lambda: analyzer_cls().analyze(artifact_path))
             except Exception as e:
                 scan_res = ScanResult(
-                    analyzer="secret",
+                    analyzer=analyzer_name,
                     findings=[],
-                    diagnostics=[Diagnostic(level="error", message=f"Сбой анализатора секретов: {str(e)}", source="SecretAnalyzer")],
-                    duration_ms=0.0
-                )
-            return {"scan_result": scan_res}, None
-
-        elif kind == NodeKind.SCA_SCAN:
-            art = inputs.get("artifact")
-            if not art or "extractedPath" not in art:
-                raise ValueError("SCA Scan: Отсутствует входной артефакт проекта")
-            try:
-                scan_res = ScaAnalyzer().analyze(art["extractedPath"])
-            except Exception as e:
-                scan_res = ScanResult(
-                    analyzer="sca",
-                    findings=[],
-                    diagnostics=[Diagnostic(level="error", message=f"Сбой анализатора зависимостей: {str(e)}", source="ScaAnalyzer")],
-                    duration_ms=0.0
-                )
-            return {"scan_result": scan_res}, None
-
-        elif kind == NodeKind.KOTLIN_SAST:
-            art = inputs.get("artifact")
-            if not art or "extractedPath" not in art:
-                raise ValueError("Kotlin SAST: Отсутствует входной артефакт проекта")
-            try:
-                scan_res = SastAnalyzer().analyze(art["extractedPath"])
-            except Exception as e:
-                scan_res = ScanResult(
-                    analyzer="sast",
-                    findings=[],
-                    diagnostics=[Diagnostic(level="error", message=f"Сбой статического анализатора SAST: {str(e)}", source="SastAnalyzer")],
-                    duration_ms=0.0
+                    diagnostics=[Diagnostic(
+                        level="error",
+                        message=f"Сбой анализатора {analyzer_name}: {str(e)}",
+                        source=analyzer_cls.__name__,
+                    )],
+                    duration_ms=0.0,
                 )
             return {"scan_result": scan_res}, None
 
@@ -364,17 +404,59 @@ class WorkflowExecutor:
                 total_parser_errors += sr.coverage.parser_errors
                 total_unresolved += sr.coverage.unresolved_dependencies
                 all_diagnostics.extend(sr.diagnostics)
+                if sr.coverage.files_scanned == 0:
+                    all_diagnostics.append(Diagnostic(
+                        level="warning",
+                        message=f"Анализатор {sr.analyzer} не просканировал ни одного файла",
+                        source=f"{sr.analyzer}/coverage",
+                        details={"coverage_gap": True, "analyzer": sr.analyzer},
+                    ))
 
                 for f in sr.findings:
                     if f.fingerprint not in seen_fingerprints:
                         seen_fingerprints.add(f.fingerprint)
                         all_findings.append(f)
 
+            run_row = self.db.get_run(run_id) or {}
+            artifact_id = default_artifact_id or run_row.get("artifact_id")
+            codefacts_facts = None
+            map_error = None
+            if artifact_id:
+                try:
+                    if engine == "team_b":
+                        all_findings, codefacts_facts, map_error = await asyncio.to_thread(
+                            self._integrate_team_b, run_id, artifact_id, all_findings,
+                        )
+                    else:
+                        all_findings, codefacts_facts, map_error = await asyncio.to_thread(
+                            self._integrate_codefacts, run_id, artifact_id, all_findings, scan_results,
+                        )
+                except Exception as exc:  # noqa: BLE001 - карта не должна скрывать находки
+                    logger.warning("Code facts integration failed for %s: %s", run_id, exc)
+                    map_error = str(exc)
+            if codefacts_facts is not None:
+                for diag in codefacts_facts.diagnostics:
+                    code = str(diag.get("code", "CF-DIAG"))
+                    level = "error" if code in {"CF-DECODE-ERROR", "CF-EDGE-WITHOUT-EVIDENCE"} else "warning"
+                    all_diagnostics.append(Diagnostic(
+                        level=level, message=str(diag.get("message", code)),
+                        source="codefacts", details={"code": code, "path": diag.get("path")},
+                    ))
+                all_rules.update(rule["id"] for rule in RULE_DEFINITIONS)
+                total_parser_errors += sum(
+                    1 for diag in codefacts_facts.diagnostics if diag.get("code") == "CF-DECODE-ERROR"
+                )
+            if map_error:
+                all_diagnostics.append(Diagnostic(
+                    level="error", message=f"Не удалось построить security map: {map_error}",
+                    source="codefacts", details={"code": "CF-MAP-UNAVAILABLE"},
+                ))
+
             agg_coverage = Coverage(
                 files_scanned=total_files,
                 files_skipped=total_skipped,
                 lines_of_code=total_loc,
-                rules_executed=list(all_rules),
+                rules_executed=sorted(all_rules),
                 parser_errors=total_parser_errors,
                 unresolved_dependencies=total_unresolved
             )
@@ -386,7 +468,7 @@ class WorkflowExecutor:
                 scan_durations=durations
             )
 
-            # Persist findings to database
+            # Persist findings to database (including codefacts findings).
             findings_dicts = [f.model_dump() for f in all_findings]
             self.db.save_findings(run_id, findings_dicts)
 
@@ -433,10 +515,29 @@ class WorkflowExecutor:
                 verdict = SecurityVerdict.FAIL
                 reasons.append(f"Превышен лимит среднего риска: {med_count} > {max_medium}")
 
+            coverage_gaps: List[str] = []
+            if bundle.coverage.files_scanned == 0:
+                coverage_gaps.append("ни один файл не просканирован")
+            if not bundle.coverage.rules_executed:
+                coverage_gaps.append("ни одно правило не выполнено")
+            missing_scanners = {"secret", "sca", "sast"} - set(bundle.scan_durations)
+            if missing_scanners:
+                coverage_gaps.append(f"не отработали сканеры: {', '.join(sorted(missing_scanners))}")
+            if bundle.coverage.parser_errors > 0:
+                coverage_gaps.append(f"{bundle.coverage.parser_errors} ошибок парсера")
+            if bundle.coverage.unresolved_dependencies > 0:
+                coverage_gaps.append(f"{bundle.coverage.unresolved_dependencies} неразрешенных зависимостей")
+            failed_diags = [d for d in bundle.diagnostics if d.level == "error"]
+            if failed_diags:
+                coverage_gaps.append(f"{len(failed_diags)} ошибок анализа/карты")
+            gap_diags = [d for d in bundle.diagnostics if d.details.get("coverage_gap")]
+            if gap_diags:
+                coverage_gaps.append(f"{len(gap_diags)} анализаторов без покрытия")
+
             if verdict != SecurityVerdict.FAIL:
-                if strict_cov and (bundle.coverage.parser_errors > 0 or bundle.coverage.unresolved_dependencies > 0):
+                if strict_cov and coverage_gaps:
                     verdict = SecurityVerdict.INCONCLUSIVE
-                    reasons.append(f"Неполное покрытие: {bundle.coverage.parser_errors} ошибок парсера, {bundle.coverage.unresolved_dependencies} неразрешенных зависимостей")
+                    reasons.append("Неполное покрытие: " + "; ".join(coverage_gaps))
                 elif not reasons:
                     reasons.append("Все проверки пройдены: критических находок нет")
 
@@ -517,8 +618,8 @@ class WorkflowExecutor:
             if not bundle:
                 raise ValueError("AI Explain: Отсутствуют находки для объяснения")
 
-            # Call AI Service with validation
-            exp_res = self.ai_service.explain_findings(bundle.findings)
+            # Call AI/fallback in a worker thread: провайдер может быть сетевым.
+            exp_res = await asyncio.to_thread(self.ai_service.explain_findings, bundle.findings)
             return {"explain_result": exp_res}, None
 
         elif kind == NodeKind.BUILD_REPORT:
@@ -548,10 +649,10 @@ class WorkflowExecutor:
 
             passport = self.report_builder.build_security_passport(bundle.coverage, pol, bundle.findings)
             readable_md = self.report_builder.build_readable_markdown(
-                run_id, "Security Scan", passport, pol, bundle.findings, exp
+                run_id, workflow_name, passport, pol, bundle.findings, exp
             )
             official_json = self.report_builder.build_official_json(
-                run_id, "wf_main", "rev_1", passport, pol, bundle.findings, exp
+                run_id, workflow_id, revision_id, passport, pol, bundle.findings, exp
             )
 
             # Save report to DB
@@ -576,34 +677,76 @@ class WorkflowExecutor:
 
         elif kind == NodeKind.NOTIFY:
             pol = current_policy
-            report_ref = inputs.get("report")
-            webhook_url = config.get("webhookUrl", "http://127.0.0.1:8000/api/webhook-test")
-            send_on_fail_only = config.get("sendOnFailOnly", False)
+            webhook_url = str(config.get("webhookUrl") or "")
+            send_on_fail_only = bool(config.get("sendOnFailOnly", False))
             secret_token = config.get("secretToken")
-
+            # Никакой автоматической отправки: только явный enabled=true + разрешённый URL.
+            enabled = config.get("enabled") is True
+            allow_local = config.get("allowLocal") is True
+            allow_external = config.get("allowExternal") is True
             verdict = pol.verdict if pol else SecurityVerdict.INCONCLUSIVE
-            if send_on_fail_only and verdict != SecurityVerdict.FAIL:
+
+            if not enabled:
                 del_res = DeliveryResult(
                     channel="webhook",
-                    status="succeeded",
-                    target=webhook_url,
-                    message="Отправка пропущена: настроена отправка только при SecurityVerdict=FAIL",
-                    timestamp=datetime.now(timezone.utc).isoformat()
+                    status="skipped",
+                    target="",
+                    message=(
+                        "Уведомление отключено: нужен явный config.enabled=true. "
+                        "Sample/дефолтный сценарий не отправляет наружу автоматически."
+                    ),
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                )
+            elif not webhook_url:
+                del_res = DeliveryResult(
+                    channel="webhook",
+                    status="failed",
+                    target="",
+                    message="config.enabled=true, но webhookUrl не задан",
+                    timestamp=datetime.now(timezone.utc).isoformat(),
                 )
             else:
-                summary_data = {
-                    "verdict": verdict.value,
-                    "critical": pol.critical_count if pol else 0,
-                    "high": pol.high_count if pol else 0,
-                    "findingsTotal": pol.findings_count if pol else 0
-                }
-                del_res = self.notifier.send(
-                    url=webhook_url,
-                    run_id=run_id,
-                    verdict=verdict,
-                    passport_summary=summary_data,
-                    secret_token=secret_token
+                decision = await asyncio.to_thread(
+                    validate_webhook_url,
+                    webhook_url,
+                    allow_local=allow_local,
+                    allow_external=allow_external,
                 )
+                if not decision.allowed:
+                    del_res = DeliveryResult(
+                        channel="webhook",
+                        status="failed",
+                        target="",
+                        message=f"Отправка запрещена политикой: {decision.reason}",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    )
+                elif send_on_fail_only and verdict != SecurityVerdict.FAIL:
+                    del_res = DeliveryResult(
+                        channel="webhook",
+                        status="skipped",
+                        target="",
+                        message="Отправка пропущена: настроена отправка только при SecurityVerdict=FAIL",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    )
+                else:
+                    summary_data = {
+                        "verdict": verdict.value,
+                        "critical": pol.critical_count if pol else 0,
+                        "high": pol.high_count if pol else 0,
+                        "findingsTotal": pol.findings_count if pol else 0,
+                    }
+                    del_res = await asyncio.to_thread(
+                        self.notifier.send,
+                        webhook_url,
+                        run_id,
+                        verdict,
+                        summary_data,
+                        secret_token,
+                    )
+
+            # URL query/fragment могут содержать токены; в UI/SSE их не отдаём.
+            if del_res.target:
+                del_res.target = del_res.target.split("?", 1)[0].split("#", 1)[0]
 
             # Save delivery to DB and emit SSE
             self.db.save_delivery(
@@ -613,7 +756,7 @@ class WorkflowExecutor:
                 status=del_res.status,
                 target=del_res.target,
                 status_code=del_res.status_code,
-                message=del_res.message
+                message=del_res.message,
             )
             await self.sse.emit_event(run_id, "delivery_status", del_res.model_dump())
 
@@ -621,6 +764,132 @@ class WorkflowExecutor:
 
         else:
             raise ValueError(f"Неизвестный тип ноды для исполнения: {kind}")
+
+    def _publish_canonical(self, run_id: str, workflow_id: str, revision_id: str,
+                          final_status: Optional[str] = None,
+                          final_verdict: Optional[str] = None) -> None:
+        workspace = workspace_id()
+        store = CodeFactsStore()
+        payload = store.load_run(workspace, run_uuid(run_id))
+        if not payload:
+            return
+        run = self.db.get_run(run_id) or {}
+        if final_status:
+            run = {**run, "execution_status": final_status}
+        if final_verdict:
+            run = {**run, "security_verdict": final_verdict}
+        artifact_id = str(run.get("artifact_id") or "")
+        artifact = self.db.get_artifact(artifact_id) if artifact_id else None
+        workflow = self.db.get_workflow(workflow_id) or {}
+        if not artifact:
+            payload["publication"] = {"published": False, "reason": "artifact row missing"}
+            store.save_run(workspace, run_uuid(run_id), payload)
+            return
+        meta = store.load_artifact_meta(workspace, artifact_id) or {}
+        if meta.get("expiresAt") and not artifact.get("expires_at"):
+            artifact = {**artifact, "expires_at": meta["expiresAt"]}
+        snapshot = store.load_snapshot(workspace, str(payload["identity"]["snapshotId"]))
+        if not snapshot:
+            payload["publication"] = {"published": False, "reason": "snapshot missing"}
+            store.save_run(workspace, run_uuid(run_id), payload)
+            return
+        result = publish_run_artifact(
+            workspace=workspace,
+            run_artifact=payload,
+            snapshot=snapshot,
+            artifact=artifact,
+            workflow=workflow,
+            run=run,
+            revision_id=revision_id,
+        )
+        payload["publication"] = result
+        store.save_run(workspace, run_uuid(run_id), payload)
+        if not result.get("published"):
+            logger.info("Immutable bundle not published for %s: %s", run_id, result.get("reason"))
+
+    def _resolve_artifact_path(self, artifact_id: str) -> str:
+        artifact = self.db.get_artifact(artifact_id)
+        if not artifact:
+            raise ValueError(f"Артефакт '{artifact_id}' не найден в хранилище")
+        path = artifact.get("extracted_path")
+        if not path or not Path(path).is_dir():
+            raise ValueError("Распакованный артефакт недоступен")
+        return str(path)
+
+    def _engine_for_draft(self, draft: WorkflowDraft) -> str:
+        engines = {
+            str((node.config or {}).get("engine") or "backend")
+            for node in draft.nodes
+            if node.kind in (NodeKind.SECRET_SCAN, NodeKind.SCA_SCAN, NodeKind.KOTLIN_SAST)
+        }
+        if len(engines) > 1:
+            raise ValueError("Смешанные engine сканеров запрещены: один run — один engine")
+        return next(iter(engines), "backend")
+
+    def _integrate_team_b(self, run_id: str, artifact_id: str,
+                          findings: List[Finding]) -> Tuple[List[Finding], Any, Optional[str]]:
+        artifact = self.db.get_artifact(artifact_id)
+        if not artifact:
+            return findings, None, "artifact missing"
+        workspace = workspace_id()
+        try:
+            persist_team_b_run(
+                run_id=run_id, artifact_id=artifact_id, workspace=workspace,
+                store=self.team_b.store, adapter=self.team_b,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Team B bundle persistence failed for %s: %s", run_id, exc)
+            return findings, None, str(exc)
+        return findings, None, None
+
+    def _integrate_codefacts(self, run_id: str, artifact_id: str,
+                             findings: List[Finding],
+                             scan_results: Optional[List[ScanResult]] = None) -> Tuple[List[Finding], Any, Optional[str]]:
+        """Строит CF-находки и immutable run-карту. Вызывается в отдельном потоке."""
+        run_row = self.db.get_run(run_id) or {}
+        artifact = self.db.get_artifact(artifact_id)
+        if not artifact:
+            return findings, None, "artifact missing"
+        artifact_path = artifact.get("extracted_path")
+        if not artifact_path or not Path(artifact_path).is_dir():
+            return findings, None, "artifact path unavailable"
+        workspace = workspace_id()
+        store = CodeFactsStore()
+        facts = None
+        merged = list(findings)
+        error: Optional[str] = None
+        try:
+            meta = ensure_artifact_meta(store, workspace, artifact)
+            snapshot = store.load_snapshot(workspace, str(meta.get("snapshotId")))
+            if not snapshot:
+                return findings, None, "snapshot missing"
+            sources, source_diags = load_snapshot_sources(Path(artifact_path), snapshot)
+            facts = extract_facts(sources, len(snapshot.get("files", [])))
+            for diag in source_diags:
+                facts.diagnostics.append(diag)
+            seen = {finding.fingerprint for finding in merged}
+            for finding in facts.findings:
+                if finding.fingerprint not in seen:
+                    seen.add(finding.fingerprint)
+                    merged.append(finding)
+            build_run_map(
+                workspace=workspace,
+                internal_run_id=run_id,
+                run_id=run_uuid(run_id),
+                workflow_revision_id=str(run_row.get("revision_id") or "unknown"),
+                artifact_row=artifact,
+                backend_findings=merged,
+                store=store,
+                meta=meta,
+                snapshot=snapshot,
+                sources=sources,
+                facts=facts,
+                scan_results=scan_results,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Security map build failed for %s: %s", run_id, exc)
+            error = str(exc)
+        return merged, facts, error
 
     def _record_node_run(self, run_id: str, node: WorkflowNode, status: NodeRunStatus,
                          duration_ms: float, error_msg: Optional[str],
