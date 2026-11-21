@@ -334,11 +334,14 @@ def init_db(workspace_id: uuid.UUID) -> None:
 
 
 class DatabaseRepository:
-    def __init__(self):
+    def __init__(self, initialize: bool = True):
         # init_db всегда на явном env workspace: аккаунты создают свои
         # workspace-строки при регистрации, а не через runtime-инициализацию.
+        # Read-only tools pass initialize=False so a dry-run cannot run DDL or
+        # insert a workspace row.
         self._default_workspace_id = uuid.UUID(configured_workspace_id())
-        init_db(self._default_workspace_id)
+        if initialize:
+            init_db(self._default_workspace_id)
 
     @property
     def workspace_id(self) -> uuid.UUID:
@@ -393,6 +396,92 @@ class DatabaseRepository:
                 (rev_id, ws, workflow_id),
             )
             return rev_id
+
+    def save_workflow_if_latest(
+        self,
+        workflow_id: str,
+        expected_revision_id: Optional[str],
+        name: str,
+        description: str,
+        draft: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create the next revision only if the active revision is unchanged.
+
+        `expected_revision_id` is read and compared under a row lock in the same
+        transaction that inserts the revision. On a conflict the current latest
+        revision and its draft are returned from the same transaction, so the
+        caller can re-evaluate without racing a second read.
+
+        Result: `revision_id` is the new revision on success, otherwise None.
+        `latest_revision_id` and `draft` describe the current winner on conflict.
+        `expected_revision_id=None` means "workflow must not exist yet" (or must
+        still have no active revision), which lets the explicit create path race
+        safely too.
+        """
+        ws = self.workspace_id
+        now = _now()
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT latest_revision_id FROM runtime.workflows "
+                "WHERE workspace_id = %s AND id = %s FOR UPDATE",
+                (ws, workflow_id),
+            ).fetchone()
+            if row is None:
+                if expected_revision_id is not None:
+                    return {"revision_id": None, "latest_revision_id": None, "draft": None}
+                conn.execute(
+                    """
+                    INSERT INTO runtime.workflows (
+                        workspace_id, id, name, description, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (ws, workflow_id, name, description, now, now),
+                )
+            elif row["latest_revision_id"] != expected_revision_id:
+                latest = row["latest_revision_id"]
+                current_draft = None
+                if latest:
+                    revision = conn.execute(
+                        "SELECT draft_json FROM runtime.workflow_revisions "
+                        "WHERE workspace_id = %s AND id = %s",
+                        (ws, latest),
+                    ).fetchone()
+                    if revision:
+                        current_draft = revision["draft_json"]
+                return {
+                    "revision_id": None,
+                    "latest_revision_id": latest,
+                    "draft": current_draft,
+                }
+
+            max_row = conn.execute(
+                "SELECT COALESCE(MAX(revision_num), 0) AS max_rev "
+                "FROM runtime.workflow_revisions WHERE workspace_id = %s AND workflow_id = %s",
+                (ws, workflow_id),
+            ).fetchone()
+            new_rev_num = int(max_row["max_rev"]) + 1
+            rev_id = f"rev_{workflow_id}_{new_rev_num}"
+            conn.execute(
+                """
+                INSERT INTO runtime.workflow_revisions (
+                    workspace_id, id, workflow_id, revision_num, draft_json, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (ws, rev_id, workflow_id, new_rev_num, _jsonb(draft), now),
+            )
+            conn.execute(
+                """
+                UPDATE runtime.workflows
+                SET name = %s, description = %s, updated_at = %s, latest_revision_id = %s
+                WHERE workspace_id = %s AND id = %s
+                """,
+                (name, description, now, rev_id, ws, workflow_id),
+            )
+            return {
+                "revision_id": rev_id,
+                "latest_revision_id": rev_id,
+                "draft": draft,
+            }
 
     def get_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
         ws = self.workspace_id

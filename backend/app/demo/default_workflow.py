@@ -1,8 +1,24 @@
+"""System default workflow: Secure PR Gate.
+
+The default is seeded only when a workspace has no workflows yet. Existing user
+workflows are never rewritten from here; the explicit, revision-preserving
+upgrade path lives in `backend.app.demo.default_workflow_upgrade`.
+
+`AI_SCAN` reads the same frozen artifact as deterministic scanners. It only
+receives bounded redacted source/config excerpts (never logs, `.env`, keys,
+test or generated paths) and returns advisory hypotheses that stay outside
+canonical findings, policy counts and the verdict.
+"""
+
 from backend.app.contracts.schemas import NodeKind, WorkflowDraft, WorkflowEdge, WorkflowNode
 
+SYSTEM_DEFAULT_WORKFLOW_ID = "wf_secure_pr_gate"
+AI_SCAN_NODE_ID = "node_ai_scan"
 
-def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
-    nodes = [
+
+def _base_nodes(artifact_id: str) -> list[WorkflowNode]:
+    """Deterministic part of the default; also the frozen pre-AI_SCAN baseline."""
+    return [
         WorkflowNode(
             id="node_start",
             kind=NodeKind.MANUAL_TRIGGER,
@@ -82,7 +98,9 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
         )
     ]
 
-    edges = [
+
+def _base_edges() -> list[WorkflowEdge]:
+    return [
         WorkflowEdge(id="e_start_proj", source="node_start", sourcePort="out", target="node_project", targetPort="trigger"),
         WorkflowEdge(id="e_proj_sec", source="node_project", sourcePort="artifact", target="node_secret", targetPort="artifact"),
         WorkflowEdge(id="e_proj_sca", source="node_project", sourcePort="artifact", target="node_sca", targetPort="artifact"),
@@ -98,10 +116,68 @@ def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
         WorkflowEdge(id="e_report_notify", source="node_report", sourcePort="report", target="node_notify", targetPort="report")
     ]
 
+
+def _ai_scan_node() -> WorkflowNode:
+    return WorkflowNode(
+        id=AI_SCAN_NODE_ID,
+        kind=NodeKind.AI_SCAN,
+        title="AI Vulnerability Scanner",
+        # Advisory side branch: the only outgoing edge goes to the report's
+        # dedicated AI input. It never reaches policy, canonical findings or
+        # the deterministic counts.
+        position={"x": 760, "y": 430},
+        config={
+            "profile": "balanced",
+            "maxFiles": 6,
+            "maxBytes": 24576,
+            "perFileBytes": 4096,
+            "maxObservations": 12,
+        },
+    )
+
+
+def _ai_scan_edges() -> list[WorkflowEdge]:
+    return [
+        WorkflowEdge(
+            id="e_proj_ai_scan", source="node_project", sourcePort="artifact",
+            target=AI_SCAN_NODE_ID, targetPort="artifact",
+        ),
+        WorkflowEdge(
+            id="e_merge_ai_scan", source="node_merge", sourcePort="findings_bundle",
+            target=AI_SCAN_NODE_ID, targetPort="findings_bundle",
+        ),
+        WorkflowEdge(
+            id="e_ai_scan_report", source=AI_SCAN_NODE_ID, sourcePort="ai_scan_result",
+            target="node_report", targetPort="ai_scan_result",
+        ),
+    ]
+
+
+def get_previous_system_default_draft(artifact_id: str = "") -> WorkflowDraft:
+    """Frozen pre-AI_SCAN default, used only to detect untouched system drafts.
+
+    Do not extend this baseline when the default changes again: capture the
+    then-current default instead, otherwise user edits stop being detectable.
+    """
     return WorkflowDraft(
         schemaVersion=1,
         name="Банковский аудит Kotlin/Spring Boot (Secure PR Gate)",
         description="Комплексный сквозной анализ: поиск секретов, проверка зависимостей SCA, taint-анализ SAST, AI-обоснование и опциональное уведомление (по умолчанию выключено)",
-        nodes=nodes,
-        edges=edges
+        nodes=_base_nodes(artifact_id),
+        edges=_base_edges(),
+    )
+
+
+def get_default_workflow_draft(artifact_id: str = "") -> WorkflowDraft:
+    return WorkflowDraft(
+        schemaVersion=1,
+        name="Банковский аудит Kotlin/Spring Boot (Secure PR Gate)",
+        description=(
+            "Комплексный сквозной анализ: поиск секретов, проверка зависимостей SCA, "
+            "taint-анализ SAST, отдельные ИИ-гипотезы по redacted-фрагментам "
+            "замороженного кода, AI-обоснование и опциональное уведомление "
+            "(по умолчанию выключено)"
+        ),
+        nodes=[*_base_nodes(artifact_id), _ai_scan_node()],
+        edges=[*_base_edges(), *_ai_scan_edges()],
     )

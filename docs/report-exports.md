@@ -175,12 +175,14 @@ report; deterministic findings may be empty and are still exported honestly.
 ## 6. Readable Markdown
 
 `ReportBuilder.build_readable_markdown` produces both the stored run report and
-`GET /report/export.md`; the export appends a separate «Гипотезы ИИ-сканера»
-section built from `ai_scan` observations. It emits natural Russian:
+`GET /report/export.md`. Both paths pass the saved `ai_scan` result, so the
+«Гипотезы ИИ-сканера (не подтверждены)» section with status/coverage is built
+once instead of appended by the export. It emits natural Russian:
 
 - title `Отчёт о проверке безопасности кода`, no icons or FAIL/PASS badges;
 - headings `Основные показатели`, `Что проверено`,
-  `Что осталось за пределами проверки`, `Почему такой итог`, `Находки`,
+  `Что осталось за пределами проверки`, `Почему такой итог`,
+  `Гипотезы ИИ-сканера (не подтверждены)`, `Находки`,
   `Пояснения к находкам`;
 - one summary block per run: severities, evidence statuses, files scanned and
   skipped, executed rules, parser errors and the single coverage label;

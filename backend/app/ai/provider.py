@@ -102,6 +102,23 @@ class ProviderConfig:
         return f"{parts.scheme}://{parts.netloc}" if parts.scheme else ""
 
 
+def effective_route(base_url: str) -> str:
+    """Normalized non-secret request route: no userinfo, query or fragment."""
+    try:
+        parts = urllib.parse.urlsplit(base_url or "")
+        if not parts.scheme or not parts.hostname:
+            return ""
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        return ""
+    path = parts.path.rstrip("/")
+    return f"{parts.scheme.lower()}://{parts.hostname.lower()}{port}{path}"
+
+
+def json_mode_enabled() -> bool:
+    return os.getenv("AI_JSON_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
 def _env_float(name: str, default: float, low: float, high: float) -> float:
     try:
         value = float(os.getenv(name, str(default)))
@@ -216,7 +233,7 @@ def complete_json(
             },
         ],
     }
-    if os.getenv("AI_JSON_MODE", "").strip().lower() in ("1", "true", "yes"):
+    if json_mode_enabled():
         request_body["response_format"] = {"type": "json_object"}
 
     body = json.dumps(request_body, ensure_ascii=False).encode("utf-8")

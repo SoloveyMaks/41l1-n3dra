@@ -35,6 +35,32 @@ def _safe_ai_item(item: Any) -> Dict[str, Any]:
     return data
 
 
+_AI_SCAN_STATUS_LABELS = {
+    "succeeded": "гипотезы сформированы",
+    "partial": "сформированы частично",
+    "degraded": "недоступен",
+    "rejected": "ответ отклонён валидатором",
+    "disabled": "не запускался",
+}
+
+
+def _ai_scan_payload(ai_scan: Any) -> Optional[Dict[str, Any]]:
+    """Advisory AI_SCAN output; never contributes to canonical counts."""
+    if ai_scan is None:
+        return None
+    if hasattr(ai_scan, "model_dump"):
+        data = ai_scan.model_dump()
+    elif isinstance(ai_scan, dict):
+        data = dict(ai_scan)
+    else:
+        return None
+    if not data:
+        return None
+    data["countsAsFindings"] = False
+    data["isHypothesis"] = True
+    return data
+
+
 _VERDICT_LABELS = {
     "pass": "нарушений не обнаружено",
     "fail": "требуется исправление",
@@ -137,7 +163,8 @@ class ReportBuilder:
     def build_readable_markdown(self, run_id: str, workflow_name: str,
                                 passport: SecurityPassport, policy: PolicyResult,
                                 findings: List[Finding], ai_result: Optional[ExplainResult],
-                                execution_status: str = "running") -> str:
+                                execution_status: str = "running",
+                                ai_scan: Optional[Any] = None) -> str:
         now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
         verdict = _VERDICT_LABELS.get(passport.verdict.value, "итог не определён")
         status = _STATUS_LABELS.get(execution_status, execution_status)
@@ -221,6 +248,63 @@ class ReportBuilder:
             md.append(f"**Модель:** {ai_result.model or 'не указана'}")
             md.append(f"> {mask_sensitive_text(ai_result.summary)}\n")
 
+        scan_payload = _ai_scan_payload(ai_scan)
+        if scan_payload is not None:
+            scan_status = str(scan_payload.get("status") or "disabled")
+            md.append("## Гипотезы ИИ-сканера (не подтверждены)")
+            md.append(
+                "Это гипотезы, а не подтверждённые находки. Они не входят в "
+                "счётчики находок, не меняют итог проверки и требуют ручной проверки."
+            )
+            md.append(
+                f"- **Статус ИИ-сканера:** {_AI_SCAN_STATUS_LABELS.get(scan_status, scan_status)}"
+            )
+            coverage = scan_payload.get("coverage") or {}
+            if coverage:
+                md.append(
+                    "- **Покрытие ИИ-сканера:** "
+                    f"{coverage.get('status') or 'unknown'}; "
+                    f"файлов отправлено {coverage.get('filesSent', 0)} из "
+                    f"{coverage.get('filesTotal', 0)}; "
+                    f"пропущено {coverage.get('omittedCount', 0)}, "
+                    f"ошибок {coverage.get('failedCount', 0)}."
+                )
+                if coverage.get("providerErrors"):
+                    errors = ", ".join(
+                        mask_sensitive_text(str(item)) for item in coverage["providerErrors"][:5]
+                    )
+                    md.append(f"- **Ошибки провайдера:** {errors}")
+            observations = scan_payload.get("observations") or []
+            if not observations:
+                md.append("\nИИ-сканер не сформировал гипотез для этого запуска.")
+            for obs in observations:
+                if not isinstance(obs, dict):
+                    continue
+                location = obs.get("primaryLocation") or {}
+                where = ""
+                if isinstance(location, dict) and location.get("path"):
+                    where = (
+                        f"`{location.get('path')}:"
+                        f"{location.get('startLine', '')}`"
+                    )
+                severity = _SEVERITY_LABELS.get(
+                    str(obs.get("severity")), str(obs.get("severity") or "")
+                )
+                md.append(f"### {obs.get('ruleClass') or 'без класса'} — {severity}")
+                md.append(f"- **ID гипотезы:** `{obs.get('id')}`")
+                if where:
+                    md.append(f"- **Где:** {where}")
+                md.append(f"- **Почему:** {mask_sensitive_text(str(obs.get('rationale') or 'без пояснения'))}")
+                md.append(f"- **Что проверить:** {mask_sensitive_text(str(obs.get('remediation') or 'без рекомендации'))}")
+                if obs.get("redactedEvidence"):
+                    md.append(evidence_markdown(mask_text(str(obs["redactedEvidence"]))))
+            limitations = scan_payload.get("limitations") or []
+            if limitations:
+                md.append("**Ограничения:**")
+                for limitation in limitations:
+                    md.append(f"- {mask_sensitive_text(str(limitation))}")
+            md.append("")
+
         md.append(f"## Находки ({len(findings)})")
         if not findings:
             md.append(
@@ -285,7 +369,8 @@ class ReportBuilder:
     def build_official_json(self, run_id: str, workflow_id: str, revision_id: str,
                             passport: SecurityPassport, policy: PolicyResult,
                             findings: List[Finding], ai_result: Optional[ExplainResult],
-                            execution_status: str = "running") -> str:
+                            execution_status: str = "running",
+                            ai_scan: Optional[Any] = None) -> str:
         ai_item_map = {
             item.findingId: _safe_ai_item(item)
             for item in (ai_result.items if ai_result else [])
@@ -330,6 +415,7 @@ class ReportBuilder:
                 ),
                 "similarFixesCount": len(ai_result.similar_fixes) if ai_result else 0
             },
+            "aiScan": _ai_scan_payload(ai_scan),
             "findingsCount": len(findings),
             "findings": findings_json
         }

@@ -157,8 +157,13 @@ def _truncate_to_line(text: str, max_bytes: int) -> Tuple[str, bool]:
     return prefix[:cut].decode("utf-8", "ignore") + "\n", True
 
 
+def _normalized_lines(text: str) -> List[str]:
+    """Lines without CRLF artifacts; line numbers stay identical."""
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
 def _line_window(source: SourceFile, start_line: int, end_line: int) -> str:
-    lines = source.text.split("\n")
+    lines = _normalized_lines(source.text)
     start = max(1, start_line)
     end = min(len(lines), max(start, end_line))
     return "\n".join(lines[start - 1:end])
@@ -277,6 +282,7 @@ def select_sources(
             failed.append(AiScanCoverageIssue(path=path, code="empty_excerpt", detail=""))
             continue
         sent_end_line = start_line + consumed_lines - 1
+        window_truncated = start_line > 1 or sent_end_line < line_count
         ref_index = 1
         while f"sf_{ref_index}" in used_refs:
             ref_index += 1
@@ -289,10 +295,10 @@ def select_sources(
             start_line=start_line,
             end_line=sent_end_line,
             excerpt=excerpt,
-            truncated=was_truncated,
+            truncated=was_truncated or window_truncated,
         ))
         total_bytes += len(excerpt.encode("utf-8"))
-        if was_truncated:
+        if was_truncated or window_truncated:
             truncated.append(path)
 
     coverage.filesSelected = len(result.files)
@@ -308,7 +314,7 @@ def select_sources(
         coverage.limitsReached.append("selection_budget")
     if len(result.files) == 0:
         coverage.status = "degraded"
-    elif omitted_count or truncated:
+    elif omitted_count or truncated or failed:
         coverage.status = "partial"
     else:
         coverage.status = "complete"

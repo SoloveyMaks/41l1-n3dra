@@ -747,6 +747,10 @@ class WorkflowExecutor:
             if not bundle or not pol:
                 raise ValueError("Build Report: Для генерации отчета необходимы FindingsBundle и PolicyResult")
 
+            ai_scan = inputs.get("ai_scan_result")
+            if ai_scan is None:
+                ai_scan = self._latest_ai_scan_result(run_id)
+
             report_status = str((self.db.get_run(run_id) or {}).get("execution_status") or "running")
             canonical_coverage = (pol.details or {}).get("canonicalCoverage")
             passport = self.report_builder.build_security_passport(
@@ -754,11 +758,11 @@ class WorkflowExecutor:
             )
             readable_md = self.report_builder.build_readable_markdown(
                 run_id, workflow_name, passport, pol, bundle.findings, exp,
-                execution_status=report_status,
+                execution_status=report_status, ai_scan=ai_scan,
             )
             official_json = self.report_builder.build_official_json(
                 run_id, workflow_id, revision_id, passport, pol, bundle.findings, exp,
-                execution_status=report_status,
+                execution_status=report_status, ai_scan=ai_scan,
             )
 
             # Save report to DB
@@ -930,9 +934,11 @@ class WorkflowExecutor:
         passport = self.report_builder.build_security_passport(
             bundle.coverage, policy, bundle.findings, canonical_coverage=canonical_coverage,
         )
+        ai_scan = self._latest_ai_scan_result(run_id)
         readable = self.report_builder.build_readable_markdown(
             run_id, workflow_name, passport, policy, bundle.findings, explain,
             execution_status=execution_status,
+            ai_scan=ai_scan,
         )
         official = self.report_builder.build_official_json(
             run_id,
@@ -940,6 +946,7 @@ class WorkflowExecutor:
             str(run_row.get("revision_id") or "revision-unknown"),
             passport, policy, bundle.findings, explain,
             execution_status=execution_status,
+            ai_scan=ai_scan,
         )
         self.db.save_report(
             run_id=run_id,
@@ -1068,6 +1075,21 @@ class WorkflowExecutor:
             "input_data_masked": in_data,
             "output_data_masked": out_data
         })
+
+    def _latest_ai_scan_result(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Read the advisory AI_SCAN output already stored for this run."""
+        try:
+            node_runs = self.db.get_node_runs(run_id)
+        except Exception:  # noqa: BLE001 - report must survive a storage hiccup
+            return None
+        for node_run in reversed(node_runs):
+            if node_run.get("kind") != NodeKind.AI_SCAN.value:
+                continue
+            output = node_run.get("output_data_masked") or {}
+            value = output.get("ai_scan_result") if isinstance(output, dict) else None
+            if isinstance(value, dict):
+                return value
+        return None
 
     def _mask_data_for_ui(self, obj: Any) -> Any:
         """
