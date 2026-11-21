@@ -36,7 +36,7 @@ Bearer-токен. Токен привязан к реальной привяз�
 Успех:
 
 ```json
-{"token": "v1.<payload>.<signature>", "expiresAt": 1795297200}
+{"token": "v2.<payload>.<signature>", "expiresAt": 1795297200}
 ```
 
 `expiresAt` — UNIX-время в секундах, не более чем через 15 минут. Токен не
@@ -51,7 +51,9 @@ Bearer-токен. Токен привязан к реальной привяз�
   к аккаунту нет (или аккаунт отключён / workspace не совпадает). Автопривязки
   и создания аккаунта нет: сначала веб-кабинет → Telegram → код. В боте:
   `/start`, затем код обычным сообщением; в Mini App: `POST /api/telegram/mini/bind`;
-- `503 TELEGRAM_MINIAPP_UNAVAILABLE` — не настроен бот/секрет.
+- `503 TELEGRAM_MINIAPP_UNAVAILABLE` — бот выключен (`TELEGRAM_ENABLED`) или
+  не настроен бот-токен/секрет подписи. Проверка не обходится явным
+  `TELEGRAM_MINIAPP_TOKEN_SECRET`.
 
 ### `POST /bind`
 
@@ -63,7 +65,7 @@ Bearer-токен. Токен привязан к реальной привяз�
 возвращает обычный scoped Bearer:
 
 ```json
-{"token": "v1.<payload>.<signature>", "expiresAt": 1795297200}
+{"token": "v2.<payload>.<signature>", "expiresAt": 1795297200}
 ```
 
 Порядок жёсткий:
@@ -112,6 +114,11 @@ bot-слоя); Mini App использует `/bind` вместо команды
 `RunSummary`. Наружу не отдаются chat id, email, workspace id и секреты.
 `scenario` — `null`, если сценарий не выбран.
 
+`telegram.settings` читается с полной идентичностью токена
+(`user_id/workspace_id/binding_epoch`). Если чат успели перепривязать между
+проверкой bearer и этим чтением, вместо настроек нового владельца возвращаются
+дефолты, а финальная проверка привязки завершает запрос `401 TOKEN_REVOKED`.
+
 ### `PUT /settings`
 
 Тело: `{"deliveryMode": "alerts|jsonc|both", "scenario": "wf_..."}`; оба поля
@@ -134,15 +141,32 @@ bot-слоя); Mini App использует `/bind` вместо команды
 
 Запуск создаётся только явным действием пользователя. Перед сетевым импортом
 и после него привязка перечитывается; если чат перепривязали — run не
-создаётся и executor не вызывается. Импорт ограничен семафором
-`CG_MINIAPP_MAX_CONCURRENT_RUNS` (по умолчанию 2) и rate limit
-`CG_RATE_MINI_RUN` (по умолчанию 5 запросов в минуту на IP). Артефакт
-сохраняется через существующие поля storage-манифеста, затем создаётся
-`runtime.runs` и запускается штатный `WorkflowExecutor`.
+создаётся и executor не вызывается. Артефакт сохраняется через существующие
+поля storage-манифеста, затем создаётся `runtime.runs` и запускается штатный
+`WorkflowExecutor`. HTTP `202` отдаётся только после создания строки run и
+повторной проверки привязки.
+
+Число принятых запусков ограничено `CG_MINIAPP_MAX_CONCURRENT_RUNS`
+(по умолчанию 2) на процесс: место занимается до чтения настроек и импорта и
+удерживается до завершения executor, включая ожидание его семафора. Поэтому
+лимит покрывает pending+running, а не только одновременный импорт. При
+переполнении — `429 RUN_CAPACITY_REACHED` с `Retry-After: 5` до импорта и
+создания артефакта. Дополнительно действует rate limit `CG_RATE_MINI_RUN`
+(по умолчанию 5 запросов в минуту на IP).
+
+Отмена HTTP-запроса, shutdown lifespan и ошибка executor завершают ещё
+`queued`/`running` run как `cancelled`/`failed` с `security_verdict=inconclusive`
+и `finished_at`; уже терминальный статус не перезаписывается. Импорт и
+DB-потоки при отмене доигрываются до конца, чтобы место не освобождалось
+раньше фактического I/O. Если cleanup сам не смог обновить статус, новые
+запуски в процессе отвечают `503 RUNS_UNAVAILABLE` до рестарта. Лимит
+процессный, не распределённый: строки, оставшиеся от SIGKILL/аварии, требуют
+отдельного durable recovery.
 
 Типичные ошибки: `400 INVALID_REPOSITORY_URL`, `400/404 REPOSITORY_IMPORT_FAILED`,
 `400 SCENARIO_INVALID`, `400 SCENARIO_NOT_FOUND`, `409 SCENARIO_REQUIRED`,
-`500 ARTIFACT_SAVE_FAILED`, `500 RUN_START_FAILED`.
+`429 RUN_CAPACITY_REACHED`, `500 ARTIFACT_SAVE_FAILED`, `500 RUN_START_FAILED`,
+`503 RUNS_UNAVAILABLE`.
 
 ### `GET /runs/{run_id}`
 
@@ -186,20 +210,25 @@ argv и ошибки он не попадает.
 
 ## Bearer-токен
 
-Компактный формат: `v1.<base64url(payload)>.<base64url(HMAC-SHA256)>`.
-Поля payload: `cid` (chat_id), `uid`, `wid`, `ep` (binding_epoch), `role=user`,
-`iat`, `exp`, `jti`.
+Компактный формат: `v2.<base64url(payload)>.<base64url(HMAC-SHA256)>`.
+Поля payload: `v=2`, `cid` (chat_id), `uid`, `wid`, `ep` (binding_epoch),
+`role=user`, `iat`, `exp`, `jti`. Подписывается строка `v2.<payload>`.
 
 Секрет подписи:
 
 - `TELEGRAM_MINIAPP_TOKEN_SECRET` — рекомендуется, минимум 16 символов;
-- иначе выводится из бот-токена через domain-separated HMAC. Смена бот-токена
-  инвалидирует выданные токены.
+- иначе выводится из бот-токена через domain-separated HMAC с меткой
+  `nedra-miniapp-token-v2`. Смена бот-токена инвалидирует выданные токены.
 
-Проверка на каждом запросе: подпись, версия, роль, TTL ≤ 900 секунд, `exp`,
-затем живая `telegram.bindings` и активный аккаунт. Если `binding_epoch`,
-`user_id` или `workspace_id` разошлись — `401 TOKEN_REVOKED`. Unbind/rebind
-отзывает токены без отдельного хранилища.
+Проверка на каждом запросе: префикс `v2` и payload `v=2`, подпись, роль,
+TTL ≤ 900 секунд, `exp`, затем живая `telegram.bindings` и активный аккаунт.
+Legacy `v1` отвергается как неверная версия (`401 INVALID_TOKEN`), а не
+принимается по старой схеме. Если `binding_epoch`, `user_id` или
+`workspace_id` разошлись — `401 TOKEN_REVOKED`. Поколение
+`binding_epoch` выдаётся storage durable sequence, поэтому unbind/rebind
+отзывает и старые токены после delete/recreate, без отдельного token-store.
+Настройки читаются с полной идентичностью токена, чтобы гонка с rebind не
+отдала строку нового владельца.
 
 Осознанная граница: `initData` можно повторно предъявить в пределах его
 `auth_date`-окна, а токен — в пределах 15 минут. Это нормальный replay-scope
@@ -226,12 +255,12 @@ polling и раздача frontend сохраняются.
 | `TELEGRAM_MINI_APP_URL` | `https://nedra.soloveyka.bond/miniapp` | URL для кнопки бота (использует bot-слой) |
 | `TELEGRAM_MINIAPP_TOKEN_SECRET` | derived | секрет Bearer-токенов |
 | `TELEGRAM_MINIAPP_INIT_MAX_AGE_SECONDS` | `3600` | максимальный возраст `initData` |
-| `CG_MINIAPP_MAX_CONCURRENT_RUNS` | `2` | одновременные импорты/запуски |
+| `CG_MINIAPP_MAX_CONCURRENT_RUNS` | `2` | принятых запусков (pending+running) на процесс |
 | `CG_RATE_MINI_AUTH` | `20` | POST `/auth` в минуту на IP |
 | `CG_RATE_MINI_BIND` | `20` | POST `/bind` в минуту на IP |
 | `CG_RATE_MINI_BIND_USER` | `10` | POST `/bind` в минуту на verified Telegram user |
 | `CG_RATE_MINI_RUN` | `5` | POST `/runs` в минуту на IP |
-| `TELEGRAM_ENABLED` | `0` | polling бота; на HTTP Mini App не влияет |
+| `TELEGRAM_ENABLED` | `0` | `1/true/yes` включает бота и HTTP Mini App; иначе Mini API отвечает `503` |
 
 ## Фронтенд: обязательные правила
 
