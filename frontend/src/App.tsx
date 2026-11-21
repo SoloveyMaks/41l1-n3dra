@@ -31,6 +31,7 @@ import {
   AiScanResult,
   AppTab,
   ArtifactManifest,
+  ExecutionStatus,
   Finding,
   NodeKind,
   NodeRunRecord,
@@ -106,6 +107,19 @@ const sameRunGraph = (revisionDraft: WorkflowDraft | null, currentDraft: Workflo
 };
 
 const EMPTY_RUN_TELEMETRY: RunTelemetry = { nodes: {}, edges: {}, lastSeq: 0, live: false };
+
+// Run status only moves forward: queued → running → terminal. A summary with a
+// lower rank is older than what is already applied, even when the request that
+// carries it was issued later (a reconnect reply or a slow details fetch).
+const TERMINAL_RUN_RANK = 2;
+const RUN_STATUS_RANK: Record<ExecutionStatus, number> = {
+  queued: 0,
+  running: 1,
+  succeeded: TERMINAL_RUN_RANK,
+  failed: TERMINAL_RUN_RANK,
+  cancelled: TERMINAL_RUN_RANK,
+  interrupted: TERMINAL_RUN_RANK,
+};
 
 // The map owner exposes `onLoadStateChange(status)` from SecurityMapScreen in
 // its own commit. This typed seam binds App to that agreed contract so the
@@ -183,6 +197,9 @@ export const App: React.FC = () => {
   // Last applied event seq for the selected run; reconnect resumes after it.
   const lastSeqRef = useRef(0);
   const selectedRunRef = useRef<string | null>(null);
+  // Highest run status applied for selectedRunRef. Guards against a delayed
+  // summary resurrecting a run that already reached terminal.
+  const runProgressRef = useRef<{ runId: string; rank: number } | null>(null);
   const artifactIdsRef = useRef<Set<string>>(new Set());
   const artifactFetchRef = useRef<Map<string, Promise<ArtifactManifest | null>>>(new Map());
   const artifactCacheRef = useRef<Map<string, ArtifactManifest>>(new Map());
@@ -284,6 +301,26 @@ export const App: React.FC = () => {
     return pending;
   }, []);
 
+  // The single writer for `currentRun`. A terminal summary is final: later
+  // replies with an active status are stale, and the stream must not reopen.
+  const applyRunSummary = useCallback((summary: RunSummary): boolean => {
+    const rank = RUN_STATUS_RANK[summary.execution_status] ?? 0;
+    const known = runProgressRef.current;
+    if (known && known.runId === summary.id && rank < known.rank) {
+      if (known.rank >= TERMINAL_RUN_RANK) closeSSE();
+      return false;
+    }
+    runProgressRef.current = { runId: summary.id, rank };
+    setCurrentRun(summary);
+    if (rank >= TERMINAL_RUN_RANK) {
+      setIsRunning(false);
+      // Terminal API truth invalidates a pending reconnect timer and any
+      // stream, so neither can restore a running state afterwards.
+      closeSSE();
+    }
+    return true;
+  }, [closeSSE]);
+
   const loadRunDetails = useCallback(async (runId: string) => {
     const seq = ++runLoadSeq.current;
     try {
@@ -319,14 +356,15 @@ export const App: React.FC = () => {
         ));
       }
 
-      setCurrentRun(runInfo);
+      const accepted = applyRunSummary(runInfo);
       setNodeRuns(nodes);
       setFindings(runFindings);
       setAiScan(extractAiScan(nodes));
       setReport(runReport);
-      setIsRunning(runInfo.execution_status === 'running' || runInfo.execution_status === 'queued');
-      if (runInfo.execution_status !== 'running' && runInfo.execution_status !== 'queued') {
-        void refreshRuns();
+      if (accepted) {
+        const active = runInfo.execution_status === 'running' || runInfo.execution_status === 'queued';
+        setIsRunning(active);
+        if (!active) void refreshRuns();
       }
     } catch (e: any) {
       if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
@@ -336,7 +374,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Не удалось загрузить запуск');
       }
     }
-  }, [ensureArtifact, refreshRuns, showNotice]);
+  }, [applyRunSummary, ensureArtifact, refreshRuns, showNotice]);
 
   const loadRunRevision = useCallback(async (runId: string) => {
     const seq = ++revisionLoadSeq.current;
@@ -370,6 +408,10 @@ export const App: React.FC = () => {
 
     const open = () => {
       if (!isCurrent()) return;
+      // A terminal summary already applied for this run cannot gain events;
+      // reopening the stream could only resurrect what is already finished.
+      const applied = runProgressRef.current;
+      if (applied && applied.runId === runId && applied.rank >= TERMINAL_RUN_RANK) return;
       // Resume after the last applied seq: replayed history must not restart
       // motion, and replayed terminal events must not resurrect old statuses.
       const source = apiClient.createEventSource(runId, lastSeqRef.current);
@@ -399,6 +441,7 @@ export const App: React.FC = () => {
           if (event.type === 'run_status') {
             const status = event.payload?.status;
             if (status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted') {
+              runProgressRef.current = { runId, rank: TERMINAL_RUN_RANK };
               setIsRunning(false);
               closeSSE();
               void loadRunDetails(runId);
@@ -438,7 +481,11 @@ export const App: React.FC = () => {
           try {
             const summary = await apiClient.getRun(runId);
             if (!isCurrent()) return;
-            setCurrentRun(summary);
+            // A later terminal state may have arrived while this GET was in
+            // flight. An older reply must not replace it, and a terminal one
+            // must not open a new stream.
+            if (!applyRunSummary(summary)) return;
+            if (!isCurrent()) return;
             setLiveBaselineSeq(summary.last_event_seq ?? lastSeqRef.current);
           } catch {
             // Server still unreachable: keep the previous boundary; the next
@@ -452,7 +499,7 @@ export const App: React.FC = () => {
     };
 
     open();
-  }, [closeSSE, loadRunDetails, refreshRuns]);
+  }, [applyRunSummary, closeSSE, loadRunDetails, refreshRuns]);
 
   const validateDraft = useCallback(async (wfId: string, nextDraft: WorkflowDraft) => {
     const seq = ++validateSeq.current;
@@ -471,6 +518,7 @@ export const App: React.FC = () => {
   const resetRunSelection = () => {
     closeSSE();
     selectedRunRef.current = null;
+    runProgressRef.current = null;
     lastSeqRef.current = 0;
     setLiveBaselineSeq(null);
     runLoadSeq.current += 1;
@@ -523,7 +571,7 @@ export const App: React.FC = () => {
         selectedRunRef.current = latest.id;
         lastSeqRef.current = 0;
         setCurrentRunId(latest.id);
-        setCurrentRun(latest);
+        applyRunSummary(latest);
         await loadRunDetails(latest.id);
         void loadRunRevision(latest.id);
         connectSSE(latest.id, latest.last_event_seq ?? null);
@@ -538,7 +586,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Сервер недоступен');
       }
     }
-  }, [connectSSE, loadRunDetails, loadRunRevision, showNotice, validateDraft]);
+  }, [applyRunSummary, connectSSE, loadRunDetails, loadRunRevision, showNotice, validateDraft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -665,6 +713,7 @@ export const App: React.FC = () => {
     }
     closeSSE();
     selectedRunRef.current = null;
+    runProgressRef.current = null;
     lastSeqRef.current = 0;
     setLiveBaselineSeq(null);
     runLoadSeq.current += 1;
@@ -695,6 +744,12 @@ export const App: React.FC = () => {
     if (!runId) return;
     closeSSE();
     selectedRunRef.current = runId;
+    const listed = runs.find((run) => run.id === runId);
+    // Seed from the list row only to avoid opening a stream for a run the list
+    // already reports as finished. Details replace it with authoritative data.
+    runProgressRef.current = listed
+      ? { runId, rank: RUN_STATUS_RANK[listed.execution_status] ?? 0 }
+      : null;
     lastSeqRef.current = 0;
     revisionLoadSeq.current += 1;
     setCurrentRunId(runId);
@@ -901,6 +956,7 @@ export const App: React.FC = () => {
       if (!skipDraftSave) await apiClient.saveWorkflowDraft(workflowId, draft);
       const result = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
       selectedRunRef.current = result.runId;
+      runProgressRef.current = null;
       lastSeqRef.current = 0;
       revisionLoadSeq.current += 1;
       setCurrentRunId(result.runId);

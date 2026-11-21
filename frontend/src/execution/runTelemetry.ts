@@ -19,6 +19,10 @@ export interface NodeTelemetry {
   startedAtMs?: number;
   error?: string;
   lastSeq: number;
+  // The last recorded status is still active, but the run summary is already
+  // terminal, so the node cannot be executing now. Consumers keep the recorded
+  // status (it is a fact) but must not animate it or call the stage "running".
+  stalled: boolean;
 }
 
 export interface EdgeTelemetry {
@@ -108,6 +112,7 @@ export function buildRunTelemetry(input: {
       startedAtMs: timeMs(record.started_at),
       error: record.error_message || undefined,
       lastSeq: 0,
+      stalled: false,
     };
     if (TERMINAL_NODE_STATUSES[status]) apiTerminal.add(record.node_id);
   }
@@ -155,6 +160,7 @@ export function buildRunTelemetry(input: {
         startedAtMs: nextStatus === 'running' ? eventAt ?? previous?.startedAtMs : previous?.startedAtMs,
         error: nextStatus === 'failed' ? asString(event.payload?.error) : undefined,
         lastSeq: event.seq,
+        stalled: false,
       };
       continue;
     }
@@ -173,6 +179,13 @@ export function buildRunTelemetry(input: {
         dataSeq: event.seq,
       };
     }
+  }
+
+  // A terminal run cannot still be executing anything. Keep the last recorded
+  // status as the fact, but flag every non-terminal node as stalled so canvas
+  // spinners, live dots, clocks and stage cards stop with the run.
+  for (const node of Object.values(nodes)) {
+    node.stalled = apiTerminalRun && !TERMINAL_NODE_STATUSES[node.status];
   }
 
   // A run is live when its last known status is active; before the first run

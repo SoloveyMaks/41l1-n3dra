@@ -127,6 +127,10 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             durationMs: live?.durationMs,
             startedAtMs: live?.startedAtMs,
             live: telemetry.live,
+            // A terminal run never animates an active node record: the record
+            // is history, not something executing right now.
+            active: Boolean(live) && !live?.stalled,
+            stalled: Boolean(live?.stalled),
           },
         };
       }),

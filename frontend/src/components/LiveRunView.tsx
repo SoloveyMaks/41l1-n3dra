@@ -5,7 +5,7 @@ import {
   PackageSearch, FileCode2, GitMerge, ShieldAlert, GitFork, Sparkles,
   FileText, Send, Network,
 } from 'lucide-react';
-import { NodeKind, NodeRunRecord, RunMapLoadState, RunSummary, WorkflowNode } from '../types';
+import { NodeKind, NodeRunRecord, NodeRunStatus, RunMapLoadState, RunSummary, WorkflowNode } from '../types';
 import type { NodeTelemetry, RunTelemetry } from '../execution/runTelemetry';
 
 type LiveEvent = {
@@ -37,7 +37,7 @@ interface LiveRunViewProps {
   onOpenReport?: () => void;
 }
 
-type DisplayStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled';
+type DisplayStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled' | 'stalled';
 type PhaseId = 'snapshot' | 'scanners' | 'facts' | 'verdict' | 'ai' | 'report' | 'delivery' | 'other';
 type ActionKind = 'map' | 'findings' | 'report';
 
@@ -142,6 +142,14 @@ const STATUS_META: Record<DisplayStatus, { label: string; icon: IconComponent; c
     icon: MinusCircle,
     chip: 'bg-slate-800 text-slate-400 border-slate-700',
     dot: 'bg-slate-500',
+  },
+  // The last block record is still active, but the run is already over. The
+  // card must not claim the block is executing, and no spinner may run.
+  stalled: {
+    label: 'Нет итога',
+    icon: Clock,
+    chip: 'bg-amber-950 text-amber-300 border-amber-800',
+    dot: 'bg-amber-500',
   },
 };
 
@@ -617,7 +625,17 @@ function describeMapRequest(
   };
 }
 
-function buildStage(nodeRun: NodeRunRecord): Stage {
+const RAW_NODE_STATUS_LABEL: Record<NodeRunStatus, string> = {
+  pending: 'ожидает',
+  running: 'выполняется',
+  retrying: 'повторная попытка',
+  succeeded: 'готово',
+  failed: 'ошибка',
+  skipped: 'пропущен',
+  cancelled: 'отменён',
+};
+
+function buildStage(nodeRun: NodeRunRecord, stalled = false): Stage {
   const meta: { title: string; phase: PhaseId; icon: IconComponent; color: string } =
     KIND_META[nodeRun.kind] || {
       title: nodeRun.kind,
@@ -626,15 +644,27 @@ function buildStage(nodeRun: NodeRunRecord): Stage {
       color: 'text-slate-400',
     };
   const copy = describeStage(nodeRun);
+  const baseStatus: DisplayStatus = copy.statusOverride || displayStatus(nodeRun.status);
+  // A terminal run cannot still be executing or queuing a block. Keep the
+  // recorded status as the fact but show it as unresolved instead of running.
+  const status: DisplayStatus =
+    stalled && (baseStatus === 'running' || baseStatus === 'queued') ? 'stalled' : baseStatus;
   return {
     ...copy,
     nodeRun,
     title: meta.title,
     phase: meta.phase,
-    status: copy.statusOverride || displayStatus(nodeRun.status),
+    status,
     durationMs: asNumber(nodeRun.duration_ms),
     icon: meta.icon,
     color: meta.color,
+    short: status === 'stalled'
+      ? 'Запуск завершён, итоговый статус этого блока не пришёл'
+      : copy.short,
+    detail: status === 'stalled'
+      ? `Последняя запись блока: «${RAW_NODE_STATUS_LABEL[nodeRun.status]}». После завершения запуска блок не считается выполняющимся.`
+      : copy.detail,
+    live: false,
   };
 }
 
@@ -697,10 +727,10 @@ function buildTelemetryStage(
 ): Stage {
   const kind = inferNodeKind(nodeId, plannedNodes);
   const meta = kind ? KIND_META[kind] : undefined;
-  const status = displayStatus(state.status);
+  const status: DisplayStatus = state.stalled ? 'stalled' : displayStatus(state.status);
   const startedAtMs = state.startedAtMs;
   const durationMs =
-    status === 'running'
+    status === 'running' && !state.stalled
       ? startedAtMs !== undefined
         ? Math.max(0, nowMs - startedAtMs)
         : asNumber(state.durationMs)
@@ -718,7 +748,9 @@ function buildTelemetryStage(
     output_data_masked: {},
   };
   const short =
-    status === 'running'
+    state.stalled
+      ? 'Запуск завершён, итоговый статус этого блока не пришёл'
+      : status === 'running'
       ? liveStageText(kind)
       : status === 'failed'
         ? 'Блок завершился ошибкой'
@@ -730,7 +762,9 @@ function buildTelemetryStage(
               ? 'Блок завершён, результат ещё загружается'
               : 'Ожидает запуска';
   const detail =
-    status === 'running'
+    state.stalled
+      ? `Последняя запись блока: «${RAW_NODE_STATUS_LABEL[state.status]}». После завершения запуска блок не считается выполняющимся.`
+      : status === 'running'
       ? startedAt
         ? `Событие старта получено в ${formatClock(startedAt)}. Итог появится после завершения блока.`
         : 'Статус выполнения получен из SSE.'
@@ -822,7 +856,9 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   events,
   telemetry,
   plannedNodes = [],
-  planKnown = true,
+  // Omitting `planKnown` means the caller has no immutable revision: never
+  // pretend an empty plan is the real one.
+  planKnown = false,
   graphMismatch = false,
   runMapState = null,
   onSelectNode,
@@ -851,8 +887,10 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   }, [runIsActive]);
 
   const recordedStages = useMemo(
-    () => nodeRuns.map(buildStage).sort(compareStages),
-    [nodeRuns],
+    () => nodeRuns
+      .map((nodeRun) => buildStage(nodeRun, Boolean(telemetry.nodes[nodeRun.node_id]?.stalled)))
+      .sort(compareStages),
+    [nodeRuns, telemetry.nodes],
   );
 
   // Real per-node statuses from SSE + API. These also cover a reload where the
@@ -907,6 +945,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
       failed: 0,
       skipped: 0,
       cancelled: 0,
+      stalled: 0,
     };
     for (const stage of stages) counts[stage.status] += 1;
     return counts;
@@ -990,7 +1029,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
     statusCounts.succeeded + statusCounts.failed + statusCounts.skipped + statusCounts.cancelled;
 
   const progressSegments: Array<{ status: DisplayStatus; width: number }> = totalStages
-    ? (['succeeded', 'failed', 'skipped', 'running', 'queued'] as DisplayStatus[])
+    ? (['succeeded', 'failed', 'skipped', 'cancelled', 'stalled', 'running', 'queued'] as DisplayStatus[])
         .filter((status) => statusCounts[status] > 0)
         .map((status) => ({ status, width: (statusCounts[status] / totalStages) * 100 }))
     : [];
@@ -1136,7 +1175,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
           <span>
             Этапы: <strong className="text-slate-200">{finishedStages}</strong> из {totalStages}
           </span>
-          {runIsActive && !planKnown && (
+          {!planKnown && (
             <span className="text-amber-300" data-plan-state="unknown">
               план запуска неизвестен — только подтверждённые этапы
             </span>
@@ -1147,6 +1186,11 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
             </span>
           )}
           {statusCounts.running > 0 && <span className="text-blue-300">в работе: {statusCounts.running}</span>}
+          {statusCounts.stalled > 0 && (
+            <span className="text-amber-300" data-stalled-count={statusCounts.stalled}>
+              без итога: {statusCounts.stalled}
+            </span>
+          )}
           {statusCounts.failed > 0 && <span className="text-rose-300">ошибок: {statusCounts.failed}</span>}
           {statusCounts.skipped > 0 && <span className="text-slate-500">пропущено: {statusCounts.skipped}</span>}
           {totalStages > 0 && (
@@ -1230,7 +1274,11 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                                     {status.label}
                                   </span>
                                   <span className="text-[10px] font-mono text-slate-500">
-                                    {stage.status === 'queued' ? 'не начат' : formatDuration(stage.durationMs)}
+                                    {stage.status === 'queued'
+                                      ? 'не начат'
+                                      : stage.status === 'stalled'
+                                        ? 'нет итога'
+                                        : formatDuration(stage.durationMs)}
                                   </span>
                                 </div>
                                 <p className="mt-1 text-[11px] leading-snug text-slate-300">{stage.short}</p>

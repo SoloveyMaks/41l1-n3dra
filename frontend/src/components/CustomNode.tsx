@@ -16,6 +16,10 @@ interface CustomNodeData {
   durationMs?: number;
   startedAtMs?: number;
   live?: boolean;
+  // `active` is false when the last record is still running but the run is
+  // already terminal; `stalled` carries that fact for an honest label.
+  active?: boolean;
+  stalled?: boolean;
   isSelected?: boolean;
 }
 
@@ -58,7 +62,9 @@ export const CustomNode = memo(({ data, selected }: NodeProps) => {
   const Icon = cfg.icon;
 
   const status = nodeData.status;
-  const isCurrent = Boolean(nodeData.live) && status === 'running';
+  const stalled = Boolean(nodeData.stalled);
+  // Live motion needs both a truthful active record and a live subscription.
+  const isCurrent = Boolean(nodeData.active) && Boolean(nodeData.live) && status === 'running' && !stalled;
   const elapsedMs = useRunningElapsed(isCurrent, nodeData.startedAtMs);
   const shownMs = isCurrent ? elapsedMs : nodeData.durationMs;
 
@@ -70,6 +76,7 @@ export const CustomNode = memo(({ data, selected }: NodeProps) => {
       data-status={status || 'pending'}
       data-current={isCurrent ? 'true' : 'false'}
       data-live={nodeData.live ? 'true' : 'false'}
+      data-stalled={stalled ? 'true' : 'false'}
     >
       {/* Input Handles */}
       {renderInputHandles(nodeData.kind)}
@@ -93,10 +100,18 @@ export const CustomNode = memo(({ data, selected }: NodeProps) => {
         {/* Live Status Badge */}
         {status && (
           <div className="flex items-center gap-1 text-[10px] font-medium">
-            {status === 'running' && (
+            {status === 'running' && !stalled && (
               <span className="flex items-center gap-1 text-blue-400">
                 <Loader2 size={13} className="animate-spin" />
                 <span className="exec-node__live-dot" />
+              </span>
+            )}
+            {status === 'running' && stalled && (
+              <span
+                className="flex items-center text-amber-400/90"
+                title="Запуск завершён, итоговый статус блока не пришёл"
+              >
+                <Clock size={13} />
               </span>
             )}
             {status === 'succeeded' && (
