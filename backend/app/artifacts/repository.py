@@ -105,18 +105,18 @@ def _parse_repository_url(url: Any) -> _RepoTarget:
         raise _reject("Слишком длинный URL репозитория")
     if "\\" in raw or any(_CONTROL_RE.search(ch) or ch.isspace() for ch in raw):
         raise _reject("URL репозитория содержит недопустимые символы")
-    parts = urlsplit(raw)
     try:
+        parts = urlsplit(raw)
         port = parts.port
+        host = (parts.hostname or "").lower()
     except ValueError as exc:
-        raise _reject("Недопустимый порт в URL репозитория") from exc
+        raise _reject("Некорректный URL репозитория") from exc
     if parts.scheme.lower() != "https":
         raise _reject("Разрешены только HTTPS-адреса GitHub/GitLab")
     if parts.username is not None or parts.password is not None or port is not None:
         raise _reject("URL с логином, паролем или портом запрещён")
     if parts.query or parts.fragment:
         raise _reject("URL репозитория не должен содержать query или fragment")
-    host = (parts.hostname or "").lower()
     provider = _PROVIDER_HOSTS.get(host)
     if provider is None:
         raise _reject("Разрешены только github.com и gitlab.com")
@@ -299,14 +299,17 @@ async def _default_branch(client: httpx.AsyncClient, target: _RepoTarget) -> str
     return branch
 
 
-async def _resolve_commit(client: httpx.AsyncClient, target: _RepoTarget, branch: str) -> str:
+async def _branch_commit(client: httpx.AsyncClient, target: _RepoTarget, branch: str) -> str:
     ref = quote(branch, safe="")
     if target.provider == "github":
-        url = _github_api(target, f"commits/{ref}")
+        url = _github_api(target, f"branches/{ref}")
     else:
-        url = _gitlab_api(target, f"repository/commits/{ref}")
+        url = _gitlab_api(target, f"repository/branches/{ref}")
     data = await _get_json(client, url, target.provider)
-    raw = data.get("sha") if target.provider == "github" else data.get("id")
+    commit = data.get("commit")
+    if not isinstance(commit, dict):
+        raise _reject("Провайдер не вернул коммит ветки", 502)
+    raw = commit.get("sha") if target.provider == "github" else commit.get("id")
     if not isinstance(raw, str) or not _SHA_RE.fullmatch(raw.lower()):
         raise _reject("Провайдер не вернул commit SHA", 502)
     return raw.lower()
@@ -319,7 +322,7 @@ async def resolve_repository(url: str, branch: Optional[str] = None) -> Dict[str
     async with _IMPORT_SEM:
         async with _client() as client:
             resolved_branch = requested or await _default_branch(client, target)
-            commit_sha = await _resolve_commit(client, target, resolved_branch)
+            commit_sha = await _branch_commit(client, target, resolved_branch)
     return {
         "url": target.url,
         "provider": target.provider,
@@ -541,11 +544,24 @@ async def import_repository(
     branch: Optional[str] = None,
     commit_sha: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Скачивает и принимает публичный репозиторий; возвращает intake-манифест."""
+    """Скачивает и принимает публичный репозиторий; возвращает intake-манифест.
+
+`commit_sha` фиксирует загрузку ровно на этом SHA: branch остаётся метаданными
+и при отсутствии резолвится в фактическую default-ветку без сверки с текущим
+head. Без `commit_sha` ветка резолвится в её текущий commit через branch API.
+"""
     target = _parse_repository_url(url)
-    resolved = await resolve_repository(target.url, branch)
-    if commit_sha is not None and _validate_sha(commit_sha) != resolved["commit_sha"]:
-        raise _reject("Ветка уже указывает на другой коммит; повторите импорт")
+    requested_sha = _validate_sha(commit_sha) if commit_sha is not None else None
+    if requested_sha is None:
+        resolved = await resolve_repository(target.url, branch)
+        resolved_branch = resolved["branch"]
+        artifact_sha = resolved["commit_sha"]
+    else:
+        branch_name = _normalize_branch(branch)
+        async with _IMPORT_SEM:
+            async with _client() as client:
+                resolved_branch = branch_name or await _default_branch(client, target)
+        artifact_sha = requested_sha
 
     tmp_root = data_root() / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -569,7 +585,7 @@ async def import_repository(
         os.chmod(filtered_path, 0o600)
         async with _IMPORT_SEM:
             async with _client() as client:
-                await _download_archive(client, target, resolved["commit_sha"], source_path)
+                await _download_archive(client, target, artifact_sha, source_path)
             await asyncio.to_thread(
                 _sanitize_archive, source_path, filtered_path, target.repo_name
             )
@@ -577,7 +593,7 @@ async def import_repository(
                 raise _reject(
                     f"Архив больше {MAX_ARCHIVE_BYTES // (1024 * 1024)} МБ", 413
                 )
-            filename = _artifact_filename(target.repo_name, resolved["commit_sha"])
+            filename = _artifact_filename(target.repo_name, artifact_sha)
             manifest = await asyncio.to_thread(
                 _INTAKE.ingest_zip_file, filename, filtered_path
             )
@@ -593,8 +609,8 @@ async def import_repository(
     repository = {
         "url": target.url,
         "provider": target.provider,
-        "branch": resolved["branch"],
-        "commit_sha": resolved["commit_sha"],
+        "branch": resolved_branch,
+        "commit_sha": artifact_sha,
     }
     source_ref = await asyncio.to_thread(_attach_repository_meta, manifest, repository)
     manifest["repository"] = dict(repository)

@@ -927,7 +927,7 @@ def _include_repository_watch_router() -> None:
     except ModuleNotFoundError as exc:
         if exc.name != "backend.app.api.repository_watches":
             raise
-        logger.warning("repository watches module is absent; watch API is not mounted")
+        logger.error("repository watches module is absent; /api/repository-watches is not mounted")
         return
     api_router.include_router(create_repository_watch_router(db_repo, executor))
 
