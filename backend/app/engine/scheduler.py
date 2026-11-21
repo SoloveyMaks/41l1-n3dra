@@ -204,18 +204,24 @@ class RepositoryWatchService:
             raise WatchValidationError("branch должен быть строкой")
         if isinstance(branch, str) and len(branch.strip()) > 255:
             raise WatchValidationError("branch слишком длинный")
-        parts = urlsplit(url.strip())
+        try:
+            parts = urlsplit(url.strip())
+            host = (parts.hostname or "").lower()
+            port = parts.port
+        except ValueError as exc:
+            raise WatchValidationError("Некорректный URL репозитория") from exc
         if (
             parts.scheme != "https"
-            or not parts.hostname
-            or parts.hostname.lower() not in ("github.com", "gitlab.com")
+            or not host
+            or host not in ("github.com", "gitlab.com")
+            or port is not None
             or parts.username is not None
             or parts.password is not None
             or parts.query
             or parts.fragment
         ):
             raise WatchValidationError(
-                "Разрешены только публичные HTTPS-репозитории без credentials в URL"
+                "Разрешены только публичные HTTPS-репозитории без credentials и порта в URL"
             )
         try:
             expression = validate_watch_expression(cron_or_interval)
