@@ -36,7 +36,7 @@ v3.<session_id>.<user_id>.<workspace>.<role>.<issued>.<nonce>.<hmac_sha256>
 
 | Метод | Путь | Доступ |
 |---|---|---|
-| `POST` | `/api/auth/register` | без сессии; в `CG_PUBLIC_DEMO=1` требует `accessCode` |
+| `POST` | `/api/auth/register` | без сессии; invite-код только если задан `CG_REGISTRATION_CODE` |
 | `POST` | `/api/auth/login` | без сессии |
 | `POST` | `/api/auth/logout` | отзывает текущую v3 сессию, стирает cookie |
 | `GET` | `/api/auth/me` | сессия; для demo возвращает `mode=demo`, `user=null` |
@@ -54,7 +54,7 @@ POST /api/auth/register
 `sessionId`, `expiresInSec`. Cookie `cg_session` — HttpOnly, SameSite=Lax, Secure при HTTPS.
 
 Ошибки: `400 INVALID_ACCOUNT`, `409 EMAIL_TAKEN`, `401 INVALID_CREDENTIALS`,
-`403 DEMO_ACCESS_CODE_REQUIRED`, `401 AUTH_REQUIRED`.
+`403 REGISTRATION_CODE_REQUIRED` (только при включённом invite), `401 AUTH_REQUIRED`.
 Логин намеренно не различает «нет такого email» и «неверный пароль».
 
 `GET /api/auth/history` отдаёт `runtime.runs` своего workspace, свежие первыми;
@@ -119,13 +119,50 @@ watches нужен явный workspace в scheduler-задаче (root integrat
 это не делается молчаливым `os.environ` или гонкой потоков. `executor.py` и
 `contracts/` в этой волне не правились.
 
+## Контракт для scheduler/webhooks/executor
+
+`executor.py` и `contracts/` не менялись. Для root/AI owner точный способ
+передать workspace в фоновую работу:
+
+```python
+from backend.app.codefacts.identity import workspace_scope
+
+# scheduler: workspace берётся из уже прочитанной строки run/watch
+with workspace_scope(row["workspace_id"]):
+    await executor.execute_run(...)          # asyncio.create_task/to_thread
+    # или: await service.check_claimed(watch, token)   # контекст копируется
+
+# webhook: watch/hook row уже scoped, scope ставится до importer/executor
+with workspace_scope(watch["workspace_id"]):
+    await service.check_claimed(watch, token)
+```
+
+Правила:
+
+- `workspace_id()` читает ContextVar; `configured_workspace_id()` — только env
+  (demo/init);
+- `set_workspace_scope(uuid)` возвращает token, `reset_workspace_scope(token)`
+  обязателен в `finally`; `workspace_scope(uuid)` — sync-contextmanager и
+  работает в async-коде;
+- `asyncio.create_task` и `asyncio.to_thread`/`anyio.to_thread` копируют
+  контекст; ручной `ThreadPoolExecutor` — только через
+  `contextvars.copy_context().run(fn)`;
+- никогда не писать `os.environ["RUNTIME_WORKSPACE_ID"] = ...` и не держать
+  глобальный mutable current workspace: это утечёт между аккаунтами;
+- без scope (глобальный scheduler, demo) работает env workspace — это явный
+  demo-режим, а не молчаливый default для аккаунта.
+
+До этой интеграции фоновые проверки аккаунтов **не считаются готовыми**:
+ручной run через API уже изолирован, scheduler/watches пока demo.
+
 ## Эксплуатация
 
 ```bash
 CG_SESSION_SECRET=<постоянный секрет>   # иначе v3-сессии умрут после рестарта
 CG_SESSION_TTL_SECONDS=43200            # опционально
 CG_RATE_LOGIN=10 CG_RATE_REGISTER=5     # per-IP, 60s window
-CG_PUBLIC_DEMO=1 CG_ACCESS_CODE=...     # регистрация дополнительно требует accessCode
+CG_PUBLIC_DEMO=1 CG_ACCESS_CODE=...     # только legacy demo-вход, не регистрация
+CG_REGISTRATION_CODE=...               # опционально: invite-режим регистрации
 ```
 
 Без `CG_SESSION_SECRET` процесс работает на эфемерном секрете: это допустимо
@@ -135,7 +172,8 @@ CG_PUBLIC_DEMO=1 CG_ACCESS_CODE=...     # регистрация дополни�
 
 1. Нет подтверждения email, сброса пароля, смены пароля и удаления аккаунта.
 2. Нет UI; контракт backend-only.
-3. Регистрация в публичном demo закрыта кодом доступа; в локальном режиме открыта.
+3. Регистрация открыта; invite включается только явным `CG_REGISTRATION_CODE`,
+   флаг `registrationInviteRequired` отдаётся в `/api/session`.
 4. Повышение до `admin` — только SQL (`UPDATE account.users SET role='admin'`),
    эндпоинта нет. Demo-admin остаётся отдельным входом по коду.
 5. Per-user schedules/watches не включены (см. выше).
@@ -168,8 +206,10 @@ CG_PUBLIC_DEMO=1 CG_ACCESS_CODE=...     # регистрация дополни�
 - повторный `python -m backend.app.storage.migrate` → `ledger актуален`;
 - 009 на отдельной legacy-БД: до миграции `workflows=1`, после — `after=1`,
   имя строки сохранено, `account.users`/`account.sessions` созданы;
-- публичный demo: регистрация без `accessCode` → `403`, с кодом → `200`,
-  повтор → `409`; старый v2-токен принимается как `mode=demo`;
+- регистрация без какого-либо кода → `200`; с заданным `CG_REGISTRATION_CODE`
+  без поля `registrationCode` → `403 REGISTRATION_CODE_REQUIRED`, с кодом → `200`;
+  `/api/session` показывает `registrationInviteRequired`; повтор → `409`;
+  старый v2-токен принимается как `mode=demo`;
 - `/api/auth/me` с demo-cookie → `mode=demo`, `user=null`, `/api/profile` → `403`.
 
 Отдельный прогон default-workflow (`wf_secure_pr_gate`) аккаунта:

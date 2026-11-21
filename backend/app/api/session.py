@@ -84,6 +84,24 @@ def admin_access_code() -> str:
     return os.getenv("CG_ADMIN_ACCESS_CODE", "").strip()
 
 
+def registration_code() -> str:
+    """Опциональный invite-код для регистрации. Пусто = регистрация открыта."""
+    return os.getenv("CG_REGISTRATION_CODE", "").strip()
+
+
+def registration_invite_required() -> bool:
+    return bool(registration_code())
+
+
+def verify_registration_code(value: Optional[str]) -> bool:
+    expected = registration_code()
+    if not expected:
+        return True
+    if not isinstance(value, str):
+        return False
+    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
+
+
 def admin_available() -> bool:
     """Admin login is available only with a non-empty code distinct from the user code."""
     admin = admin_access_code()

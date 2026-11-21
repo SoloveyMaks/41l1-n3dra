@@ -29,6 +29,7 @@ from backend.app.api.session import (
     request_workspace,
     require_admin,
     revoke_current_session,
+    registration_invite_required,
     session_from_request,
     set_session_cookie,
     verify_access_code,
@@ -157,6 +158,7 @@ def get_session(request: Request, response: Response):
         return {
             "authenticated": True,
             "authRequired": auth_required(),
+            "registrationInviteRequired": registration_invite_required(),
             "mode": session.get("mode", MODE_DEMO),
             "user": (
                 {
@@ -181,6 +183,7 @@ def get_session(request: Request, response: Response):
         return {
             "authenticated": False,
             "authRequired": True,
+            "registrationInviteRequired": registration_invite_required(),
             "mode": None,
             "adminAvailable": admin_available(),
             "workspaceId": request_workspace(request),
@@ -191,6 +194,7 @@ def get_session(request: Request, response: Response):
     return {
         "authenticated": True,
         "authRequired": False,
+        "registrationInviteRequired": registration_invite_required(),
         "mode": MODE_DEMO,
         "user": None,
         "role": ROLE_USER,
@@ -244,6 +248,7 @@ def create_session(request: Request, response: Response,
     return {
         "authenticated": True,
         "authRequired": auth_required(),
+        "registrationInviteRequired": registration_invite_required(),
         "mode": MODE_DEMO,
         "user": None,
         "role": role,

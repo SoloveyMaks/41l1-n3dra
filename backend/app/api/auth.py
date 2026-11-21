@@ -24,12 +24,12 @@ from backend.app.api.session import (
     MODE_DEMO,
     SESSION_COOKIE,
     issue_account_session,
-    public_demo,
+    registration_invite_required,
     request_origin_allowed,
     revoke_current_session,
     session_from_request,
     set_session_cookie,
-    verify_access_code,
+    verify_registration_code,
 )
 from backend.app.storage import accounts
 from backend.app.storage.profile import (
@@ -91,14 +91,14 @@ def create_auth_router() -> APIRouter:
                  payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         _origin_guard(request)
         data = payload or {}
-        if public_demo() and not verify_access_code(
-            data.get("accessCode", data.get("access_code"))
+        if registration_invite_required() and not verify_registration_code(
+            data.get("registrationCode", data.get("registration_code"))
         ):
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "code": "DEMO_ACCESS_CODE_REQUIRED",
-                    "message": "Регистрация в публичном demo требует код доступа",
+                    "code": "REGISTRATION_CODE_REQUIRED",
+                    "message": "Регистрация по приглашению: нужен registrationCode",
                 },
             )
         try:
