@@ -14,8 +14,8 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { CustomNode } from './CustomNode';
-import { WorkflowDraft, WorkflowNode, WorkflowEdge, NodeRunStatus } from '../types';
-import { AlertCircle, CheckCircle2, RotateCcw, Save } from 'lucide-react';
+import { WorkflowDraft, WorkflowEdge, NodeRunStatus } from '../types';
+import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save } from 'lucide-react';
 
 interface WorkflowCanvasProps {
   draft: WorkflowDraft;
@@ -30,6 +30,7 @@ interface WorkflowCanvasProps {
   workflows: any[];
   workflowId: string;
   onSelectWorkflow: (workflowId: string) => void;
+  onCreateWorkflow?: () => void;
   artifacts: import('../types').ArtifactManifest[];
   currentArtifactId: string;
   onSelectArtifact: (artifactId: string) => void;
@@ -48,6 +49,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   workflows,
   workflowId,
   onSelectWorkflow,
+  onCreateWorkflow,
   artifacts,
   currentArtifactId,
   onSelectArtifact,
@@ -168,6 +170,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               ))}
             </select>
           </label>
+          {onCreateWorkflow && (
+            <button
+              onClick={onCreateWorkflow}
+              className="flex items-center gap-1 rounded border border-indigo-800 bg-indigo-950/60 px-1.5 py-0.5 text-[11px] text-indigo-300 hover:bg-indigo-900"
+              title="Создать новый сценарий на основе текущих блоков"
+            >
+              <Plus size={12} /> Новый
+            </button>
+          )}
           <label className="flex items-center gap-1.5 min-w-0">
             <span className="text-[10px] uppercase tracking-wider text-slate-500">Проект</span>
             <select

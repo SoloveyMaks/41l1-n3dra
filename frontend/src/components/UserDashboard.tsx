@@ -17,6 +17,7 @@ import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage
 type UserSection = 'check' | 'problems' | 'map' | 'report' | 'comparison';
 
 interface UserDashboardProps {
+  workflowId?: string;
   artifacts: ArtifactManifest[];
   currentArtifactId: string;
   runs: RunSummary[];
@@ -77,6 +78,7 @@ const projectName = (artifactId: string | undefined, artifacts: ArtifactManifest
   artifactLabel(findArtifact(artifactId, artifacts));
 
 export const UserDashboard: React.FC<UserDashboardProps> = ({
+  workflowId,
   artifacts,
   currentArtifactId,
   runs,
@@ -113,7 +115,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
   const runRepository = artifactRepository(runArtifact);
   const coverage = getCanonicalCoverage(nodeRuns);
   const recentRuns = runs
-    .filter((run) => run.workflow_id === 'wf_secure_pr_gate' && run.trigger_type !== 'schedule')
+    .filter((run) => (!workflowId || run.workflow_id === workflowId) && run.trigger_type !== 'schedule')
     .slice(0, 8);
 
   const handleSample = async () => {
