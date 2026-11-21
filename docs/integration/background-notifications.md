@@ -89,12 +89,22 @@ per-workspace advisory lock (`store.save_settings` / `store.authorize`):
 
 ## Интеграция root-файлов
 
-`backend/app/main.py` и `frontend/src/App.tsx` — root-owned. В этой ветке они не
-меняются; патч `docs/integration/background-notifications-hooks.patch` обновлён
-под текущие API (`NotificationRuntime`, `create_notification_router`,
-`handleSelectRun`, `setActiveTab`, `setAdminSection`) и проверяется через
-`git apply --check`. Перед применением владелец root-файлов должен прогнать эту
-проверку и применить патч вместе с code review.
+`backend/app/main.py` уже подключён в этой ветке: `NotificationRuntime`
+стартует в lifespan внутри `try` (сбой инициализации всё равно останавливает
+scheduler/telegram и закрывает пул БД), останавливается в `finally`, роутер
+смонтирован как `include_router(create_notification_router(), prefix="/api")` до
+`StaticFiles`.
+
+`frontend/src/App.tsx` ещё не изменён; его владелец применяет только frontend-hunk
+патча:
+
+```bash
+git apply --exclude=backend/app/main.py docs/integration/background-notifications-hooks.patch
+```
+
+Патч обновлён под текущие API (`NotificationRuntime`,
+`create_notification_router`, `handleSelectRun`, `setActiveTab`,
+`setAdminSection`); перед применением — `git apply --check` и code review.
 
 ## Проверка без сторонних адресатов
 

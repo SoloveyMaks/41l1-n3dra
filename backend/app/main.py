@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.router import api_router, scheduler, db_repo, telegram_runtime
 from backend.app.api.admin import admin_router
+from backend.app.notifications import NotificationRuntime, create_notification_router
 from backend.app.api.session import (
     allow_attempt,
     allowed_origins,
@@ -72,10 +73,14 @@ async def lifespan(app: FastAPI):
             "Это допустимо только для локального режима; для CG_PUBLIC_DEMO=1 секрет обязателен."
         )
     scheduler.start()
+    notifications_runtime = NotificationRuntime()
     telegram_task = None
-    if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
-        telegram_task = asyncio.create_task(telegram_runtime.start(), name="telegram-start")
     try:
+        # Inside try: a failed initialization must still stop the scheduler and
+        # close the DB pool instead of leaking tasks from a half-started app.
+        await notifications_runtime.start()
+        if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
+            telegram_task = asyncio.create_task(telegram_runtime.start(), name="telegram-start")
         yield
     finally:
         if telegram_task is not None and not telegram_task.done():
@@ -83,6 +88,7 @@ async def lifespan(app: FastAPI):
         if telegram_task is not None:
             await asyncio.gather(telegram_task, return_exceptions=True)
         await telegram_runtime.stop()
+        await notifications_runtime.stop()
         scheduler.stop()
         close = getattr(db_repo, "close", None)
         if callable(close):
@@ -197,6 +203,7 @@ async def workspace_scope(request: Request, call_next):
 
 
 app.include_router(api_router)
+app.include_router(create_notification_router(), prefix="/api")
 app.include_router(admin_router)
 
 frontend_dist = None
