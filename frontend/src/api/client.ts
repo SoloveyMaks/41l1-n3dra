@@ -8,6 +8,7 @@ import {
   ReportData,
   RepositoryCheckResult,
   RepositoryWatch,
+  RepositoryWebhookSetup,
   RunSummary,
   SessionRole,
   SessionState,
@@ -162,12 +163,29 @@ export const apiClient = {
     workflowId: string;
     url: string;
     branch?: string;
-    cronOrInterval: string;
+    cronOrInterval?: string;
+    triggerMode?: 'poll' | 'webhook';
   }): Promise<RepositoryWatch> {
-    const body = input.branch
-      ? input
-      : { workflowId: input.workflowId, url: input.url, cronOrInterval: input.cronOrInterval };
+    const body: Record<string, unknown> = {
+      workflowId: input.workflowId,
+      url: input.url,
+      triggerMode: input.triggerMode || 'poll',
+    };
+    if (input.branch) body.branch = input.branch;
+    if (input.cronOrInterval) body.cronOrInterval = input.cronOrInterval;
     return (await request('/repository-watches', jsonInit('POST', body))).json();
+  },
+
+  /**
+   * Выпускает (или перевыпускает) секрет доставки. Это единственный вызов,
+   * который возвращает секрет: вызывать только по явному действию администратора
+   * и не сохранять ответ в браузере.
+   */
+  async setupRepositoryWebhook(watchId: string, rotate: boolean): Promise<RepositoryWebhookSetup> {
+    return (await request(
+      `/repository-watches/${encodeURIComponent(watchId)}/webhook/setup`,
+      jsonInit('POST', { rotate }),
+    )).json();
   },
 
   async setRepositoryWatchEnabled(watchId: string, enabled: boolean): Promise<RepositoryWatch> {
