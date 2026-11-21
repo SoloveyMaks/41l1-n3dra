@@ -67,26 +67,25 @@ JOB_RECOVERY_BATCH = 20
 HELP_TEXT = """NEDRA Telegram
 
 /start — меню и привязка аккаунта
-/status — привязка, режим и последние проверки
+/status — статус и последние проверки
 /settings — режим доставки и сценарий кнопками
-/settings alerts|jsonc|both — доставка: Кратко, JSON или Оба
-/settings scenario <id> — выбрать сценарий
 /help — эта справка
 
+Привязка: пришлите код из кабинета обычным сообщением — команда не нужна.
+Режим и сценарий меняются кнопками в /settings.
 Пришлите HTTPS-ссылку GitHub/GitLab — бот импортирует репозиторий и запустит выбранный сценарий."""
 
 BINDING_SUCCESS_TEXT = (
     "Аккаунт привязан.\n"
-    "Меню ниже: проверки, настройки и Mini App NEDRA.\n"
-    "Дальше пришлите HTTPS-ссылку GitHub/GitLab."
+    "Меню ниже, настройки — следующим сообщением."
 )
 BINDING_CODE_HINT = (
-    "Код не найден, истёк или уже использован. Код действует 10 минут; "
-    "создайте новый в веб-кабинете и отправьте /start <код>."
+    "Код не подошёл, истёк или уже использован. Код действует 10 минут; "
+    "создайте новый в кабинете и пришлите его сюда следующим сообщением."
 )
 BARE_CODE_MISS_TEXT = (
-    "Похоже на код привязки, но он не найден или истёк. "
-    "Создайте новый код в веб-кабинете и отправьте /start <код>."
+    "Код не подошёл, истёк или уже использован. "
+    "Создайте новый код в кабинете и пришлите его сюда следующим сообщением."
 )
 UNSUPPORTED_FILE_TEXT = (
     "Файлы, архивы (ZIP) и изображения пока не поддерживаются. "
@@ -94,7 +93,7 @@ UNSUPPORTED_FILE_TEXT = (
 )
 STALE_CALLBACK_TEXT = "Кнопка устарела — откройте меню заново."
 CALLBACK_FAILED_TEXT = "Не удалось выполнить действие. Откройте меню и попробуйте ещё раз."
-BARE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+BARE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{6,128}$")
 
 
 class TelegramRuntime:
@@ -575,12 +574,12 @@ class TelegramRuntime:
     def _binding_text(self) -> str:
         cabinet = self.menu_config.cabinet_url
         return (
-            "Аккаунт не привязан.\n\n"
-            f"1. Откройте кабинет NEDRA: {cabinet}\n"
-            "2. Войдите в свой аккаунт.\n"
-            "3. Настройки → Telegram → «Создать код».\n"
-            "4. Отправьте сюда /start <код> в течение 10 минут.\n\n"
-            "Бот не привязывает аккаунт сам: одноразовый код подтверждаете вы."
+            "Привет! Я NEDRA — проверяю репозитории на уязвимости.\n\n"
+            "Откройте кабинет, создайте код привязки и пришлите его сюда "
+            "следующим сообщением — без команд.\n"
+            f"Кабинет: {cabinet}\n\n"
+            "Код действует 10 минут и срабатывает один раз. "
+            "Если код не подошёл — создайте новый в кабинете."
         )
 
     @staticmethod
@@ -761,6 +760,31 @@ class TelegramRuntime:
         )
         await self._edit_or_send(chat_id, message_id, text, markup)
 
+    async def _send_settings(
+        self,
+        chat_id: int,
+        sender_id: int,
+        binding: Any,
+        *,
+        notice: Optional[str] = None,
+    ) -> None:
+        text, markup = await self._settings_view(
+            binding, sender_id, notice=notice,
+        )
+        await self._reply(chat_id, text, reply_markup=markup)
+
+    async def _after_bind(
+        self, chat_id: int, sender_id: int, binding: Any,
+    ) -> None:
+        """Binding is done: show the menu and then the shared settings."""
+        await self._render_main(
+            chat_id, sender_id, None, binding, notice=BINDING_SUCCESS_TEXT,
+        )
+        await self._send_settings(
+            chat_id, sender_id, binding,
+            notice="Выберите сценарий кнопкой — печатать id не нужно.",
+        )
+
     async def _render_checks(
         self, chat_id: int, sender_id: int, message_id: int, binding: Any,
     ) -> None:
@@ -940,11 +964,11 @@ class TelegramRuntime:
             return
         bound = await self._repo("consume_binding_code", code, chat_id, username)
         if bound is None:
-            await self._reply(chat_id, BARE_CODE_MISS_TEXT)
+            await self._render_binding(
+                chat_id, sender_id, None, notice=BARE_CODE_MISS_TEXT,
+            )
             return
-        await self._render_main(
-            chat_id, sender_id, None, bound, notice=BINDING_SUCCESS_TEXT,
-        )
+        await self._after_bind(chat_id, sender_id, bound)
 
     async def _handle_start(
         self,
@@ -956,11 +980,11 @@ class TelegramRuntime:
         if argument:
             bound = await self._repo("consume_binding_code", argument, chat_id, username)
             if bound is None:
-                await self._reply(chat_id, BINDING_CODE_HINT)
+                await self._render_binding(
+                    chat_id, sender_id, None, notice=BINDING_CODE_HINT,
+                )
                 return
-            await self._render_main(
-                chat_id, sender_id, None, bound, notice=BINDING_SUCCESS_TEXT,
-            )
+            await self._after_bind(chat_id, sender_id, bound)
             return
         binding = await self._repo("get_binding", chat_id)
         if binding is None:

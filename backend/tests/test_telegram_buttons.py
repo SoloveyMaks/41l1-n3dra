@@ -415,7 +415,7 @@ async def check_callbacks() -> None:
 
 
 async def check_start_and_commands() -> None:
-    # Unbound /start: honest binding steps, cabinet link, no fake auto-binding.
+    # Unbound /start: short primary flow, code comes as the next plain message.
     repo, api = FakeRepo(), FakeAPI()
     runtime = make_runtime(repo, api)
     await runtime.handle_update(message_update("/start", update_id=100))
@@ -423,15 +423,36 @@ async def check_start_and_commands() -> None:
     check("unbound /start replies", len(sent) == 1)
     text = sent[0][2]
     check("unbound /start explains cabinet", DEFAULT_CABINET_URL in text, text)
-    check("unbound /start asks for code", "/start <код>" in text and "10 минут" in text, text)
+    check("unbound /start asks for next message", "следующим сообщением" in text, text)
+    check("unbound /start explains code", "10 минут" in text and "один раз" in text, text)
+    check(
+        "unbound /start avoids command syntax",
+        "/start <код>" not in text and "/settings" not in text,
+        text,
+    )
     check("unbound /start is not fake-bound", "Аккаунт привязан" not in text, text)
     markup = sent[0][3]["reply_markup"]
+    buttons = [button for row in markup["inline_keyboard"] for button in row]
     check(
         "unbound /start has cabinet button",
-        markup["inline_keyboard"][0][0].get("url") == DEFAULT_CABINET_URL,
+        any(button.get("url") == DEFAULT_CABINET_URL for button in buttons),
+        markup,
+    )
+    check(
+        "unbound /start has mini app button",
+        any(button.get("web_app", {}).get("url") == DEFAULT_MINI_APP_URL for button in buttons),
         markup,
     )
     check("unbound /start does not claim a binding", repo.binding is None)
+
+    # A plain wrong code is answered, not silently turned into generic help.
+    repo, api = FakeRepo(), FakeAPI()
+    runtime = make_runtime(repo, api)
+    await runtime.handle_update(message_update("abcdef", update_id=105))
+    sent = api.kinds("send")
+    check("invalid plain code replies", len(sent) == 1)
+    check("invalid plain code explains retry", "Код не подошёл" in sent[0][2], sent[0][2])
+    check("invalid plain code does not bind", repo.binding is None)
 
     # /start <code> and bare code remain compatible.
     for index, command in enumerate(("/start ValidCode1234", "ValidCode1234"), start=101):
@@ -439,10 +460,27 @@ async def check_start_and_commands() -> None:
         runtime = make_runtime(repo, api)
         await runtime.handle_update(message_update(command, update_id=index))
         check(f"{command} binds", repo.binding is not None)
-        check(f"{command} confirms", "привязан" in api.kinds("send")[-1][2].lower())
-        markup = api.kinds("send")[-1][3]["reply_markup"]
-        labels = [button.get("text") for row in markup["inline_keyboard"] for button in row]
+        sends = api.kinds("send")
+        check(f"{command} sends menu and settings", len(sends) == 2, len(sends))
+        check(f"{command} confirms", "привязан" in sends[0][2].lower(), sends[0][2])
+        labels = [
+            button.get("text")
+            for row in sends[0][3]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
         check(f"{command} shows menu", "Проверки" in labels and "Настройки" in labels, labels)
+        check(f"{command} shows settings", "Настройки NEDRA" in sends[1][2], sends[1][2])
+        settings_labels = [
+            str(button.get("text")).lstrip("✓ ")
+            for row in sends[1][3]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        check(
+            f"{command} settings use same labels",
+            "Кратко" in settings_labels and "JSON" in settings_labels
+            and "Оба" in settings_labels and "Alpha" in settings_labels,
+            settings_labels,
+        )
 
     # Bound /start greeting with all four menu entries.
     repo, api = bound_repo(epoch=2), FakeAPI()
@@ -480,7 +518,13 @@ async def check_start_and_commands() -> None:
     await runtime.handle_update(message_update("/status", update_id=113))
     check("legacy /status still works", "Проверки NEDRA" in api.kinds("send")[-1][2])
     await runtime.handle_update(message_update("/help", update_id=114))
-    check("legacy /help still works", "/settings" in api.kinds("send")[-1][2])
+    help_text = api.kinds("send")[-1][2]
+    check("legacy /help still works", "/settings" in help_text)
+    check(
+        "help does not primary-advertise legacy syntax",
+        "/settings alerts" not in help_text and "scenario <id>" not in help_text,
+        help_text,
+    )
     await runtime.handle_update(message_update("просто текст", update_id=115))
     check("unknown text falls back to help", "/help" in api.kinds("send")[-1][2])
 

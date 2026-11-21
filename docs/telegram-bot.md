@@ -172,29 +172,40 @@ Example binding response:
 
 ## 5. Bot commands and buttons
 
-Private chat only. Every reply that needs action carries an inline keyboard:
+Private chat only. The primary flow is **`/start` then a plain code**:
 
-- `/start` (unbound) — honest binding instructions: open the web cabinet
-  (`TELEGRAM_WEB_CABINET_URL`), sign in, Настройки → Telegram → «Создать код»,
-  then send `/start <код>`. The cabinet is a URL button; the bot never pretends
-  the account was bound automatically.
+1. `/start` in an unbound chat replies briefly: open the cabinet, create a code,
+   and send that code as the next ordinary message. The reply has
+   `Открыть NEDRA` (`web_app` → `/miniapp`) and `Открыть кабинет` URL buttons.
+   It does not ask the user to type `/start <код>`.
+2. The user sends the code as bare text. It is consumed once through
+   `TelegramRepository.consume_binding_code`; a wrong/expired code gets an
+   explicit “код не подошёл” reply, never silence or generic help.
+3. After a successful bind the bot sends the main menu and then the settings
+   view with delivery/scenario buttons. No scenario id has to be typed.
+
+The rest of the surface:
+
 - `/start` (bound) — short status (delivery mode, scenario) and the main menu:
   `Открыть NEDRA` (`web_app` → `/miniapp`), `Проверки`, `Настройки`, `Помощь`.
-- `/start <code>` — consume the one-time code and bind the chat.
-- `<code>` без команды — a binding code sent as bare text is still consumed when
-  the chat is unbound; existing clients keep working.
-- `/help` — command reference plus menu.
+- `/help` — short command reference plus menu; legacy text syntax is not
+  advertised.
 - `/settings` — buttons: `Кратко` / `JSON` / `Оба` (selected mode is marked
   `✓`), scenario buttons by real workflow name, bounded pages of
-  `SCENARIO_PAGE_SIZE=6`, `‹ Назад` / `Ещё ›`, `В меню`.
-- `/settings alerts|jsonc|both` — legacy text mode, still supported.
-- `/settings scenario <workflow_id>` — legacy text scenario selection, still
-  supported; validated in the bound workspace.
+  `SCENARIO_PAGE_SIZE=6`, `‹ Назад` / `Ещё ›`, `В меню`. These are the same
+  human labels and the same `telegram.settings` rows used by the Mini App.
 - `/status` (and the `Проверки` button) — binding state, delivery mode, selected
   scenario, Bot API status, last jobs and last five runs from the bound
   workspace, with `Обновить`, `Настройки`, `В меню` and the Mini App entry.
 - A private-chat HTTPS GitHub/GitLab URL — create an idempotent repo job. The
   bot replies with the job id, then imports and runs in the background.
+
+Backward compatibility (still works, not primary help copy):
+
+- `/start <code>` consumes the same one-time code.
+- `/settings alerts|jsonc|both` sets the delivery mode.
+- `/settings scenario <workflow_id>` selects a workflow, validated in the bound
+  workspace.
 
 ### Callback safety
 
@@ -306,11 +317,12 @@ directory 0700, file 0600, atomic replace, bounded to 10 MiB before send.
 `backend/tests/test_telegram_buttons.py` is a plain Python suite (no pytest
 dependency) with a recording fake Bot API: no external Telegram call is made.
 
-- 82 checks without a database cover URL policy, callback signing, foreign
+- 95 checks without a database cover URL policy, callback signing, foreign
   sender/group rejection, invalid/oversized data, stale epoch, mode and
   scenario selection, shifted scenario fingerprints, duplicate updates,
-  `editMessageText` fallback, startup command/menu publishing, legacy commands
-  and bare-code binding.
+  `editMessageText` fallback, startup command/menu publishing, the primary
+  `/start` → bare-code flow, invalid plain code, legacy commands and post-bind
+  menu plus settings.
 - 4 additional checks use a disposable PostgreSQL database
   (`nedra_tg_buttons_probe`, local container, migrations 010–012): the current
   binding epoch writes, a stale epoch is rejected with
@@ -319,10 +331,10 @@ dependency) with a recording fake Bot API: no external Telegram call is made.
 - Run: `/tmp/nedra-venv/bin/python backend/tests/test_telegram_buttons.py`
   (add `TELEGRAM_TEST_DATABASE_URL=...` for the DB probe). The probe refuses a
   database name that does not start with `nedra_tg_buttons_`.
-- Result on this commit: **86/86 checks passed** (82/menu-level + 4/DB).
-  `start`, bundled code binding, `/status`, `/settings`, `/settings alerts`,
-  `/help` and unknown-text fallback were exercised through the same handler
-  entry point as polling.
+- Result on this commit: **99/99 checks passed** (95/menu-level + 4/DB).
+  `start`, bare-code binding, `/start <code>` compatibility, `/status`,
+  `/settings`, `/settings alerts`, `/help` and unknown-text fallback were
+  exercised through the same handler entry point as polling.
 
 ## 9. Live evidence (local temp PostgreSQL, 2026-11-21)
 
