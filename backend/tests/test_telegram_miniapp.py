@@ -203,6 +203,10 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
         os.environ["TELEGRAM_ENABLED"] = "0"
         os.environ["CG_SESSION_SECRET"] = "miniapp-test-session-secret"
         os.environ["CG_DATA_DIR"] = tempfile.mkdtemp(prefix="nedra-miniapp-test-")
+        os.environ["CG_RATE_MINI_AUTH"] = "1000"
+        os.environ["CG_RATE_MINI_BIND"] = "1000"
+        os.environ["CG_RATE_MINI_RUN"] = "1000"
+        os.environ.pop("CG_RATE_MINI_BIND_USER", None)
         os.environ.pop("CG_PUBLIC_DEMO", None)
         os.environ.pop("CG_ALLOWED_ORIGINS", None)
         module = importlib.import_module("backend.app.main")
@@ -343,6 +347,96 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(response.status_code, 401, response.text)
             self.assertEqual(response.json()["detail"]["code"], "INVALID_INIT_DATA")
+
+    async def test_bind_with_code_issues_working_token(self) -> None:
+        from backend.app.storage.telegram import TelegramRepository
+
+        ctx = self._provision(bind=False, scenario=False)
+        other = self._provision(bind=False, scenario=False)
+        issued = TelegramRepository().issue_binding_code(
+            ctx["user_id"], ctx["workspace_id"]
+        )
+        code = issued["code"]
+        async with await self._client() as client:
+            # A bad signature must not consume the code.
+            tampered = await client.post(
+                "/api/telegram/mini/bind",
+                json={
+                    "initData": sign_init_data(ctx["chat_id"]).replace("ivan", "evil"),
+                    "code": code,
+                },
+            )
+            self.assertEqual(tampered.status_code, 401, tampered.text)
+
+            response = await client.post(
+                "/api/telegram/mini/bind",
+                json={"initData": sign_init_data(ctx["chat_id"]), "code": code},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            body = response.json()
+            self.assertEqual(set(body), {"token", "expiresAt"})
+            self.assertGreater(body["expiresAt"], int(time.time()))
+
+            response = await client.get(
+                "/api/telegram/mini/bootstrap",
+                headers={"Authorization": f"Bearer {body['token']}"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            bootstrap = response.json()
+            self.assertEqual(bootstrap["user"]["displayName"], "Тестовый Пользователь")
+            self.assertEqual(bootstrap["settings"], {"deliveryMode": "both", "scenario": None})
+            self.assertEqual(bootstrap["scenarios"], [])
+            self.assertNotIn("chat_id", response.text)
+
+            # The same code from another chat is not a second binding.
+            response = await client.post(
+                "/api/telegram/mini/bind",
+                json={"initData": sign_init_data(other["chat_id"]), "code": code},
+            )
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertEqual(response.json()["detail"]["code"], "INVALID_BINDING_CODE")
+
+    async def test_bind_rejects_expired_code_generically(self) -> None:
+        from backend.app.storage.telegram import TelegramRepository
+
+        ctx = self._provision(bind=False, scenario=False)
+        issued = TelegramRepository().issue_binding_code(
+            ctx["user_id"], ctx["workspace_id"]
+        )
+        with self.pool.connection() as conn:
+            conn.execute(
+                "UPDATE telegram.binding_codes "
+                "SET created_at = now() - interval '1 hour', "
+                "    expires_at = now() - interval '1 second' "
+                "WHERE consumed_at IS NULL AND user_id = %s",
+                (uuid.UUID(ctx["user_id"]),),
+            )
+        async with await self._client() as client:
+            response = await client.post(
+                "/api/telegram/mini/bind",
+                json={"initData": sign_init_data(ctx["chat_id"]), "code": issued["code"]},
+            )
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertEqual(response.json()["detail"]["code"], "INVALID_BINDING_CODE")
+            # The generic message must not reveal whether it was expired or unknown.
+            self.assertNotIn("expired", response.text.lower())
+            self.assertNotIn(issued["code"], response.text)
+
+    async def test_bind_rate_limits_each_verified_user(self) -> None:
+        ctx = self._provision(bind=False, scenario=False)
+        async with await self._client() as client:
+            statuses = []
+            for _ in range(11):
+                response = await client.post(
+                    "/api/telegram/mini/bind",
+                    json={
+                        "initData": sign_init_data(ctx["chat_id"]),
+                        "code": "0" * 32,
+                    },
+                )
+                statuses.append(response.status_code)
+        self.assertEqual(statuses[:10], [400] * 10, statuses)
+        self.assertEqual(statuses[10], 429, statuses)
 
     async def test_rebind_and_unbind_revoke_token(self) -> None:
         ctx = self._provision()

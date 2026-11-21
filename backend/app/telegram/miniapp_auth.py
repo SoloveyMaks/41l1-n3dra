@@ -76,6 +76,10 @@ class MiniNotBound(MiniAppAuthError):
     """Verified Telegram identity has no usable private-chat binding."""
 
 
+class MiniBindError(MiniAppAuthError):
+    """Binding code is malformed, expired or already used by another chat."""
+
+
 @dataclass(frozen=True)
 class InitDataUser:
     id: int
@@ -461,6 +465,57 @@ class MiniAppAuth:
         if account is None:
             raise MiniNotBound("Аккаунт привязки отключён или удалён")
         return binding, account
+
+    def verify_init_data(self, raw: str) -> InitDataUser:
+        """Verify initData without touching bindings (used by /bind).
+
+        The same signature, freshness, private-chat and user checks as /auth
+        apply; a verified user is not yet an authorized account.
+        """
+        return verify_init_data(
+            raw,
+            self._bot_token(),
+            now=self._now(),
+            max_age=self._init_max_age,
+        )
+
+    def bind_with_code(
+        self,
+        user: InitDataUser,
+        code: str,
+    ) -> Tuple[MiniIdentity, int, str]:
+        """Consume a one-time cabinet code for this private chat, then mint.
+
+        A token is issued only after the code was consumed and the bound
+        account is active in exactly the binding workspace. Bad input and a
+        missing/expired code share one generic error; the code itself is never
+        echoed or logged. Replay of an already-consumed code follows the
+        existing ``consume_binding_code`` idempotency window (same chat only).
+        """
+        if not isinstance(code, str):
+            raise MiniBindError("Код привязки недействителен или истёк")
+        normalized = code.strip()
+        if not 8 <= len(normalized) <= 128:
+            raise MiniBindError("Код привязки недействителен или истёк")
+        # Resolve the signing secret before consuming the one-time code: a
+        # misconfigured secret must not burn a valid code.
+        secret = self._secret()
+        binding = self._repository.consume_binding_code(
+            normalized, int(user.id), user.username
+        )
+        if binding is None:
+            raise MiniBindError("Код привязки недействителен или истёк")
+        account = accounts.get_user(binding.user_id)
+        if account is None:
+            raise MiniNotBound("Аккаунт привязки отключён или удалён")
+        identity = self._identity(binding, account, user=user)
+        token, expires = mint_mini_token(
+            identity,
+            secret,
+            ttl_seconds=self._token_ttl,
+            now=self._now(),
+        )
+        return identity, expires, token
 
     def authenticate_init_data(self, raw: str) -> Tuple[MiniIdentity, int, str]:
         """Verify initData, resolve the private-chat binding, mint a token.

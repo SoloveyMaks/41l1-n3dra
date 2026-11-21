@@ -52,12 +52,14 @@ _RATE_UPLOAD = int(os.getenv("CG_RATE_UPLOAD", "10"))
 _RATE_RUN = int(os.getenv("CG_RATE_RUN", "15"))
 _RATE_HOOK = int(os.getenv("CG_RATE_HOOK", "120"))
 _RATE_MINI_AUTH = int(os.getenv("CG_RATE_MINI_AUTH", "20"))
+_RATE_MINI_BIND = int(os.getenv("CG_RATE_MINI_BIND", "20"))
 _RATE_MINI_RUN = int(os.getenv("CG_RATE_MINI_RUN", "5"))
 _HOOK_PATH_RE = re.compile(r"^/api/repository-hooks/rw_[A-Za-z0-9]{1,40}$")
 # Mini App uses its own Bearer auth; these exact paths never get a cookie
 # session. Origin guard and rate limits still run before the exemption.
 _MINI_API_PREFIX = "/api/telegram/mini/"
 _MINI_AUTH_PATH = "/api/telegram/mini/auth"
+_MINI_BIND_PATH = "/api/telegram/mini/bind"
 _MINI_RUNS_PATH = "/api/telegram/mini/runs"
 
 
@@ -70,6 +72,8 @@ def _rate_bucket(method: str, path: str) -> str | None:
         return "register"
     if path == _MINI_AUTH_PATH:
         return "mini_auth"
+    if path == _MINI_BIND_PATH:
+        return "mini_bind"
     if path == _MINI_RUNS_PATH:
         return "mini_run"
     if path == "/api/artifacts" or path.startswith("/api/artifacts/"):
@@ -160,7 +164,8 @@ async def same_origin_session(request: Request, call_next):
         limits = {
             "login": _RATE_LOGIN, "register": _RATE_REGISTER,
             "upload": _RATE_UPLOAD, "run": _RATE_RUN, "hook": _RATE_HOOK,
-            "mini_auth": _RATE_MINI_AUTH, "mini_run": _RATE_MINI_RUN,
+            "mini_auth": _RATE_MINI_AUTH, "mini_bind": _RATE_MINI_BIND,
+            "mini_run": _RATE_MINI_RUN,
         }
         if not allow_attempt(client_key(request), bucket, limit=limits[bucket], window_seconds=_RATE_WINDOW):
             return JSONResponse(
