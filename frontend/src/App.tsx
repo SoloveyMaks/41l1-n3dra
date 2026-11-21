@@ -807,7 +807,7 @@ export const App: React.FC = () => {
                 onSelectArtifact={handleUserSelectArtifact}
               />
               {selectedNode && (
-                <div className="fixed inset-x-0 bottom-0 z-30 max-h-[45vh] overflow-hidden shadow-2xl md:static md:z-auto md:max-h-none md:shrink-0">
+                <div className="fixed inset-x-0 bottom-0 z-30 shadow-2xl md:static md:z-auto md:shrink-0">
                   <InspectorPanel
                     node={selectedNode}
                     artifacts={artifacts}

@@ -30,7 +30,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   };
 
   return (
-    <div className="w-full md:w-80 max-h-[55vh] md:max-h-none bg-slate-900/95 border-t md:border-t-0 md:border-l border-slate-800 flex flex-col md:h-full overflow-hidden shadow-2xl shrink-0">
+    <div className="w-full md:w-80 max-h-[45vh] md:max-h-none bg-slate-900/95 border-t md:border-t-0 md:border-l border-slate-800 flex flex-col md:h-full overflow-hidden shadow-2xl shrink-0">
       {/* Header */}
       <div className="p-3.5 border-b border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-2">
