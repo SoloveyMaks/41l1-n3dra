@@ -56,7 +56,7 @@ function verdictTone(verdict: SecurityVerdict): Tone {
 }
 
 export function reportAvailable(run: RunSummary | null | undefined): boolean {
-  return Boolean(run && run.execution_status === 'succeeded' && run.finished_at)
+  return Boolean(run && !isActiveRun(run) && run.finished_at)
 }
 
 export function reportAvailabilityText(run: RunSummary | null | undefined): string | null {

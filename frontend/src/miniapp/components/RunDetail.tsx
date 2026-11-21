@@ -182,7 +182,11 @@ export function RunDetail({ runId, sessionKey, onBack, loadRun, getReport, onRun
       )}
 
       {state.status === 'ready' && state.staleError && (
-        <Alert tone="error">Не удалось обновить: {state.staleError}</Alert>
+        <Alert tone="error">Не удалось обновить: {state.staleError}
+          <button type="button" className="mini-btn mini-btn--ghost mini-btn--block" onClick={retryLoad}>
+            <RefreshCw size={16} /> Повторить
+          </button>
+        </Alert>
       )}
 
       {run && verdict && (
@@ -207,7 +211,7 @@ export function RunDetail({ runId, sessionKey, onBack, loadRun, getReport, onRun
           <section className="mini-card" aria-labelledby="mini-findings-title">
             <div className="mini-section-head">
               <h2 id="mini-findings-title" className="mini-card__title">Находки</h2>
-              <span className="mini-count">{findings.length}</span>
+              <span className="mini-count">{findings.length < run.total_findings ? `${findings.length} из ${run.total_findings}` : findings.length}</span>
             </div>
 
             {findings.length > 0 ? (
@@ -266,7 +270,7 @@ export function RunDetail({ runId, sessionKey, onBack, loadRun, getReport, onRun
             )}
 
             {reportError && <Alert tone="error">{reportError}</Alert>}
-            {reportSaved && <Alert tone="success">Файл отчёта сохранён.</Alert>}
+            {reportSaved && <Alert tone="success">Файл передан браузеру для скачивания.</Alert>}
           </section>
         </>
       )}
