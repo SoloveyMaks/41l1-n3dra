@@ -11,12 +11,18 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.publish import get_published_envelope
 from backend.app.codefacts.store import CodeFactsStore
+
+
+_COMPARE_SEM = threading.BoundedSemaphore(int(os.getenv("CG_MAX_CONCURRENT_COMPARISONS", "1")))
+_MAX_OUTPUT_BYTES = int(os.getenv("CG_COMPARISON_MAX_OUTPUT_BYTES", str(2 * 1024 * 1024)))
+_COMPARE_TIMEOUT = float(os.getenv("CG_COMPARISON_TIMEOUT_SECONDS", "15"))
 
 
 class ComparisonError(RuntimeError):
@@ -81,29 +87,44 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     if not cli.is_file():
         raise ComparisonError(503, "COMPARISON_CLI_MISSING", "packages/comparison/compare-cli.mjs не найден")
     node = os.getenv("CG_NODE_BIN", "node")
-    with tempfile.TemporaryDirectory(prefix="cg_compare_") as temp_dir:
-        before_path = Path(temp_dir) / "baseline.json"
-        after_path = Path(temp_dir) / "current.json"
-        before_path.write_text(json.dumps(before, ensure_ascii=False), encoding="utf-8")
-        after_path.write_text(json.dumps(after, ensure_ascii=False), encoding="utf-8")
-        try:
-            completed = subprocess.run(
-                [node, str(cli), str(before_path), str(after_path)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            raise ComparisonError(503, "NODE_MISSING", f"Node 22 не найден: {node}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ComparisonError(504, "COMPARISON_TIMEOUT", "Сравнение превысило 60 секунд") from exc
+    if not _COMPARE_SEM.acquire(blocking=False):
+        raise ComparisonError(429, "COMPARISON_BUSY", "Сравнение уже выполняется; повторите позже")
+    try:
+        with tempfile.TemporaryDirectory(prefix="cg_compare_") as temp_dir:
+            os.chmod(temp_dir, 0o700)
+            before_path = Path(temp_dir) / "baseline.json"
+            after_path = Path(temp_dir) / "current.json"
+            before_path.write_text(json.dumps(before, ensure_ascii=False), encoding="utf-8")
+            after_path.write_text(json.dumps(after, ensure_ascii=False), encoding="utf-8")
+            os.chmod(before_path, 0o600)
+            os.chmod(after_path, 0o600)
+            stdout_path = Path(temp_dir) / "stdout.json"
+            stderr_path = Path(temp_dir) / "stderr.txt"
+            try:
+                with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
+                    completed = subprocess.run(
+                        [node, str(cli), str(before_path), str(after_path)],
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                        timeout=_COMPARE_TIMEOUT,
+                        check=False,
+                    )
+            except FileNotFoundError as exc:
+                raise ComparisonError(503, "NODE_MISSING", f"Node 22 не найден: {node}") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise ComparisonError(504, "COMPARISON_TIMEOUT", "Сравнение превысило лимит времени") from exc
+            if stdout_path.stat().st_size > _MAX_OUTPUT_BYTES or stderr_path.stat().st_size > _MAX_OUTPUT_BYTES:
+                raise ComparisonError(502, "COMPARISON_OUTPUT_TOO_LARGE", "compare-cli превысил лимит вывода")
+            stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace")
+            stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+    finally:
+        _COMPARE_SEM.release()
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+        detail = (stderr_text or stdout_text or "").strip().splitlines()
         reason = detail[-1] if detail else "comparison rejected"
         raise ComparisonError(422, "COMPARISON_REJECTED", reason[:500])
     try:
-        result = json.loads(completed.stdout)
+        result = json.loads(stdout_text)
     except ValueError as exc:
         raise ComparisonError(502, "COMPARISON_BAD_OUTPUT", "compare-cli вернул не JSON") from exc
     required = {
