@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
-  <title id="title">NEDRA</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="nedra-title">
+  <title id="nedra-title">Недра</title>
   <defs>
     <linearGradient id="nedra-bg" x1="6" y1="4" x2="58" y2="62" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#4338ca"/>
@@ -34,4 +34,5 @@
     <circle cx="43" cy="26" r="3"/>
   </g>
   <circle cx="52" cy="12" r="2.2" fill="#a5f3fc" opacity="0.9"/>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="none" stroke="#6366f1" stroke-width="3"/>
 </svg>
