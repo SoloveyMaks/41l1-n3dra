@@ -261,8 +261,12 @@ export const ResponsibilityPanel: React.FC<ResponsibilityPanelProps> = ({ runId,
               </>
             ) : data.codeowners.status === 'absent' ? (
               <span className="text-[10px] text-slate-500">В снимке нет CODEOWNERS</span>
+            ) : data.codeowners.status === 'incomplete' ? (
+              <span className="text-[10px] text-amber-300">incomplete · {data.codeowners.basis || 'CODEOWNERS обрезан лимитом'}</span>
+            ) : data.codeowners.status === 'unavailable' ? (
+              <span className="text-[10px] text-amber-300">unavailable · {data.codeowners.basis || 'CODEOWNERS недоступен'}</span>
             ) : (
-              <span className="text-[10px] text-slate-500">{data.codeowners.basis || 'CODEOWNERS недоступен'}</span>
+              <span className="text-[10px] text-slate-500">{data.codeowners.basis || 'owner не подтверждён'}</span>
             )}
           </div>
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, Optional
 from pathlib import PurePosixPath
 
@@ -15,6 +16,12 @@ from backend.app.responsibility.models import (
     ResponsibilityScope,
     RoleSuggestion,
 )
+
+
+RESPONSIBILITY_DEADLINE_SECONDS = 10.0
+_MAX_ACTIVE_RESPONSIBILITY = 4
+_ACTIVE = asyncio.Semaphore(_MAX_ACTIVE_RESPONSIBILITY)
+_INFLIGHT: Dict[str, asyncio.Task] = {}
 
 
 class ResponsibilityNotFound(Exception):
@@ -91,13 +98,12 @@ def _history_without_repo(reason: str) -> Dict[str, Any]:
     }
 
 
-async def build_responsibility(
-    *,
-    db: Any,
-    store: Any,
-    run_id: str,
-    finding_id: str,
-) -> ResponsibilityResponse:
+def _load_context(db: Any, store: Any, run_id: str, finding_id: str) -> Dict[str, Any]:
+    """All synchronous DB/store/CODEOWNERS reads, called in a worker thread.
+
+    asyncio.to_thread copies the current ContextVar, so the tenant workspace
+    stays attached to these scoped reads.
+    """
     run = db.get_run(run_id)
     if not run:
         raise ResponsibilityNotFound("Запуск не найден")
@@ -133,7 +139,34 @@ async def build_responsibility(
             basis="Путь находки не прошёл проверку; CODEOWNERS не искался.",
             limitations=["Некорректный путь не используется для чтения файлов или внешних запросов."],
         )
+    return {
+        "run": run,
+        "finding": finding,
+        "path": path,
+        "safe_path": safe_path,
+        "artifact_id": artifact_id,
+        "artifact": artifact,
+        "artifact_workspace": artifact_workspace,
+        "meta": meta,
+        "codeowners": codeowners,
+    }
 
+
+async def _build_responsibility_impl(
+    *,
+    db: Any,
+    store: Any,
+    run_id: str,
+    finding_id: str,
+) -> ResponsibilityResponse:
+    context = await asyncio.to_thread(_load_context, db, store, run_id, finding_id)
+    run = context["run"]
+    finding = context["finding"]
+    path = context["path"]
+    safe_path = context["safe_path"]
+    artifact_id = context["artifact_id"]
+    meta = context["meta"]
+    codeowners = context["codeowners"]
     suggestion = _suggest_role(finding, path or "неизвестный путь", codeowners)
     repository = meta.get("repository") if isinstance(meta, dict) else None
     provider, _, commit_sha = parse_repository_target(repository)
@@ -156,6 +189,7 @@ async def build_responsibility(
         commitSha=commit_sha,
         path=path,
     )
+
     limitations = [
         "Рекомендуемая роль — подсказка по analyzer/rule/path, не назначение человека и не факт авторства.",
         "Последний коммит файла не является автором уязвимости; line blame отдельно не поддерживается.",
@@ -172,3 +206,35 @@ async def build_responsibility(
         history=history_payload,
         limitations=limitations,
     )
+
+async def build_responsibility(
+    *,
+    db: Any,
+    store: Any,
+    run_id: str,
+    finding_id: str,
+) -> ResponsibilityResponse:
+    key = f"{workspace_id()}:{run_id}:{finding_id}"
+    existing = _INFLIGHT.get(key)
+    if existing is not None and not existing.done():
+        return await asyncio.shield(existing)
+
+    async def run() -> ResponsibilityResponse:
+        async with _ACTIVE:
+            return await asyncio.wait_for(
+                _build_responsibility_impl(
+                    db=db, store=store, run_id=run_id, finding_id=finding_id
+                ),
+                timeout=RESPONSIBILITY_DEADLINE_SECONDS,
+            )
+
+    task = asyncio.create_task(run())
+    _INFLIGHT[key] = task
+
+    def cleanup(finished: asyncio.Task) -> None:
+        if _INFLIGHT.get(key) is finished:
+            _INFLIGHT.pop(key, None)
+
+    task.add_done_callback(cleanup)
+    # A cancelled caller must not cancel the shared enrichment task for others.
+    return await asyncio.shield(task)
