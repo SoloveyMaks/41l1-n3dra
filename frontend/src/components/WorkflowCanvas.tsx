@@ -14,7 +14,9 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { CustomNode } from './CustomNode';
-import { WorkflowDraft, WorkflowEdge, NodeRunStatus } from '../types';
+import { ExecutionEdge, ExecutionEdgeData } from './ExecutionEdge';
+import { WorkflowDraft, WorkflowEdge } from '../types';
+import type { RunTelemetry } from '../execution/runTelemetry';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
 import { artifactRepository } from '../repository';
@@ -24,7 +26,7 @@ interface WorkflowCanvasProps {
   onDraftChange: (updated: WorkflowDraft) => void;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
-  nodeStatuses?: Record<string, NodeRunStatus>;
+  telemetry: RunTelemetry;
   validationIssues: Array<{ level: string; message: string }>;
   onSaveDraft: () => void;
   onResetToTemplate: () => void;
@@ -44,7 +46,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onDraftChange,
   selectedNodeId,
   onSelectNode,
-  nodeStatuses = {},
+  telemetry,
   validationIssues,
   onSaveDraft,
   onResetToTemplate,
@@ -59,59 +61,93 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onSelectArtifact,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
+  const edgeTypes = useMemo(() => ({ executionEdge: ExecutionEdge }), []);
   const selectedArtifact = artifacts.find((artifact) => artifact.id === currentArtifactId);
   const selectedRepository = artifactRepository(selectedArtifact);
 
-  // Map our domain WorkflowNode to ReactFlow Node
-  const initialRfNodes: Node[] = useMemo(() => {
+  // Graph structure only. Live status is layered on separately so an SSE event
+  // never resets positions or re-mounts edges mid-drag.
+  const baseNodes: Node[] = useMemo(() => {
     return draft.nodes.map((n) => ({
       id: n.id,
       type: 'customNode',
       position: n.position || { x: 100, y: 100 },
-      selected: n.id === selectedNodeId,
       data: {
         kind: n.kind,
         title: n.title || n.kind,
         config: n.config,
-        status: nodeStatuses[n.id] || 'pending',
       },
     }));
-  }, [draft.nodes, selectedNodeId, nodeStatuses]);
+  }, [draft.nodes]);
 
-  // Map our domain WorkflowEdge to ReactFlow Edge
-  const initialRfEdges: Edge[] = useMemo(() => {
+  // Map our domain WorkflowEdge to ReactFlow Edge. The saved draft stays the
+  // only source of graph topology; telemetry only decorates an edge.
+  const baseEdges: Edge[] = useMemo(() => {
     return draft.edges.map((e) => {
-      const isCondition = e.sourcePort === 'true_branch' || e.sourcePort === 'false_branch';
-      const edgeColor =
-        e.sourcePort === 'true_branch'
-          ? '#34d399'
-          : e.sourcePort === 'false_branch'
-          ? '#f87171'
-          : '#818cf8';
-
+      const tone: ExecutionEdgeData['tone'] =
+        e.sourcePort === 'true_branch' ? 'true' : e.sourcePort === 'false_branch' ? 'false' : 'default';
       return {
         id: e.id,
+        type: 'executionEdge',
         source: e.source,
         sourceHandle: e.sourcePort,
         target: e.target,
         targetHandle: e.targetPort,
-        animated: isCondition,
-        style: { stroke: edgeColor, strokeWidth: 2 },
+        data: { tone, flow: 'idle', pulse: false },
       };
     });
   }, [draft.edges]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialRfNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialRfEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState(baseNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(baseEdges);
 
-  // Sync when draft changes from outside
+  // Rebuild topology only when the draft itself changes (load, add/remove,
+  // drag stop). Positions come from the draft, so this is not a snap.
   useEffect(() => {
-    setNodes(initialRfNodes);
-  }, [initialRfNodes, setNodes]);
+    setNodes(baseNodes);
+  }, [baseNodes, setNodes]);
 
   useEffect(() => {
-    setEdges(initialRfEdges);
-  }, [initialRfEdges, setEdges]);
+    setEdges(baseEdges);
+  }, [baseEdges, setEdges]);
+
+  // Overlay live node status without touching node positions.
+  useEffect(() => {
+    setNodes((current) =>
+      current.map((node) => {
+        const live = telemetry.nodes[node.id];
+        return {
+          ...node,
+          selected: node.id === selectedNodeId,
+          data: {
+            ...node.data,
+            status: live?.status || 'pending',
+            durationMs: live?.durationMs,
+            startedAtMs: live?.startedAtMs,
+            live: telemetry.live,
+          },
+        };
+      }),
+    );
+  }, [selectedNodeId, telemetry, baseNodes, setNodes]);
+
+  // Overlay edge flow. Pulse is true only for edge_data received in this live
+  // subscription, so replaying history restores highlights without motion.
+  useEffect(() => {
+    setEdges((current) =>
+      current.map((edge) => {
+        const live = telemetry.edges[edge.id];
+        return {
+          ...edge,
+          data: {
+            ...edge.data,
+            flow: live?.state || 'idle',
+            pulse: Boolean(live?.pulse),
+          },
+        };
+      }),
+    );
+  }, [telemetry, baseEdges, setEdges]);
 
   // Handle new connections
   const onConnect = useCallback(
@@ -273,6 +309,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
