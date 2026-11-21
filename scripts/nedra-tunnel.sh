@@ -99,8 +99,10 @@ case "$MODE" in
   route)
     [ "$CONFIRM" = "1" ] || die "route публикует DNS; повторите с --yes"
     [ -n "$tunnel_id" ] || die "сначала создайте туннель"
-    cloudflared tunnel route dns "$NEDRA_TUNNEL_NAME" "$NEDRA_DOMAIN"
-    say "DNS $NEDRA_DOMAIN опубликован; backend auth должен быть готов"
+    # Use the explicit tunnel ID and never --overwrite-dns: an existing foreign
+    # hostname route must fail closed instead of being repointed.
+    cloudflared tunnel route dns "$tunnel_id" "$NEDRA_DOMAIN"
+    say "DNS $NEDRA_DOMAIN опубликован для туннеля $tunnel_id"
     ;;
   run)
     [ "$CONFIRM" = "1" ] || die "run открывает туннель наружу; повторите с --yes"

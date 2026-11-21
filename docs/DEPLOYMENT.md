@@ -1,9 +1,9 @@
 # Локальный деплой nedra
 
 Локальный компьютер — единственный хост приложения: если он выключен или спит,
-`nedra.soloveyka.bond` и loopback-приложение недоступны. Публикация DNS и запуск
-туннеля выполняются координатором отдельно, после готовности backend auth.
-Сейчас ничего наружу не открыто.
+`nedra.soloveyka.bond` и loopback-приложение недоступны. Публичный вход —
+`https://nedra.soloveyka.bond` через отдельный Cloudflare tunnel `nedra`;
+backend auth (access code + server session secret) включён.
 
 ## Что собирается
 
@@ -83,7 +83,8 @@ quoted/export значения парсятся и переписываются 
 - `CG_SESSION_SECRET`, `CG_ANCHOR_HMAC_KEY`, `CG_ACCESS_CODE` генерируются
   только если отсутствуют и дальше сохраняются;
 - `CG_DATA_DIR=/app/data`, `CG_PUBLIC_DEMO=1`,
-  `CG_ALLOWED_ORIGINS=https://nedra.soloveyka.bond`,
+  `CG_ALLOWED_ORIGINS=https://nedra.soloveyka.bond`, `CG_TRUST_PROXY=1`
+  (cloudflared передаёт `X-Forwarded-Proto`, поэтому Secure cookie),
   `AI_PROVIDER=reformboss`, `AI_MODEL=deepseek-v4.1-flash-1017`,
   `VECTOR_RETRIEVAL_ENABLED=0`;
 - значения не печатаются, access code не выводится ни в `--check`, ни в
@@ -178,31 +179,40 @@ scripts/nedra-systemd-install.sh --enable --start
 `podman-restart.service` сам по себе не поднимает rootless-контейнеры без
 user-manager/linger.
 
-## Cloudflare (не опубликован)
+## Cloudflare: опубликовано
 
-Домен `soloveyka.bond` подтверждён, cert лежит в `~/.cloudflared/cert.pem`.
-Существующий туннель `brigada` (`e5999ace-...`) и его
-`~/.cloudflared/config.yml` не изменяются.
+Публичный вход: **https://nedra.soloveyka.bond** (ingress только на
+`http://127.0.0.1:18080`, остальное — 404). Используется отдельный туннель
+`nedra` `7e72751b-bc39-4e7d-b0fc-6ef1e67e7a2b`; credentials
+`~/.cloudflared/7e72751b-....json` и config
+`~/.config/nedra/cloudflared-nedra.yml` имеют mode `600`.
 
-```bash
-scripts/nedra-tunnel.sh status           # read-only
-scripts/nedra-tunnel.sh create --yes     # создать отдельный tunnel nedra
-scripts/nedra-tunnel.sh config           # ~/.config/nedra/cloudflared-nedra.yml (600)
-scripts/nedra-tunnel.sh route --yes      # публикация DNS — только после auth review
-scripts/nedra-tunnel.sh run --yes        # запуск connector
-```
+Системный unit `nedra-tunnel.service` установлен из `integration-dev`, включён и
+active. DNS опубликован только для `nedra.soloveyka.bond`. Существующий туннель
+`brigada` (`e5999ace-...`), его config и root DNS не изменялись. `route` теперь
+вызывает `cloudflared tunnel route dns <tunnel-id> <hostname>` без
+`--overwrite-dns`, чтобы чужой route не перезаписывался.
 
-Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное — 404.
-Публикация не выполнялась; перед `route`/`run` нужен готовый public auth
-(`CG_PUBLIC_DEMO`, access code) и live check.
+Фактическая доступность: туннель поднят по `http2` (precheck: QUIC PASS, TCP
+HTTP/2 PASS; в config выбран `http2` как primary). Внешние проверки:
+`GET /api/health` 200; `GET /api/runs` без cookie 401; `GET /api/session` без
+`Set-Cookie`; неверный код 401; верный код 200 с
+`Secure; HttpOnly; SameSite=Lax`; авторизованные runs/map/evidence и SQL proof
+200. Cloudflare может отдавать 403 на дефолтный `Python-urllib` User-Agent;
+браузерный/curl UA проходит, это не app-auth.
+
+PC-хост должен быть включён. `Linger=no`: после reboot db/app/tunnel поднимутся
+после входа пользователя (units enabled), либо нужно один раз выполнить
+`loginctl enable-linger $USER`. Туннель без PC/интернета недоступен.
 
 ## Проверено реальной сборкой
 
-Текущий loopback-образ собран из `integration-dev` HEAD 2503230 (worktree не
-изменялся, deploy-файлы уже в dev):
+Текущий loopback/публичный образ собран из `integration-dev` HEAD `c01c96d`
+(worktree не изменялся):
 
-- `localhost/nedra-app:local` = `204670634fe5...`, revision `2503230`,
-  18 шагов; `db/`, `docs/`, healthcheck, Python wheels и `frontend/dist` внутри.
+- `localhost/nedra-app:local` = `c322a7f6d1e3...`, revision `c01c96d`,
+  Node `v22.23.5`, `db/`, `docs/`, `packages/comparison`, healthcheck,
+  Python wheels и `frontend/dist` внутри.
 - Backend стартовал, применил ledger 001/002/004/005; `vector 0.8.7`,
   `published_bundles=1`.
 - Auth: `GET /api/health` 200; `GET /api/runs` без сессии 401;
@@ -212,8 +222,8 @@ Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное �
   `15dc34ba-...` succeeded/verdict fail/13 findings; `security-map` 200 schema
   0.1 (10 nodes, 9 edges, 26 evidence, 13 findings), evidence ready.
 - Systemd user units переустановлены из `integration-dev`; app unit cycle прошёл,
-  artifact в volume `nedra-app-data` сохранился. Tunnel unit disabled/inactive,
-  DNS не публиковался.
+  artifact в volume `nedra-app-data` сохранился. Tunnel unit enabled/active,
+  DNS опубликован только для `nedra.soloveyka.bond`.
 - Node-образ `node-verify` (`7874a386f36b...`, 20 шагов) содержит
   `node v22.23.5`; committed
   `examples/demo/sql-before-after/{baseline,current}.published.json` прогнаны
@@ -230,7 +240,7 @@ Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное �
 - `CG_PUBLIC_DEMO=1` требует access code; без него backend не стартует. Код
   хранится только в `runtime.env` и никогда не печатается.
 - Optional 003 — зона PG worker; deploy не выполняет его SQL.
-- Текущий loopback-образ `204670634fe5` (HEAD 2503230) ещё без Node; Dockerfile с
-  Node проверен отдельным `node-verify` образом, финальная пересборка — после
-  следующего backend commit (auth/rate/origin).
+- Публичный образ `c322a7f6d1e3` (HEAD c01c96d) содержит Node и comparison;
+  новые remote analyzers add-only из `dev66fec77` в runtime не включены и cg26
+  не заявляется.
 - Volumes удаляются только вручную и осознанно; скрипты этого не делают.
