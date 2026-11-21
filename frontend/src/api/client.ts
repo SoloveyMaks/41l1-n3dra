@@ -16,6 +16,10 @@ import {
   SessionRole,
   SessionState,
   SqlPatternResult,
+  TelegramBinding,
+  TelegramMe,
+  TelegramScenario,
+  TelegramSettings,
   WorkflowDraft
 } from '../types';
 
@@ -109,6 +113,50 @@ export const apiClient = {
 
   async getProfile(): Promise<ProfileData> {
     return (await request('/profile')).json();
+  },
+
+  async downloadReportExport(
+    runId: string,
+    format: 'docx' | 'jsonc',
+  ): Promise<{ blob: Blob; filename: string }> {
+    const res = await request(`/runs/${encodeURIComponent(runId)}/report/export.${format}`);
+    const blob = await res.blob();
+    const fallback = `nedra-${runId.slice(0, 12)}.${format}`;
+    const disposition = res.headers.get('content-disposition') || '';
+    const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    let filename = fallback;
+    if (utf8?.[1]) {
+      try {
+        filename = decodeURIComponent(utf8[1].trim());
+      } catch {
+        filename = utf8[1].trim();
+      }
+    } else {
+      const quoted = /filename="([^"]+)"/i.exec(disposition);
+      const plain = /filename=([^;]+)/i.exec(disposition);
+      filename = (quoted?.[1] || plain?.[1] || fallback).trim();
+    }
+    return { blob, filename };
+  },
+
+  async getTelegramMe(): Promise<TelegramMe> {
+    return (await request('/telegram/me')).json();
+  },
+
+  async createTelegramBinding(): Promise<TelegramBinding> {
+    return (await request('/telegram/binding', { method: 'POST' })).json();
+  },
+
+  async unbindTelegram(): Promise<{ bound: boolean; removed: boolean }> {
+    return (await request('/telegram/unbind', { method: 'POST' })).json();
+  },
+
+  async listTelegramScenarios(): Promise<{ items: TelegramScenario[] }> {
+    return (await request('/telegram/scenarios')).json();
+  },
+
+  async updateTelegramSettings(settings: TelegramSettings): Promise<TelegramSettings> {
+    return (await request('/telegram/settings', jsonInit('PUT', settings))).json();
   },
 
   async getAdminOverview(): Promise<AdminOverview> {

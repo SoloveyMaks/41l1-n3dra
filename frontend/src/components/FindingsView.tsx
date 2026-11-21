@@ -112,6 +112,9 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiScan = n
   const medCount = findings.filter((f) => f.severity === 'medium').length;
   const lowCount = findings.filter((f) => f.severity === 'low').length;
   const infoCount = findings.filter((f) => f.severity === 'info').length;
+  const confirmedCount = findings.filter((f) => f.confidence === 'confirmed').length;
+  const potentialCount = findings.filter((f) => f.confidence === 'potential').length;
+  const inconclusiveCount = findings.filter((f) => f.confidence === 'inconclusive').length;
 
   return (
     <div className="flex-1 h-full flex flex-col lg:flex-row overflow-hidden bg-slate-950">
@@ -196,6 +199,9 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiScan = n
             <span className="text-slate-400 font-mono">
               Проблем: {findings.length}
             </span>
+          </div>
+          <div className="w-full text-[10px] text-slate-500">
+            Находок: {findings.length} · подтверждено: {confirmedCount} · возможно: {potentialCount} · не подтверждено: {inconclusiveCount}
           </div>
           </div>
         </div>

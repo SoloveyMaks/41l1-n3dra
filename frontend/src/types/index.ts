@@ -332,6 +332,37 @@ export interface AccountCredentials {
   registrationCode?: string;
 }
 
+export type TelegramDeliveryMode = 'alerts' | 'jsonc' | 'both';
+
+export interface TelegramSettings {
+  deliveryMode: TelegramDeliveryMode;
+  scenario: string | null;
+}
+
+export interface TelegramMe {
+  bound: boolean;
+  chatId?: string | number;
+  telegramUsername?: string | null;
+  createdAt?: string | null;
+  settings?: TelegramSettings | null;
+  botUsername?: string | null;
+  externalStatus?: 'ready' | 'blocked' | string | null;
+  proxyConfigured?: boolean;
+}
+
+export interface TelegramBinding {
+  code: string;
+  expiresAt?: string | null;
+  expiresInSec: number;
+  deepLink?: string | null;
+  instructions: string;
+}
+
+export interface TelegramScenario {
+  id: string;
+  name: string;
+}
+
 export interface AdminOverview {
   counts?: Record<string, number>;
   db?: {
@@ -476,4 +507,4 @@ export interface ReportData {
   created_at: string;
 }
 
-export type AppTab = 'editor' | 'live' | 'findings' | 'map' | 'report' | 'comparison' | 'schedule';
+export type AppTab = 'editor' | 'live' | 'findings' | 'map' | 'report' | 'comparison' | 'schedule' | 'settings';

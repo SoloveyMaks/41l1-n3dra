@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
+from backend.app.reports.language import naturalize
 from backend.app.contracts.schemas import (
     Coverage, ExplainResult, Finding, PolicyResult, SecurityPassport, SecurityVerdict
 )
@@ -29,6 +30,34 @@ def _safe_ai_item(item: Any) -> Dict[str, Any]:
             data[key] = mask_sensitive_text(data[key])
     return data
 
+
+_VERDICT_LABELS = {
+    "pass": "нарушений не обнаружено",
+    "fail": "требуется исправление",
+    "inconclusive": "нужна дополнительная проверка",
+    "pending": "итог ещё не определён",
+}
+_STATUS_LABELS = {
+    "queued": "в очереди",
+    "running": "выполняется",
+    "succeeded": "завершено",
+    "failed": "завершилось ошибкой",
+    "interrupted": "прервано",
+    "cancelled": "отменено",
+}
+_SEVERITY_LABELS = {
+    "critical": "критический",
+    "high": "высокий",
+    "medium": "средний",
+    "low": "низкий",
+    "info": "информационный",
+}
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+_CONFIDENCE_LABELS = {
+    "confirmed": "подтверждено",
+    "potential": "потенциально",
+    "inconclusive": "не определено",
+}
 
 _SKIPPED_SCOPE_LABELS = {
     "runtime-configuration": "конфигурация времени выполнения",
@@ -105,29 +134,42 @@ class ReportBuilder:
                                 passport: SecurityPassport, policy: PolicyResult,
                                 findings: List[Finding], ai_result: Optional[ExplainResult],
                                 execution_status: str = "running") -> str:
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        verdict_badge = "❌ FAIL" if passport.verdict == SecurityVerdict.FAIL else ("✅ PASS" if passport.verdict == SecurityVerdict.PASS else "⚠️ INCONCLUSIVE")
+        now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+        verdict = _VERDICT_LABELS.get(passport.verdict.value, "итог не определён")
+        status = _STATUS_LABELS.get(execution_status, execution_status)
 
         md = []
-        md.append(f"# Отчет проверки безопасности кода: {workflow_name}")
-        md.append(f"**Идентификатор запуска:** `{run_id}`  ")
-        md.append(f"**Дата и время:** {now}  ")
-        md.append(f"**Статус выполнения:** `{execution_status}`  ")
-        md.append(f"**Итоговый вердикт:** {verdict_badge}  \n")
+        md.append("# Отчёт о проверке безопасности кода")
+        md.append(f"**Сценарий:** {workflow_name}  ")
+        md.append(f"**Номер запуска:** `{run_id}`  ")
+        md.append(f"**Дата:** {now}  ")
+        md.append(f"**Статус:** {status}  ")
+        md.append(f"**Итог:** {verdict}  \n")
+        md.append(
+            f"Проверен сценарий «{workflow_name or 'без названия'}». Итог: {verdict}. "
+            "Ниже — что найдено в проверенном объёме и что осталось за его пределами."
+        )
+        md.append("")
 
-        md.append("## 1. Карта безопасности (Security Passport)")
-        md.append("| Метрика | Значение |")
+        md.append("## Основные показатели")
+        md.append("| Показатель | Значение |")
         md.append("| :--- | :--- |")
-        md.append(f"| Проверено файлов | **{passport.files_scanned}** |")
+        md.append(f"| Всего находок | **{len(findings)}** |")
+        md.append(f"| Критические | {sum(1 for f in findings if f.severity.value == 'critical')} |")
+        md.append(f"| Высокие | {sum(1 for f in findings if f.severity.value == 'high')} |")
+        md.append(f"| Средние | {sum(1 for f in findings if f.severity.value == 'medium')} |")
+        md.append(f"| Низкие | {sum(1 for f in findings if f.severity.value == 'low')} |")
+        md.append(f"| Информационные | {sum(1 for f in findings if f.severity.value == 'info')} |")
+        md.append(f"| Подтверждено | {passport.confirmed_findings} |")
+        md.append(f"| Потенциально | {passport.potential_findings} |")
+        md.append(f"| Проверено файлов | {passport.files_scanned} |")
         md.append(f"| Пропущено файлов | {passport.files_skipped} |")
-        md.append(f"| Строк кода (LOC) | {passport.lines_of_code} |")
+        md.append(f"| Строк кода | {passport.lines_of_code} |")
         md.append(f"| Запущено правил | {len(passport.rules_executed)} |")
         md.append(f"| Ошибок парсера | {passport.parser_errors} |")
-        md.append(f"| Неразрешенных зависимостей | {passport.unresolved_dependencies} |")
-        md.append(f"| Подтвержденных находок | **{passport.confirmed_findings}** |")
-        md.append(f"| Потенциальных находок | {passport.potential_findings} |")
+        md.append(f"| Неразрешённых зависимостей | {passport.unresolved_dependencies} |")
         if passport.completeness_known:
-            md.append("| Полнота проверки | **100%** |")
+            md.append("| Полнота проверки | подтверждена |")
         else:
             if passport.coverage_status == "partial" or (
                 passport.coverage_status == "complete" and not passport.completeness_known
@@ -137,90 +179,88 @@ class ReportBuilder:
                 completeness_label = "недоступна"
             else:
                 completeness_label = "неизвестна"
-            md.append(f"| Полнота проверки | **{completeness_label}** |\n")
+            md.append(f"| Полнота проверки | {completeness_label} |")
+        md.append("")
 
         if passport.coverage_reasons:
-            md.append("### ⚠️ Полнота проверки")
+            md.append("## Что осталось за пределами проверки")
             for reason in passport.coverage_reasons:
-                md.append(f"- {reason}")
+                md.append(f"- {mask_sensitive_text(naturalize(reason))}")
             md.append("")
 
         if passport.coverage_warnings:
-            md.append("### ⚠️ Предупреждения по покрытию:")
-            for w in passport.coverage_warnings:
-                md.append(f"- {w}")
+            md.append("### Предупреждения по покрытию")
+            for warning in passport.coverage_warnings:
+                md.append(f"- {mask_sensitive_text(naturalize(warning))}")
             md.append("")
 
-        md.append("## 2. Сводка вердикта политики (Policy Gate)")
-        md.append(f"- Критических находок: **{policy.critical_count}**")
-        md.append(f"- Высокого риска: **{policy.high_count}**")
+        md.append("## Почему такой итог")
+        md.append(f"- Критических находок: {policy.critical_count}")
+        md.append(f"- Высокого риска: {policy.high_count}")
         md.append(f"- Среднего риска: {policy.medium_count}")
         md.append(f"- Низкого риска: {policy.low_count}")
         if policy.reasons:
-            md.append("\n**Основания вердикта:**")
-            for r in policy.reasons:
-                md.append(f"- {r}")
+            md.append("")
+            for reason in policy.reasons:
+                md.append(f"- {mask_sensitive_text(naturalize(reason))}")
         md.append("")
 
         if ai_result:
-            md.append("## 3. Заключение AI-ассистента")
-            status_text = "✅ Успешно проверено валидатором" if ai_result.status == "succeeded" else f"⚠️ Режим fallback ({ai_result.status})"
-            md.append(f"**Статус интеграции:** {status_text} (модель: `{ai_result.model}`)\n")
-            if ai_result.provenance:
-                prov = ai_result.provenance
-                fallback = f"; fallback: {prov.fallback_reason}" if prov.fallback_reason else ""
-                md.append(
-                    f"**Провайдер:** `{prov.provider}/{prov.model}`; endpoint: `{prov.endpoint or '—'}`; "
-                    f"request: `{prov.request_id or '—'}`; {prov.latency_ms:.0f} ms{fallback}\n"
-                )
-            if ai_result.batch_provenance:
-                batches = ", ".join(
-                    f"{batch.batchIndex}:{batch.status} ({batch.itemCount} items)"
-                    for batch in ai_result.batch_provenance
-                )
-                md.append(f"**AI batches:** {batches}\n")
-            if ai_result.retrieval and ai_result.retrieval.status != "disabled":
-                retrieval = ai_result.retrieval
-                md.append(
-                    f"**Exact retrieval:** `{retrieval.status}`"
-                    + (f" — {retrieval.reason}" if retrieval.reason else "")
-                    + "\n"
-                )
+            md.append("## Пояснения к находкам")
+            if ai_result.status == "succeeded":
+                md.append("Пояснения сформированы и проверены валидатором.")
+            else:
+                md.append("Модель недоступна, поэтому показаны базовые рекомендации.")
+            md.append(f"**Модель:** {ai_result.model or 'не указана'}")
             md.append(f"> {mask_sensitive_text(ai_result.summary)}\n")
 
-        md.append(f"## 4. Обнаруженные дефекты ({len(findings)})")
+        md.append(f"## Находки ({len(findings)})")
         if not findings:
-            md.append("Дефектов безопасности не обнаружено.")
+            md.append(
+                "Находок не обнаружено. Это не доказывает отсутствие уязвимостей за "
+                "пределами проверенного покрытия."
+            )
         else:
             ai_item_map = {item.findingId: item for item in (ai_result.items if ai_result else [])}
-            for idx, f in enumerate(findings, 1):
-                sev_icon = "🔴" if f.severity.value == "critical" else ("🟠" if f.severity.value == "high" else "🟡")
-                md.append(f"### {idx}. {sev_icon} [{f.severity.value.upper()}] {f.ruleId}")
-                md.append(f"- **ID:** `{f.id}`")
-                md.append(f"- **Анализатор:** `{f.analyzer}`")
-                md.append(f"- **Файл:** `{f.primaryLocation.path}:{f.primaryLocation.startLine}`")
-                md.append(f"- **Обоснование риска:** {mask_sensitive_text(f.severityBasis)}")
-                md.append(f"- **Уверенность детектора:** {f.confidence.value} ({mask_sensitive_text(f.confidenceBasis)})")
-                if f.advisoryIds:
-                    md.append(f"- **CVE:** {', '.join(f.advisoryIds)}")
+            ordered = sorted(
+                findings,
+                key=lambda item: (
+                    _SEVERITY_ORDER.get(item.severity.value, 9),
+                    item.ruleId,
+                    item.id,
+                ),
+            )
+            for idx, finding in enumerate(ordered, 1):
+                severity = _SEVERITY_LABELS.get(finding.severity.value, finding.severity.value)
+                confidence = _CONFIDENCE_LABELS.get(finding.confidence.value, finding.confidence.value)
+                md.append(f"### {idx}. {severity.capitalize()}: {finding.ruleId}")
+                md.append(f"- **ID:** `{finding.id}`")
+                md.append(f"- **Правило:** `{finding.ruleId}` ({finding.analyzer})")
+                md.append(f"- **Где:** `{finding.primaryLocation.path}:{finding.primaryLocation.startLine}`")
+                md.append(f"- **Почему это важно:** {mask_sensitive_text(naturalize(finding.severityBasis))}")
+                md.append(f"- **Достоверность:** {confidence} ({mask_sensitive_text(naturalize(finding.confidenceBasis))})")
+                if finding.advisoryIds:
+                    md.append(f"- **Связанные записи безопасности:** {', '.join(finding.advisoryIds)}")
 
-                if f.redactedEvidence:
-                    md.append(f"```text\n{mask_text(f.redactedEvidence)}\n```")
+                if finding.redactedEvidence:
+                    md.append(f"```text\n{mask_text(finding.redactedEvidence)}\n```")
 
-                if f.trace:
-                    md.append("**Evidence Trace (Цепочка вызовов):**")
-                    for t in f.trace:
-                        md.append(f"  {t.step}. {mask_sensitive_text(t.description)}")
+                if finding.trace:
+                    md.append("**Цепочка доказательств:**")
+                    for step in finding.trace:
+                        md.append(f"- {step.step}. {mask_sensitive_text(naturalize(step.description))}")
 
-                if f.id in ai_item_map:
-                    item = ai_item_map[f.id]
-                    md.append("\n**Объяснение AI:**")
+                if finding.id in ai_item_map:
+                    item = ai_item_map[finding.id]
+                    md.append("")
+                    md.append("**Пояснение:**")
                     md.append(mask_sensitive_text(item.explanation))
-                    md.append("\n**Рекомендация по исправлению:**")
+                    md.append("")
+                    md.append("**Рекомендация:**")
                     md.append(f"`{mask_sensitive_text(item.remediation)}`")
                     if item.suggestedFixedVersion:
                         md.append(f"\n*Рекомендуемая безопасная версия:* `{item.suggestedFixedVersion}`")
-                md.append("\n---\n")
+                md.append("")
 
         return "\n".join(md)
 
