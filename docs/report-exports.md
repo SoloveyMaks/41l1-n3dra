@@ -105,21 +105,17 @@ format can print a credential path that another format hides.
 
 ### Inherited stored-report endpoints
 
-The same redaction is *not* applied by the inherited
-`GET /api/runs/{id}/report/official.json` and `GET /api/runs/{id}/report/readable.md`
-handlers in `backend/app/api/router.py`. They still serve the stored
-`official_json` and `readable_markdown` through `_remask_official_json` /
-`_remask_report_record`, which mask only selected text fields (evidence, AI
-summary/items, readable body) with `mask_sensitive_text`. `official.json` still
-prints raw provider provenance (URL userinfo, query credentials, signature) and
-a scheme-less `/token/<secret>` it carries in `aiAnalysis.summary`; `readable.md`
-keeps a scheme-less `/token/<secret>` from the stored body. Both were measured
-with fake sentinels against this branch. That router is outside this export task
-and is not edited here; the export router must not be mistaken for a fix of those
-two endpoints. Closing it is a router-side change: apply `_sanitize_provenance`
-to `aiAnalysis`/`securityPassport`/`policyResult` and `_sanitize_text` to
-`readable_markdown` inside `_remask_report_record`, or mount the export builders
-instead of serving stored text.
+The inherited `GET /api/runs/{id}/report`,
+`GET /api/runs/{id}/report/official.json` and
+`GET /api/runs/{id}/report/readable.md` handlers in `backend/app/api/router.py`
+now use the same boundary helpers as the export builders: `_remask_official_json`
+parses the stored JSON, applies `sanitize_provenance` (URL userinfo, path/query
+credentials, credential-named fields) and keeps the stricter code-evidence
+masker; `_remask_report_record` applies the same recursive sanitizer to the
+record and `sanitize_text` to the readable body. Findings, counts, canonical
+passport/policy keys and safe metadata (`tokenCount`, `apiKeyId`, `model`) are
+preserved. Measured with fake sentinels over all three legacy routes and the
+MD/JSONC/DOCX exports by a one-off ASGI probe on this branch (no real keys).
 
 When a saved passport has no measurement key (`files_scanned`, `lines_of_code`,
 `parser_errors`, …), readable exports say «неизвестно» and the DOCX summary

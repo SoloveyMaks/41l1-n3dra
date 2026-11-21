@@ -43,6 +43,7 @@ from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
 from backend.app.codefacts.source import REDACTION_VERSION, mask_text
+from backend.app.reports.exports import sanitize_provenance, sanitize_text
 from backend.app.security.presentation import mask_named_text_fields, mask_value_tree
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
@@ -567,11 +568,11 @@ def _remask_trace_json(raw: Any) -> Any:
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
-        return mask_sensitive_text(raw)
+        return sanitize_text(raw)
     if isinstance(parsed, list):
         for step in parsed:
             if isinstance(step, dict) and isinstance(step.get("description"), str):
-                step["description"] = mask_sensitive_text(step["description"])
+                step["description"] = sanitize_text(step["description"])
     return json.dumps(parsed, ensure_ascii=False)
 
 
@@ -585,19 +586,17 @@ def _remask_finding(item: Dict[str, Any]) -> Dict[str, Any]:
         out["redacted_evidence"] = mask_text(out["redacted_evidence"])
     for key in ("severityBasis", "confidenceBasis", "severity_basis", "confidence_basis"):
         if isinstance(out.get(key), str):
-            out[key] = mask_sensitive_text(out[key])
+            out[key] = sanitize_text(out[key])
     trace = out.get("trace")
     if isinstance(trace, list):
         for step in trace:
             if isinstance(step, dict) and isinstance(step.get("description"), str):
-                step["description"] = mask_sensitive_text(step["description"])
+                step["description"] = sanitize_text(step["description"])
     if "trace_json" in out:
         out["trace_json"] = _remask_trace_json(out["trace_json"])
     enrichment = out.get("ai_enrichment")
     if isinstance(enrichment, dict):
-        for key in ("explanation", "remediation"):
-            if isinstance(enrichment.get(key), str):
-                enrichment[key] = mask_sensitive_text(enrichment[key])
+        out["ai_enrichment"] = sanitize_provenance(enrichment)
     return out
 
 
@@ -625,54 +624,63 @@ def _remask_map_dto(map_dto: Any) -> Any:
 
 
 def _remask_official_json(raw: str) -> str:
+    """Sanitize the stored official JSON at the HTTP boundary.
+
+    Export builders already run this sanitizer; the legacy handler must match
+    them. Parsing first keeps findings, counts and the canonical passport/policy
+    shape, while every URL/path/query credential and raw provenance value is
+    masked. Code evidence keeps the stricter snippet masker.
+    """
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
-        return mask_sensitive_text(raw)
+        return sanitize_text(raw)
     if not isinstance(parsed, dict):
-        return mask_sensitive_text(raw)
+        return sanitize_text(raw)
+    parsed = sanitize_provenance(parsed)
     findings = parsed.get("findings")
     if isinstance(findings, list):
-        parsed["findings"] = _remask_findings(findings)
-    ai = parsed.get("aiAnalysis")
-    if isinstance(ai, dict):
-        if isinstance(ai.get("summary"), str):
-            ai["summary"] = mask_sensitive_text(ai["summary"])
-        for item in ai.get("items") or []:
-            if isinstance(item, dict):
-                for key in ("explanation", "remediation"):
-                    if isinstance(item.get(key), str):
-                        item[key] = mask_sensitive_text(item[key])
+        for item in findings:
+            if not isinstance(item, dict):
+                continue
+            for key in ("redactedEvidence", "redacted_evidence"):
+                if isinstance(item.get(key), str):
+                    item[key] = mask_text(item[key])
     return json.dumps(parsed, ensure_ascii=False, indent=2)
 
 
+def _remask_json_blob(raw: str) -> str:
+    """Sanitize a stored JSON string without losing its machine-readable shape."""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return sanitize_text(raw)
+    return json.dumps(sanitize_provenance(parsed), ensure_ascii=False)
+
+
 def _remask_report_record(rep: Dict[str, Any]) -> Dict[str, Any]:
+    """Last boundary for the legacy `/runs/{id}/report*` handlers.
+
+    Same sanitizer as `reports.exports`: structured JSON blobs first, then the
+    shared recursive pass over the remaining fields (readable body, AI summary,
+    passport, items). Safe metadata such as `tokenCount`/`apiKeyId` survives.
+    """
     out = copy.deepcopy(rep)
-    for key in ("ai_summary", "readable_markdown"):
-        if isinstance(out.get(key), str):
-            out[key] = mask_sensitive_text(out[key])
-    items = out.get("ai_items")
-    if isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict):
-                for key in ("explanation", "remediation"):
-                    if isinstance(item.get(key), str):
-                        item[key] = mask_sensitive_text(item[key])
-    if isinstance(out.get("ai_items_json"), str):
-        try:
-            parsed_items = json.loads(out["ai_items_json"])
-        except (TypeError, ValueError):
-            out["ai_items_json"] = mask_sensitive_text(out["ai_items_json"])
-        else:
-            if isinstance(parsed_items, list):
-                for item in parsed_items:
-                    if isinstance(item, dict):
-                        for key in ("explanation", "remediation"):
-                            if isinstance(item.get(key), str):
-                                item[key] = mask_sensitive_text(item[key])
-            out["ai_items_json"] = json.dumps(parsed_items, ensure_ascii=False)
-    if isinstance(out.get("official_json"), str):
-        out["official_json"] = _remask_official_json(out["official_json"])
+    blobs: Dict[str, str] = {}
+    for key in ("official_json", "ai_items_json", "passport_json"):
+        value = out.pop(key, None)
+        if isinstance(value, str):
+            blobs[key] = value
+        elif value is not None:
+            out[key] = value
+    # Serialized JSON must be sanitized structurally, not as free text: the
+    # prose masker would eat a backslash before an escaped quote and corrupt it.
+    out = sanitize_provenance(out)
+    if "official_json" in blobs:
+        out["official_json"] = _remask_official_json(blobs["official_json"])
+    for key in ("ai_items_json", "passport_json"):
+        if key in blobs:
+            out[key] = _remask_json_blob(blobs[key])
     return out
 
 
@@ -986,6 +994,7 @@ from backend.app.api.repository_watches import create_repository_watch_router
 from backend.app.api.repository_hooks import create_repository_hook_router
 from backend.app.api.auth import create_auth_router
 from backend.app.api.profile import create_profile_router
+from backend.app.api.reference_checks_mount import mount_reference_checks
 from backend.app.api.report_exports import create_report_exports_router
 from backend.app.api.responsibility import create_responsibility_router
 from backend.app.api.scenario_builder import create_scenario_builder_router
@@ -997,6 +1006,8 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 api_router.include_router(create_scenario_builder_router())
 api_router.include_router(create_repository_watch_router(db_repo, executor))
 api_router.include_router(create_repository_hook_router(db_repo))
+# Defaults: server-owned registry, canonical loaders, require_workspace_actor.
+mount_reference_checks(api_router)
 
 
 def _telegram_principal(request: Request) -> Optional[Dict[str, Any]]:

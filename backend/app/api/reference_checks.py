@@ -6,6 +6,9 @@ The caller sends only server-owned identifiers::
     {"referenceManifestId": "reference-suite", "targetRunId": "run_...",
      "targetArtifactId": "..."}  # artifact id is optional; run implies it
 
+    GET /api/reference-checks/references
+    # -> [{"id", "label", "projectId", "branch", "sha"}, ...]
+
 Never accepted: a raw manifest, a raw bundle, ``targetSha``, ``targetBranch``
 or ``targetProjectId``. The authenticated workspace comes from the existing
 session middleware; the loaders resolve the published envelope and source
@@ -15,7 +18,7 @@ middleware; ``main.py`` and the global router are not modified here.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -123,6 +126,32 @@ def create_reference_checks_router(
     target_loader = load_target_snapshot or _default_target_loader
     reference_loader = load_reference_snapshot or _default_reference_loader
     router = APIRouter(prefix=prefix, tags=["reference-checks"])
+
+    @router.get("/references")
+    async def list_references(request: Request) -> List[Dict[str, Any]]:
+        """Server-owned descriptors for the UI picker; never bundles or paths.
+
+        The workspace guard runs first, exactly like compare. Each descriptor is
+        only ``{id, label, projectId, branch, sha}``: the manifest id is the
+        compare handle, the label is the manifest's own suite id, and
+        project/branch/SHA come from the validated server-owned manifest. No
+        value is fabricated: a manifest that fails ``parse_manifest`` raises.
+        """
+        try:
+            workspace_resolver(request)
+            descriptors: List[Dict[str, Any]] = []
+            for manifest_id, raw_manifest in suite_registry.list_manifests():
+                suite = parse_manifest(raw_manifest)
+                descriptors.append({
+                    "id": manifest_id,
+                    "label": suite.suite_id,
+                    "projectId": suite.project_id,
+                    "branch": suite.branch,
+                    "sha": suite.sha,
+                })
+            return descriptors
+        except ReferenceCheckError as exc:
+            raise _http_error(exc) from None
 
     @router.post("/compare")
     async def compare(payload: ReferenceComparisonRequest, request: Request) -> Dict[str, Any]:

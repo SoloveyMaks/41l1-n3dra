@@ -1,7 +1,7 @@
 """Exact root hook for the reference-checks router.
 
-The root owner mounts this after auth/workspace middleware. Nothing in
-``main.py`` or the global router is edited by this branch::
+The global ``api_router`` in ``backend/app/api/router.py`` mounts this after the
+auth/workspace middleware; ``main.py`` is untouched::
 
     from backend.app.api.reference_checks_mount import mount_reference_checks
 
