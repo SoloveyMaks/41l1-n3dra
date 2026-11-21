@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">NEDRA</title>
+  <defs>
+    <linearGradient id="nedra-bg" x1="6" y1="4" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4338ca"/>
+      <stop offset="0.55" stop-color="#3730a3"/>
+      <stop offset="1" stop-color="#0e7490"/>
+    </linearGradient>
+    <linearGradient id="nedra-layer" x1="18" y1="14" x2="46" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#c7d2fe"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#nedra-bg)"/>
+  <path d="M2 44c14-8 27 6 60-4v6c0 8.8-7.2 16-16 16H18C9.2 62 2 54.8 2 46v-2Z" fill="#020617" opacity="0.18"/>
+
+  <g fill="url(#nedra-layer)">
+    <path d="M12 41 32 51 52 41 32 31Z" opacity="0.16"/>
+    <path d="M16 31 32 39 48 31 32 23Z" opacity="0.24"/>
+    <path d="M20 21 32 27 44 21 32 15Z" opacity="0.34"/>
+  </g>
+  <g fill="none" stroke="#e0e7ff" stroke-linejoin="round" stroke-width="1.4">
+    <path d="M12 41 32 51 52 41 32 31Z" opacity="0.45"/>
+    <path d="M16 31 32 39 48 31 32 23Z" opacity="0.62"/>
+    <path d="M20 21 32 27 44 21 32 15Z" opacity="0.82"/>
+  </g>
+
+  <path d="M20 36 27 31 34 35 43 26" fill="none" stroke="#22d3ee" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.6"/>
+  <g fill="#f8fafc" stroke="#22d3ee" stroke-width="1.4">
+    <circle cx="20" cy="36" r="2.7"/>
+    <circle cx="27" cy="31" r="2.2"/>
+    <circle cx="34" cy="35" r="2.2"/>
+    <circle cx="43" cy="26" r="3"/>
+  </g>
+  <circle cx="52" cy="12" r="2.2" fill="#a5f3fc" opacity="0.9"/>
+</svg>

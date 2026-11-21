@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  ShieldCheck, Play, Upload, Clock, FileText, Bug,
+  Play, Upload, Clock, FileText, Bug,
   Sparkles, Layers, Network, GitCompare, RefreshCw, LogOut, User, Settings
 } from 'lucide-react';
 import { AppTab, RunSummary, SecurityVerdict, SessionMode, SessionUser } from '../types';
@@ -87,8 +87,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="min-h-14 bg-slate-900 border-b border-slate-800 px-3 sm:px-4 py-2 flex flex-wrap xl:flex-nowrap items-center gap-2 xl:gap-3 z-20 select-none">
       <div className="flex items-center gap-2.5 min-w-0">
-        <div className="p-2 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 text-white shadow-lg shadow-indigo-500/20">
-          <ShieldCheck size={19} />
+        <div className="h-9 w-9 rounded-xl overflow-hidden shadow-lg shadow-indigo-500/20 shrink-0">
+          <img src="/nedra.svg" alt="NEDRA" className="h-full w-full" />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
