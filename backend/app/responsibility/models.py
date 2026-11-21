@@ -50,8 +50,10 @@ class CommitEvidence(BaseModel):
 
 class ReviewEvidence(BaseModel):
     reviewer: PersonEvidence
-    state: str  # APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+    state: str  # decision: APPROVED | CHANGES_REQUESTED | DISMISSED | NONE/UNKNOWN
+    opinionState: str = "UNKNOWN"  # latest review opinion, including COMMENTED
     submittedAt: Optional[str] = None
+    decisionAt: Optional[str] = None
     appliesToMerge: bool = False
     limitation: Optional[str] = None
 
@@ -68,6 +70,7 @@ class PullRequestEvidence(BaseModel):
     reviewsStatus: str = "unavailable"
     reviewsReason: str = ""
     reviewsTruncated: bool = False
+    reviewsIncomplete: bool = False
     limitations: List[str] = Field(default_factory=list)
 
 
@@ -78,6 +81,8 @@ class HistoryInfo(BaseModel):
     evidenceKind: str = "last_file_commit"
     notBlame: bool = True
     commit: Optional[CommitEvidence] = None
+    associationCommitSha: Optional[str] = None
+    frozenCommitSha: Optional[str] = None
     pullRequests: List[PullRequestEvidence] = Field(default_factory=list)
     pullRequestsStatus: str = "not_requested"  # available | none | unavailable | rate_limited | failed | unsupported | not_requested
     pullRequestsReason: str = ""

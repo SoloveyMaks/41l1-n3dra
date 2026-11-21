@@ -103,7 +103,9 @@ export interface ResponsibilityCommit {
 export interface ResponsibilityReview {
   reviewer: ResponsibilityPerson;
   state: string;
+  opinionState?: string;
   submittedAt?: string | null;
+  decisionAt?: string | null;
   appliesToMerge: boolean;
   limitation?: string | null;
 }
@@ -120,6 +122,7 @@ export interface ResponsibilityPullRequest {
   reviewsStatus: string;
   reviewsReason: string;
   reviewsTruncated: boolean;
+  reviewsIncomplete?: boolean;
   limitations: string[];
 }
 
@@ -135,6 +138,8 @@ export interface ResponsibilityHistory {
   evidenceKind: string;
   notBlame: boolean;
   commit?: ResponsibilityCommit | null;
+  associationCommitSha?: string | null;
+  frozenCommitSha?: string | null;
   pullRequests: ResponsibilityPullRequest[];
   pullRequestsStatus: string;
   pullRequestsReason: string;

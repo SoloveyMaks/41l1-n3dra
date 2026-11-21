@@ -82,19 +82,27 @@ const safeRepositoryUrl = (value?: string | null): string | null => {
   }
 };
 
-const ReviewRow: React.FC<{ review: ResponsibilityReview }> = ({ review }) => (
-  <div className="flex flex-wrap items-start gap-1.5 rounded border border-slate-800 bg-slate-900/70 px-2 py-1">
-    <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${reviewTone(review.state)}`}>
-      {REVIEW_STATE_LABEL[review.state] || review.state}
-    </span>
-    <span className="text-[10px] text-slate-300">{personText(review.reviewer)}</span>
-    <span className="text-[9px] text-slate-500">{review.submittedAt ? new Date(review.submittedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'время неизвестно'}</span>
-    <span className={`text-[9px] ${review.appliesToMerge ? 'text-emerald-300' : 'text-amber-300'}`}>
-      {review.appliesToMerge ? 'учтено к merge' : 'историческое / не доказано к merge'}
-    </span>
-    {review.limitation && <span className="basis-full text-[9px] leading-snug text-amber-300/80">{review.limitation}</span>}
-  </div>
-);
+const ReviewRow: React.FC<{ review: ResponsibilityReview }> = ({ review }) => {
+  const opinion = review.opinionState || review.state;
+  return (
+    <div className="flex flex-wrap items-start gap-1.5 rounded border border-slate-800 bg-slate-900/70 px-2 py-1">
+      <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${reviewTone(review.state)}`}>
+        решение: {review.state === 'NONE' ? 'нет' : REVIEW_STATE_LABEL[review.state] || review.state}
+      </span>
+      <span className="text-[10px] text-slate-300">{personText(review.reviewer)}</span>
+      <span className="text-[9px] text-slate-500">
+        {review.submittedAt ? new Date(review.submittedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'время неизвестно'}
+      </span>
+      <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[9px] text-slate-400">
+        последний отзыв: {REVIEW_STATE_LABEL[opinion] || opinion}
+      </span>
+      <span className={`text-[9px] ${review.appliesToMerge ? 'text-emerald-300' : 'text-amber-300'}`}>
+        {review.appliesToMerge ? 'действует к merged head' : 'историческое / не доказано к merge'}
+      </span>
+      {review.limitation && <span className="basis-full text-[9px] leading-snug text-amber-300/80">{review.limitation}</span>}
+    </div>
+  );
+};
 
 const PullRequestRow: React.FC<{ pr: ResponsibilityPullRequest }> = ({ pr }) => {
   const url = safeRepositoryUrl(pr.url);
@@ -117,11 +125,12 @@ const PullRequestRow: React.FC<{ pr: ResponsibilityPullRequest }> = ({ pr }) => 
         {pr.headSha && <span className="font-mono">head {shortSha(pr.headSha)}</span>}
       </div>
       <div className="mt-1 space-y-1">
-        {pr.reviewsStatus === 'available' ? (
+        {pr.reviewsStatus === 'available' || pr.reviewsStatus === 'incomplete' ? (
           pr.reviews.length ? (
             <>
               {pr.reviews.map((review, index) => <ReviewRow key={`${pr.number}-${review.reviewer.login || review.reviewer.displayName || index}-${index}`} review={review} />)}
               {pr.reviewsTruncated && <p className="text-[9px] text-amber-300">Показаны не все reviewers; список ограничен.</p>}
+              {pr.reviewsIncomplete && <p className="text-[9px] text-amber-300">Reviews неполные: unseen dismissal/approval может изменить решение; активным не считаем.</p>}
             </>
           ) : <p className="text-[9px] text-slate-500">API не вернул reviews для этого PR.</p>
         ) : (
@@ -342,7 +351,7 @@ export const ResponsibilityPanel: React.FC<ResponsibilityPanelProps> = ({ runId,
               </div>
               {data.history.provider && (
                 <p className="font-mono text-[9px] text-slate-600">
-                  provider: {data.history.provider} · frozen commit: {shortSha(data.scope.commitSha)} · path: {data.scope.path}
+                  provider: {data.history.provider} · PR association commit: {shortSha(data.history.associationCommitSha)} · frozen snapshot: {shortSha(data.history.frozenCommitSha || data.scope.commitSha)} · path: {data.scope.path}
                 </p>
               )}
             </div>
