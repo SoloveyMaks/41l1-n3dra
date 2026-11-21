@@ -8,6 +8,9 @@ import { EvidenceCard } from './EvidenceCard';
 
 interface FindingsViewProps {
   findings: Finding[];
+  aiItems?: Array<{ findingId: string; explanation: string; remediation: string; suggestedFixedVersion?: string }>;
+  aiStatus?: string;
+  onOpenReport?: () => void;
 }
 
 const SEVERITY_LABEL: Record<Severity, string> = {
@@ -24,7 +27,7 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   inconclusive: 'не подтверждено',
 };
 
-export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
+export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = [], aiStatus, onOpenReport }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -41,6 +44,9 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
   const selectedFinding = selectedFindingId
     ? findings.find((finding) => finding.id === selectedFindingId) ?? null
     : null;
+  const selectedAi = selectedFinding
+    ? aiItems.find((item) => item.findingId === selectedFinding.id)
+    : undefined;
 
   const filteredFindings = findings.filter((f) => {
     if (analyzerFilter !== 'all' && f.analyzer !== analyzerFilter) return false;
@@ -220,6 +226,9 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings }) => {
       {selectedFinding && (
         <EvidenceCard
           finding={selectedFinding}
+          aiEnrichment={selectedAi}
+          aiStatus={aiStatus}
+          onOpenReport={onOpenReport}
           onClose={() => setSelectedFindingId(null)}
         />
       )}

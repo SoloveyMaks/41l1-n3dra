@@ -737,7 +737,14 @@ export const App: React.FC = () => {
           />
         );
       case 'problems':
-        return <FindingsView findings={findings} />;
+        return (
+          <FindingsView
+            findings={findings}
+            aiItems={report?.run_id === currentRunId ? report.ai_items : []}
+            aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
+            onOpenReport={() => setAdminSection('report')}
+          />
+        );
       case 'map':
         return <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />;
       case 'report':

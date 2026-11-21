@@ -345,7 +345,12 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
 
         {section === 'problems' && (
           findings.length > 0 ? (
-            <FindingsView findings={findings} />
+            <FindingsView
+              findings={findings}
+              aiItems={report?.run_id === currentRunId ? report.ai_items : []}
+              aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
+              onOpenReport={() => setSection('report')}
+            />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-slate-400">
               <CheckCircle2 size={34} className="text-emerald-500" />
