@@ -36,6 +36,40 @@ app_health_ok() {
   curl -fsS --max-time 2 -o /dev/null "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/health" 2>/dev/null
 }
 
+# Builds NEDRA_TELEGRAM_APP_ARGS for `podman run` from the optional Telegram
+# socket settings. Only the socket file is mounted; no other host path and no
+# published port is added.
+telegram_app_mount_args() {
+  NEDRA_TELEGRAM_APP_ARGS=()
+  [ -n "${TELEGRAM_PROXY_SOCKET:-}" ] || return 0
+  case "$TELEGRAM_PROXY_SOCKET" in
+    /*) ;;
+    *) die "TELEGRAM_PROXY_SOCKET должен быть абсолютным путём внутри контейнера" ;;
+  esac
+  local socket_host="${TELEGRAM_PROXY_SOCKET_HOST:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/nedra/telegram-proxy.sock}"
+  case "$socket_host" in
+    /*) ;;
+    *) die "TELEGRAM_PROXY_SOCKET_HOST должен быть абсолютным путём на хосте" ;;
+  esac
+  # A missing source would make podman create a directory named like the
+  # socket, so the relay must already be up.
+  local waited=0
+  while [ ! -S "$socket_host" ]; do
+    if [ "$waited" -ge 20 ]; then
+      die "нет UNIX-сокета $socket_host; запустите nedra-telegram-proxy.service"
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  NEDRA_TELEGRAM_APP_ARGS+=(--volume "${socket_host}:${TELEGRAM_PROXY_SOCKET}:ro")
+  # The socket is 0660 owner:owner; rootless containers keep the host user's
+  # groups only with keep-groups.
+  if [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || printf false)" = "true" ]; then
+    NEDRA_TELEGRAM_APP_ARGS+=(--group-add keep-groups)
+  fi
+  say "Telegram proxy socket: ${socket_host} -> ${TELEGRAM_PROXY_SOCKET}"
+}
+
 runtime_env_mode() {
   stat -c '%a' "$NEDRA_RUNTIME_ENV" 2>/dev/null || printf missing
 }

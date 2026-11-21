@@ -12,7 +12,8 @@ copied or committed.
 | --- | --- |
 | `db/migrations/010_telegram.up.sql` | `telegram` schema: bindings, one-time codes, settings, jobs, outbox, cursor, update dedupe |
 | `backend/app/storage/telegram.py` | PostgreSQL repository; no transport, no token |
-| `backend/app/telegram/bot_api.py` | httpx Bot API client; token from env/0600 file; redacted errors |
+| `backend/app/telegram/bot_api.py` | httpx Bot API client; token from env/0600 file; `TELEGRAM_PROXY_URL` or UNIX-socket proxy; redacted errors |
+| `backend/app/telegram/proxy_bridge.py` | loopback TCP→UNIX-socket bridge for `TELEGRAM_PROXY_SOCKET`; no external listener |
 | `backend/app/telegram/runtime.py` | polling, commands, repo jobs, workspace scope adapter usage, outbox worker |
 | `backend/app/telegram/report.py` | redacted JSONC-compatible report + JSONC file writer |
 | `backend/app/telegram/router.py` | DI router factory for binding/settings endpoints |
@@ -75,11 +76,14 @@ Resolution order:
 2. `TELEGRAM_BOT_TOKEN_FILE`, default `~/.config/nedra/telegram-bot.token`.
 3. `TELEGRAM_BOT_TOKEN=...` in 0600 `~/.config/nedra/runtime.env`.
 
-Bot API egress uses **only** `TELEGRAM_PROXY_URL` (optional, bare
-`http(s)://host:port`, no credentials/path/query). The httpx client sets
-`trust_env=False`, so global `HTTP(S)_PROXY` and LLM/client proxy settings do
-not leak into Telegram traffic. Direct access is attempted when the variable is
-absent.
+Bot API egress uses **only** `TELEGRAM_PROXY_URL` or `TELEGRAM_PROXY_SOCKET`
+(exactly one; both set is a config error). `TELEGRAM_PROXY_URL` is a bare
+`http(s)://host:port`, no credentials/path/query. `TELEGRAM_PROXY_SOCKET` is an
+absolute path to a UNIX socket served by the scoped host relay; the app starts a
+loopback TCP→UNIX bridge inside its own network namespace and points httpx at
+it. The httpx client sets `trust_env=False`, so global `HTTP(S)_PROXY` and
+LLM/client proxy settings do not leak into Telegram traffic. Direct access is
+attempted when neither variable is set.
 
 Token files must be mode 0600; broader permissions fail closed. The token is
 never put in argv, git, logs, exceptions, API responses or the DB. `repr` is
@@ -87,13 +91,16 @@ never put in argv, git, logs, exceptions, API responses or the DB. `repr` is
 `TELEGRAM_API_BASE` must be HTTPS; `TELEGRAM_BOT_KEY` is only a logical cursor
 key.
 
-External check in this environment: direct `getMe` failed, while
-`TELEGRAM_PROXY_URL=http://127.0.0.1:14600` reached Telegram. Runtime startup
-reported `externalStatus="ready"`, `botUsername="chilli_nedra_bot"`,
-`proxyConfigured=true`. No proxy/network/tunnel was changed; the proxy was
-already running. Outbound `sendMessage`/`sendDocument` to a real chat was not
-exercised (no authorized live chat was available); the outbox retry path was
-verified against an unreachable local endpoint.
+External check in this environment: direct `getMe` failed, while the host proxy
+`127.0.0.1:14600` reached Telegram. That proxy listens on host loopback only and
+the app container cannot reach it; production uses a UNIX-socket relay scoped to
+that one upstream (see `docs/telegram-deployment.md`). Live container check with
+the socket route: `getMe` returned `chilli_nedra_bot`, `proxyMode="socket"`;
+`getWebhookInfo` showed no webhook. The runtime itself was not started, so no
+`getUpdates` consumed pending messages. No proxy/network/tunnel was changed; the
+proxy was already running. Outbound `sendMessage`/`sendDocument` to a real chat
+was not exercised (no authorized live chat was available); the outbox retry path
+was verified against an unreachable local endpoint.
 
 ## 4. HTTP endpoints
 
@@ -119,6 +126,8 @@ Example binding response:
 
 - `/start <code>` — consume one-time code, bind this private chat to the
   account's `userId`/`workspaceId`.
+- `<code>` без команды — код привязки, отправленный голым текстом, тоже
+  принимается, если чат ещё не привязан; ответ тот же, что у `/start <code>`.
 - `/start` — show binding/help; unbound users are told to create a code in the
   web cabinet.
 - `/help` — commands.
@@ -131,9 +140,11 @@ Example binding response:
 - A private-chat HTTPS GitHub/GitLab URL — create an idempotent repo job. The
   bot replies with the job id, then imports and runs in the background.
 
-Group chats and bots are ignored. No report is sent to an unbound chat. Codes
-are single-use; a retried `/start` from the same chat inside 10 minutes returns
-the existing binding rather than a misleading “used” error.
+Group chats and bots are ignored. Files, archives (ZIP) and images are not
+supported: the bot replies explicitly with the HTTPS repository-link instruction
+instead of staying silent. No report is sent to an unbound chat. Codes are
+single-use; a retried `/start` from the same chat inside 10 minutes returns the
+existing binding rather than a misleading “used” error.
 
 ## 6. Repo job and scan path
 
@@ -253,10 +264,12 @@ files and was never printed.
 
 ## 9. Honest limitations
 
-- Direct Bot API is blocked; production/local live checks need
-  `TELEGRAM_PROXY_URL=http://127.0.0.1:14600` (or another working server-side
-  proxy). The runtime reports `blocked` if the configured path fails instead of
-  claiming success. Real message/document delivery to a chat was not exercised.
+- Direct Bot API is blocked; the app container cannot reach host loopback, so
+  production needs the scoped UNIX-socket relay (`docs/telegram-deployment.md`).
+  The runtime reports `blocked` if the configured path fails instead of claiming
+  success. Real message/document delivery to a chat was not exercised.
+- `main.py` starts polling only with `TELEGRAM_ENABLED=1`; a token alone never
+  enables polling. Production was silent because this variable was unset.
 - The bot uses long polling, not webhooks. If a webhook is configured on the
   bot, root must call `deleteWebhook` once; this module does not change global
   bot state automatically.
@@ -282,7 +295,7 @@ not pushed, not merged into main, not deployed.**
 `api/router.py` монтирует binding/settings через проверенную account-сессию.
 Demo-сессии не принимаются. `main.py` запускает polling/outbox только при
 `TELEGRAM_ENABLED=1`; это позволяет проверять приложение без второго poller
-того же бота. Завершение приложения отменяет startup и закрывает runtime.
-Сохранение токена само по себе не включает polling. На хосте подтверждён
-`getMe` для `@chilli_nedra_bot` через существующий HTTP-прокси; контейнерный
-маршрут и доставка конечному пользователю ещё требуют живой проверки.
+того же бота. Сохранение токена само по себе не включает polling. Маршрут до
+Bot API из контейнера — UNIX-сокет-релей к `127.0.0.1:14600`; проверен живым
+`getMe` из контейнера, доставка конечному пользователю ещё требует проверки
+после включения env.

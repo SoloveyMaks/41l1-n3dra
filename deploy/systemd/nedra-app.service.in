@@ -1,8 +1,8 @@
 [Unit]
 Description=nedra FastAPI backend (rootless Podman)
 Documentation=file:@REPO@/docs/DEPLOYMENT.md
-Wants=nedra-db.service
-After=nedra-db.service
+Wants=nedra-db.service nedra-telegram-proxy.service
+After=nedra-db.service nedra-telegram-proxy.service
 
 [Service]
 Type=oneshot

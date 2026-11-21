@@ -42,14 +42,15 @@ render() {
 
 render "$NEDRA_REPO_ROOT/deploy/systemd/nedra-db.service.in" "$UNIT_DIR/nedra-db.service"
 render "$NEDRA_REPO_ROOT/deploy/systemd/nedra-app.service.in" "$UNIT_DIR/nedra-app.service"
+render "$NEDRA_REPO_ROOT/deploy/systemd/nedra-telegram-proxy.service.in" "$UNIT_DIR/nedra-telegram-proxy.service"
 render "$NEDRA_REPO_ROOT/deploy/systemd/nedra-tunnel.service.in" "$UNIT_DIR/nedra-tunnel.service"
 
 systemctl --user daemon-reload
 say "systemd user units перечитаны"
 
 if [ "$ENABLE" = "1" ]; then
-  systemctl --user enable nedra-db.service nedra-app.service
-  say "db/app units включены; tunnel unit не включён намеренно"
+  systemctl --user enable nedra-db.service nedra-app.service nedra-telegram-proxy.service
+  say "db/app/telegram-proxy units включены; tunnel unit не включён намеренно"
   say "для старта без логина: loginctl enable-linger $USER"
 fi
 if [ "$START" = "1" ]; then
