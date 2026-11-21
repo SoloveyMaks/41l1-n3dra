@@ -264,6 +264,24 @@ def sanitize_provenance(value: Any) -> Any:
     return _sanitize_provenance(value)
 
 
+def _sanitized_export_copy(value: Any) -> Any:
+    """A plain, sanitized copy of stored passport/policy for the JSONC boundary.
+
+    Persisted canonical rows stay untouched. Pydantic models and dataclasses
+    are converted to plain data first, then the shared sanitizer removes URL
+    userinfo, path/query credentials and credential-named fields while keeping
+    canonical counts/keys and safe metadata (`tokenCount`, `apiKeyId`).
+    """
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    elif hasattr(value, "__dataclass_fields__"):
+        value = {
+            name: getattr(value, name)
+            for name in value.__dataclass_fields__
+        }
+    return sanitize_provenance(value)
+
+
 def _contradictory_coverage_warning(passport: Dict[str, Any]) -> Optional[str]:
     """A passport may claim confirmed completeness while naming another status."""
     if not passport.get("completeness_known"):
@@ -657,7 +675,13 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
         "Итог проверки относится к подтверждённому покрытию, а не ко всему проекту.",
         *bundle.ai_scan.get("limitations", []),
     ]
-    coverage_warning = _contradictory_coverage_warning(bundle.passport)
+    security_passport = _sanitized_export_copy(bundle.passport)
+    policy_result = _sanitized_export_copy(bundle.policy)
+    coverage_warning = (
+        _contradictory_coverage_warning(security_passport)
+        if isinstance(security_passport, dict)
+        else None
+    )
     if coverage_warning:
         limitations.append(coverage_warning)
     document = {
@@ -685,8 +709,8 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
             "findings": bundle.findings,
         },
         "aiHypotheses": bundle.ai_scan,
-        "securityPassport": bundle.passport,
-        "policyResult": bundle.policy,
+        "securityPassport": security_passport,
+        "policyResult": policy_result,
         "technicalProvenance": bundle.technical,
         "limitations": limitations,
     }

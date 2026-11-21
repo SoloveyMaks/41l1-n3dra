@@ -623,6 +623,33 @@ def _remask_map_dto(map_dto: Any) -> Any:
     return out
 
 
+_EVIDENCE_KEYS = ("redactedEvidence", "redacted_evidence")
+
+
+def _mask_evidence_tree(value: Any, depth: int = 0) -> Any:
+    """Apply the stricter code-evidence masker to nested evidence fields.
+
+    The stored document may be an object, an array or a scalar, so findings are
+    not necessarily at ``parsed["findings"]``. The snippet masker handles quoted
+    assignments (`password = "…"`) that the prose sanitizer deliberately leaves
+    alone.
+    """
+    if depth > 12:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: (
+                mask_text(item)
+                if key in _EVIDENCE_KEYS and isinstance(item, str)
+                else _mask_evidence_tree(item, depth + 1)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_evidence_tree(item, depth + 1) for item in value]
+    return value
+
+
 def _remask_official_json(raw: str) -> str:
     """Sanitize the stored official JSON at the HTTP boundary.
 
@@ -635,17 +662,11 @@ def _remask_official_json(raw: str) -> str:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
         return sanitize_text(raw)
-    if not isinstance(parsed, dict):
-        return sanitize_text(raw)
-    parsed = sanitize_provenance(parsed)
-    findings = parsed.get("findings")
-    if isinstance(findings, list):
-        for item in findings:
-            if not isinstance(item, dict):
-                continue
-            for key in ("redactedEvidence", "redacted_evidence"):
-                if isinstance(item.get(key), str):
-                    item[key] = mask_text(item[key])
+    # A stored document may be an array or a scalar. It was parsed successfully,
+    # so sanitize the tree and serialize it again: running `sanitize_text` over
+    # serialized JSON can eat the backslash of an escaped quote and hand the
+    # client HTTP 200 with invalid JSON.
+    parsed = _mask_evidence_tree(sanitize_provenance(parsed))
     return json.dumps(parsed, ensure_ascii=False, indent=2)
 
 
