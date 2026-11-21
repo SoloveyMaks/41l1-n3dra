@@ -88,7 +88,7 @@ class SecretAnalyzer(BaseAnalyzer):
         rules_executed = [r[0] for r in self.rules]
 
         root_path = Path(artifact_path)
-        if not root_path.exists():
+        if not root_path.is_dir():
             return ScanResult(
                 analyzer=self.name,
                 findings=[],
@@ -101,6 +101,10 @@ class SecretAnalyzer(BaseAnalyzer):
             for file_name in files:
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
+                if file_path.is_symlink():
+                    files_skipped += 1
+                    diagnostics.append(Diagnostic(level="warning", message=f"Символическая ссылка пропущена: {rel_path}", source="SecretAnalyzer"))
+                    continue
 
                 # Skip non-text or oversized
                 ext = file_path.suffix.lower()

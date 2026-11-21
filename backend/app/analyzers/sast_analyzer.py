@@ -41,7 +41,7 @@ class SastAnalyzer(BaseAnalyzer):
         ]
 
         root_path = Path(artifact_path)
-        if not root_path.exists():
+        if not root_path.is_dir():
             return ScanResult(
                 analyzer=self.name,
                 findings=[],
@@ -59,6 +59,10 @@ class SastAnalyzer(BaseAnalyzer):
 
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
+                if file_path.is_symlink():
+                    parser_errors += 1
+                    diagnostics.append(Diagnostic(level="warning", message=f"Символическая ссылка пропущена: {rel_path}", source="SastAnalyzer"))
+                    continue
                 files_scanned += 1
                 sql_observation: Dict[str, Any] = {
                     "rule_id": "KOTLIN-SQL-INJECTION",

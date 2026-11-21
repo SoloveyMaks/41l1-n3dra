@@ -40,7 +40,7 @@ class ScaAnalyzer(BaseAnalyzer):
         unresolved_deps = 0
 
         root_path = Path(artifact_path)
-        if not root_path.exists():
+        if not root_path.is_dir():
             return ScanResult(
                 analyzer=self.name,
                 findings=[],
@@ -60,7 +60,9 @@ class ScaAnalyzer(BaseAnalyzer):
         version_catalog_libs: Dict[str, Tuple[str, str, str]] = {}  # alias -> (group, name, version)
 
         catalog_path = root_path / "gradle" / "libs.versions.toml"
-        if catalog_path.exists():
+        if catalog_path.is_symlink():
+            diagnostics.append(Diagnostic(level="warning", message="Символическая ссылка libs.versions.toml пропущена", source="ScaAnalyzer"))
+        elif catalog_path.exists():
             files_scanned += 1
             try:
                 lines = catalog_path.read_text(encoding="utf-8").splitlines()
@@ -111,6 +113,9 @@ class ScaAnalyzer(BaseAnalyzer):
 
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
+                if file_path.is_symlink():
+                    diagnostics.append(Diagnostic(level="warning", message=f"Символическая ссылка пропущена: {rel_path}", source="ScaAnalyzer"))
+                    continue
                 files_scanned += 1
 
                 try:
