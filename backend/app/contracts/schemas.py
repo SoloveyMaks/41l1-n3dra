@@ -11,6 +11,7 @@ class PortType(str, Enum):
     FINDINGS_BUNDLE = "findings_bundle"
     POLICY_RESULT = "policy_result"
     EXPLAIN_RESULT = "explain_result"
+    AI_SCAN_RESULT = "ai_scan_result"
     REPORT = "report"
     CONDITION_BRANCH = "condition_branch"
     DELIVERY_RESULT = "delivery_result"
@@ -28,6 +29,7 @@ class NodeKind(str, Enum):
     CONDITION = "condition"
     POLICY_GATE = "policy_gate"
     AI_EXPLAIN = "ai_explain"
+    AI_SCAN = "ai_scan"
     BUILD_REPORT = "build_report"
     NOTIFY = "notify"
 
@@ -243,6 +245,96 @@ class ExplainResult(BaseModel):
     batch_provenance: List[AiBatchProvenance] = Field(default_factory=list)
     retrieval: Optional[RetrievalInfo] = None
     similar_fixes: List[SimilarFix] = Field(default_factory=list)
+
+
+class AiObservationGrounding(BaseModel):
+    """Server-verified anchor for one AI hypothesis.
+
+    Byte bounds are recomputed from the frozen snapshot source; model-supplied
+    offsets are only hints and are never stored as truth.
+    """
+    fileRef: str
+    sourceHash: str
+    quoteSha256: str
+    startByte: int
+    endByte: int
+    modelStartLine: int
+    modelEndLine: int
+
+
+class AiObservation(BaseModel):
+    """A finding-like AI hypothesis, not a deterministic finding.
+
+    It deliberately has no `fingerprint`, `analyzer`, or `advisoryIds`: this
+    type must never be inserted into canonical findings or policy counts.
+    """
+    id: str
+    origin: str = "ai_hypothesis"
+    ruleClass: str
+    severity: Severity
+    confidence: Confidence = Confidence.POTENTIAL
+    confidenceBasis: str = "AI hypothesis; not confirmed by deterministic scanners"
+    status: FindingStatus = FindingStatus.POTENTIAL
+    primaryLocation: Location
+    redactedEvidence: str
+    rationale: str
+    remediation: str
+    grounding: AiObservationGrounding
+
+
+class AiScanCoverageIssue(BaseModel):
+    path: str
+    code: str
+    detail: str = ""
+
+
+class AiScanCoverage(BaseModel):
+    """Coverage of the selected AI subset, never of the whole project."""
+    status: str = "degraded"  # complete | partial | degraded | rejected
+    filesTotal: int = 0
+    filesSelected: int = 0
+    filesSent: int = 0
+    bytesSelected: int = 0
+    bytesSent: int = 0
+    maxFiles: int = 0
+    maxBytes: int = 0
+    maxObservations: int = 0
+    truncatedFiles: List[str] = Field(default_factory=list)
+    omittedCount: int = 0
+    omitted: List[AiScanCoverageIssue] = Field(default_factory=list)
+    failedCount: int = 0
+    failed: List[AiScanCoverageIssue] = Field(default_factory=list)
+    limitsReached: List[str] = Field(default_factory=list)
+    providerErrors: List[str] = Field(default_factory=list)
+
+
+class AiScanProvenance(BaseModel):
+    """Provider/prompt identity of one bounded AI scan request. Never a key."""
+    provider: str = "none"
+    model: str = ""
+    endpoint: str = ""
+    promptVersion: str = ""
+    validatorVersion: str = ""
+    selectionVersion: str = ""
+    configVersion: str = ""
+    requestId: Optional[str] = None
+    latencyMs: float = 0.0
+    usage: Dict[str, Optional[int]] = Field(default_factory=dict)
+    finishReason: Optional[str] = None
+    responseSha256: Optional[str] = None
+    fallbackReason: Optional[str] = None
+
+
+class AiScanResult(BaseModel):
+    """Separate result of the AI_SCAN block; never changes the verdict."""
+    status: str = "degraded"  # succeeded | partial | degraded | rejected
+    observations: List[AiObservation] = Field(default_factory=list)
+    suppressedDuplicates: int = 0
+    validationErrors: List[str] = Field(default_factory=list)
+    coverage: AiScanCoverage = Field(default_factory=AiScanCoverage)
+    provenance: Optional[AiScanProvenance] = None
+    isHypothesis: bool = True
+    countsAsFindings: bool = False
 
 
 class SecurityPassport(BaseModel):
