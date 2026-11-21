@@ -125,7 +125,7 @@ def _bearer_token(request: Request) -> str:
 
 
 def _run_summary(row: Dict[str, Any], *, last_event_seq: int = 0) -> Dict[str, Any]:
-    """Project a runtime row onto the shared ``RunSummary`` shape.
+    """Project a runtime row onto the backend and frontend summary contracts.
 
     DB columns ``critical_count``/``high_count`` are not the model field names;
     the projection is explicit so a schema addition cannot leak by accident.
@@ -147,10 +147,14 @@ def _run_summary(row: Dict[str, Any], *, last_event_seq: int = 0) -> Dict[str, A
             high_findings=int(row.get("high_count") or 0),
             last_event_seq=int(last_event_seq or 0),
         )
+        counts = {
+            f"{severity}_count": int(row.get(f"{severity}_count") or 0)
+            for severity in ("critical", "high", "medium", "low", "info")
+        }
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("mini run summary projection failed: %s", type(exc).__name__)
         _fail(500, "RUN_SUMMARY_UNAVAILABLE", "Не удалось прочитать состояние запуска")
-    return summary.model_dump()
+    return {**summary.model_dump(), **counts}
 
 
 def _settings_view(settings: Settings) -> Dict[str, Any]:
@@ -252,7 +256,22 @@ def create_miniapp_router(
     auth_service = auth or MiniAppAuth(repo)
     validator = WorkflowValidator()
 
+    async def settle_before_cancel(work: Awaitable[Any]) -> Any:
+        pending = asyncio.ensure_future(work)
+        cancelled = False
+        # Import/intake and DB threads can outlive cancellation of their caller.
+        while not pending.done():
+            try:
+                await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                cancelled = True
+        result = pending.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
     async def finish_aborted_run(run_id: str, status: str) -> None:
+        nonlocal stopping
         try:
             row = await asyncio.to_thread(db.get_run, run_id)
             if row and row.get("execution_status") in {"queued", "running"}:
@@ -262,6 +281,7 @@ def create_miniapp_router(
                     finished_at=datetime.now(timezone.utc).isoformat(),
                 )
         except Exception as exc:  # noqa: BLE001 - cleanup must preserve the original error
+            stopping = True
             logger.error("mini run cleanup failed: %s", type(exc).__name__)
 
     def task_finished(task: asyncio.Task) -> None:
@@ -538,7 +558,7 @@ def create_miniapp_router(
                     # was rebound meanwhile, this request must not import anything.
                     await assert_live(identity)
                     try:
-                        manifest = await importer(repository_url)
+                        manifest = await settle_before_cancel(importer(repository_url))
                     except RepositoryImportError as exc:
                         _fail(exc.status_code, "REPOSITORY_IMPORT_FAILED", exc.message)
                     except SafeIntakeError:
@@ -553,7 +573,7 @@ def create_miniapp_router(
                     # run/executor work for the old binding.
                     await assert_live(identity)
                     try:
-                        await asyncio.to_thread(db.save_artifact, manifest)
+                        await settle_before_cancel(asyncio.to_thread(db.save_artifact, manifest))
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:  # noqa: BLE001
@@ -566,7 +586,7 @@ def create_miniapp_router(
 
                     run_id = str(uuid.uuid4())
                     try:
-                        persist = asyncio.create_task(asyncio.to_thread(
+                        await settle_before_cancel(asyncio.to_thread(
                             db.create_run,
                             run_id=run_id,
                             workflow_id=scenario,
@@ -574,16 +594,6 @@ def create_miniapp_router(
                             artifact_id=artifact_id,
                             trigger_type="miniapp",
                         ))
-                        cancelled = False
-                        # A thread may commit after cancellation; settle it before cleanup.
-                        while not persist.done():
-                            try:
-                                await asyncio.shield(persist)
-                            except asyncio.CancelledError:
-                                cancelled = True
-                        persist.result()
-                        if cancelled:
-                            raise asyncio.CancelledError
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:  # noqa: BLE001
