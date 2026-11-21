@@ -9,6 +9,7 @@ publisher.
 
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 from dataclasses import dataclass
@@ -46,10 +47,15 @@ class TeamBError(RuntimeError):
     """Team B cannot be used safely for this run."""
 
 
+_DEMO_HMAC_KEY = b"cg26-local-demo-key-not-for-production"
+_ALLOWED_DIAGNOSTIC_LEVELS = {"info", "warning", "error"}
+
+
 @dataclass
 class TeamBPayload:
     bundle: Dict[str, Any]
     scan_results: Dict[str, ScanResult]
+    raw_result: Any = None
 
 
 def _trusted_advisory_path() -> Optional[Path]:
@@ -76,6 +82,8 @@ def _require_hmac_environment() -> None:
     version = os.getenv("CG26_HMAC_KEY_VERSION", "").strip()
     if not key:
         raise TeamBError("Team B требует серверный CG26_HMAC_KEY; demo key запрещён")
+    if hmac.compare_digest(key.encode("utf-8"), _DEMO_HMAC_KEY):
+        raise TeamBError("Team B: известный demo HMAC key запрещён")
     if not version or version == "local-demo-1":
         raise TeamBError("Team B требует CG26_HMAC_KEY_VERSION, отличный от local-demo-1")
 
@@ -153,20 +161,28 @@ def _backend_findings(bundle: Dict[str, Any], category: str) -> List[Finding]:
     return result
 
 
-def _backend_scan_results(bundle: Dict[str, Any]) -> Dict[str, ScanResult]:
+def _backend_scan_results(bundle: Dict[str, Any], raw_result: Any = None) -> Dict[str, ScanResult]:
+    raw_by_code: Dict[str, List[Any]] = {}
+    for diagnostic in getattr(raw_result, "diagnostics", []) or []:
+        raw_by_code.setdefault(str(getattr(diagnostic, "code", "")), []).append(diagnostic)
     results: Dict[str, ScanResult] = {}
     for scan in bundle["scanResults"]:
         category = str(scan["category"])
         coverage = scan["coverage"]
-        diagnostics = [
-            Diagnostic(
-                level="error" if str(item.get("code", "")).endswith("error") else "warning",
+        diagnostics: List[Diagnostic] = []
+        for item in scan.get("diagnostics", []):
+            code = str(item.get("code", ""))
+            candidates = raw_by_code.get(code, [])
+            raw = candidates.pop(0) if candidates else None
+            level = str(getattr(raw, "level", "warning") or "warning")
+            if level not in _ALLOWED_DIAGNOSTIC_LEVELS:
+                level = "warning"
+            diagnostics.append(Diagnostic(
+                level=level,
                 message=str(item.get("message", "")),
                 source="team_b",
-                details={"code": str(item.get("code", "")), "category": category},
-            )
-            for item in scan.get("diagnostics", [])
-        ]
+                details={"code": code, "category": category},
+            ))
         total = int(coverage.get("filesTotal", 0))
         visited = int(coverage.get("filesVisited", 0))
         results[category] = ScanResult(
@@ -291,8 +307,8 @@ class TeamBAdapter:
                 part["identity"] = identity
         for policy in bundle.get("codeFacts", {}).get("policyInputs", []):
             policy["workspaceId"] = workspace
-        scan_results = _backend_scan_results(bundle)
-        return TeamBPayload(bundle=bundle, scan_results=scan_results)
+        scan_results = _backend_scan_results(bundle, result)
+        return TeamBPayload(bundle=bundle, scan_results=scan_results, raw_result=result)
 
 
 def persist_team_b_run(*, run_id: str, artifact_id: str, workspace: str,
