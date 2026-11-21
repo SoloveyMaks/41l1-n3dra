@@ -155,14 +155,22 @@ CG_PUBLIC_DEMO=1 CG_ACCESS_CODE=...     # регистрация дополни�
 - B не видит workflow/artifact/run/report/evidence A: `404`, списки без A;
 - A не видит workflow B; `GET /api/workflows` создаёт demo-default только в
   своём workspace;
-- фоновый run A создаётся и завершается в workspace A (события `run_status`
-  лежат в `runtime.run_events` A), env workspace не тронут;
+- фоновый run A создаётся в workspace A и пишет туда `run_status`/`node_status`/
+  `edge_data` (env workspace не тронут);
+- два одновременных фоновых run (A и B) под `asyncio.gather`: каждый run и все
+  его `run_events` лежат в своём workspace, env не изменён, списки после
+  фоновой работы изолированы;
 - `logout` отзывает v3: старый cookie → `401`, новый login работает;
 - demo-сессия: `mode=demo`, `/api/profile` → `403 DEMO_SESSION`, admin-эндпоинт
   → `403`;
 - параллельные ASGI-запросы A/B под `asyncio.gather` возвращают каждый только
   свои workflows;
-- повторный `python -m backend.app.storage.migrate` → `ledger актуален`.
+- повторный `python -m backend.app.storage.migrate` → `ledger актуален`;
+- 009 на отдельной legacy-БД: до миграции `workflows=1`, после — `after=1`,
+  имя строки сохранено, `account.users`/`account.sessions` созданы;
+- публичный demo: регистрация без `accessCode` → `403`, с кодом → `200`,
+  повтор → `409`; старый v2-токен принимается как `mode=demo`;
+- `/api/auth/me` с demo-cookie → `mode=demo`, `user=null`, `/api/profile` → `403`.
 
 Отдельный прогон default-workflow (`wf_secure_pr_gate`) аккаунта:
 

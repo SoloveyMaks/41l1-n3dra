@@ -302,20 +302,3 @@ def revoke_session(session_id: Optional[str]) -> bool:
             (session_id,),
         ).fetchone()
     return row is not None
-
-
-def revoke_user_sessions(user_id: str) -> int:
-    try:
-        parsed = uuid.UUID(str(user_id))
-    except (ValueError, TypeError, AttributeError):
-        return 0
-    with get_pool().connection() as conn:
-        rows = conn.execute(
-            """
-            UPDATE account.sessions SET revoked_at = now()
-             WHERE user_id = %s AND revoked_at IS NULL
-             RETURNING session_id
-            """,
-            (parsed,),
-        ).fetchall()
-    return len(rows)

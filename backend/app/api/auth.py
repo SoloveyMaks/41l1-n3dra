@@ -23,7 +23,6 @@ from backend.app.api.session import (
     MODE_ACCOUNT,
     MODE_DEMO,
     SESSION_COOKIE,
-    SESSION_TTL_SECONDS,
     issue_account_session,
     public_demo,
     request_origin_allowed,
@@ -191,6 +190,3 @@ def create_auth_router() -> APIRouter:
         }
 
     return router
-
-
-__all__ = ["create_auth_router", "AUTH_PREFIX", "SESSION_TTL_SECONDS"]
