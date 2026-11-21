@@ -15,15 +15,25 @@ import math
 import os
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.ai import vector_demo
 from backend.app.ai.provider import mask_sensitive_text, open_same_host
 from backend.app.ai.vector_result import VectorExample
+from backend.app.codefacts.identity import current_workspace_scope
 from backend.app.contracts.schemas import Finding, RetrievalInfo, SimilarFix
 
 _ALLOWED_METRICS = {"cosine", "l2", "inner_product"}
+
+
+def _workspace_key(value: str) -> str:
+    """Canonical UUID text for comparison; empty when the value is not a UUID."""
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        return ""
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -193,6 +203,11 @@ class VectorRuntime:
             info.status = "unavailable"
             info.reason = "retrieval unavailable: missing or invalid " + ", ".join(missing)
             return info
+        scope_violation = self._scope_violation()
+        if scope_violation:
+            info.status = "unavailable"
+            info.reason = scope_violation
+            return info
         if cfg.demo_fixture:
             info.status = "ready"
             info.reason = (
@@ -203,6 +218,34 @@ class VectorRuntime:
         info.status = "ready"
         info.reason = "retrieval configured (not executed)"
         return info
+
+    def _scope_violation(self) -> Optional[str]:
+        """Return why the configured corpus is not authorized for this request.
+
+        Retrieval has no independent authorization: it only runs inside an
+        explicit request/background workspace scope, and the configured corpus
+        workspace must be that exact workspace. A process-wide env workspace is
+        configuration, never proof of session ownership.
+        """
+        scoped = current_workspace_scope()
+        if not scoped:
+            return "retrieval unavailable: no authorized workspace scope for this request"
+        scoped_key = _workspace_key(scoped)
+        configured_key = _workspace_key(self.config.workspace_id)
+        if not scoped_key:
+            return "retrieval unavailable: authorized workspace scope is not a UUID"
+        if not configured_key:
+            return "retrieval unavailable: configured corpus workspace is not a UUID"
+        if scoped_key != configured_key:
+            return (
+                "retrieval unavailable: configured corpus workspace does not match "
+                "the authorized request workspace"
+            )
+        return None
+
+    def _scoped_workspace(self) -> str:
+        scoped = current_workspace_scope()
+        return _workspace_key(scoped or "")
 
     def retrieve_for_findings(
         self,
@@ -230,6 +273,11 @@ class VectorRuntime:
         info = self.status()
         if info.status in ("disabled", "unavailable"):
             return info, []
+        workspace = self._scoped_workspace()
+        if not workspace or workspace != _workspace_key(self.config.workspace_id):
+            info.status = "unavailable"
+            info.reason = self._scope_violation() or "retrieval unavailable: workspace scope changed"
+            return info, []
         if _load_pg_driver() is None:
             info.status = "unavailable"
             info.reason = "retrieval unavailable: psycopg/psycopg2 is not installed"
@@ -246,7 +294,7 @@ class VectorRuntime:
 
         for finding in findings[: self.config.max_findings]:
             try:
-                status, items, reason = self._retrieve_one(finding, result_limit)
+                status, items, reason = self._retrieve_one(finding, result_limit, workspace)
             except Exception as exc:  # fail-open by design
                 status, items, reason = "unavailable", [], f"retrieval error: {_sanitize(exc)}"
             if status == "ok":
@@ -264,7 +312,11 @@ class VectorRuntime:
             prefix = (
                 "demo fixture (synthetic vectors, draft-only, not vetted): "
                 if self.config.demo_fixture
-                else ""
+                else (
+                    "draft-only retrieval (examples are not vetted): "
+                    if self.config.status == "draft"
+                    else ""
+                )
             )
             info.reason = (prefix + "; ".join(dict.fromkeys(failures)))[:600]
         else:
@@ -278,6 +330,13 @@ class VectorRuntime:
                 info.reason = (
                     "demo fixture (synthetic vectors, draft-only, not vetted): " + detail
                 )
+            elif self.config.status == "draft":
+                detail = (
+                    f"{len(collected)} matching draft examples (not vetted)"
+                    if collected
+                    else "no matching draft examples"
+                )
+                info.reason = "draft-only retrieval: " + detail
             else:
                 info.reason = "exact retrieval completed" if collected else "no matching vetted examples"
         return info, collected
@@ -286,6 +345,7 @@ class VectorRuntime:
         self,
         finding: Finding,
         limit: int,
+        workspace: str,
     ) -> Tuple[str, List[VectorExample], str]:
         cfg = self.config
         query_text = self._query_text(finding)
@@ -310,7 +370,7 @@ class VectorRuntime:
         rule_family = cfg.rule_family_map.get(finding.ruleId, finding.ruleId)
         function = "exact_demo_fixes" if cfg.demo_fixture else "exact_similar_fixes"
         try:
-            rows = self._query_db(vector, rule_family, limit, function)
+            rows = self._query_db(workspace, vector, rule_family, limit, function)
         except Exception as exc:
             return "unavailable", [], f"database unavailable: {_sanitize(exc)}"
 
@@ -322,6 +382,13 @@ class VectorRuntime:
                     limitations = [limitations]
                 elif limitations is None:
                     limitations = []
+                example_status = str(row[7])
+                if example_status not in ("draft", "vetted"):
+                    return (
+                        "unavailable",
+                        [],
+                        f"unexpected example status {example_status!r}",
+                    )
                 fixes.append(
                     VectorExample(
                         findingId=finding.id,
@@ -332,7 +399,7 @@ class VectorRuntime:
                         ruleVersion=str(row[4]),
                         verificationBasis=str(row[5] or ""),
                         limitations=[str(x) for x in limitations],
-                        status=str(row[7]),
+                        status=example_status,
                         distance=float(row[8]),
                         metric=str(row[9]),
                         embeddingSpecId=cfg.embedding_spec_id,
@@ -344,9 +411,7 @@ class VectorRuntime:
 
     @staticmethod
     def _as_similar_fix(example: VectorExample) -> SimilarFix:
-        """Legacy DTO mapping. Extra SQL fields pass through as kwargs so an
-        extended shared SimilarFix stores them without a second query; the
-        current schema ignores them."""
+        """Map the full row onto the shared DTO without dropping or inferring status."""
         return SimilarFix(
             findingId=example.findingId,
             exampleId=example.exampleId,
@@ -411,6 +476,7 @@ class VectorRuntime:
 
     def _query_db(
         self,
+        workspace: str,
         vector: List[float],
         rule_family: str,
         limit: int,
@@ -432,7 +498,7 @@ class VectorRuntime:
             "%s, %s, %s, %s, %s)"
         )
         params = (
-            cfg.workspace_id,
+            workspace,
             cfg.embedding_spec_id,
             vector_literal,
             cfg.provider,

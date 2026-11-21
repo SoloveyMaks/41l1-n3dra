@@ -21,6 +21,7 @@ const checks = [];
 
 for (const example of fixture.examples) {
   const result = exactSearch(fixture, {
+    workspaceId: fixture.workspaceId,
     queryVector: example.embedding,
     language: example.language,
     framework: example.framework,
@@ -50,6 +51,7 @@ const tls = fixture.examples.find(example => example.framework === 'jvm');
 if (!tls) failures.push('fixture has no jvm example to exercise the framework filter');
 else {
   const wrongFramework = exactSearch(fixture, {
+    workspaceId: fixture.workspaceId,
     queryVector: tls.embedding,
     language: tls.language,
     framework: 'spring-boot',
@@ -57,6 +59,7 @@ else {
   });
   if (wrongFramework.items.length !== 0) failures.push('framework filter did not exclude the jvm example');
   const wrongRule = exactSearch(fixture, {
+    workspaceId: fixture.workspaceId,
     queryVector: tls.embedding,
     language: tls.language,
     framework: tls.framework,
@@ -66,6 +69,7 @@ else {
 }
 
 const vetted = exactSearch(fixture, {
+  workspaceId: fixture.workspaceId,
   queryVector: fixture.examples[0].embedding,
   language: fixture.examples[0].language,
   framework: fixture.examples[0].framework,
@@ -75,6 +79,7 @@ const vetted = exactSearch(fixture, {
 if (vetted.status !== 'unavailable') failures.push('demo fixture accepted status=vetted');
 
 const mismatchedSpec = exactSearch(fixture, {
+  workspaceId: fixture.workspaceId,
   queryVector: fixture.examples[0].embedding,
   language: fixture.examples[0].language,
   framework: fixture.examples[0].framework,
@@ -82,6 +87,45 @@ const mismatchedSpec = exactSearch(fixture, {
   spec: { ...fixture.spec, modelVersion: 'demo/other' },
 });
 if (mismatchedSpec.status !== 'unavailable') failures.push('demo fixture accepted a mismatched embedding spec');
+
+const caseChangedSpec = exactSearch(fixture, {
+  workspaceId: fixture.workspaceId,
+  queryVector: fixture.examples[0].embedding,
+  language: fixture.examples[0].language,
+  framework: fixture.examples[0].framework,
+  ruleFamily: fixture.examples[0].ruleFamily,
+  spec: { ...fixture.spec, model: fixture.spec.model.toUpperCase() },
+});
+if (caseChangedSpec.status !== 'unavailable') failures.push('demo fixture accepted different model casing as the same spec');
+
+const foreignWorkspace = exactSearch(fixture, {
+  workspaceId: '11111111-1111-1111-1111-111111111111',
+  queryVector: fixture.examples[0].embedding,
+  language: fixture.examples[0].language,
+  framework: fixture.examples[0].framework,
+  ruleFamily: fixture.examples[0].ruleFamily,
+});
+if (foreignWorkspace.status !== 'unavailable') failures.push('demo fixture accepted a foreign workspace');
+
+const missingWorkspace = exactSearch(fixture, {
+  queryVector: fixture.examples[0].embedding,
+  language: fixture.examples[0].language,
+  framework: fixture.examples[0].framework,
+  ruleFamily: fixture.examples[0].ruleFamily,
+});
+if (missingWorkspace.status !== 'unavailable') failures.push('demo fixture accepted a missing workspace');
+
+const scaledQuery = exactSearch(fixture, {
+  workspaceId: fixture.workspaceId,
+  queryVector: fixture.examples[0].embedding.map(value => value * 2),
+  language: fixture.examples[0].language,
+  framework: fixture.examples[0].framework,
+  ruleFamily: fixture.examples[0].ruleFamily,
+  status: 'draft',
+});
+const scaledFirst = scaledQuery.items[0];
+if (scaledQuery.status !== 'available' || !scaledFirst) failures.push('scaled query did not search');
+else if (Math.abs(scaledFirst.distance) > 1e-9) failures.push(`cosine distance for a scaled vector is ${scaledFirst.distance}, not 0`);
 
 const output = {
   status: failures.length === 0 ? 'ok' : 'failed',
@@ -93,6 +137,10 @@ const output = {
     ruleFamilyFilter: 'excluded',
     vetted: vetted.reason,
     mismatchedSpec: mismatchedSpec.reason,
+    caseChangedSpec: caseChangedSpec.reason,
+    foreignWorkspace: foreignWorkspace.reason,
+    missingWorkspace: missingWorkspace.reason,
+    scaledCosineDistance: scaledFirst?.distance,
   },
   failures,
 };

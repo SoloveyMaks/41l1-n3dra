@@ -1,6 +1,6 @@
 from __future__ import annotations
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
 
@@ -207,13 +207,21 @@ class AiBatchProvenance(BaseModel):
 
 
 class SimilarFix(BaseModel):
-    """One vetted remediation example returned by exact pgvector retrieval."""
+    """One exact pgvector example returned by retrieval.
+
+    ``status`` is part of the row, not a presentation default: a draft or demo
+    example must stay visibly draft, and a row without an explicit status is
+    rejected instead of being promoted to vetted by Pydantic.
+    """
     findingId: Optional[str] = None
     exampleId: str
     sourceRef: str
+    redactedBefore: str
+    redactedFix: str
+    ruleVersion: str
     verificationBasis: str
     limitations: List[str] = Field(default_factory=list)
-    redactedFix: str
+    status: Literal["draft", "vetted"]
     distance: float
     metric: str
     embeddingSpecId: str

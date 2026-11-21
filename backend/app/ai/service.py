@@ -407,7 +407,11 @@ class AiService:
         findings: List[Finding],
         execute: bool,
     ) -> ExplainResult:
-        """Attach optional retrieval without ever failing the main analysis."""
+        """Attach optional retrieval without ever failing the main analysis.
+
+        Each fix keeps its explicit SQL status plus redactedBefore/ruleVersion;
+        nothing here upgrades draft or demo rows to vetted.
+        """
         if not self.vector_runtime.enabled:
             result.retrieval = self.vector_runtime.status()
             return result

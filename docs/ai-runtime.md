@@ -72,6 +72,11 @@ SQL-контракт: `db/optional/003_exact_vector.up.sql` (базовые та
 `VECTOR_EMBEDDING_API_KEY`; `VECTOR_RETRIEVAL_STATUS` по умолчанию `vetted`.
 Драйвер PostgreSQL (`psycopg` или `psycopg2`) — optional dependency.
 
+`VECTOR_WORKSPACE_ID` — только конфигурация корпуса. Retrieval запускается
+внутри `current_workspace_scope()` и требует точного совпадения UUID с этим
+scope; без scope или с чужим scope возвращается `unavailable` до SQL. Поэтому
+прямой вызов `AiService` вне request/scheduler тоже не достаёт корпус.
+
 В коде нет default embedding model/version/dimension/metric: размерность и
 модель нельзя выдумывать. Значения заполняются только после реального
 `POST /embeddings` и сверки с active row `embedding_specs`. Функция проверяет
@@ -88,7 +93,10 @@ SQL-контракт: `db/optional/003_exact_vector.up.sql` (базовые та
 `metric`. Обязательные фильтры: workspace, language, framework, rule family,
 status; `limit` 1..20. `VECTOR_RULE_FAMILY_MAP` переводит `ruleId` в
 `rule_family`. Меньше distance — лучше; distance не выдаётся за человеческую
-оценку применимости.
+оценку применимости. `vetted`-ряд дополнительно проходит provenance-пол в
+`014` (published scanner bundles, verified scopes, совпадающая подпись,
+resolved published comparison, review-поля, непустые limitations); это
+defense in depth, а не замена `RemediationStore.save()` или DB-грантов.
 
 `db/optional/015_vector_demo_fixture.up.sql` и
 `db/optional/fixtures/vector_demo_examples.json` — отдельный demo/fixture:

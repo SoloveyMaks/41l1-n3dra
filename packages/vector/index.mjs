@@ -26,9 +26,11 @@ function assertFiniteArray(value, name, dimension) {
 export function validateFixture(fixture) {
   if (!fixture || typeof fixture !== 'object') throw new TypeError('fixture must be an object');
   if (fixture.schemaVersion !== 'vector-demo/1') throw new TypeError('unsupported fixture schemaVersion');
+  uuidKey(fixture.workspaceId, 'fixture.workspaceId');
   const spec = fixture.spec;
   if (!spec || typeof spec !== 'object') throw new TypeError('fixture.spec is required');
   assertString(spec.embeddingSpecId, 'spec.embeddingSpecId');
+  uuidKey(spec.embeddingSpecId, 'spec.embeddingSpecId');
   assertString(spec.provider, 'spec.provider');
   assertString(spec.model, 'spec.model');
   assertString(spec.modelVersion, 'spec.modelVersion');
@@ -55,6 +57,9 @@ export function validateFixture(fixture) {
       throw new TypeError('example.limitations must be non-empty');
     }
     assertFiniteArray(example.embedding, 'example.embedding', spec.dimension);
+    if (spec.metric !== 'l2' && example.embedding.every(value => value === 0)) {
+      throw new TypeError('example.embedding must be non-zero for cosine/inner_product');
+    }
   }
   return fixture;
 }
@@ -67,19 +72,39 @@ export function loadFixture(text) {
 function distance(metric, a, b) {
   let dot = 0;
   let sum = 0;
+  let normA = 0;
+  let normB = 0;
   for (let index = 0; index < a.length; index += 1) {
     dot += a[index] * b[index];
+    normA += a[index] * a[index];
+    normB += b[index] * b[index];
     const delta = a[index] - b[index];
     sum += delta * delta;
   }
-  if (metric === 'cosine') return 1 - dot;
+  if (metric === 'cosine') {
+    // pgvector <=> is 1 - (a.b)/(|a||b|), not 1 - a.b. The fixture vectors are
+    // unit length, but the query is caller-supplied and must not be assumed so.
+    return 1 - dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
   if (metric === 'l2') return Math.sqrt(sum);
   return -dot;
 }
 
+function uuidKey(value, name) {
+  assertString(value, name);
+  const key = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(key)) {
+    throw new TypeError(`${name} must be a UUID`);
+  }
+  return key;
+}
+
 function specMatches(fixtureSpec, spec) {
-  return ['embeddingSpecId', 'provider', 'model', 'modelVersion', 'queryPreparationVersion', 'documentPreparationVersion', 'redactionVersion']
-    .every(key => String(fixtureSpec[key]).toLowerCase() === String(spec[key]).toLowerCase())
+  // Text fields are compared exactly, as PostgreSQL does. Only UUID identity
+  // is normalised; lowercasing a model or version would accept a mismatch.
+  return ['provider', 'model', 'modelVersion', 'queryPreparationVersion', 'documentPreparationVersion', 'redactionVersion']
+    .every(key => fixtureSpec[key] === spec[key])
+    && uuidKey(fixtureSpec.embeddingSpecId, 'spec.embeddingSpecId') === uuidKey(spec.embeddingSpecId, 'spec.embeddingSpecId')
     && fixtureSpec.dimension === spec.dimension
     && fixtureSpec.metric === spec.metric;
 }
@@ -88,17 +113,26 @@ function specMatches(fixtureSpec, spec) {
  * Exact search over the demo fixture.
  *
  * @param {object} fixture validated demo fixture
- * @param {object} options queryVector, language, framework, ruleFamily,
- *   status='draft', limit=5, spec=null (spec compatibility check)
+ * @param {object} options workspaceId, queryVector, language, framework,
+ *   ruleFamily, status='draft', limit=5, spec=null (spec compatibility check)
  * @returns {{status:'available'|'unavailable', reason:string|null, items:object[]}}
  */
 export function exactSearch(fixture, options = {}) {
   validateFixture(fixture);
   const spec = fixture.spec;
+  if (options.workspaceId === undefined) {
+    return { status: 'unavailable', reason: 'explicit workspaceId is required', items: [] };
+  }
+  if (uuidKey(options.workspaceId, 'workspaceId') !== uuidKey(fixture.workspaceId, 'fixture.workspaceId')) {
+    return { status: 'unavailable', reason: 'workspace does not match the demo fixture workspace', items: [] };
+  }
   if (options.spec && !specMatches(spec, options.spec)) {
     return { status: 'unavailable', reason: 'embedding spec does not match the configured model/versions', items: [] };
   }
-  if (options.status !== undefined && options.status !== 'draft') {
+  if (options.status === undefined) {
+    return { status: 'unavailable', reason: 'explicit status filter is required', items: [] };
+  }
+  if (options.status !== 'draft') {
     return { status: 'unavailable', reason: 'demo fixture is draft-only; vetted examples do not exist', items: [] };
   }
   const queryVector = options.queryVector;

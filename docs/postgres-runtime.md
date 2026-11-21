@@ -25,10 +25,12 @@ API пока не принимает workspace в запросах: процес
 
 1. Применяет миграции C через ledger `public.schema_migrations` (filename + sha256,
    advisory lock); повторный запуск их не повторяет, изменённый файл — ошибка.
-2. Если `DB_ENABLE_VECTOR=1` и на сервере есть pgvector, применяет
-   `db/optional/003_exact_vector.up.sql` через тот же ledger и проверяет
-   `pg_available_extensions`. Без флага optional не применяется; повторный старт
-   SQL не повторяет. Registry остаётся `pending`, fake vectors не создаются.
+2. Если `DB_ENABLE_VECTOR=1` и на сервере есть pgvector, применяет все
+   `db/optional/*.up.sql` (003, 014, 015) через **тот же** ledger
+   `public.schema_migrations` и проверяет `pg_available_extensions`. Отдельной
+   ledger-таблицы нет: optional-прогон отличается advisory lock и списком файлов.
+   Без флага optional не применяется; повторный старт SQL не повторяет. Registry
+   остаётся `pending`, fake vectors не создаются.
 3. Под `pg_advisory_xact_lock` заводит identity-строку workspace в
    `data_contract.workspaces` (`runtime:<uuid>`), если её нет, и создаёт/обновляет
    runtime DDL. Lock сериализует параллельные старты на пустой БД; других записей
@@ -45,8 +47,9 @@ API пока не принимает workspace в запросах: процес
 `pg_available_extensions` не содержит `vector`, старт падает с понятной ошибкой.
 Мигратор берёт все optional-файлы по порядку: `003` создаёт
 `example_embeddings` и базовую функцию, `014` заменяет `exact_similar_fixes`
-на контракт с точной сверкой одного active spec и обязательными фильтрами,
-`015` создаёт отдельные demo/fixture-таблицы и `exact_demo_fixes`. Схема не
+на контракт с точной сверкой одного active spec, обязательными фильтрами и
+provenance-полом для `vetted`-строк, `015` создаёт отдельные demo/fixture-таблицы
+и `exact_demo_fixes`. Схема не
 выбирает provider/model/dimension: `embedding_specs` остаётся пустым/pending,
 fake vectors в реальные таблицы не пишутся. Demo/fixture заполняется только
 явной командой `python -m backend.app.ai.vector_demo --seed`, `draft`-only и не

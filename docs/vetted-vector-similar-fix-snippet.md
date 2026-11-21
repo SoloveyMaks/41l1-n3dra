@@ -1,41 +1,31 @@
-# Root snippet: extend `SimilarFix` with the full retrieval row
+# Root snippet: mirror the full retrieval row in the JSON/TS contract
 
-Owner-only patch for the shared contract C. This branch does not edit
-`backend/app/contracts/schemas.py` or `docs/data-contracts/*`; the optional
-vector runtime already returns the complete row through
-`retrieve_examples_for_findings()` (`backend/app/ai/vector_result.py`).
-
-Legacy `retrieve_for_findings()` passes `redactedBefore`, `ruleVersion` and
-`status` as kwargs. Today `SimilarFix` ignores unknown kwargs, so the legacy DTO
-silently drops those three fields. Apply this snippet in the contract owner's
-branch if the legacy endpoint must expose them.
-
-```python
-# backend/app/contracts/schemas.py, class SimilarFix
-redactedBefore: Optional[str] = None
-ruleVersion: Optional[str] = None
-status: str = "vetted"
-```
+The Python DTO `SimilarFix` in `backend/app/contracts/schemas.py` already carries
+`redactedBefore`, `ruleVersion` and a required `status: Literal["draft",
+"vetted"]`. This branch does not edit `docs/data-contracts/*`; the JSON schema
+and TS type below are the owner-side mirror. Keep the status required.
 
 ```json
 // docs/data-contracts/contracts.schema.json, $defs/SimilarFix.properties
-"redactedBefore": {"type": ["string", "null"]},
-"ruleVersion": {"type": ["string", "null"]},
-"status": {"type": "string", "enum": ["draft", "vetted", "retired"]}
+"redactedBefore": {"type": "string", "minLength": 1},
+"ruleVersion": {"type": "string", "minLength": 1},
+"status": {"type": "string", "enum": ["draft", "vetted"]}
 ```
+
+Add all three names to `$defs/SimilarFix.required` and to the
+`SimilarFixesResult` item contract. Do not use `"status": {"type": "string"}`
+alone: an unknown value must fail validation, not pass through.
 
 ```ts
 // docs/data-contracts/contracts.ts, type SimilarFix
-redactedBefore?: string | null;
-ruleVersion?: string | null;
-status?: 'draft' | 'vetted' | 'retired';
+redactedBefore: string;
+ruleVersion: string;
+status: 'draft' | 'vetted';
 ```
 
-After the change `retrieve_for_findings()` stores all fields without a second
-query. If the shared contract must not grow, call
-`retrieve_examples_for_findings()` from the new node/endpoint and leave
-`SimilarFix` untouched.
-
-`status="vetted"` here is a DTO default only. Demo/fixture rows always carry
-`status="draft"` and a `demo/fixture:` source ref; nothing in the demo path may
-be published as vetted.
+No default is safe. A field default of `status: "vetted"` would relabel a legacy
+or demo row that never had a status, so the contract must require the value.
+Rows from `exact_demo_fixes` always carry `status="draft"` and a
+`demo/fixture:` source ref; nothing in the demo path may be published as vetted.
+`retrieve_for_findings()` already passes the full row, so no second query is
+needed once the contract files match the Python DTO.

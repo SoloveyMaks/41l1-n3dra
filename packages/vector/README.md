@@ -7,13 +7,18 @@ runtime (`backend/app/ai/vector_runtime.py`) and PostgreSQL functions in
 
 What it checks without a database:
 
-* exact cosine / L2 / inner-product distance over stored fixture vectors;
-* mandatory `workspace`/`language`/`framework`/`ruleFamily`/`status` filters;
-* explicit spec compatibility (provider, model, version, dimension, metric,
-  preparation and redaction versions);
+* exact cosine / L2 / inner-product distance over stored fixture vectors,
+  including the real `1 - dot/(|a||b|)` cosine formula for non-unit queries;
+* mandatory `workspaceId`/`language`/`framework`/`ruleFamily`/`status` filters;
+* explicit spec compatibility: provider, model, version, metric, preparation
+  and redaction versions compare exactly as in PostgreSQL (no case folding);
 * `vetted` is refused: the fixture is draft-only;
 * every returned item carries `sourceRef`, `redactedBefore`, `redactedFix`,
   `ruleVersion`, `verificationBasis`, `limitations` and `status`.
+
+This harness still has no session/auth layer of its own: callers must pass a
+workspace, and the backend binds that workspace to the authorized request scope
+before any SQL runs. A matching string here is not an authorization check.
 
 ```bash
 node packages/vector/verify-cli.mjs

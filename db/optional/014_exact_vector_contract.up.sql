@@ -6,6 +6,14 @@
 -- Retrieval still returns only rows whose remediation example status equals the
 -- caller's status filter. The runtime defaults to 'vetted'; 'draft' exists for
 -- review/demo tooling and must never be presented as a verified fix.
+--
+-- Defense in depth for vetted rows: the trusted admission path is
+-- RemediationStore.save() with its scanner/comparison checks. Retrieval repeats
+-- the durable provenance floors it can verify from stored data (fixed bundle,
+-- scanner envelopes, matching static signature, resolved comparison, review
+-- fields and non-empty limitations). This does not grant table privileges and
+-- cannot stop a database writer from forging every referenced bundle; direct
+-- writes still must be restricted by roles/grants (see docs/vetted-vector-retrieval.md).
 BEGIN;
 SET LOCAL search_path = data_contract, public;
 
@@ -118,6 +126,67 @@ BEGIN
     AND e.rule_family = rule_family_filter
     AND e.verification_basis IS NOT NULL
     AND e.verification_basis <> ''
+    AND (
+      e.status <> 'vetted'
+      OR (
+        e.fixed_run_id IS NOT NULL
+        AND e.fixed_snapshot_id IS NOT NULL
+        AND e.reviewed_by IS NOT NULL
+        AND btrim(e.reviewed_by) <> ''
+        AND e.reviewed_at IS NOT NULL
+        AND cardinality(e.limitations) > 0
+        AND EXISTS (
+          SELECT 1 FROM analysis_bundles ab
+          WHERE ab.workspace_id = e.workspace_id
+            AND ab.run_id = e.source_run_id
+            AND ab.snapshot_id = e.source_snapshot_id
+            AND ab.published_at IS NOT NULL
+        )
+        AND EXISTS (
+          SELECT 1 FROM analysis_bundles ab
+          WHERE ab.workspace_id = e.workspace_id
+            AND ab.run_id = e.fixed_run_id
+            AND ab.snapshot_id = e.fixed_snapshot_id
+            AND ab.published_at IS NOT NULL
+        )
+        AND EXISTS (
+          SELECT 1 FROM bundle_envelopes be
+          WHERE be.workspace_id = e.workspace_id
+            AND be.run_id = e.source_run_id
+            AND be.snapshot_id = e.source_snapshot_id
+            AND be.origin = 'scanner'
+            AND be.expected_scopes_verified
+        )
+        AND EXISTS (
+          SELECT 1 FROM bundle_envelopes be
+          WHERE be.workspace_id = e.workspace_id
+            AND be.run_id = e.fixed_run_id
+            AND be.snapshot_id = e.fixed_snapshot_id
+            AND be.origin = 'scanner'
+            AND be.expected_scopes_verified
+        )
+        AND data_contract.static_signature(e.workspace_id, e.source_run_id)
+            IS NOT DISTINCT FROM
+            data_contract.static_signature(e.workspace_id, e.fixed_run_id)
+        AND EXISTS (
+          SELECT 1
+          FROM comparisons c
+          JOIN comparison_items ci
+            ON ci.workspace_id = c.workspace_id
+           AND ci.comparison_id = c.comparison_id
+          WHERE c.workspace_id = e.workspace_id
+            AND c.published_at IS NOT NULL
+            AND c.comparable
+            AND c.baseline_run_id = e.source_run_id
+            AND c.baseline_snapshot_id = e.source_snapshot_id
+            AND c.current_run_id = e.fixed_run_id
+            AND c.current_snapshot_id = e.fixed_snapshot_id
+            AND ci.baseline_finding_id = e.source_finding_id
+            AND ci.current_finding_id IS NULL
+            AND ci.status = 'resolved'
+        )
+      )
+    )
   ORDER BY 9, e.example_id
   LIMIT result_limit;
 END;
@@ -128,7 +197,10 @@ COMMENT ON FUNCTION exact_similar_fixes(
   text, text, text, text, integer
 ) IS 'Exact pgvector search over vetted (or explicitly draft) remediation examples. '
     'Requires the active embedding spec to match the configured provider, model, '
-    'version, metric and preparation versions. Distance is a similarity score, '
+    'version, metric and preparation versions. Vetted rows additionally require '
+    'stored provenance floors: fixed published bundle, scanner envelopes with '
+    'verified scopes, matching static signature, resolved published comparison, '
+    'review fields and non-empty limitations. Distance is a similarity score, '
     'not a human applicability or verification judgment.';
 
 COMMIT;
