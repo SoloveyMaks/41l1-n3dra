@@ -89,6 +89,24 @@
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(2, 6, 23, 0.94));
   box-shadow: 0 10px 30px rgba(2, 6, 23, 0.35);
 }
+.sm-intro {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 18px;
+  padding: 7px 16px;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.65);
+  background: rgba(8, 15, 30, 0.92);
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.sm-intro span:last-child {
+  color: #93c5fd;
+  white-space: nowrap;
+}
 .sm-brand {
   display: flex;
   align-items: center;
@@ -506,15 +524,16 @@
   background: rgba(30, 58, 138, 0.25);
   color: #93c5fd;
 }
-.sm-node-symbol-detail {
-  padding: 6px 7px;
+.sm-node-hint {
+  padding: 7px 8px;
   border: 1px solid var(--sm-line);
+  border-left: 2px solid #475569;
   border-radius: 7px;
-  background: rgba(2, 6, 23, 0.6);
-  color: #93a4bb;
-  font: 9.5px/1.5 ui-monospace, monospace;
+  background: rgba(2, 6, 23, 0.5);
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 .sm-evidence-list {
   display: grid;
@@ -656,8 +675,17 @@
   border-top: 1px solid rgba(30, 41, 59, 0.7);
 }
 .sm-tech article strong {
-  color: #fbbf24;
-  font-size: 9px;
+  display: block;
+  color: #e2e8f0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.sm-tech pre {
+  margin: 7px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #cbd5e1;
+  font: 9.5px/1.45 ui-monospace, monospace;
 }
 .sm-coverage,
 .sm-policy {
@@ -794,10 +822,10 @@
 }
 .sm-node-kind {
   color: var(--tone);
-  font-size: 8px;
+  font-size: 9px;
+  line-height: 1.2;
   font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 .sm-node-unknown {
   display: grid;
@@ -822,16 +850,6 @@
   font-weight: 700;
   overflow-wrap: anywhere;
   word-break: break-word;
-}
-.sm-node-symbol {
-  position: relative;
-  z-index: 1;
-  margin-top: 4px;
-  color: #93a4bb;
-  font: 8.5px/1.45 ui-monospace, monospace;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  white-space: normal;
 }
 .sm-node-stats {
   position: relative;
@@ -928,6 +946,15 @@
   .sm-topbar {
     gap: 7px;
     padding: 9px 10px;
+  }
+  .sm-intro {
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    font-size: 10.5px;
+  }
+  .sm-intro span:last-child {
+    white-space: normal;
   }
   .sm-brand {
     min-width: 0;
