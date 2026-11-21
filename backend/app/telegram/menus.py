@@ -298,6 +298,9 @@ def main_menu_markup(ctx: MenuContext) -> Dict[str, Any]:
 
 def binding_markup(ctx: MenuContext) -> Optional[Dict[str, Any]]:
     rows: List[List[Dict[str, Any]]] = []
+    web_app = _web_app_row(ctx)
+    if web_app:
+        rows.append(web_app)
     cabinet = ctx.config.cabinet_url
     if cabinet:
         rows.append([{"text": "Открыть кабинет", "url": cabinet}])
