@@ -1,4 +1,5 @@
-import { ExternalLink, Link2Off, RotateCcw, ShieldCheck, Smartphone, TimerOff } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
+import { ExternalLink, KeyRound, Link2Off, RotateCcw, ShieldCheck, Smartphone, TimerOff } from 'lucide-react'
 import { Alert, BrandHeader, Spinner } from './ui'
 
 export type GateKind = 'loading' | 'outside-sdk' | 'outside-init' | 'unbound' | 'invalid' | 'error'
@@ -9,9 +10,78 @@ interface GateScreenProps {
   onRetry: () => void
   onOpenCabinet: () => void
   onReopen: () => void
+  binding?: boolean
+  bindError?: string | null
+  onBind?: (code: string) => void
 }
 
-export function GateScreen({ kind, message, onRetry, onOpenCabinet, onReopen }: GateScreenProps) {
+function BindForm({
+  binding,
+  error,
+  onBind,
+  onOpenCabinet,
+}: {
+  binding: boolean
+  error: string | null
+  onBind: (code: string) => void
+  onOpenCabinet: () => void
+}) {
+  const [code, setCode] = useState('')
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    const value = code.trim()
+    if (!value || binding) return
+    onBind(value)
+  }
+
+  return (
+    <form className="mini-form mini-bind" onSubmit={submit} noValidate>
+      <div className="mini-field">
+        <label className="mini-label" htmlFor="mini-bind-code">Код из кабинета</label>
+        <div className="mini-input-wrap">
+          <KeyRound size={17} className="mini-input-icon" aria-hidden="true" />
+          <input
+            id="mini-bind-code"
+            className="mini-input mini-input--with-icon"
+            type="text"
+            inputMode="text"
+            autoComplete="one-time-code"
+            autoCapitalize="none"
+            spellCheck={false}
+            enterKeyHint="send"
+            maxLength={128}
+            placeholder="Введите код привязки"
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            disabled={binding}
+            aria-describedby="mini-bind-hint"
+          />
+        </div>
+        <p id="mini-bind-hint" className="mini-help">
+          Нажмите Start в боте NEDRA — он пришлёт код обычным сообщением. Код действует один раз.
+        </p>
+      </div>
+
+      {error && <Alert tone="error">{error}</Alert>}
+
+      <button
+        type="submit"
+        className="mini-btn mini-btn--primary mini-btn--block"
+        disabled={binding || !code.trim()}
+        aria-busy={binding}
+      >
+        {binding ? <Spinner /> : <ShieldCheck size={17} aria-hidden="true" />}
+        {binding ? 'Привязываем…' : 'Привязать аккаунт'}
+      </button>
+      <button type="button" className="mini-btn mini-btn--ghost mini-btn--block" onClick={onOpenCabinet} disabled={binding}>
+        <ExternalLink size={16} /> Открыть веб-кабинет
+      </button>
+    </form>
+  )
+}
+
+export function GateScreen({ kind, message, onRetry, onOpenCabinet, onReopen, binding = false, bindError = null, onBind }: GateScreenProps) {
   if (kind === 'loading') {
     return (
       <div className="mini-gate">
@@ -72,22 +142,16 @@ export function GateScreen({ kind, message, onRetry, onOpenCabinet, onReopen }: 
           <div className="mini-gate__icon" aria-hidden="true">
             <Link2Off size={24} />
           </div>
-          <h1 className="mini-gate__title">Telegram не привязан</h1>
+          <h1 className="mini-gate__title">Привяжите Telegram</h1>
           <p className="mini-gate__text">
-            Этот аккаунт ещё не связан с профилем NEDRA. Привязка выполняется вручную в веб-кабинете.
+            Введите код привязки — после этого проверки и настройки откроются в приложении.
           </p>
-          <ol className="mini-steps">
-            <li>Откройте веб-кабинет NEDRA.</li>
-            <li>В настройках Telegram привяжите этот аккаунт.</li>
-            <li>Вернитесь сюда и нажмите «Проверить снова».</li>
-          </ol>
-          <p className="mini-note">Автоматической привязки нет.</p>
-          <button type="button" className="mini-btn mini-btn--primary mini-btn--block" onClick={onRetry}>
-            <ShieldCheck size={17} /> Проверить снова
-          </button>
-          <button type="button" className="mini-btn mini-btn--ghost mini-btn--block" onClick={onOpenCabinet}>
-            <ExternalLink size={16} /> Открыть веб-кабинет
-          </button>
+          <BindForm
+            binding={binding}
+            error={bindError}
+            onBind={onBind ?? onRetry}
+            onOpenCabinet={onOpenCabinet}
+          />
         </div>
       </div>
     )

@@ -28,6 +28,17 @@ interface SessionHandle {
 
 const CABINET_URL = () => new URL('/', window.location.origin).toString()
 
+function bindFailure(error: unknown): string {
+  if (error instanceof MiniApiError) {
+    if (error.code === 'INVALID_BINDING_CODE') return 'Код не подошёл или уже истёк. Проверьте его и попробуйте снова.'
+    if (error.code === 'RATE_LIMITED') return 'Слишком много попыток привязки. Подождите немного и повторите.'
+    if (error.code === 'TELEGRAM_NOT_BOUND') return 'Привязка недоступна. Создайте новый код в веб-кабинете и повторите.'
+    if (error.code === 'BIND_UNAVAILABLE') return 'Не удалось выполнить привязку. Попробуйте ещё раз.'
+    return error.message
+  }
+  return errorText(error)
+}
+
 export default function MiniApp() {
   const [view, setView] = useState<View>('loading')
   const [gateMessage, setGateMessage] = useState('')
@@ -40,11 +51,14 @@ export default function MiniApp() {
   const [retryTick, setRetryTick] = useState(0)
   const [app, setApp] = useState<TelegramWebApp | null>(null)
   const [theme, setTheme] = useState<MiniTheme>(() => deriveTheme(null))
+  const [binding, setBinding] = useState(false)
+  const [bindError, setBindError] = useState<string | null>(null)
 
   const sessionRef = useRef<SessionHandle | null>(null)
   const epochRef = useRef(0)
   const refreshTimerRef = useRef<number | undefined>(undefined)
   const bootstrapSeqRef = useRef(0)
+  const bindingRef = useRef(false)
 
   const invalidateSession = useCallback(() => {
     epochRef.current += 1
@@ -57,6 +71,8 @@ export default function MiniApp() {
     setBootstrap(null)
     setSyncError(null)
     setSelectedRunId(null)
+    setBinding(false)
+    bindingRef.current = false
     setView('invalid')
   }, [])
 
@@ -64,6 +80,33 @@ export default function MiniApp() {
     const session = sessionRef.current
     if (!session) return Promise.reject(new MiniApiError('Сессия не активна', 401))
     return fn(session.api, session.controller.signal)
+  }, [])
+
+  const startRefreshLoop = useCallback((webApp: TelegramWebApp, api: MiniApi, controller: AbortController, epoch: number, expiresAt: number) => {
+    if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current)
+    const arm = (nextExpiresAt: number) => {
+      const delay = Math.max(5_000, nextExpiresAt * 1000 - Date.now() - 60_000)
+      refreshTimerRef.current = window.setTimeout(async () => {
+        if (controller.signal.aborted || epoch !== epochRef.current) return
+        try {
+          const renewed = await api.authorize(webApp.initData, controller.signal)
+          if (controller.signal.aborted || epoch !== epochRef.current) return
+          api.setToken(renewed.token)
+          arm(renewed.expiresAt)
+        } catch (error) {
+          if (controller.signal.aborted || epoch !== epochRef.current) return
+          if (error instanceof MiniApiError && error.status === 401) {
+            sessionRef.current?.controller.abort()
+            sessionRef.current = null
+            setBootstrap(null)
+            setView('invalid')
+          } else {
+            arm(Date.now() / 1000 + 90)
+          }
+        }
+      }, delay)
+    }
+    arm(expiresAt)
   }, [])
 
   // Авторизация: только подписанный initData уходит на бэкенд. Токен остаётся
@@ -78,6 +121,9 @@ export default function MiniApp() {
     setSelectedRunId(null)
     setSyncError(null)
     setRefreshing(false)
+    setBindError(null)
+    setBinding(false)
+    bindingRef.current = false
     setView('loading')
 
     void (async () => {
@@ -111,30 +157,7 @@ export default function MiniApp() {
         setBootstrap(next)
         setSessionKey(epoch)
         setView('ready')
-
-        const armRefresh = (expiresAt: number) => {
-          const delay = Math.max(5_000, expiresAt * 1000 - Date.now() - 60_000)
-          refreshTimerRef.current = window.setTimeout(async () => {
-            if (!alive || epoch !== epochRef.current) return
-            try {
-              const renewed = await api.authorize(webApp.initData, controller.signal)
-              if (!alive || epoch !== epochRef.current) return
-              api.setToken(renewed.token)
-              armRefresh(renewed.expiresAt)
-            } catch (error) {
-              if (!alive || controller.signal.aborted || epoch !== epochRef.current) return
-              if (error instanceof MiniApiError && error.status === 401) {
-                sessionRef.current?.controller.abort()
-                sessionRef.current = null
-                setBootstrap(null)
-                setView('invalid')
-              } else {
-                armRefresh(Date.now() / 1000 + 90)
-              }
-            }
-          }, delay)
-        }
-        armRefresh(session.expiresAt)
+        startRefreshLoop(webApp, api, controller, epoch, session.expiresAt)
       } catch (error) {
         if (!alive || epoch !== epochRef.current || controller.signal.aborted) return
         controller.abort()
@@ -161,7 +184,7 @@ export default function MiniApp() {
         refreshTimerRef.current = undefined
       }
     }
-  }, [retryTick])
+  }, [retryTick, startRefreshLoop])
 
   // Тема Telegram: themeParams в CSS-переменные, переключение на лету.
   useEffect(() => {
@@ -219,6 +242,58 @@ export default function MiniApp() {
       if (seq === bootstrapSeqRef.current) setRefreshing(false)
     }
   }, [invalidateSession, withSession])
+
+  const bindAccount = useCallback(async (rawCode: string) => {
+    const code = rawCode.trim()
+    if (!code || bindingRef.current) return
+    const webApp = app ?? getTelegramWebApp()
+    if (!webApp?.initData) {
+      setBindError('Telegram не передал данные входа. Закройте и снова откройте приложение из бота.')
+      return
+    }
+
+    bindingRef.current = true
+    setBinding(true)
+    setBindError(null)
+    const epoch = ++epochRef.current
+    sessionRef.current?.controller.abort()
+    sessionRef.current = null
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current)
+      refreshTimerRef.current = undefined
+    }
+    const controller = new AbortController()
+    const api = new MiniApi()
+    try {
+      const session = await api.bind(webApp.initData, code, controller.signal)
+      if (controller.signal.aborted || epoch !== epochRef.current) return
+      api.setToken(session.token)
+      sessionRef.current = { api, controller }
+      const next = await api.bootstrap(controller.signal)
+      if (controller.signal.aborted || epoch !== epochRef.current) return
+      setBootstrap(next)
+      setSessionKey(epoch)
+      setSelectedRunId(null)
+      setTab('home')
+      setBindError(null)
+      setView('ready')
+      startRefreshLoop(webApp, api, controller, epoch, session.expiresAt)
+    } catch (error) {
+      if (controller.signal.aborted || epoch !== epochRef.current) return
+      if (error instanceof MiniApiError && error.status === 401) {
+        setView('invalid')
+        return
+      }
+      controller.abort()
+      sessionRef.current = null
+      setBindError(bindFailure(error))
+    } finally {
+      if (epoch === epochRef.current) {
+        bindingRef.current = false
+        setBinding(false)
+      }
+    }
+  }, [app, startRefreshLoop])
 
   const createRun = useCallback(async (input: MiniRunInput): Promise<string> => {
     try {
@@ -314,6 +389,9 @@ export default function MiniApp() {
             onRetry={view === 'outside-init' ? reloadPage : retry}
             onOpenCabinet={openCabinet}
             onReopen={reopen}
+            binding={binding}
+            bindError={bindError}
+            onBind={bindAccount}
           />
         </div>
       </div>
