@@ -70,7 +70,7 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
   onApply,
   initialPrompt = '',
 }) => {
-  const [prompt, setPrompt] = useState(initialPrompt);
+  const [prompt, setPrompt] = useState(initialPrompt.slice(0, MAX_PROMPT));
   const [preview, setPreview] = useState<ScenarioPreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +78,9 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const voiceSeqRef = useRef(0);
+  const requestSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setVoiceSupported(Boolean(speechCtor()));
@@ -85,6 +88,11 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) {
+      requestSeqRef.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setLoading(false);
+      voiceSeqRef.current += 1;
       recognitionRef.current?.abort();
       recognitionRef.current = null;
       setListening(false);
@@ -95,6 +103,10 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
   }, [isOpen]);
 
   useEffect(() => () => {
+    requestSeqRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    voiceSeqRef.current += 1;
     recognitionRef.current?.abort();
     recognitionRef.current = null;
   }, []);
@@ -102,12 +114,17 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
   if (!isOpen) return null;
 
   const stopVoice = () => {
+    voiceSeqRef.current += 1;
     recognitionRef.current?.stop();
     recognitionRef.current = null;
     setListening(false);
   };
 
   const close = () => {
+    requestSeqRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
     stopVoice();
     onClose();
   };
@@ -124,12 +141,15 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
       return;
     }
     setVoiceError(null);
+    const voiceSession = voiceSeqRef.current + 1;
+    voiceSeqRef.current = voiceSession;
     try {
       const recognition = new Ctor();
       recognition.lang = 'ru-RU';
       recognition.continuous = false;
       recognition.interimResults = false;
       recognition.onresult = (event) => {
+        if (voiceSeqRef.current !== voiceSession || recognitionRef.current !== recognition) return;
         const fragments: string[] = [];
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
@@ -140,11 +160,13 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
         if (fragments.length) {
           setPrompt((current) => {
             const joined = fragments.join(' ').trim();
-            return current.trim() ? `${current.trim()} ${joined}` : joined;
+            const next = current.trim() ? `${current.trim()} ${joined}` : joined;
+            return next.slice(0, MAX_PROMPT);
           });
         }
       };
       recognition.onerror = (event) => {
+        if (voiceSeqRef.current !== voiceSession || recognitionRef.current !== recognition) return;
         const code = event.error || 'unknown';
         const message = code === 'not-allowed' || code === 'service-not-allowed'
           ? 'Доступ к микрофону запрещён. Разрешите его в браузере или введите текст вручную.'
@@ -156,6 +178,7 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
         recognitionRef.current = null;
       };
       recognition.onend = () => {
+        if (voiceSeqRef.current !== voiceSession || recognitionRef.current !== recognition) return;
         setListening(false);
         recognitionRef.current = null;
       };
@@ -175,20 +198,30 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
       setError(`Опишите сценарий хотя бы в ${MIN_PROMPT} символах.`);
       return;
     }
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setError(null);
     setPreview(null);
     try {
-      const result = await requestScenarioPreview(value);
+      const result = await requestScenarioPreview(value, controller.signal);
+      if (requestSeq !== requestSeqRef.current || controller.signal.aborted) return;
       setPreview(result);
     } catch (exc) {
+      if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
       if (exc instanceof ScenarioBuilderApiError) {
         setError(exc.message);
       } else {
         setError('Не удалось получить черновик. Попробуйте позже.');
       }
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) {
+        setLoading(false);
+        abortRef.current = null;
+      }
     }
   };
 
@@ -270,6 +303,10 @@ export const ScenarioPromptModal: React.FC<ScenarioPromptModalProps> = ({
                   </span>
                 )}
               </div>
+              <p className="text-[10px] leading-relaxed text-slate-500">
+                Распознавание выполняет браузер и может использовать его внешний сервис.
+                Аудио на сервер NEDRA не отправляется.
+              </p>
               {voiceError && (
                 <div role="alert" className="rounded-xl border border-amber-800 bg-amber-950/40 p-3 text-[11px] text-amber-200">
                   {voiceError}

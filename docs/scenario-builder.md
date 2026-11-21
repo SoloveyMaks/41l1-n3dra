@@ -61,7 +61,8 @@ Errors:
 | 422 | `SCENARIO_MODEL_INVALID` | Model response shape/known-intent validation failed |
 | 422 | `SCENARIO_DRAFT_INVALID` | Assembled draft failed `WorkflowValidator` |
 | 503 | `SCENARIO_PROVIDER_UNAVAILABLE` | No provider config, network/refusal/timeout at provider layer |
-| 504 | `SCENARIO_TIMEOUT` | API-level 45s bound |
+| 429 | `SCENARIO_BUSY` | Bounded queue/deadline is full; retry later |
+| 504 | `SCENARIO_TIMEOUT` | Overall API deadline while the worker thread is still running |
 | 503 | `SCENARIO_BUILDER_UNAVAILABLE` | Unexpected bounded fallback; no raw provider text |
 
 There is no invented model answer on provider failure. The endpoint returns an
@@ -117,10 +118,14 @@ Config allowlist:
 - schedule uses the registry default (`*/30 * * * *`, UTC);
 - no provider/model/auth keys are placed in node config.
 
-Bounds: prompt 8–2000 chars; max 12 nodes; max 16 edges; API timeout 45s;
-concurrency 2 (clamped 1–4). The external call gets only
-`mask_sensitive_text(prompt)` under `task=plan_workflow`. Project source and
-artifact contents are never sent.
+Bounds: prompt 8–2000 chars; max 12 nodes; max 16 edges; overall API deadline
+45s; 2 active provider workers (clamped 1–4) and 4 waiting slots (clamped
+0–16). The deadline includes queue wait. The semaphore is released only when
+the blocking worker thread actually finishes, not when the HTTP coroutine times
+out, so a timed-out request cannot free a slot while its provider call is still
+running. Excess queue requests get `429 SCENARIO_BUSY`. The external call gets
+only `mask_sensitive_text(prompt)` under `task=plan_workflow`. Project source
+and artifact contents are never sent.
 
 ## 6. AI_SCAN independence
 
@@ -166,7 +171,13 @@ Voice:
 - visible «Слушаю…» indicator and «Остановить запись»;
 - recognized text is appended to an editable textarea;
 - unsupported browser shows a text fallback and no server audio is used;
-- permission/`no-speech`/runtime errors are surfaced as readable messages.
+- the UI states that recognition is performed by the browser and may use the
+  browser vendor's external service; NEDRA does not receive audio;
+- permission/`no-speech`/runtime errors are surfaced as readable messages;
+- closing the modal aborts the HTTP request and invalidates its generation;
+  a late response after close/reopen is discarded;
+- voice callbacks are fenced by a recognition session and append at most the
+  2000-character prompt limit.
 
 ## 8. Live evidence
 
@@ -192,8 +203,17 @@ Rejections checked without trusting the model:
 - ASGI preview 200 for a valid prompt, short prompt 400
   `SCENARIO_PROMPT_INVALID`.
 
+Concurrency proof against a real slow local provider endpoint (2 workers, 6s
+provider, 5s overall deadline): server observed `max_active=2`; two requests
+returned `SCENARIO_TIMEOUT`, the queued third returned `SCENARIO_BUSY`; no third
+provider thread started while timed-out calls were still running.
+
+Modal stale-response proof with a delayed route (1.5s): submitting, closing,
+and reopening left `loading=false`, showed the prompt form again, and discarded
+the late preview (`hasStalePreview=false`).
+
 Frontend build: `npm ci && npm run build` passed (Vite production build). A
-temporary wrapper rendered the modal at 390×844 (`/tmp/scenario-modal-390.png`);
+temporary wrapper rendered the modal at 390×844 (`/tmp/scenario-modal-390-final.png`);
 the screenshot and OCR show the dialog, textarea, voice button and submit button
 inside the viewport. No `App.tsx` edit was made, so root owns the visible
 button/mount. Vision review was unavailable; OCR and viewport dimensions were
@@ -206,7 +226,9 @@ used.
 - Coverage warning is honest: Kotlin/Spring Boot only; other languages and
   runtime scopes are not covered by this draft.
 - `notify` is intentionally disabled and cannot receive a URL from the prompt.
-- `schedule` uses a fixed safe template; the user must check timing.
+- `schedule` adds a `SCHEDULE_TRIGGER` block only. It does **not** create an
+  active schedule record; the UI warning says the schedule must be configured
+  separately and timing checked.
 - Speech recognition depends on browser support and permissions; text is the
   fallback, and there is no server-side audio path.
 - A provider outage is an explicit error, not a deterministic fake plan.

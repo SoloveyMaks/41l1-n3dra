@@ -37,13 +37,14 @@ function detailText(payload: unknown): string {
   return '';
 }
 
-export async function requestScenarioPreview(prompt: string): Promise<ScenarioPreview> {
+export async function requestScenarioPreview(prompt: string, signal?: AbortSignal): Promise<ScenarioPreview> {
   const response = await fetch(`${API_BASE}/scenario-builder/preview`, {
     method: 'POST',
     credentials: 'include',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt }),
+    signal,
   });
   const payload = await response.json().catch(() => ({}));
   if (response.status === 401) {
