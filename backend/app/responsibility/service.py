@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from typing import Any, Dict, Optional
 from pathlib import PurePosixPath
 
@@ -221,8 +222,8 @@ def _history_without_repo(reason: str) -> Dict[str, Any]:
 def _load_context(db: Any, store: Any, run_id: str, finding_id: str) -> Dict[str, Any]:
     """All synchronous DB/store/CODEOWNERS reads, called in a worker thread.
 
-    asyncio.to_thread copies the current ContextVar, so the tenant workspace
-    stays attached to these scoped reads.
+    The caller must run this through contextvars.copy_context().run so the
+    tenant workspace stays attached to these scoped reads.
     """
     run = db.get_run(run_id)
     if not run:
@@ -281,7 +282,13 @@ async def _build_responsibility_impl(
     slot: _AdmissionSlot,
 ) -> ResponsibilityResponse:
     loop = asyncio.get_running_loop()
-    future = loop.run_in_executor(None, _load_context, db, store, run_id, finding_id)
+    # run_in_executor does NOT copy ContextVars. Copy explicitly, otherwise
+    # db.workspace_id()/store fallback can use env workspace instead of the
+    # authenticated account workspace.
+    context = contextvars.copy_context()
+    future = loop.run_in_executor(
+        None, context.run, _load_context, db, store, run_id, finding_id
+    )
     slot.sync_future = future
     # Shield the executor future: cancelling the HTTP waiter must not hide the
     # fact that a real thread is still using PG/CPU.

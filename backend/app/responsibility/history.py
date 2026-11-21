@@ -13,6 +13,7 @@ import asyncio
 import json
 import re
 import time
+import zlib
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlsplit
 
@@ -29,6 +30,7 @@ from backend.app.responsibility.models import (
 )
 
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_COMPRESSED_BYTES = 256 * 1024
 REQUEST_TIMEOUT_SECONDS = 4.0
 ENRICHMENT_DEADLINE_SECONDS = 9.0
 CACHE_TTL_SECONDS = 15 * 60
@@ -40,6 +42,11 @@ MAX_PRS_WITH_REVIEWS = 2
 MAX_REVIEWERS = 20
 MAX_REVIEWS_PER_PAGE = 100
 _ALLOWED_HOSTS = {"github.com": "github", "gitlab.com": "gitlab"}
+_PROVIDER_BY_HOST = {
+    "api.github.com": "github",
+    "github.com": "github",
+    "gitlab.com": "gitlab",
+}
 _GITHUB_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _GITLAB_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}$")
@@ -161,39 +168,102 @@ def _client() -> httpx.AsyncClient:
         timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=2.0),
         follow_redirects=False,
         trust_env=False,
-        headers={"Accept": "application/json", "User-Agent": "nedra-responsibility/1.0"},
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "User-Agent": "nedra-responsibility/1.0",
+        },
     )
+
+
+async def _read_limited_json_body(response: httpx.Response) -> Tuple[str, Optional[bytes], str]:
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding not in {"", "identity", "gzip", "x-gzip", "deflate"}:
+        return "failed", None, "Provider вернул неподдерживаемый Content-Encoding."
+    decoder = None
+    if encoding in {"gzip", "x-gzip"}:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    elif encoding == "deflate":
+        decoder = zlib.decompressobj(zlib.MAX_WBITS)
+    raw_total = 0
+    decoded = bytearray()
+    try:
+        async for chunk in response.aiter_raw():
+            raw_total += len(chunk)
+            if raw_total > MAX_COMPRESSED_BYTES:
+                return "failed", None, "Ответ provider превысил допустимый размер."
+            if decoder is None:
+                if len(decoded) + len(chunk) > MAX_RESPONSE_BYTES:
+                    return "failed", None, "Ответ provider превысил допустимый размер."
+                decoded.extend(chunk)
+                continue
+            pending = chunk
+            while pending:
+                remaining = MAX_RESPONSE_BYTES - len(decoded)
+                if remaining <= 0:
+                    return "failed", None, "Ответ provider превысил допустимый размер."
+                part = decoder.decompress(pending, min(remaining, 65536) + 1)
+                if len(part) > remaining:
+                    return "failed", None, "Ответ provider превысил допустимый размер."
+                decoded.extend(part)
+                pending = decoder.unconsumed_tail
+        if decoder is not None:
+            remaining = MAX_RESPONSE_BYTES - len(decoded)
+            if remaining <= 0:
+                return "failed", None, "Ответ provider превысил допустимый размер."
+            tail = decoder.flush()
+            if len(tail) > remaining:
+                return "failed", None, "Ответ provider превысил допустимый размер."
+            decoded.extend(tail)
+            if not decoder.eof:
+                return "failed", None, "Provider вернул повреждённый Content-Encoding."
+        return "ok", bytes(decoded), ""
+    except (httpx.HTTPError, OSError, zlib.error):
+        return "failed", None, "Provider оборвал ответ."
+
+
+def _provider_for_url(url: str) -> Optional[str]:
+    try:
+        return _PROVIDER_BY_HOST.get(urlsplit(url).netloc.lower())
+    except ValueError:
+        return None
 
 
 async def _fetch_json_page(
     client: httpx.AsyncClient, url: str, params: Dict[str, Any]
 ) -> Tuple[str, Any, str, Dict[str, str]]:
-    """Stream a response with a decompressed byte ceiling.
+    """Stream a response with compressed and decompressed byte ceilings.
 
-    httpx's `aiter_bytes()` yields decoded/decompressed chunks; the ceiling is
-    enforced while reading, before the whole body exists in memory.
+    Raw bytes are never trusted from Content-Length. gzip/deflate are decoded
+    incrementally with zlib max_length, and unsupported encodings fail closed.
     """
     try:
-        async with client.stream("GET", url, params=params) as response:
-            headers = {key.lower(): value for key, value in response.headers.items()}
-            status = response.status_code
-            if status in {301, 302, 303, 307, 308}:
-                return "failed", None, "Provider вернул redirect; переход отклонён.", headers
-            if status == 429 or (status == 403 and headers.get("x-ratelimit-remaining") == "0"):
-                return "rate_limited", None, "Provider временно ограничил публичные запросы.", headers
-            if status in {401, 403, 404}:
-                return "unavailable", None, f"Provider ответил HTTP {status}.", headers
-            if status != 200:
-                return "failed", None, f"Provider ответил HTTP {status}.", headers
-            chunks = bytearray()
-            async for chunk in response.aiter_bytes():
-                if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
-                    return "failed", None, "Ответ provider превысил допустимый размер.", headers
-                chunks.extend(chunk)
-            try:
-                return "ok", json.loads(bytes(chunks).decode("utf-8")), "", headers
-            except (UnicodeDecodeError, ValueError):
-                return "failed", None, "Provider вернул не-JSON ответ.", headers
+        async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
+            async with client.stream("GET", url, params=params) as response:
+                headers = {key.lower(): value for key, value in response.headers.items()}
+                status = response.status_code
+                if status in {301, 302, 303, 307, 308}:
+                    return "failed", None, "Provider вернул redirect; переход отклонён.", headers
+                if status == 429 or (status == 403 and headers.get("x-ratelimit-remaining") == "0"):
+                    provider = _provider_for_url(url)
+                    if provider is not None:
+                        # Central setter covers nested reviews/details too; one
+                        # 429 must stop further provider calls for the TTL.
+                        _COOLDOWN[provider] = time.monotonic() + PROVIDER_COOLDOWN_SECONDS
+                    return "rate_limited", None, "Provider временно ограничил публичные запросы.", headers
+                if status in {401, 403, 404}:
+                    return "unavailable", None, f"Provider ответил HTTP {status}.", headers
+                if status != 200:
+                    return "failed", None, f"Provider ответил HTTP {status}.", headers
+                body_kind, body, body_reason = await _read_limited_json_body(response)
+                if body_kind != "ok" or body is None:
+                    return body_kind, None, body_reason, headers
+                try:
+                    return "ok", json.loads(body.decode("utf-8")), "", headers
+                except (UnicodeDecodeError, ValueError):
+                    return "failed", None, "Provider вернул не-JSON ответ.", headers
+    except TimeoutError:
+        return "failed", None, "Provider превысил общий deadline запроса.", {}
     except (httpx.HTTPError, OSError) as exc:
         return "failed", None, f"Provider временно недоступен ({type(exc).__name__}).", {}
 
