@@ -1,8 +1,7 @@
 """Admin-only operational overview.
 
-This is deliberately a read-only operator surface, not a user-account system.
-The demo has one shared workspace; the signed session role only gates operator
-actions such as workflow authoring, schedules and training hooks.
+This read-only operator surface reports the current workspace. Demo sessions
+share the configured workspace; account sessions use their personal workspace.
 """
 
 from __future__ import annotations

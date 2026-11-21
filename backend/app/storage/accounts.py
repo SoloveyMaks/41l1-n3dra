@@ -43,10 +43,20 @@ class EmailTaken(AccountError):
     """Такой e-mail уже зарегистрирован."""
 
 
+def _validate_text(value: str, field: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise AccountError(f"{field} содержит недопустимый символ") from None
+    if "\x00" in value:
+        raise AccountError(f"{field} содержит недопустимый символ")
+
+
 def normalize_email(value: Any) -> str:
     if not isinstance(value, str):
         raise AccountError("email должен быть строкой")
     email = value.strip().lower()
+    _validate_text(email, "email")
     if not email or len(email) > MAX_EMAIL_LENGTH or not _EMAIL_RE.fullmatch(email):
         raise AccountError("Некорректный email")
     return email
@@ -59,8 +69,7 @@ def validate_password(value: Any) -> str:
         raise AccountError(
             f"Пароль должен быть от {MIN_PASSWORD_LENGTH} до {MAX_PASSWORD_LENGTH} символов"
         )
-    if "\x00" in value:
-        raise AccountError("Пароль содержит недопустимый символ")
+    _validate_text(value, "Пароль")
     return value
 
 
@@ -147,6 +156,8 @@ def register_user(email: Any, password: Any, display_name: Optional[str] = None)
     normalized = normalize_email(email)
     valid_password = validate_password(password)
     name = display_name.strip()[:80] if isinstance(display_name, str) and display_name.strip() else None
+    if name is not None:
+        _validate_text(name, "Имя")
     user_id = uuid.uuid4()
     workspace_id = uuid.uuid4()
     password_hash = hash_password(valid_password)
