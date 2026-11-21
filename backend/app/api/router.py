@@ -920,16 +920,6 @@ def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
     return ai_service.generate_synthetic_test(findings)
 
 
-def _include_repository_watch_router() -> None:
-    """Watch API живёт в отдельном модуле и подключается после api_router."""
-    try:
-        from backend.app.api.repository_watches import create_repository_watch_router
-    except ModuleNotFoundError as exc:
-        if exc.name != "backend.app.api.repository_watches":
-            raise
-        logger.error("repository watches module is absent; /api/repository-watches is not mounted")
-        return
-    api_router.include_router(create_repository_watch_router(db_repo, executor))
+from backend.app.api.repository_watches import create_repository_watch_router
 
-
-_include_repository_watch_router()
+api_router.include_router(create_repository_watch_router(db_repo, executor))
