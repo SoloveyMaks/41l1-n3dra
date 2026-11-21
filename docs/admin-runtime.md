@@ -1,8 +1,9 @@
 # Admin runtime: отдельный код доступа
 
 Документ фиксирует env-контракт для отдельного admin-кода публичного demo и
-безопасный порядок его появления на хосте. Код backend/router и frontend живёт
-в отдельных изменениях; здесь — только `runtime.env` и ограничения деплоя.
+безопасный порядок его появления на хосте. Полный контракт ролей, токена и
+матрицы доступа — в [docs/admin-access.md](admin-access.md); здесь — только
+`runtime.env`, bootstrap и ограничения деплоя.
 
 ## Переменная
 
@@ -20,26 +21,30 @@
 - Если существующий `CG_ADMIN_ACCESS_CODE` совпадает с `CG_ACCESS_CODE`,
   `--write` отказывается писать и не трогает `runtime.env`: коды нужно развести
   вручную (удалить admin-строку и повторить `--write`).
-- Отсутствие ключа — валидное состояние: публичный admin login выключен,
-  обычный вход по `CG_ACCESS_CODE` продолжает работать. `nedra-lib.sh` не
-  требует этот ключ при загрузке env.
+- Отсутствие ключа или равенство с `CG_ACCESS_CODE` — валидное, но нерабочее
+  для админки состояние: backend отдаёт `adminAvailable: false`, а
+  `POST /api/session {role:"admin"}` — `503`; обычный вход по `CG_ACCESS_CODE`
+  продолжает работать. `nedra-lib.sh` не требует этот ключ при загрузке env.
 
-`CG_ACCESS_CODE` остаётся общим кодом для роли `user`; коды всегда разные.
+`CG_ACCESS_CODE` остаётся общим кодом для роли `user`; для действующей админки
+оба кода обязательны и различны.
 
-## Контракт backend (согласован)
+## Контракт (реализован в dev)
+
+Полная версия — [docs/admin-access.md](admin-access.md). Ключевое для env:
 
 - `POST /api/session` принимает `{accessCode, role?}`; `role` — `user` или
   `admin`, по умолчанию `user`.
 - `role=user` сверяется с `CG_ACCESS_CODE`, `role=admin` — с
   `CG_ADMIN_ACCESS_CODE`. Сравнение постоянного времени, значения не
   возвращаются в ошибках.
-- `GET /api/session` для аутентифицированной сессии отдаёт `role`; поле
-  `adminAvailable` показывает, задан ли `CG_ADMIN_ACCESS_CODE`.
-- Нет `CG_ADMIN_ACCESS_CODE` → `adminAvailable=false`, admin-вход отклоняется;
-  user-вход не меняется.
-- Один workspace и одна сессия: `admin` — роль в рамках demo, не отдельный
-  tenant и не приватный кабинет. В локальном режиме (`CG_PUBLIC_DEMO` не `1`)
-  вход не требуется, роль не является границей доступа.
+- `GET /api/session` отдаёт `role` для аутентифицированной сессии и
+  `adminAvailable` для любой.
+- `adminAvailable=true` только если `CG_ADMIN_ACCESS_CODE` непустой и не равен
+  `CG_ACCESS_CODE`. Иначе admin-вход выключен: `POST {role:"admin"}` → `503`,
+  user-вход не меняется. Код user'а в теле с `role:"admin"` даёт `401`.
+- Один workspace и одна сессия: `admin` — роль в подписанном токене в рамках
+  demo, не отдельный tenant и не приватный кабинет.
 
 ## Точное безопасное действие для будущего деплоя
 
@@ -88,6 +93,7 @@
 5. Smoke-проверка контракта. Код читается без эха и не попадает в argv:
 
    ```bash
+   curl -sS http://127.0.0.1:18080/api/session          # adminAvailable
    read -rs CG_CODE
    printf '{"accessCode":"%s","role":"admin"}' "$CG_CODE" \
      | curl -sS -c /tmp/nedra-admin.jar -X POST --data-binary @- \
@@ -96,12 +102,17 @@
    curl -sS -b /tmp/nedra-admin.jar http://127.0.0.1:18080/api/session
    ```
 
-   Ожидаемо: `role=admin`; для user-кода — `role=user`; до admin-кода
-   `adminAvailable=false`. Cookie-файл после проверки удалить.
+   Ожидаемо: `adminAvailable=true`; admin-вход — `200` и `role=admin`; user-код
+   с `role:"user"` — `role=user`; user-код с `role:"admin"` — `401`. Если
+   `CG_ADMIN_ACCESS_CODE` отсутствует или равен user-коду, `adminAvailable`
+   будет `false`, а admin-вход вернёт `503` — это штатное выключение админки,
+   user-вход продолжает работать. Cookie-файл после проверки удалить.
 
 6. Ротация admin-кода: удалить строку `CG_ADMIN_ACCESS_CODE` из
-   `runtime.env`, выполнить `--write`, затем `--recreate-app`. Пока строки нет,
-   admin-вход выключен. Новый код передать администратору вне git/чата/логов.
+   `runtime.env`, выполнить `--write`, затем `--recreate-app`; bootstrap создаст
+   новый отдельный код. Если цель — штатно выключить админку, удалить строку и
+   пересоздать backend без `--write`: `adminAvailable` станет `false`, admin-вход
+   будет отдавать `503`. Новый код передать администратору вне git/чата/логов.
 
 ## Ограничения общего workspace
 
@@ -123,10 +134,13 @@
   и git. Для диагностики допустимы только имена ключей, режимы файлов,
   булевы результаты сравнения и хэши файлов.
 
-## Живая проверка (2026-11-21, временные env в `/tmp`)
+## Живая проверка
 
-Проверено одноразовым скриптом на копии `runtime.env`; реальный файл не
-использовался. Итог: 20/20 проверок PASS, 7 запусков bootstrap.
+Проверено одноразовыми скриптами на копиях `runtime.env` в `/tmp`; реальный
+файл не использовался. Итог: 20/20 проверок PASS при 7 запусках bootstrap до
+merge и 14/14 PASS при 5 повторных запусках после merge local dev (4012fb5).
+Bootstrap после merge не менялся; backend-контракт `503`/`adminAvailable`
+сверен с `backend/app/api/session.py` и `router.py`.
 
 | Проверка | Результат |
 |---|---|
@@ -138,3 +152,4 @@
 | Custom env | `CG26_*`, кастомный `CG_*` сохранены; AI/vector — канонические |
 | Совпадение кодов | `--write` отказал, файл не изменён, temp-файлов нет |
 | Утечка значений | кодов нет в stdout/stderr ни на одном запуске |
+| Backend при equal/absent | `adminAvailable=false`, admin login `503` (по коду dev) |
