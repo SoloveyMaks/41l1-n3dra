@@ -1,8 +1,9 @@
 # Backend debug audit
 
 Дата: 2026-11-21. Ветка `task/postgres-runtime`, merge local `dev` `770f0a6`.
-Кодовые fix-коммиты: `a886868530` (CRUD/SSE/cron) и `084c90a196`
-(actual next-fire validation, interval bound, PATCH pause/resume).
+Кодовые fix-коммиты: `a886868530` (CRUD/SSE/cron), `084c90a196`
+(next-fire/bound/pause-resume) и `1eb6721b92` (bounded executor,
+mixed-engine terminal, no schedule overlap).
 Проверка — read-only относительно исходников, на изолированной temporary
 PostgreSQL и temporary workspace/data; ключи и DSN не выводились, реальные demo
 данные не использовались. Все probes — `/tmp`, в repo тестовых файлов нет.
@@ -17,6 +18,8 @@ PostgreSQL и temporary workspace/data; ключи и DSN не выводили�
 | 4 | Cron считался приблизительным `*/N`-парсером; прочие cron → 60s | `croniter` вычисляет next fire; `interval:N` — точные секунды | `backend/app/engine/scheduler.py` |
 | 5 | Impossible cron `0 0 31 2 *` и огромный `interval` принимались; затем падали на `get_next`/`timedelta` | API проверяет фактический next fire; cron без даты → 400, interval вне `1..31536000` → 400, ничего не сохраняется | `backend/app/engine/scheduler.py`, `backend/app/api/router.py` |
 | 6 | Не было способа остановить случайный interval-schedule | `PATCH /api/schedules/{id} {"enabled":bool}`: scoped pause/resume, unknown/foreign → 404; resume ставит `next_fire_at=NULL`; runs/history не удаляются | `backend/app/api/router.py`, `backend/app/storage/database.py` |
+| 7 | Persisted mixed-engine draft: POST run 202, `_engine_for_draft` падал до validator/status running, run навсегда `queued` | engine resolution после validator; run терминально `failed/inconclusive`; wrapper `finally` освобождает team_b/cache | `backend/app/engine/executor.py` |
+| 8 | `CG_MAX_CONCURRENT_RUNS` действовал только в router; scheduler вызывал executor напрямую и обходил лимит | один bounded entrypoint в executor для manual+schedule; router `_RUN_SEM` убран; scheduler не создаёт run того же schedule, пока активен предыдущий | `backend/app/engine/executor.py`, `backend/app/engine/scheduler.py`, `backend/app/api/router.py` |
 
 Точный repro:
 
@@ -51,6 +54,16 @@ PATCH /api/schedules/<id> {"enabled": true}
 after:  200, enabled=1, next_fire_at=null; после тика scheduler новый run появился
 PATCH /api/schedules/sch_absent {"enabled":false}
 after:  404 Расписание не найдено
+
+POST /api/workflows/<mixed>/runs (draft с team_b + backend scanners)
+before: 202, run остаётся queued (background ValueError)
+after:  202 -> run failed/inconclusive, не queued
+
+CG_MAX_CONCURRENT_RUNS=1, slow local notify (4с):
+schedule run: running; manual run: queued; оба terminal succeeded;
+одновременно running >1 не наблюдался.
+Долгий schedule interval:1: nonterminal runs одного schedule ≤1;
+pause останавливает новые запуски.
 ```
 
 ## Матрица checked / fixed / unverified
@@ -68,6 +81,8 @@ after:  404 Расписание не найдено
 | Run | несуществующий artifact | PASS: 404 «Артефакт не найден» |
 | Run | валидный run sample artifact | PASS: succeeded, fail, 13 findings |
 | Run | повторный run того же artifact | PASS: отдельные runs, evidence 26/26 disjoint |
+| Run | persisted mixed-engine draft | **FIXED**: 202 → failed/inconclusive, не queued |
+| Run | bounded manual+schedule при `CG_MAX_CONCURRENT_RUNS=1` | PASS: schedule running, manual queued; >1 running не наблюдалось |
 | Report | report JSON / official.json / readable.md | PASS: 200, valid JSON, `application/json`, `text/plain` |
 | Report | отсутствующий report | PASS: 404 controlled |
 | SSE | history order, resume after seq | PASS: seq возрастает, resume > after |
@@ -83,6 +98,8 @@ after:  404 Расписание не найдено
 | Schedules | PATCH resume | PASS: next_fire_at=null, следующий run после тика |
 | Schedules | PATCH unknown/foreign | PASS: 404, чужие workspace не затронуты |
 | Schedules | history on pause/resume | PASS: существующие runs/report остаются |
+| Schedules | overlap/backlog одного slow schedule | PASS: active schedule run не дублируется; nonterminal ≤1 |
+| Schedules | direct scheduler bypass лимита | **FIXED**: schedule run проходит через executor semaphore |
 | Conditions | true (`equals fail`) | PASS: true branch, merge/report/notify |
 | Conditions | false (`equals pass`) | PASS: false branch; AI node `skipped` |
 | Conditions | regex `f.*` | PASS: true branch |
