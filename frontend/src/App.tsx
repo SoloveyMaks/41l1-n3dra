@@ -13,6 +13,7 @@ import { AccessGate } from './components/AccessGate';
 import { ComparisonView } from './components/ComparisonView';
 import { Navbar } from './components/Navbar';
 import { ScenarioCreateModal } from './components/ScenarioCreateModal';
+import { ScenarioPromptModal } from './components/ScenarioPromptModal';
 import { AccountModal } from './components/AccountModal';
 import { UserSettingsPanel } from './components/UserSettingsPanel';
 import { AdminShell, AdminSection } from './components/AdminShell';
@@ -100,6 +101,7 @@ export const App: React.FC = () => {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isAiTestOpen, setIsAiTestOpen] = useState(false);
   const [isScenarioOpen, setIsScenarioOpen] = useState(false);
+  const [isScenarioPromptOpen, setIsScenarioPromptOpen] = useState(false);
   const [scenarioName, setScenarioName] = useState('');
   const [scenarioBusy, setScenarioBusy] = useState(false);
   const [scenarioError, setScenarioError] = useState<string | null>(null);
@@ -600,6 +602,22 @@ export const App: React.FC = () => {
     void validateDraft(workflowId, updated);
   };
 
+  const handleApplyGeneratedScenario = (generated: WorkflowDraft) => {
+    const nextDraft: WorkflowDraft = {
+      ...generated,
+      nodes: generated.nodes.map((node) => node.kind === 'project_input'
+        ? { ...node, config: { ...node.config, artifactId: currentArtifactId } }
+        : node),
+    };
+    resetRunSelection();
+    setSelectedNodeId(null);
+    handleDraftChange(nextDraft);
+    setIsScenarioPromptOpen(false);
+    if (isAdmin) setAdminSection('editor');
+    else setActiveTab('editor');
+    showNotice('ok', 'Черновик применён. Проверьте блоки и сохраните сценарий перед запуском.');
+  };
+
   const openScenarioModal = () => {
     const baseName = workflows.find((workflow) => workflow.id === workflowId)?.name || draft.name || 'Мой сценарий';
     setScenarioName(`${baseName.slice(0, 108)} (копия)`);
@@ -903,6 +921,7 @@ export const App: React.FC = () => {
                 workflowId={workflowId}
                 onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
                 onCreateWorkflow={openScenarioModal}
+                onGenerateWorkflow={() => setIsScenarioPromptOpen(true)}
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleUserSelectArtifact}
@@ -988,6 +1007,11 @@ export const App: React.FC = () => {
           onClose={() => setIsUploadOpen(false)}
           onArtifactLoaded={handleArtifactLoaded}
           showTraining={false}
+        />
+        <ScenarioPromptModal
+          isOpen={isScenarioPromptOpen}
+          onClose={() => setIsScenarioPromptOpen(false)}
+          onApply={handleApplyGeneratedScenario}
         />
         <ScenarioCreateModal
           isOpen={isScenarioOpen}
@@ -1084,6 +1108,7 @@ export const App: React.FC = () => {
                 workflowId={workflowId}
                 onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
                 onCreateWorkflow={openScenarioModal}
+                onGenerateWorkflow={() => setIsScenarioPromptOpen(true)}
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleSelectArtifact}
@@ -1185,6 +1210,11 @@ export const App: React.FC = () => {
         onClose={() => setIsUploadOpen(false)}
         onArtifactLoaded={handleArtifactLoaded}
         showTraining
+      />
+      <ScenarioPromptModal
+        isOpen={isScenarioPromptOpen}
+        onClose={() => setIsScenarioPromptOpen(false)}
+        onApply={handleApplyGeneratedScenario}
       />
       <ScenarioCreateModal
         isOpen={isScenarioOpen}

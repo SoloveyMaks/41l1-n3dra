@@ -15,7 +15,7 @@ import '@xyflow/react/dist/style.css';
 
 import { CustomNode } from './CustomNode';
 import { WorkflowDraft, WorkflowEdge, NodeRunStatus } from '../types';
-import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
 import { artifactRepository } from '../repository';
 
@@ -33,6 +33,7 @@ interface WorkflowCanvasProps {
   workflowId: string;
   onSelectWorkflow: (workflowId: string) => void;
   onCreateWorkflow?: () => void;
+  onGenerateWorkflow?: () => void;
   artifacts: import('../types').ArtifactManifest[];
   currentArtifactId: string;
   onSelectArtifact: (artifactId: string) => void;
@@ -52,6 +53,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   workflowId,
   onSelectWorkflow,
   onCreateWorkflow,
+  onGenerateWorkflow,
   artifacts,
   currentArtifactId,
   onSelectArtifact,
@@ -181,6 +183,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               title="Создать новый сценарий на основе текущих блоков"
             >
               <Plus size={12} /> Новый
+            </button>
+          )}
+          {onGenerateWorkflow && (
+            <button
+              onClick={onGenerateWorkflow}
+              className="flex items-center gap-1 rounded border border-fuchsia-800 bg-fuchsia-950/60 px-1.5 py-0.5 text-[11px] text-fuchsia-200 hover:bg-fuchsia-900"
+              title="Собрать черновик сценария из текста или голоса"
+            >
+              <Sparkles size={12} /> По описанию
             </button>
           )}
           <label className="flex items-center gap-1.5 min-w-0">

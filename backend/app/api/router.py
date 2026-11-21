@@ -966,11 +966,13 @@ from backend.app.api.auth import create_auth_router
 from backend.app.api.profile import create_profile_router
 from backend.app.api.report_exports import create_report_exports_router
 from backend.app.api.responsibility import create_responsibility_router
+from backend.app.api.scenario_builder import create_scenario_builder_router
 
 api_router.include_router(create_auth_router())
 api_router.include_router(create_profile_router())
 api_router.include_router(create_report_exports_router(db_repo))
 api_router.include_router(create_responsibility_router(db_repo, codefacts_store))
+api_router.include_router(create_scenario_builder_router())
 api_router.include_router(create_repository_watch_router(db_repo, executor))
 api_router.include_router(create_repository_hook_router(db_repo))
 
