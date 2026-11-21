@@ -9,7 +9,7 @@
 
 - Приложение проходит основной путь: вход, загрузка ZIP, выбор сценария/артефакта, сохранение draft, запуск, live SSE, история запусков, находки/evidence, отчёт, сравнение, расписание, AI Trust Layer.
 - Исправлены реальные UX/state-баги: 403 от dev-прокси, 0 событий SSE из-за named events, 404 отчёта во время running, гонки при переключении запусков/валидации, stale evidence, stale `gemini-*`, перекрывающая fixed-кнопка logout, отсутствие обновления live-статуса при молчащем SSE.
-- Остался backend-баг расписания: `POST /schedules` принимает произвольную строку, а scheduler трактует всё, кроме `interval:N` и `*/N`, как 60 секунд. UI теперь не отправляет произвольный cron, но корень — в backend. Подробно ниже.
+- Backend worker отдельно исправил валидацию cron и добавил `PATCH /schedules/{id}` для pause/resume. UI уже связан с этим контрактом (`enabled` нормализуется из `0/1`), но локальный контейнер в этой проверке ещё старый: PATCH отвечает 405. После пересборки/деплоя backend нужно повторить pause/resume вживую.
 
 ## Живые проверки
 
@@ -29,7 +29,7 @@
 | Findings | фильтры анализаторов/риска, карточка `CF-SQL-PARAM-INTERPOLATION` | Локация, Evidence, Taint Trace, severity/confidence отображаются |
 | Report | JSON и Markdown ссылки | оба 200; JSON 27026 B, Markdown 16172 B (`application/json` и `text/plain`) |
 | Comparison | одинаковые runs, пара `c8b41afe`/`52efd83f`, swap | same-run: disabled + «Baseline и Current совпадают»; пара: «Недостаточно доказательств», SQL «Паттерн исчез»; swap меняет select и чистит старый результат |
-| Schedule | пустой ввод, `not-a-cron`, `0 0 1 1 *`, refresh списка | пусто/невалидно — понятная ошибка, запись не создаётся; refresh показывает 0; поддерживаются только `interval:N` и `*/N * * * *` |
+| Schedule | пустой ввод, невалидный формат, `interval:3600`, pause/resume | пусто/невалидно — ошибка без создания; список и refresh работают; кнопка «Пауза» отправляет PATCH и показывает ошибку, если старый backend отвечает 405 |
 | AI Trust | синтетический стресс-тест | «ВАЛИДАТОР УСПЕШНО ЗАБЛОКИРОВАЛ ГАЛЛЮЦИНАЦИЮ», 3 нарушения; при ошибке API показывается alert, не пустой экран |
 | Mobile 390×844 | editor, findings, live, report, comparison | `documentElement.scrollWidth === 390` на всех; горизонтального overflow нет |
 | Desktop 1280×900 | те же экраны | overflow нет; таблица сравнения скроллится внутри контейнера |
@@ -62,13 +62,13 @@
 9. **Отчёт запрашивался для running.** См. п.3; заодно убран 404-спам в консоли.
 10. **Сравнение позволяло бессмысленные действия.** Same-run guard, disabled «Сравнить», сообщение при <2 runs, swap, сброс результата при смене выбора, `onRefreshRuns`.
 11. **SSE-события с огромным payload/`Invalid Date`.** В live-ленте timestamp с fallback `—`, payload обрезается до 240 символов; полный JSON остаётся в title.
-12. **Расписание принимало что угодно.** Добавлена клиентская проверка: только `interval:N` (N>0) и `*/N * * * *`; произвольный 5-field cron блокируется. Добавлена кнопка «Обновить» списка.
+12. **Расписание: создание без контроля и отсутствие паузы.** Добавлена проверка формата (`interval:N` или 5-field cron), кнопка «Обновить», статус «Активно/На паузе» и кнопка pause/resume через `PATCH /schedules/{id}`. Ошибка backend показывается в модалке, не теряется.
 13. **AI Trust падал без `result.errors`.** Добавлены `error` state, alert и защита `result.errors || []`.
 14. **Мобильная вёрстка.** Navbar/палитра/инспектор/live/findings/report/comparison получили responsive-классы; проверено на 390×844.
 
 ## Backend-блокеры и ограничения
 
-- **Расписание (корень в backend).** `POST /schedules` не валидирует `cronOrInterval`; `scheduler._parse_interval` для любой строки без `interval:` и без `*/` возвращает 60 секунд. Поэтому `not-a-cron` и `0 0 1 1 *` ставятся на запуск каждые ~60 с. Frontend теперь такие значения не отправляет, но API остаётся уязвимым. Тестовые записи `sch_b513f055`, `sch_0d6eb1a2`, `sch_8310be74` удалены из `runtime.schedules`; backend-код не менялся.
+- **Расписание — версия backend.** В локальном контейнере этой проверки `PATCH /schedules/{id}` ещё не было (405), а старый scheduler принимал произвольную строку. Backend worker отдельно исправил это: croniter/валидация, `PATCH` с `enabled`, `next_fire_at=null` до пересчёта. UI готов к контракту, но успешный pause/resume нужно перепроверить после пересборки образа. Тестовые записи расписаний удалены из `runtime.schedules`.
 - **Training sample.** Локальный backend без `CG_TRAINING_PROJECT` отдаёт 400; UI показывает человеческий текст. Для проверки самого training нужен env с путём к training-project.
 - **Report 404 до завершения run.** Backend отдаёт 404, пока report не создан; frontend это учитывает, но API-поведение остаётся.
 - **Map.** `SecurityMapScreen.tsx` и `ui/security-map/**` — зона другого worker; не трогались.

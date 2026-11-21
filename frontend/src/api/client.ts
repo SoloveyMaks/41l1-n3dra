@@ -154,6 +154,13 @@ export const apiClient = {
     )).json();
   },
 
+  async setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<any> {
+    return (await request(
+      `/schedules/${scheduleId}`,
+      jsonInit('PATCH', { enabled }),
+    )).json();
+  },
+
   async runAiSyntheticTest(runId?: string): Promise<any> {
     return (await request('/ai/synthetic-test', jsonInit('POST', { runId }))).json();
   },
