@@ -85,7 +85,7 @@ optional `db/optional/003` только при доступном pgvector; fake
 ошибкой, без DSN в тексте.
 
 ```bash
-python -X utf8 -m analyzers.selftest                      # 73 проверки
+python -X utf8 -m analyzers.selftest                      # 74 проверки
 python -X utf8 -m analyzers.compare <snapshot>             # 15/15, controls 6/6
 python -X utf8 -m analyzers.contract_export <snapshot>/training-project \
     --db <snapshot>/vulnerability-database/vulnerabilities.json \

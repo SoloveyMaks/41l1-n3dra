@@ -247,14 +247,28 @@ def run_checks(failures: list[str], messages: list[str]) -> None:
         _check(examples["examples"] == len(examples_payload["examples"]), "rag: все примеры исправлений проиндексированы", failures, messages)
         _check(examples["byKind"].get("fix") == examples["examples"], "rag: примеры попадают в kind=fix", failures, messages)
 
+        # The contract's vetted status needs real scanner provenance, so a
+        # fixture-only example stays draft and the strict default returns nothing.
+        strict = store.similar_fixes(
+            "unsafe sql string concatenation in jdbc query",
+            rule_family="sql-injection",
+        )
+        _check(
+            strict["status"] == "unavailable" and strict["items"] == [],
+            "rag: без vetted-примеров строгий фильтр даёт unavailable",
+            failures,
+            messages,
+        )
+
         fixes = store.similar_fixes(
             "unsafe sql string concatenation in jdbc query",
             k=3,
             rule_family="sql-injection",
             language="kotlin",
             framework="spring-boot",
+            statuses=("vetted", "draft"),
         )
-        _check(fixes["status"] == "available" and fixes["reason"] is None and bool(fixes["items"]), "rag: similar_fixes возвращает проверенный пример", failures, messages)
+        _check(fixes["status"] == "available" and fixes["reason"] is None and bool(fixes["items"]), "rag: similar_fixes возвращает draft-пример при явном допуске", failures, messages)
         if fixes["items"]:
             item = fixes["items"][0]
             _check(set(item) == SIMILAR_FIX_KEYS, "rag: SimilarFix содержит ровно поля контракта", failures, messages)

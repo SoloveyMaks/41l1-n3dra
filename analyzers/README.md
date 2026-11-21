@@ -155,7 +155,7 @@ production-прогоном. Значения секретов в bundle не п
 findings: 15 ({'SECRET': 5, 'SCA': 5, 'SAST': 5})
 expected: 15, correct: 15, missed: 0, false positives: 0
 controls: 6, control hits: 0
-SELFTEST PASSED: 73 проверки   # 24 анализатора + 49 RAG
+SELFTEST PASSED: 74 проверки   # 24 анализатора + 50 RAG
 ```
 
 `--rag-store` дополнительно индексирует выгрузку в файловое хранилище

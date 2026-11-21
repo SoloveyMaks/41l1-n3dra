@@ -111,7 +111,7 @@ SAST, Gradle-файлы для SCA, все текстовые файлы для 
 
 ## Самотест
 
-`python -m analyzers.selftest` — 73 проверки: 24 по анализаторам и 49 по
+`python -m analyzers.selftest` — 74 проверки: 24 по анализаторам и 50 по
 RAG-хранилищу, на фиксированных копиях:
 
 * перенос строки, комментарии и переименование файла не меняют результат;
@@ -146,8 +146,8 @@ append-only журнал элементов `events.jsonl` + производн�
 проверен AJV (draft 2020-12) и структурными проверками самотеста.
 
 ```text
-python -X utf8 -m rag.selftest            # 49 проверок
-python -X utf8 -m analyzers.selftest      # 73 проверки
+python -X utf8 -m rag.selftest            # 50 проверок
+python -X utf8 -m analyzers.selftest      # 74 проверки
 python -X utf8 -m rag.cli stats --store .rag/store
 ```
 

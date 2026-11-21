@@ -49,7 +49,7 @@ SCHEMA_VERSION = "1"
 PRODUCER_VERSION = "rag/0.1.0"
 
 KINDS = ("finding", "node", "edge", "evidence", "fix")
-FIX_STATUSES = ("vetted", "documented", "assumption")
+FIX_STATUSES = ("draft", "vetted", "retired")
 
 # Retrieval vocabulary, not detection logic: the analyzers already decided what
 # a finding is.  These words only help a natural-language query ("public export
@@ -605,7 +605,7 @@ class Store:
             example_id = str(example.get("exampleId") or "").strip()
             if not example_id:
                 raise StoreError("every remediation example needs exampleId")
-            status = str(example.get("status") or "assumption")
+            status = str(example.get("status") or "draft")
             if status not in FIX_STATUSES:
                 raise StoreError(f"example {example_id}: status must be one of {FIX_STATUSES}")
             for key in ("sourceRef", "verificationBasis", "redactedFix"):
@@ -748,7 +748,7 @@ class Store:
         rule_family: str | None = None,
         language: str | None = None,
         framework: str | None = None,
-        statuses: Iterable[str] = ("vetted", "documented"),
+        statuses: Iterable[str] = ("vetted",),
     ) -> dict[str, Any]:
         """Return the contract-shaped ``SimilarFixesResult``.
 

@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--category")
     search.add_argument("--rule-family")
     search.add_argument("--max-distance", type=float)
-    search.add_argument("--status", action="append", choices=["vetted", "documented", "assumption"])
+    search.add_argument("--status", action="append", choices=["draft", "vetted", "retired"])
 
     fixes = sub.add_parser("similar-fixes", help="contract-shaped SimilarFixesResult")
     fixes.add_argument("text")
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     fixes.add_argument("--rule-family")
     fixes.add_argument("--language")
     fixes.add_argument("--framework")
-    fixes.add_argument("--status", action="append", choices=["vetted", "documented", "assumption"])
+    fixes.add_argument("--status", action="append", choices=["draft", "vetted", "retired"])
 
     stats = sub.add_parser("stats", help="store and reuse report")
     stats.add_argument("--store", type=Path, required=True)
@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                     rule_family=args.rule_family,
                     language=args.language,
                     framework=args.framework,
-                    statuses=args.status or ("vetted", "documented"),
+                    statuses=args.status or ("vetted",),
                 )
             )
         elif args.command == "stats":

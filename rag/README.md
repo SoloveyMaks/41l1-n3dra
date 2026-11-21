@@ -129,6 +129,14 @@ python -X utf8 -m analyzers.contract_export <snapshot>/training-project \
 * `limitations` и `redactedFix` обязательны: пример без ограничений не
   считается проверенным.
 
+Статусы примеров — как в runtime (`backend/app/storage/remediation.py`):
+`draft`, `vetted`, `retired`. `vetted` требует реального scanner provenance,
+published fixed bundle, checked coverage и published comparison `resolved` для
+этой находки, поэтому все примеры в `rag/examples/fixes.json` — `draft`: они
+сверены вручную с фикстурами self-test, но не проходили этот путь. По умолчанию
+`similar_fixes()` фильтрует только `vetted` и честно возвращает `unavailable`;
+`draft` выдаётся лишь при явном `statuses=("vetted", "draft")`.
+
 Обязательные фильтры контракта — workspace (зашит в хранилище), `ruleFamily`,
 `language`, `framework`, `status`. Чужой workspace — ошибка `WorkspaceMismatch`,
 а не пустая выдача.
@@ -140,8 +148,8 @@ python -X utf8 -m analyzers.contract_export <snapshot>/training-project \
 ## Проверка
 
 ```bash
-python -X utf8 -m rag.selftest        # 49 проверок
-python -X utf8 -m analyzers.selftest  # 73 проверки: анализаторы + RAG
+python -X utf8 -m rag.selftest        # 50 проверок
+python -X utf8 -m analyzers.selftest  # 74 проверки: анализаторы + RAG
 ```
 
 `rag.selftest` работает на настоящем `analyzers/examples/bundle.json` и
@@ -154,10 +162,30 @@ python -X utf8 -m analyzers.selftest  # 73 проверки: анализато�
 * поиск находит нужное семейство (9 из 9 контрольных запросов, порог в тесте —
   8 из 9), повторный
   запрос даёт тот же порядок, пустой запрос — `unavailable`;
-* `SimilarFix` совпадает с контрактом по полям и типам;
+* `SimilarFix` совпадает с контрактом по полям и типам; строгий фильтр `vetted`
+  даёт `unavailable`, `draft` — только при явном допуске;
 * в индексе нет значений секретов;
 * чужой workspace и другой embedding spec отклоняются, неполный пример — ошибка;
 * `reindex` восстанавливает векторы из журнала элементов.
+
+## Связь с runtime
+
+В backend уже есть optional exact retrieval через PostgreSQL + pgvector:
+`db/optional/003_exact_vector.up.sql` и `backend/app/ai/vector_runtime.py`
+(включается `VECTOR_RETRIEVAL_ENABLED=true`, сейчас `unavailable` — провайдер
+embeddings не подтверждён, `embedding_specs` в статусе `pending`). `rag/` — не
+замена этому пути, а независимый локальный слой:
+
+| | `backend/app/ai/vector_runtime.py` | `rag/` |
+| --- | --- | --- |
+| хранилище | PostgreSQL + pgvector | файлы: `events.jsonl`, `vectors.jsonl` |
+| когда доступен | нужен DSN, spec, провайдер | всегда, без сети и БД |
+| кто использует | runtime-отчёт после публикации | CLI, анализаторы, self-test, CI |
+| форма ответа | `SimilarFixesResult` | тот же `SimilarFixesResult` |
+
+Обе стороны читают один и тот же контракт, поэтому backend может брать элементы
+из `rag/` там, где pgvector-путь недоступен, и наоборот. Правило про `vetted`
+одно на двоих: локальный индекс не повышает статус примера.
 
 ## Ограничения
 
@@ -170,9 +198,11 @@ python -X utf8 -m analyzers.selftest  # 73 проверки: анализато�
   выбраны: текущий spec — `local/bm25-hash-tfidf/2`, статус в контракте
   `active`, но это локальный adapter, а не согласованный D.
 * `distance` не подтверждает применимость правки. `status: vetted` требует
-  ручной проверки; сейчас все примеры имеют `documented`.
+  реального scanner provenance; сейчас все примеры `draft`.
 * Переименование сущности меняет fingerprint → это новый элемент. Перенос
   находки между запусками по «похожести» не делается: для сравнения есть
   `packages/comparison`, а не вектор.
 * Хранилище не шифруется и не является источником правды о коде: это индекс
   redacted-фактов. Права доступа к каталогу — ответственность backend (A).
+* Канонические факты и publish остаются в PostgreSQL; `rag/` не участвует в
+  вердикте, покрытии и отчёте.
