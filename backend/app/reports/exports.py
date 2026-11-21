@@ -151,7 +151,7 @@ def _sanitize_url(url: str) -> str:
         netloc = f"***@{host}" if host else "***"
     return urlunsplit(
         (parts.scheme, netloc, _redact_path(parts.path),
-         _redact_query(parts.query), parts.fragment)
+         _redact_query(parts.query), _sanitize_prose(_redact_query(parts.fragment)))
     )
 
 
@@ -169,7 +169,7 @@ def _sanitize_reference(value: str) -> str:
         netloc = f"***@{host}" if host else "***"
     if netloc or parts.query:
         return urlunsplit(
-            ("", netloc, _redact_path(parts.path), _redact_query(parts.query), parts.fragment)
+            ("", netloc, _redact_path(parts.path), _redact_query(parts.query), _sanitize_prose(_redact_query(parts.fragment)))
         )
     if "/" not in value and "=" in value:
         return _redact_query(value)
@@ -452,7 +452,7 @@ def _safe_location(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, dict):
         return None
     return {
-        "path": value.get("path"),
+        "path": _sanitize_text(str(value["path"])) if value.get("path") is not None else None,
         "startLine": value.get("startLine"),
         "endLine": value.get("endLine"),
         "startColumn": value.get("startColumn"),
@@ -493,7 +493,7 @@ def _safe_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
             _safe_location(item) for item in (finding.get("relatedLocations") or [])
         ],
         "trace": _safe_trace(finding.get("trace")),
-        "redactedEvidence": mask_text(str(finding.get("redactedEvidence") or "")),
+        "redactedEvidence": mask_text(_sanitize_text(str(finding.get("redactedEvidence") or ""))),
         "advisoryIds": list(finding.get("advisoryIds") or []),
         "coverageWarnings": [
             _sanitize_text(str(item)) for item in (finding.get("coverageWarnings") or [])
@@ -524,7 +524,7 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
             "confidence": item.get("confidence"),
             "status": item.get("status"),
             "primaryLocation": _safe_location(item.get("primaryLocation")),
-            "redactedEvidence": mask_text(str(item.get("redactedEvidence") or "")),
+            "redactedEvidence": mask_text(_sanitize_text(str(item.get("redactedEvidence") or ""))),
             "rationale": _sanitize_text(naturalize(str(item.get("rationale") or ""))),
             "remediation": _sanitize_text(naturalize(str(item.get("remediation") or ""))),
             "grounding": _sanitize_provenance(item.get("grounding")),
@@ -658,10 +658,10 @@ def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
         report=report,
         findings=findings,
         ai_scan=ai_scan,
-        passport=passport,
-        policy=policy,
+        passport=_sanitize_provenance(passport),
+        policy=_sanitize_provenance(policy),
         official=official,
-        workflow_name=_workflow_name(db, run.get("workflow_id")),
+        workflow_name=_sanitize_text(_workflow_name(db, run.get("workflow_id"))),
         counts=_counts(findings),
         technical=technical,
     )
