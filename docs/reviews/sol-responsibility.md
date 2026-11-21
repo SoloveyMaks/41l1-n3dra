@@ -2,6 +2,32 @@
 
 Проверен локальный `dev` после merge, исходный source HEAD `8f35d301a863b3b066f88bea24e24b52bc0a6090`. Область: `backend/app/responsibility/**`, `backend/app/api/responsibility.py`, интеграция и `ResponsibilityPanel`; baseline/auth/TG и уже подтверждённые root ASGI tenant/build proof не повторялись. Проверки делались на disposable PG и synthetic ZIP, без внешних provider-запросов, токенов или отправок.
 
+## Targeted recheck: 864273d — частично принято
+
+Точный fix SHA `864273d4ac6ad514897ef8c9acf573db8afdd7a4`, локальный review merge HEAD `1021a70b5e666ce7343596646be44d57b339b90e`. Проверены только streaming/history/PR/review изменения. Ниже текущий статус; последующие разделы сохраняют результаты прежних ревизий, а не утверждают, что уже исправленные дефекты остаются в 864273d. **Общая release acceptance остаётся открытой:** CODEOWNERS и синхронный DB/filesystem work этим commit не исправлялись; подтверждён также остаточный decompression resource gap.
+
+### Medium — decoded body ограничен после выделения большого decompressor chunk
+
+`backend/app/responsibility/history.py:187-189`: `response.aiter_bytes()` сначала распаковывает входной кусок, а затем код проверяет его размер. Это исправляет прежнюю полную загрузку обычного тела, но не обеспечивает заявленный потолок распакованного тела до выделения памяти. На настоящем `httpx.AsyncHTTPTransport(uds=...)` и локальном HTTP server через временный Unix socket: gzip JSON из 16 MiB повторяющихся символов дал **22 502 738 bytes** пиковых Python allocations (`tracemalloc`) уже после первых **8192 wire bytes**, до возврата корректного `failed` DTO. Сжатое тело генерировалось до начала измерения; оно не включено в этот peak. Накопительный `bytearray` действительно не превышает 256 KiB, но сам decoded chunk может значительно превышать этот предел. Это локальное доказательство поведения транспорта, не утверждение о фактическом злонамеренном ответе GitHub/GitLab.
+
+Для строгого decompressed ceiling нужен bounded decoder до выделения выходного куска либо отказ от закодированных ответов; один `aiter_bytes(chunk_size=...)` не доказывает ограничение внутреннего decoder allocation. Внешние provider запросы не выполнялись. Одноразовый proof: `/tmp/sol-accounts-review/responsibility-864-proof.py`, вывод рядом в `.log` (временные артефакты, не часть commit).
+
+### Что исправлено и подтверждено
+
+* Прямой вызов owning `_review_decisions` на событиях прежнего reproduction: `APPROVED → COMMENTED` вернул `state=APPROVED, opinionState=COMMENTED, appliesToMerge=true`; `CHANGES_REQUESTED → COMMENTED` сохраняет CHANGES_REQUESTED. Поздний DISMISSED заменяет решение. Wrong-head и unmerged approval дают false, review после merge исключён.
+* Неполная история из 100 событий одного reviewer с `incomplete=true` возвращает одну строку с `appliesToMerge=false` и явной причиной неполноты. 21 уникальный reviewer ограничен **20**, `truncated=true`. Реальный локальный HTTP response сохраняет Link header, `_has_next_page` распознаёт `rel="next"`; source wiring `history.py:380-390` включает incomplete при Link-next **или** full page >=100 и передаёт флаг reducer. Целый provider PR exchange не подменялся моками и не запускался наружу.
+* На том же живом Unix-socket транспорте complete JSON размером ровно **262144 bytes** принимается; plain тело 2 MiB отклоняется, server успел отправить **270336 bytes** (порог плюс один 8192-byte chunk), а не всё тело. HTTP 429 с объявленным огромным Content-Length и без тела немедленно даёт `rate_limited`. Ошибка oversized не теряет Link header. Это подтверждает прекращение чтения и status/header handling отдельно от открытого gzip allocation gap.
+* Source-read `history.py:580-590`: `asyncio.wait_for` накрывает весь file-history + PR enrichment общим **9 s** deadline; HTTP timeout остаётся 4 s/connect 2 s. Реальный 9-секундный provider timeout не запускался; это проверка wiring, не измеренный hard CPU deadline. Синхронное декодирование также не может быть прервано asyncio посередине chunk.
+* Source-read: максимум 3 PR, detail только первых 2 и reviews только первых 2; последующие честно `not_loaded`. Совокупный GitHub cache miss по-прежнему до **6 requests** (history + association + 2 detail + 2 reviews), а не число всех PR. Новые fan-out лимиты не заменяют глобальный budget.
+* `history.py:558-565` передаёт **last-file C** в PR association; frozen **S** остаётся в `frozenCommitSha`, C — в `associationCommitSha`. DTO и раскрытый блок UI (`ResponsibilityPanel.tsx:354`) показывают обе основы явно. Это source/DTO/UI-read подтверждение, без внешнего provider association proof.
+* GitLab commit name больше не выдаётся за login (`history.py:543-544`): прямой identity вызов дал `{displayName: 'Full Name', login: null}`. Backend URL sanitizer принимает HTTPS github.com для GitHub и отклоняет чужой host, HTTP, userinfo, явный port и GitLab URL вместо GitHub; commit/PR ссылки проходят этот sanitizer. UI показывает решение отдельно от последнего отзыва и явно предупреждает о неполных reviews. Browser/live UI повторно не запускался, frontend build предоставлен root ранее.
+
+### Что этим SHA не закрыто
+
+* Ранее доказанные CODEOWNERS ReDoS, root/ownerless/`**`/comment semantics, обход MAX_ENTRIES и event-loop stall от синхронного DB/filesystem work остаются открытыми до отдельного owner SHA и targeted recheck. Их опасные/длительные proof повторно не запускались.
+* Source-read concern: cache только completed, 256 entries; нет global network concurrency budget, singleflight или provider-wide cooldown. Одновременные одинаковые miss и разные path могут повторять те же PR reads. Последствия под настоящей массовой нагрузкой здесь не измерены; это конкретный открытый resource concern, а не доказанная production авария.
+* Baseline/auth80/Telegram, tenant ASGI и frontend build не повторялись. Исходники не менялись, внешней сети, sends, credentials и production-портов не было.
+
 ## PR/reviewers targeted review: 5f0b549
 
 Точный source commit `5f0b5490543927433844eec3f48d2fdd762a6b65`, review merge HEAD `0d17a4f4c03127fb4951effbc9d6ddbb20f6b070`. Предыдущие resource blockers не исправлены этим commit и повторно не запускались. **Release acceptance остаётся открытой до owner fix SHA и targeted recheck.** Внешние provider запросы не выполнялись; ниже прямой вызов owning reducer на synthetic review events, без mock network/pytest.
