@@ -30,10 +30,12 @@ advisory-каталог отличаются, сравнение станови�
 
 ## Выбор доверенного каталога
 
-Подпись повторяет ровно ту резолюцию, которую выполняет Team B перед сканом
-(`team_b._trusted_advisory_path`), а не упрощённый `trusted_catalog_path`:
+Подпись не дублирует резолюцию: при наличии адаптера вызывается
+`backend.app.integrations.team_b._trusted_advisory_path`, а не упрощённый
+`trusted_catalog_path`. Локальная копия используется только в standalone-сборке
+codefacts, где адаптера нет или он старого контракта, и повторяет ту же семантику:
 
-1. `CG26_ADVISORY_DB` пуст → встроенный `analyzers/data/trusted-advisories.json`.
+1. `CG26_ADVISORY_DB` пуст → встроенный `analyzers/advisory-snapshot/trusted-advisories.json`.
 2. URL запрещён → встроенный снапшот.
 3. Задан `CG26_ADVISORY_ROOT`, а файл вне него → встроенный снапшот.
 4. Файл не найден или больше 10 MiB → каталог не выбран, SCA работает без него.
