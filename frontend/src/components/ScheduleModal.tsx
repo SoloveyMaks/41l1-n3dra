@@ -47,6 +47,9 @@ const deliveryStatusLabel = (status?: string | null): string => {
   switch ((status || '').toLowerCase()) {
     case 'accepted': return 'принят';
     case 'duplicate': return 'повтор — запуск не создан';
+    case 'started': return 'запуск создан';
+    case 'unchanged': return 'коммит уже проверен';
+    case 'retrying': return 'повтор после ошибки';
     case 'ignored': return 'пропущен';
     case 'error':
     case 'failed': return 'ошибка';
