@@ -18,11 +18,11 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from backend.app.artifacts.repository import RepositoryImportError, _parse_repository_url
 from backend.app.codefacts.identity import workspace_scope
 
 
@@ -70,21 +70,11 @@ def derive_webhook_secret(workspace: str, watch_id: str, nonce: str) -> str:
 
 
 def _canonical_repo_url(value: Any) -> Optional[str]:
-    if not isinstance(value, str) or not value.strip() or len(value) > 2048:
-        return None
     try:
-        parts = urlsplit(value.strip())
-        host = (parts.hostname or "").lower()
-    except ValueError:
+        target = _parse_repository_url(value)
+    except RepositoryImportError:
         return None
-    if parts.scheme != "https" or host not in ("github.com", "gitlab.com"):
-        return None
-    path = parts.path.rstrip("/")
-    if path.lower().endswith(".git"):
-        path = path[:-4]
-    if not path:
-        return None
-    return f"https://{host}{path.lower()}"
+    return target.url.lower()
 
 
 def _delivery_id(provider: str, request: Request, body: bytes) -> Optional[str]:

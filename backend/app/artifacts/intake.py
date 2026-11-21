@@ -27,6 +27,7 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional
@@ -58,7 +59,7 @@ CHUNK = 1024 * 1024
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _CONTROL_RE = re.compile(r"[\u0000-\u001f\u007f]")
-_SKIP_DIR_NAMES = {".git", ".hg", ".svn", "node_modules", "__MACOSX", "build", "target", ".gradle"}
+_SKIP_DIR_NAMES = {".git", ".hg", ".svn", "node_modules", "__macosx", "build", "target", ".gradle"}
 
 # Маркеры корня сборки, которые сами по себе доказывают, что верхняя папка —
 # это корень проекта, а не просто каталог с исходниками.
@@ -106,8 +107,7 @@ def _normalize_entry_name(name: str) -> str:
             raise SafeIntakeError("Небезопасный путь в архиве")
     if not normalized:
         raise SafeIntakeError("Пустое имя файла в архиве")
-    pure = PurePosixPath(normalized)
-    parts = pure.parts
+    parts = normalized.split("/")
     if len(parts) > MAX_PATH_DEPTH:
         raise SafeIntakeError("Слишком глубокая структура архива")
     for part in parts:
@@ -115,7 +115,7 @@ def _normalize_entry_name(name: str) -> str:
             raise SafeIntakeError(f"Небезопасный путь в архиве: {normalized!r}")
         if part.casefold() in _SKIP_DIR_NAMES:
             raise SafeIntakeError(f"Служебный каталог запрещён в архиве: {part!r}")
-    return pure.as_posix()
+    return "/".join(parts)
 
 
 def _entry_is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -309,7 +309,7 @@ class SafeArtifactIntake:
         return self.ingest_zip_bytes(filename, content)
 
     def ingest_zip_file(self, filename: str, archive_path: Path, expected_archive_hash: Optional[str] = None,
-                        workspace: Optional[str] = None) -> Dict[str, Any]:
+                        workspace: Optional[str] = None, *, strip_wrapper_root: bool = True) -> Dict[str, Any]:
         safe_name = _safe_filename(filename)
         ws = workspace or workspace_id()
         archive_path = Path(archive_path)
@@ -329,9 +329,11 @@ class SafeArtifactIntake:
 
         entries: List[zipfile.ZipInfo] = []
         names: set[str] = set()
+        directories: set[str] = set()
         total_declared = 0
         with archive:
             for info in archive.infolist():
+                _normalize_entry_name(info.orig_filename)
                 if info.flag_bits & 0x1:
                     raise SafeIntakeError(f"Зашифрованные записи запрещены: {info.filename!r}")
                 if _entry_is_symlink(info):
@@ -339,8 +341,12 @@ class SafeArtifactIntake:
                 if not _entry_is_regular_or_dir(info):
                     raise SafeIntakeError(f"Специальные файлы запрещены: {info.filename!r}")
                 if info.is_dir():
-                    _normalize_entry_name(info.filename)
+                    directories.add(_normalize_entry_name(info.filename).casefold())
                     continue
+                if info.compress_type not in {
+                    zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA,
+                }:
+                    raise SafeIntakeError("Неподдерживаемый метод сжатия ZIP")
                 rel = _normalize_entry_name(info.filename)
                 key = rel.casefold()
                 if key in names:
@@ -363,6 +369,11 @@ class SafeArtifactIntake:
                 raise SafeIntakeError("В архиве нет файлов")
             if len(entries) > MAX_FILE_COUNT:
                 raise SafeIntakeError(f"В архиве больше {MAX_FILE_COUNT} файлов")
+            for key in names | directories:
+                if key in names and key in directories:
+                    raise SafeIntakeError("Путь одновременно является файлом и каталогом")
+                if any(parent.as_posix() in names for parent in PurePosixPath(key).parents):
+                    raise SafeIntakeError("Файл используется как родительский каталог")
             if total_declared > max(1024 * 1024, archive_bytes * MAX_COMPRESSION_RATIO):
                 raise SafeIntakeError("Подозрительная общая степень сжатия архива")
 
@@ -371,7 +382,7 @@ class SafeArtifactIntake:
             # доказанном корне проекта; архивный hash остаётся хэшем ZIP.
             wrapper_root = _detect_wrapper_root(
                 [_normalize_entry_name(info.filename) for info in entries]
-            )
+            ) if strip_wrapper_root else None
             artifact_id = _archive_id()
             target_dir = (self.storage_root / artifact_id).resolve()
             self.storage_root.mkdir(parents=True, exist_ok=True)
@@ -421,6 +432,9 @@ class SafeArtifactIntake:
                         "sizeBytes": file_size,
                         "sha256": digest.hexdigest(),
                     })
+            except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError, zlib.error) as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise SafeIntakeError("Не удалось прочитать данные ZIP-архива") from exc
             except Exception:
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise

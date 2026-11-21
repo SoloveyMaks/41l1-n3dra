@@ -24,7 +24,7 @@ import tempfile
 import unicodedata
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlsplit
 
@@ -60,7 +60,7 @@ _GITLAB_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _CONTROL_RE = re.compile(r"[\u0000-\u001f\u007f]")
-_SKIP_DIR_NAMES = {".git", ".hg", ".svn", "node_modules", "__MACOSX", "build", "target", ".gradle"}
+_SKIP_DIR_NAMES = {".git", ".hg", ".svn", "node_modules", "__macosx", "build", "target", ".gradle"}
 
 _IMPORT_SEM = asyncio.Semaphore(MAX_CONCURRENT_IMPORTS)
 _INTAKE = SafeArtifactIntake()
@@ -347,13 +347,13 @@ def _normalize_entry_name(name: str) -> str:
         normalized = normalized.rstrip("/")
     if not normalized:
         raise _reject("Пустое имя файла в архиве репозитория")
-    pure = PurePosixPath(normalized)
-    if len(pure.parts) > MAX_PATH_DEPTH:
+    parts = normalized.split("/")
+    if len(parts) > MAX_PATH_DEPTH:
         raise _reject("Слишком глубокая структура архива репозитория")
-    for part in pure.parts:
+    for part in parts:
         if part in ("", ".", ".."):
             raise _reject("Небезопасный путь в архиве репозитория")
-    return pure.as_posix()
+    return "/".join(parts)
 
 
 def _entry_mode(info: zipfile.ZipInfo) -> int:
@@ -401,6 +401,7 @@ def _sanitize_archive(source_path: Path, target_path: Path, repo_name: str) -> N
             entries: List[Tuple[zipfile.ZipInfo, str]] = []
             declared_total = 0
             for info in archive.infolist():
+                _normalize_entry_name(info.orig_filename)
                 if info.flag_bits & 0x1:
                     raise _reject("Зашифрованные записи в архиве репозитория запрещены")
                 if _entry_is_symlink(info):
@@ -595,7 +596,7 @@ head. Без `commit_sha` ветка резолвится в её текущий
                 )
             filename = _artifact_filename(target.repo_name, artifact_sha)
             manifest = await asyncio.to_thread(
-                _INTAKE.ingest_zip_file, filename, filtered_path
+                _INTAKE.ingest_zip_file, filename, filtered_path, strip_wrapper_root=False
             )
     except SafeIntakeError as exc:
         raise _reject(str(exc)) from exc
