@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -46,17 +47,46 @@ class WorkflowExecutor:
         self.report_builder = ReportBuilder()
         self.notifier = WebhookNotifier()
         self.team_b = TeamBAdapter()
+        try:
+            concurrency = max(1, int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2")))
+        except ValueError:
+            concurrency = 2
+        self._run_sem = asyncio.Semaphore(concurrency)
 
     async def execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                           trigger_type: str = "manual", workflow_id: Optional[str] = None,
                           revision_id: Optional[str] = None) -> None:
+        """Single bounded entrypoint for manual and scheduled runs."""
+        async with self._run_sem:
+            try:
+                await self._execute_run(
+                    run_id, draft, artifact_id, trigger_type, workflow_id, revision_id
+                )
+            except Exception:  # noqa: BLE001 - run must not stay queued/running
+                logger.exception("Run %s failed unexpectedly", run_id)
+                self.db.update_run_status(
+                    run_id, execution_status="failed", security_verdict="inconclusive",
+                    finished_at=datetime.now(timezone.utc).isoformat()
+                )
+                try:
+                    await self.sse.emit_event(run_id, "run_status", {
+                        "status": "failed", "verdict": "inconclusive",
+                        "error": "Внутренняя ошибка выполнения",
+                    })
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to emit failure event for %s", run_id)
+            finally:
+                self.team_b.release(run_id)
+
+    async def _execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
+                           trigger_type: str = "manual", workflow_id: Optional[str] = None,
+                           revision_id: Optional[str] = None) -> None:
         start_time_iso = datetime.now(timezone.utc).isoformat()
         run_row = self.db.get_run(run_id) or {}
         workflow_id = workflow_id or str(run_row.get("workflow_id") or "workflow-unknown")
         revision_id = revision_id or str(run_row.get("revision_id") or "revision-unknown")
         workflow = self.db.get_workflow(workflow_id) or {}
         workflow_name = str(workflow.get("name") or "Security Scan")
-        engine = self._engine_for_draft(draft)
         self.db.update_run_status(run_id, execution_status="running", started_at=start_time_iso)
         await self.sse.emit_event(run_id, "run_status", {"status": "running", "trigger": trigger_type})
 
@@ -72,6 +102,8 @@ class WorkflowExecutor:
                 "status": "failed", "verdict": "inconclusive", "errors": error_msgs
             })
             return
+
+        engine = self._engine_for_draft(draft)
 
         # Build graph execution structures
         node_map: Dict[str, WorkflowNode] = {n.id: n for n in draft.nodes}
@@ -288,7 +320,6 @@ class WorkflowExecutor:
             "verdict": final_verdict.value,
             "findings_summary": counts
         })
-        self.team_b.release(run_id)
 
     async def _run_node_logic(self, run_id: str, node: WorkflowNode, inputs: Dict[str, Any],
                              default_artifact_id: Optional[str], trigger_type: str,

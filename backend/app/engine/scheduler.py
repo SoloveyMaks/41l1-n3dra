@@ -55,6 +55,7 @@ class WorkflowScheduler:
         self.executor = executor
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._active_schedules: set[str] = set()
 
     def start(self) -> None:
         if not self._running:
@@ -97,6 +98,19 @@ class WorkflowScheduler:
 
             next_dt = datetime.fromisoformat(next_fire)
             if now >= next_dt:
+                # Do not overlap an active run of the same schedule: advance the
+                # next window instead of accumulating queued runs.
+                if sched["id"] in self._active_schedules:
+                    try:
+                        new_next_dt = next_fire_at(sched.get("cron_or_interval", "interval:60"), now)
+                    except Exception as exc:
+                        logger.warning("Не удалось пересчитать расписание %s: %s", sched.get("id"), exc)
+                        continue
+                    self.db.update_schedule_run_time(
+                        sched["id"], sched.get("last_run_at") or "", new_next_dt.isoformat()
+                    )
+                    continue
+
                 # Trigger schedule!
                 wf = self.db.get_workflow(sched["workflow_id"])
                 if wf and "draft" in wf:
@@ -119,11 +133,20 @@ class WorkflowScheduler:
 
                     if self.executor:
                         draft_obj = WorkflowDraft(**wf["draft"])
-                        asyncio.create_task(
-                            self.executor.execute_run(
-                                run_id=run_id,
-                                draft=draft_obj,
-                                artifact_id=sched["artifact_id"],
-                                trigger_type="schedule"
-                            )
-                        )
+                        self._active_schedules.add(sched["id"])
+
+                        async def _run_scheduled(schedule_id: str = sched["id"],
+                                                 scheduled_run_id: str = run_id,
+                                                 scheduled_draft: WorkflowDraft = draft_obj,
+                                                 scheduled_artifact: str = sched["artifact_id"]) -> None:
+                            try:
+                                await self.executor.execute_run(
+                                    run_id=scheduled_run_id,
+                                    draft=scheduled_draft,
+                                    artifact_id=scheduled_artifact,
+                                    trigger_type="schedule",
+                                )
+                            finally:
+                                self._active_schedules.discard(schedule_id)
+
+                        asyncio.create_task(_run_scheduled())

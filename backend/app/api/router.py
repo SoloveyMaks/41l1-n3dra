@@ -54,7 +54,6 @@ ai_service = AiService()
 intake = SafeArtifactIntake()
 codefacts_store = CodeFactsStore()
 _INTAKE_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_INTAKE", "2")))
-_RUN_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2")))
 
 # Store last received test webhooks in memory for UI verification (bounded, no secrets)
 received_webhooks: List[Dict[str, Any]] = []
@@ -357,15 +356,14 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
     )
 
     async def _execute_bounded() -> None:
-        async with _RUN_SEM:
-            await executor.execute_run(
-                run_id=run_id,
-                draft=draft,
-                artifact_id=artifact_id,
-                trigger_type=payload.get("triggerType", "manual"),
-                workflow_id=workflow_id,
-                revision_id=rev_id,
-            )
+        await executor.execute_run(
+            run_id=run_id,
+            draft=draft,
+            artifact_id=artifact_id,
+            trigger_type=payload.get("triggerType", "manual"),
+            workflow_id=workflow_id,
+            revision_id=rev_id,
+        )
 
     asyncio.create_task(_execute_bounded())
 
