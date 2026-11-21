@@ -1,0 +1,3 @@
+orders:
+  callback:
+    authorization: ${ORDER_CALLBACK_TOKEN}
