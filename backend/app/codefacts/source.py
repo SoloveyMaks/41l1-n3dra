@@ -32,7 +32,7 @@ _PEM_RE = re.compile(
 )
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)(?P<key>\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|"
-    r"private[_-]?key|access[_-]?key)\b\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\s\"',;]{4,})"
+    r"private[_-]?key|access[_-]?key)\b\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\s\"',;]+)"
 )
 _ENV_DEFAULT_RE = re.compile(
     r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*):(?P<value>[^}]*)\}"

@@ -51,7 +51,7 @@ AGENT_ENV_FILE = Path.home() / ".omp" / "agent" / ".env"
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}"), "***"),
     (re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1***"),
-    (re.compile(r"(?i)\b((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,;\"']+"), r"\1***"),
+    (re.compile(r"(?i)\b((?:api[_-]?key|token|secret|password|passwd|pwd|db_pass|db_password)\s*[:=]\s*)[^\s,;\"']+"), r"\1***"),
     (re.compile(r"(\$\{[A-Za-z_][A-Za-z0-9_]*:)[^}]+\}"), r"\1****}"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "***"),

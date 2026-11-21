@@ -2,9 +2,32 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from backend.app.ai.provider import mask_sensitive_text
+from backend.app.codefacts.source import mask_text
 from backend.app.contracts.schemas import (
     Coverage, ExplainResult, Finding, PolicyResult, SecurityPassport, SecurityVerdict
 )
+
+
+def _safe_finding_data(finding: Finding) -> Dict[str, Any]:
+    data = finding.model_dump()
+    if isinstance(data.get("redactedEvidence"), str):
+        data["redactedEvidence"] = mask_text(data["redactedEvidence"])
+    for key in ("severityBasis", "confidenceBasis"):
+        if isinstance(data.get(key), str):
+            data[key] = mask_sensitive_text(data[key])
+    for step in data.get("trace") or []:
+        if isinstance(step, dict) and isinstance(step.get("description"), str):
+            step["description"] = mask_sensitive_text(step["description"])
+    return data
+
+
+def _safe_ai_item(item: Any) -> Dict[str, Any]:
+    data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+    for key in ("explanation", "remediation"):
+        if isinstance(data.get(key), str):
+            data[key] = mask_sensitive_text(data[key])
+    return data
 
 
 class ReportBuilder:
@@ -109,7 +132,7 @@ class ReportBuilder:
                     + (f" — {retrieval.reason}" if retrieval.reason else "")
                     + "\n"
                 )
-            md.append(f"> {ai_result.summary}\n")
+            md.append(f"> {mask_sensitive_text(ai_result.summary)}\n")
 
         md.append(f"## 4. Обнаруженные дефекты ({len(findings)})")
         if not findings:
@@ -122,25 +145,25 @@ class ReportBuilder:
                 md.append(f"- **ID:** `{f.id}`")
                 md.append(f"- **Анализатор:** `{f.analyzer}`")
                 md.append(f"- **Файл:** `{f.primaryLocation.path}:{f.primaryLocation.startLine}`")
-                md.append(f"- **Обоснование риска:** {f.severityBasis}")
-                md.append(f"- **Уверенность детектора:** {f.confidence.value} ({f.confidenceBasis})")
+                md.append(f"- **Обоснование риска:** {mask_sensitive_text(f.severityBasis)}")
+                md.append(f"- **Уверенность детектора:** {f.confidence.value} ({mask_sensitive_text(f.confidenceBasis)})")
                 if f.advisoryIds:
                     md.append(f"- **CVE:** {', '.join(f.advisoryIds)}")
 
                 if f.redactedEvidence:
-                    md.append(f"```text\n{f.redactedEvidence}\n```")
+                    md.append(f"```text\n{mask_text(f.redactedEvidence)}\n```")
 
                 if f.trace:
                     md.append("**Evidence Trace (Цепочка вызовов):**")
                     for t in f.trace:
-                        md.append(f"  {t.step}. {t.description}")
+                        md.append(f"  {t.step}. {mask_sensitive_text(t.description)}")
 
                 if f.id in ai_item_map:
                     item = ai_item_map[f.id]
                     md.append("\n**Объяснение AI:**")
-                    md.append(item.explanation)
+                    md.append(mask_sensitive_text(item.explanation))
                     md.append("\n**Рекомендация по исправлению:**")
-                    md.append(f"`{item.remediation}`")
+                    md.append(f"`{mask_sensitive_text(item.remediation)}`")
                     if item.suggestedFixedVersion:
                         md.append(f"\n*Рекомендуемая безопасная версия:* `{item.suggestedFixedVersion}`")
                 md.append("\n---\n")
@@ -151,11 +174,14 @@ class ReportBuilder:
                             passport: SecurityPassport, policy: PolicyResult,
                             findings: List[Finding], ai_result: Optional[ExplainResult],
                             execution_status: str = "running") -> str:
-        ai_item_map = {item.findingId: item.model_dump() for item in (ai_result.items if ai_result else [])}
+        ai_item_map = {
+            item.findingId: _safe_ai_item(item)
+            for item in (ai_result.items if ai_result else [])
+        }
 
         findings_json = []
         for f in findings:
-            item_data = f.model_dump()
+            item_data = _safe_finding_data(f)
             if f.id in ai_item_map:
                 item_data["ai_enrichment"] = ai_item_map[f.id]
             findings_json.append(item_data)
@@ -175,8 +201,11 @@ class ReportBuilder:
             "aiAnalysis": {
                 "status": ai_result.status if ai_result else "disabled",
                 "model": ai_result.model if ai_result else "none",
-                "summary": ai_result.summary if ai_result else "",
-                "validationErrors": ai_result.validation_errors if ai_result else [],
+                "summary": mask_sensitive_text(ai_result.summary) if ai_result else "",
+                "validationErrors": [
+                    mask_sensitive_text(str(item))
+                    for item in (ai_result.validation_errors if ai_result else [])
+                ],
                 "provenance": (
                     ai_result.provenance.model_dump() if ai_result and ai_result.provenance else None
                 ),

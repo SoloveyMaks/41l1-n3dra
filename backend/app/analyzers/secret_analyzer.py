@@ -137,7 +137,8 @@ class SecretAnalyzer(BaseAnalyzer):
                                 if rule_id == "SECRET-PRIVATE-KEY":
                                     raw_for_hmac = "PRIVATE_KEY_PEM"
                                 elif rule_id == "SECRET-URI-CREDENTIALS":
-                                    raw_for_hmac = full_match_str
+                                    # Preserve the pre-/2 HMAC input for stable finding identity.
+                                    raw_for_hmac = match.group(2)
                                 else:
                                     raw_for_hmac = (
                                         match.group(1)

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
+from backend.app.ai.provider import mask_sensitive_text
 from backend.app.ai.service import AiService
 from backend.app.api.comparison import ComparisonError, compare_published_runs
 from backend.app.api.sql_pattern import sql_pattern_proof
@@ -34,7 +36,7 @@ from backend.app.artifacts.sample_source import build_zip_from_directory
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
-from backend.app.codefacts.source import REDACTION_VERSION
+from backend.app.codefacts.source import REDACTION_VERSION, mask_text
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
 from backend.app.contracts.schemas import Finding, WorkflowDraft
@@ -439,11 +441,95 @@ def get_run_nodes(run_id: str):
     return _strip_private_paths(db_repo.get_node_runs(run_id))
 
 
+def _remask_finding(item: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return item
+    out = copy.deepcopy(item)
+    if isinstance(out.get("redactedEvidence"), str):
+        out["redactedEvidence"] = mask_text(out["redactedEvidence"])
+    for key in ("severityBasis", "confidenceBasis"):
+        if isinstance(out.get(key), str):
+            out[key] = mask_sensitive_text(out[key])
+    trace = out.get("trace")
+    if isinstance(trace, list):
+        for step in trace:
+            if isinstance(step, dict) and isinstance(step.get("description"), str):
+                step["description"] = mask_sensitive_text(step["description"])
+    enrichment = out.get("ai_enrichment")
+    if isinstance(enrichment, dict):
+        for key in ("explanation", "remediation"):
+            if isinstance(enrichment.get(key), str):
+                enrichment[key] = mask_sensitive_text(enrichment[key])
+    return out
+
+
+def _remask_findings(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+    return [_remask_finding(item) for item in items]
+
+
+def _remask_map_dto(map_dto: Any) -> Any:
+    if not isinstance(map_dto, dict):
+        return map_dto
+    out = copy.deepcopy(map_dto)
+    evidence = out.get("evidence")
+    if isinstance(evidence, list):
+        for item in evidence:
+            if isinstance(item, dict) and isinstance(item.get("redactedSnippet"), str):
+                item["redactedSnippet"] = mask_text(item["redactedSnippet"])
+    diagnostics = out.get("diagnostics")
+    if isinstance(diagnostics, list):
+        for item in diagnostics:
+            if isinstance(item, dict) and isinstance(item.get("message"), str):
+                item["message"] = mask_sensitive_text(item["message"])
+    return out
+
+
+def _remask_official_json(raw: str) -> str:
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return mask_sensitive_text(raw)
+    if not isinstance(parsed, dict):
+        return mask_sensitive_text(raw)
+    findings = parsed.get("findings")
+    if isinstance(findings, list):
+        parsed["findings"] = _remask_findings(findings)
+    ai = parsed.get("aiAnalysis")
+    if isinstance(ai, dict):
+        if isinstance(ai.get("summary"), str):
+            ai["summary"] = mask_sensitive_text(ai["summary"])
+        for item in ai.get("items") or []:
+            if isinstance(item, dict):
+                for key in ("explanation", "remediation"):
+                    if isinstance(item.get(key), str):
+                        item[key] = mask_sensitive_text(item[key])
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _remask_report_record(rep: Dict[str, Any]) -> Dict[str, Any]:
+    out = copy.deepcopy(rep)
+    for key in ("ai_summary", "readable_markdown"):
+        if isinstance(out.get(key), str):
+            out[key] = mask_sensitive_text(out[key])
+    items = out.get("ai_items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                for key in ("explanation", "remediation"):
+                    if isinstance(item.get(key), str):
+                        item[key] = mask_sensitive_text(item[key])
+    if isinstance(out.get("official_json"), str):
+        out["official_json"] = _remask_official_json(out["official_json"])
+    return out
+
+
 @api_router.get("/runs/{run_id}/findings")
 def get_run_findings(run_id: str):
     if not db_repo.get_run(run_id):
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    return _strip_private_paths(db_repo.get_findings(run_id))
+    return _remask_findings(_strip_private_paths(db_repo.get_findings(run_id)))
 
 
 def _load_run_artifact(run_id: str, workspace: str) -> Optional[Dict[str, Any]]:
@@ -480,7 +566,7 @@ def _load_published_map(run_id: str, workspace: str,
     mapped = map_from_analysis_bundle(published["bundle"])
     if not mapped:
         return None
-    mapped["redactionVersion"] = REDACTION_VERSION
+    mapped["redactionVersion"] = (local_payload or {}).get("redactionVersion")
     return mapped
 
 
@@ -511,8 +597,10 @@ def get_security_map(run_id: str, request: Request):
             "snapshotId": identity["snapshotId"],
             "runId": identity["runId"],
         },
-        "map": payload["map"],
-        "findings": payload["findings"],
+        "map": _remask_map_dto(payload["map"]),
+        "findings": _remask_findings(payload["findings"]),
+        "redactionVersion": REDACTION_VERSION,
+        "storedRedactionVersion": payload.get("redactionVersion"),
     }
 
 
@@ -550,13 +638,17 @@ def get_evidence(run_id: str, evidence_id: str, request: Request):
                 "code": "EVIDENCE_NOT_FOUND",
             },
         )
+    stored_fragment = evidence["redactedSnippet"]
+    masked_fragment = mask_text(stored_fragment)
     return {
         "status": "ready",
         "request": request_scope,
         "sourceHash": evidence["sourceHash"],
         "location": evidence["location"],
-        "maskedFragment": evidence["redactedSnippet"],
-        "redactionVersion": payload.get("redactionVersion", REDACTION_VERSION),
+        "maskedFragment": masked_fragment,
+        "redactionVersion": REDACTION_VERSION,
+        "storedRedactionVersion": payload.get("redactionVersion"),
+        "remasked": masked_fragment != stored_fragment,
     }
 
 
@@ -610,7 +702,7 @@ def get_run_report(run_id: str):
     rep = db_repo.get_report(run_id)
     if not rep:
         raise HTTPException(status_code=404, detail="Отчет для данного запуска еще не сформирован")
-    return _strip_private_paths(rep)
+    return _strip_private_paths(_remask_report_record(rep))
 
 
 @api_router.get("/runs/{run_id}/report/official.json")
@@ -618,8 +710,9 @@ def download_official_json(run_id: str):
     rep = db_repo.get_report(run_id)
     if not rep or not rep.get("official_json"):
         raise HTTPException(status_code=404, detail="Отчет не найден")
+    content = _remask_report_record(rep)["official_json"]
     return Response(
-        content=rep["official_json"],
+        content=content,
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename=security-report-{run_id}.json"},
     )
@@ -630,8 +723,9 @@ def download_readable_markdown(run_id: str):
     rep = db_repo.get_report(run_id)
     if not rep or not rep.get("readable_markdown"):
         raise HTTPException(status_code=404, detail="Отчет не найден")
+    content = _remask_report_record(rep)["readable_markdown"]
     return PlainTextResponse(
-        content=rep["readable_markdown"],
+        content=content,
         headers={"Content-Disposition": f"attachment; filename=security-report-{run_id}.md"},
     )
 
