@@ -185,8 +185,8 @@ def _fallback_trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
 def _trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
     """Return Team B's selected catalog; fall back only without its contract."""
     try:
-        from backend.app.integrations.team_b import (
-            _trusted_advisory_path as team_b_resolver,
+        from backend.app.analyzers.advisory_catalog import (
+            resolve_trusted_catalog as team_b_resolver,
         )
     except ImportError:
         return _fallback_trusted_advisory_path()
