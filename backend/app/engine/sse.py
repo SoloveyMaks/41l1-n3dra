@@ -3,6 +3,8 @@ import json
 from collections import defaultdict
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from backend.app.ai.provider import mask_sensitive_text
+from backend.app.security.presentation import mask_value_tree
 from backend.app.storage.database import DatabaseRepository
 
 
@@ -22,7 +24,7 @@ class SSEBroker:
             "runId": run_id,
             "type": event_type,
             "nodeId": node_id,
-            "payload": payload
+            "payload": mask_value_tree(payload, mask_sensitive_text),
         }
 
         # Deliver to all live subscribers for this run
@@ -48,7 +50,7 @@ class SSEBroker:
                     "timestamp": ev["timestamp"],
                     "type": ev["type"],
                     "node_id": ev["node_id"],
-                    "payload": ev["payload"]
+                    "payload": mask_value_tree(ev["payload"], mask_sensitive_text),
                 }, ensure_ascii=False)
                 yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {data_str}\n\n"
 
