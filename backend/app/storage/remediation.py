@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 from backend.app.storage.canonical import (
@@ -98,7 +98,7 @@ class RemediationStore:
             identity_fields = (
                 "sourceRunId", "sourceSnapshotId", "sourceFindingId",
                 "fixedRunId", "fixedSnapshotId", "sourceRef", "contentHash",
-                "status", "verificationBasis", "reviewedBy", "reviewedAt",
+                "status", "verificationBasis", "reviewedBy", "reviewedAt", "limitations",
             )
             for field in identity_fields:
                 if stored[field] != row[field]:
@@ -144,7 +144,15 @@ class RemediationStore:
         reviewed_at = item.get("reviewedAt")
         if reviewed_at is not None:
             _require(isinstance(reviewed_at, (str, datetime)), "example.reviewedAt: expected timestamp")
-            reviewed_at = reviewed_at.isoformat() if isinstance(reviewed_at, datetime) else reviewed_at
+            if isinstance(reviewed_at, datetime):
+                moment = reviewed_at
+            else:
+                try:
+                    moment = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise RemediationValidationError("example.reviewedAt: invalid timestamp") from exc
+            _require(moment.tzinfo is not None, "example.reviewedAt: timezone is required")
+            reviewed_at = moment.astimezone(timezone.utc).isoformat()
         verification_basis = item.get("verificationBasis")
         if verification_basis is not None:
             verification_basis = _text(verification_basis, "example.verificationBasis")
@@ -263,6 +271,28 @@ class RemediationStore:
         ).fetchone()["n"]
         if still_present:
             raise RemediationValidationError("source finding fingerprint is still present in the fixed bundle")
+
+        resolved = conn.execute(
+            """
+            SELECT count(*) AS n
+              FROM data_contract.comparisons c
+              JOIN data_contract.comparison_items ci
+                ON ci.workspace_id = c.workspace_id AND ci.comparison_id = c.comparison_id
+             WHERE c.workspace_id = %s AND c.published_at IS NOT NULL AND c.comparable
+               AND c.baseline_run_id = %s AND c.baseline_snapshot_id = %s
+               AND c.current_run_id = %s AND c.current_snapshot_id = %s
+               AND ci.baseline_finding_id = %s AND ci.current_finding_id IS NULL
+               AND ci.status = 'resolved'
+            """,
+            (self.workspace_id, row["sourceRunId"], row["sourceSnapshotId"],
+             row["fixedRunId"], row["fixedSnapshotId"], row["sourceFindingId"]),
+        ).fetchone()["n"]
+        if resolved != 1:
+            raise RemediationValidationError(
+                "vetted requires a published comparison item status=resolved for exactly this "
+                "sourceFindingId against the fixed run/snapshot; changed/inconclusive is not resolved "
+                "and disappearance of one fingerprint alone is not proof"
+            )
 
     def _get_with_conn(self, conn, example_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
