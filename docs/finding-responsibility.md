@@ -111,7 +111,10 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   и 256 KiB на decompressed bytes; gzip/deflate декодируются инкрементально
   через `zlib.decompressobj(max_length)`, `Content-Length` не доверяем.
   `Accept-Encoding: identity`; unsupported/повреждённый content-encoding —
-  `failed`, без чтения всего body. Request hard deadline 4 s (connect 2 s),
+  `failed`, без чтения всего body. Exact decompressed cap 262144 bytes
+  принимается: при заполненном буфере decoder consumes trailer and probes
+  один лишний byte; cap+1 и corrupt/truncated gzip — `failed`. Request hard
+  deadline 4 s (connect 2 s),
   общий enrichment deadline 9 s, кэш 15 минут. Запросы concurrent bounded
   (не более двух PR detail/review одновременно).
 - GitHub: `GET https://api.github.com/repos/{owner}/{repo}/commits?sha={frozenSHA}&path={path}&per_page=1`.
@@ -259,6 +262,9 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
   с `reviewsStatus=rate_limited`, cooldown выставлен; следующий другой
   path/repo получил `rate_limited` без вызова HTTP-клиента, TTL 60 s. Local
   429 transport также выставил cooldown.
+- Exact-cap test: plain 262144 → ok, plain 262145 → failed; gzip small → ok,
+  gzip exactly 262144 decoded → ok, gzip 262145 → failed, truncated/corrupt
+  gzip → failed; bounded memory без decompressed overrun.
 - Stream ceiling test через Unix local HTTP transport: plain exact 262144 → ok;
   plain 2 MiB → failed без полного body; gzip 16 MiB при 8 KiB wire chunks →
   failed, tracemalloc peak ~0.5 MiB (не 22 MiB).
