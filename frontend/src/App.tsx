@@ -9,6 +9,7 @@ import { ReportView } from './components/ReportView';
 import { UploadModal } from './components/UploadModal';
 import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
+import { AccessGate } from './components/AccessGate';
 
 import {
   ArtifactManifest,
@@ -18,14 +19,21 @@ import {
   NodeRunStatus,
   ReportData,
   RunSummary,
+  SessionState,
   WorkflowDraft,
   WorkflowNode,
 } from './types';
-import { apiClient } from './api/client';
+import { apiClient, AuthRequiredError } from './api/client';
 
 export const App: React.FC = () => {
   // Navigation
   const [activeTab, setActiveTab] = useState<'editor' | 'live' | 'findings' | 'report' | 'schedule'>('editor');
+
+  // Access gate (public demo requires an access code; local mode gets a session automatically)
+  const [session, setSession] = useState<SessionState | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -90,19 +98,72 @@ export const App: React.FC = () => {
         setCurrentRun(latest);
         loadRunDetails(latest.id);
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e instanceof AuthRequiredError) {
+        setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
+      }
       console.error('Failed to load initial data:', e);
     }
   };
 
   useEffect(() => {
-    loadInitialData();
+    (async () => {
+      try {
+        const state = await apiClient.getSession();
+        setSession(state);
+        if (!state.authRequired || state.authenticated) {
+          await loadInitialData();
+        }
+      } catch (e: any) {
+        if (e instanceof AuthRequiredError) {
+          setSession({ authenticated: false, authRequired: true, workspaceId: '', expiresInSec: 0 });
+        } else {
+          setAuthError(e?.message || 'Сервер недоступен');
+          setSession({ authenticated: false, authRequired: true, workspaceId: '', expiresInSec: 0 });
+        }
+      } finally {
+        setAuthLoading(false);
+      }
+    })();
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
     };
   }, []);
+
+  const handleLogin = async (accessCode: string) => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const state = await apiClient.login(accessCode);
+      setSession(state);
+      await loadInitialData();
+    } catch (e: any) {
+      setAuthError(e?.message || 'Не удалось войти');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiClient.logout();
+    } catch {
+      // cookie already gone / server unavailable — local state still resets
+    }
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
+    setCurrentRunId(null);
+    setCurrentRun(null);
+    setNodeRuns([]);
+    setFindings([]);
+    setReport(null);
+    setEvents([]);
+  };
 
   // Validate draft helper
   const validateDraft = async (wfId: string, d: WorkflowDraft) => {
@@ -284,6 +345,24 @@ export const App: React.FC = () => {
 
   const selectedNode = draft.nodes.find((n) => n.id === selectedNodeId) || null;
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen w-screen bg-slate-950 text-slate-300 flex items-center justify-center text-sm">
+        Проверяем доступ…
+      </div>
+    );
+  }
+
+  if (session?.authRequired && !session.authenticated) {
+    return (
+      <AccessGate
+        busy={authBusy}
+        error={authError}
+        onSubmit={handleLogin}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
       {/* Navbar */}
@@ -374,6 +453,16 @@ export const App: React.FC = () => {
         isOpen={isAiTestOpen}
         onClose={() => setIsAiTestOpen(false)}
       />
+
+      {session?.authenticated && (
+        <button
+          onClick={handleLogout}
+          className="fixed bottom-3 right-3 z-30 rounded-lg border border-slate-700 bg-slate-900/95 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white shadow-lg"
+          title="Завершить сессию"
+        >
+          Выйти
+        </button>
+      )}
     </div>
   );
 };

@@ -262,6 +262,16 @@ class WorkflowExecutor:
         }
 
         finished_iso = datetime.now(timezone.utc).isoformat()
+        # Publish before exposing final status: once the UI sees "succeeded/failed",
+        # the published canonical record (or an honest publication=false) already exists.
+        try:
+            await asyncio.to_thread(
+                self._publish_canonical, run_id, workflow_id, revision_id,
+                final_exec_status.value, final_verdict.value,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Canonical publish failed for %s: %s", run_id, exc)
+
         self.db.update_run_status(
             run_id,
             execution_status=final_exec_status.value,
@@ -275,10 +285,6 @@ class WorkflowExecutor:
             "verdict": final_verdict.value,
             "findings_summary": counts
         })
-        try:
-            await asyncio.to_thread(self._publish_canonical, run_id, workflow_id, revision_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Canonical publish failed for %s: %s", run_id, exc)
 
     async def _run_node_logic(self, run_id: str, node: WorkflowNode, inputs: Dict[str, Any],
                              default_artifact_id: Optional[str], trigger_type: str,
@@ -734,13 +740,19 @@ class WorkflowExecutor:
         else:
             raise ValueError(f"Неизвестный тип ноды для исполнения: {kind}")
 
-    def _publish_canonical(self, run_id: str, workflow_id: str, revision_id: str) -> None:
+    def _publish_canonical(self, run_id: str, workflow_id: str, revision_id: str,
+                          final_status: Optional[str] = None,
+                          final_verdict: Optional[str] = None) -> None:
         workspace = workspace_id()
         store = CodeFactsStore()
         payload = store.load_run(workspace, run_uuid(run_id))
         if not payload:
             return
         run = self.db.get_run(run_id) or {}
+        if final_status:
+            run = {**run, "execution_status": final_status}
+        if final_verdict:
+            run = {**run, "security_verdict": final_verdict}
         artifact_id = str(run.get("artifact_id") or "")
         artifact = self.db.get_artifact(artifact_id) if artifact_id else None
         workflow = self.db.get_workflow(workflow_id) or {}

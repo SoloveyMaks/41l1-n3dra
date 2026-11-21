@@ -23,8 +23,8 @@ logger = logging.getLogger("App")
 # Local mode keeps the same-origin CSRF/session guard and may auto-issue a cookie
 # on GET. Public demo (CG_PUBLIC_DEMO=1) requires the access-code login and never
 # auto-issues a cookie; all /api except /api/session and /api/health stay closed.
-_LOCAL_SESSION_EXEMPT = {"/api/session", "/api/health", "/api/webhook-test"}
-_PUBLIC_SESSION_EXEMPT = {"/api/session", "/api/health"}
+_LOCAL_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health", "/api/webhook-test"}
+_PUBLIC_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health"}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 

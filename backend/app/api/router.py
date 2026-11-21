@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from backend.app.ai.service import AiService
 from backend.app.api.session import (
+    SESSION_COOKIE,
     SESSION_TTL_SECONDS,
     auth_required,
     issue_session,
@@ -148,6 +149,12 @@ def get_session(request: Request, response: Response):
         "workspaceId": request_workspace(request),
         "expiresInSec": SESSION_TTL_SECONDS,
     }
+
+
+@api_router.post("/session/logout")
+def logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"authenticated": False, "authRequired": auth_required()}
 
 
 @api_router.post("/session")

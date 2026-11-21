@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from backend.app.artifacts.intake import build_snapshot_from_directory
 from backend.app.codefacts.canonical import CanonicalMapBuilder
 from backend.app.codefacts.extractor import extract_facts
-from backend.app.codefacts.identity import canonical_json, manifest_hash, sha256_hex, snapshot_uuid
+from backend.app.codefacts.identity import canonical_json, sha256_hex, snapshot_uuid, storage_manifest_hash
 from backend.app.codefacts.source import SnapshotIntegrityError, load_snapshot_sources
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.schemas import Finding as BackendFinding
@@ -97,9 +97,9 @@ def build_run_map(*, workspace: str, internal_run_id: str, run_id: str,
     manifest_digest = str(snapshot.get("manifestHash") or meta.get("snapshotManifestHash") or "")
     if not artifact_hash or len(artifact_hash) != 64:
         raise MapBuildError("ARTIFACT_HASH_MISSING", "Нет полного sha256 архива")
-    if manifest_hash(files) != manifest_digest:
+    if storage_manifest_hash(files) != manifest_digest:
         raise MapBuildError("SNAPSHOT_INTEGRITY", "manifestHash не совпадает с содержимым snapshot")
-    if snapshot_uuid(manifest_digest) != snapshot_id:
+    if snapshot_uuid(manifest_digest, workspace) != snapshot_id:
         raise MapBuildError("SNAPSHOT_INTEGRITY", "snapshotId не соответствует manifestHash")
 
     builder = CanonicalMapBuilder(

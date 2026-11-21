@@ -90,7 +90,7 @@ class CanonicalMapBuilder:
         self.snapshot_id = snapshot_id
         self.artifact_hash = artifact_hash
         self.snapshot_manifest_hash = snapshot_manifest_hash
-        self.workflow_revision_id = revision_uuid(workflow_revision_id)
+        self.workflow_revision_id = revision_uuid(workflow_revision_id, workspace_id)
         self.facts = facts
         self.sources = sources
         self.snapshot_files = snapshot_files
@@ -569,6 +569,17 @@ class CanonicalMapBuilder:
                         refs.append(evidence_id)
             evidence = [self.evidence[evidence_id] for evidence_id in refs if evidence_id in self.evidence]
             diagnostics, parser_errors = self._scan_diagnostics(scan, category)
+            scope_paths = sorted({item["location"]["path"] for item in evidence})
+            scopes = [
+                {
+                    "path": path,
+                    "ruleId": f"{getattr(scan, 'analyzer', 'scanner')}-aggregate",
+                    "category": category,
+                    "status": "partial",
+                    "reason": "Агрегированное покрытие сканера; per-rule scope не доказан.",
+                }
+                for path in scope_paths
+            ]
             raw_coverage = getattr(scan, "coverage", None)
             visited = int(getattr(raw_coverage, "files_scanned", 0) or 0) if raw_coverage else 0
             visited = min(max(visited, 0), total)
@@ -592,7 +603,7 @@ class CanonicalMapBuilder:
                     "filesTotal": total,
                     "filesVisited": visited,
                     "rulesApplied": rules,
-                    "scopes": [],
+                    "scopes": scopes,
                     "skippedScopes": ["scanner-scope-only"] if visited < total else [],
                     "parserErrors": parser_errors,
                     "unresolvedSymbols": [],

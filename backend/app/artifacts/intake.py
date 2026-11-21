@@ -33,6 +33,7 @@ from backend.app.codefacts.identity import (
     manifest_hash,
     sha256_hex,
     snapshot_uuid,
+    storage_manifest_hash,
     workspace_id,
 )
 from backend.app.codefacts.store import CodeFactsStore
@@ -158,13 +159,15 @@ def build_snapshot_from_directory(root: Path, workspace: str) -> Dict[str, Any]:
     if not files:
         raise SafeIntakeError("В артефакте нет файлов")
     files.sort(key=lambda item: tuple(item["path"].split("/")))
-    mhash = manifest_hash(files)
-    sid = snapshot_uuid(mhash)
+    source_hash = manifest_hash(files)
+    mhash = storage_manifest_hash(files)
+    sid = snapshot_uuid(mhash, workspace)
     return {
         "schemaVersion": "cg-snapshot/1",
         "workspaceId": workspace,
         "snapshotId": sid,
         "manifestHash": mhash,
+        "sourceManifestHash": source_hash,
         "files": files,
         "createdAt": _now(),
     }
@@ -350,13 +353,15 @@ class SafeArtifactIntake:
                 raise
 
             records.sort(key=lambda item: tuple(item["path"].split("/")))
-            mhash = manifest_hash(records)
-            sid = snapshot_uuid(mhash)
+            source_hash = manifest_hash(records)
+            mhash = storage_manifest_hash(records)
+            sid = snapshot_uuid(mhash, workspace)
             snapshot = {
                 "schemaVersion": "cg-snapshot/1",
                 "workspaceId": ws,
                 "snapshotId": sid,
                 "manifestHash": mhash,
+                "sourceManifestHash": source_hash,
                 "artifactHash": archive_hash,
                 "files": records,
                 "createdAt": _now(),

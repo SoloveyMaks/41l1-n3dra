@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import uuid
 from pathlib import Path
@@ -46,22 +47,26 @@ def workspace_id(seed: str | None = None) -> str:
     return str(uuid.uuid5(NS_URL, f"cg-workspace:{raw}"))
 
 
-def run_uuid(internal_run_id: str) -> str:
+def run_uuid(internal_run_id: str, workspace: str | None = None) -> str:
     if _is_uuid(internal_run_id):
         return str(uuid.UUID(internal_run_id))
-    return str(uuid.uuid5(NS_URL, f"cg-run:{internal_run_id}"))
+    ws = workspace or workspace_id()
+    return str(uuid.uuid5(NS_URL, f"cg-run:{ws}:{internal_run_id}"))
 
 
-def snapshot_uuid(manifest_hash: str) -> str:
-    return str(uuid.uuid5(NS_URL, f"cg-snapshot:{manifest_hash}"))
+def snapshot_uuid(manifest_hash: str, workspace: str | None = None) -> str:
+    ws = workspace or workspace_id()
+    return str(uuid.uuid5(NS_URL, f"cg-snapshot:{ws}:{manifest_hash}"))
 
 
-def revision_uuid(revision_id: str) -> str:
-    return str(uuid.uuid5(NS_URL, f"cg-revision:{revision_id}"))
+def revision_uuid(revision_id: str, workspace: str | None = None) -> str:
+    ws = workspace or workspace_id()
+    return str(uuid.uuid5(NS_URL, f"cg-revision:{ws}:{revision_id}"))
 
 
-def workflow_uuid(workflow_id: str) -> str:
-    return str(uuid.uuid5(NS_URL, f"cg-workflow:{workflow_id}"))
+def workflow_uuid(workflow_id: str, workspace: str | None = None) -> str:
+    ws = workspace or workspace_id()
+    return str(uuid.uuid5(NS_URL, f"cg-workflow:{ws}:{workflow_id}"))
 
 
 def artifact_scope_uuid(workspace: str, artifact_id: str) -> str:
@@ -119,6 +124,26 @@ def manifest_hash(files: Iterable[Dict[str, Any]]) -> str:
     ]
     normalized.sort(key=lambda item: tuple(item["path"].split("/")))
     return sha256_hex(canonical_json(normalized, sort_keys=True).encode("utf-8"))
+
+
+def storage_manifest_hash(files: Iterable[Dict[str, Any]]) -> str:
+    """C schema `snapshot_manifest_hash`: PostgreSQL jsonb_agg text, C path order.
+
+    JSONB key order is path, mediaType, byteLength, sourceHash; separators are
+    ", " and ": ". This is what data_contract.snapshot_manifest_hash recomputes.
+    """
+    rows = []
+    for item in files:
+        path = str(item["path"])
+        rows.append({
+            "path": path,
+            "mediaType": mimetypes.guess_type(path)[0] or "application/octet-stream",
+            "byteLength": int(item["sizeBytes"]),
+            "sourceHash": str(item["sha256"]),
+        })
+    rows.sort(key=lambda row: row["path"].encode("utf-8"))
+    text = json.dumps(rows, ensure_ascii=False, separators=(", ", ": "))
+    return sha256_hex(text.encode("utf-8"))
 
 
 def bundle_hash(value: Dict[str, Any]) -> str:
