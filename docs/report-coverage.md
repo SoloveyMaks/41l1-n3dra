@@ -24,7 +24,8 @@ Parser ratio — это не полнота security проверки. Его н
   - `completeness_score=0.0` (fail closed, не «ноль просканированных файлов»);
   - `coverage_status` и `skipped_scopes` заполняются фактами;
   - `coverage_reasons` содержит русскую причину;
-  - Markdown пишет «Полнота проверки: неизвестна» и причину, без 100%.
+  - Markdown пишет «Полнота проверки: не установлена/недоступна/неизвестна»
+    по статусу и причину, без 100%.
 - Parser ratio остаётся отдельным legacy-полем `parser_completeness_score`;
   оно не используется как общая полнота и не выводится в Markdown.
 - Если canonical данных нет, это честное `unknown`, а не фабрикованный
@@ -41,7 +42,10 @@ canonical completeness ratio: `1.0` только для подтверждённ
 
 Изменены `backend/app/reports/builder.py`, `backend/app/engine/executor.py`,
 `backend/app/contracts/schemas.py` и этот файл. Frontend, router, storage и
-redaction не менялись; UI должен отдельно перейти на новые поля.
+redaction не менялись. На dev85 `ReportView` уже получает canonical coverage
+из node runs через `frontend/src/coverage.ts`; `completeness_score` встречается
+во frontend только в типе и не используется для отображения. Поэтому этот
+backend followup не утверждает, что экран показывает 0.
 
 ## Живая проверка
 
@@ -49,8 +53,8 @@ Temp PostgreSQL/runtime, default workflow:
 
 | Run | execution | security verdict | canonical coverage | completeness |
 |---|---|---|---|---|
-| clean | succeeded | inconclusive | partial, skipped 3 scopes | `known=false`, score `0.0`, Markdown «неизвестна» |
-| known findings (13) | succeeded | fail | partial, skipped 3 scopes | `known=false`, score `0.0`, Markdown «неизвестна» |
+| clean | succeeded | inconclusive | partial, skipped 3 scopes | `known=false`, score `0.0`, Markdown «не установлена» |
+| known findings (13) | succeeded | fail | partial, skipped 3 scopes | `known=false`, score `0.0`, Markdown «не установлена» |
 
 Clean passport:
 
@@ -59,13 +63,25 @@ completeness_score=0.0, completeness_known=false,
 coverage_status=partial,
 skipped_scopes=[runtime-configuration, runtime-guards, binaries-and-archives],
 parser_completeness_score=1.0,
-coverage_reasons=[Полнота проверки не установлена: canonical coverage partial;
-  пропущены: runtime-configuration, runtime-guards, binaries-and-archives]
+coverage_reasons=[Полнота проверки не установлена: проверена только часть
+  областей; не проверено: конфигурация времени выполнения, защита во время
+  выполнения, бинарники и архивы.]
 ```
 
-Скачанный `/report/readable.md` содержит «Полнота проверки | **неизвестна**»,
+Скачанный `/report/readable.md` содержит «Полнота проверки | **не установлена**»,
 причину и не содержит `100%`. Known-findings отчёт сохраняет `verdict=fail`,
-но полнота также честно неизвестна; findings/verdict не подменяются.
+но полнота также честно не установлена; findings/verdict не подменяются.
+
+Одноразовая render-проверка:
+
+- `partial` + skipped IDs → «не установлена», русские названия трёх областей,
+  машинные `skipped_scopes` не изменены;
+- `unavailable` → «недоступна», без утверждения «canonical отсутствует»;
+- `unknown` → «неизвестна», «данные покрытия не предоставлены»;
+- `complete` + expected verified → «Полнота проверки | 100%»;
+- `complete` без expected → «не установлена», «обязательные области проверки не
+  подтверждены»;
+- policy `fail` сохраняет `verdict=fail` независимо от полноты.
 
 Ограничение: пока canonical coverage не покрывает runtime-слои и expected
 scopes не верифицированы, полная полнота не может быть заявлена. Это
