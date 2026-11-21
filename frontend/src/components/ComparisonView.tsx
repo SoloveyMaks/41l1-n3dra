@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, GitCompare, ShieldAlert } from 'lucide-react';
 import { ComparisonDto, ComparisonStatus, RunSummary } from '../types';
 import { apiClient } from '../api/client';
@@ -10,6 +10,12 @@ const STATUS_LABEL: Record<ComparisonStatus, string> = {
   resolved: 'Исправлена',
   inconclusive: 'Не подтверждено',
   file_deleted: 'Файл удалён',
+};
+
+const BASIS_LABEL: Record<string, string> = {
+  unique_anchor: 'однозначный anchor',
+  ambiguous: 'неоднозначно',
+  none: 'нет',
 };
 
 const STATUS_CLASS: Record<ComparisonStatus, string> = {
@@ -35,6 +41,22 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
   const [result, setResult] = useState<ComparisonDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const requestSeq = useRef(0);
+
+  const changeBaseline = (value: string) => {
+    requestSeq.current += 1;
+    setBaseline(value);
+    setResult(null);
+    setError(null);
+    setBusy(false);
+  };
+  const changeCurrent = (value: string) => {
+    requestSeq.current += 1;
+    setCurrent(value);
+    setResult(null);
+    setError(null);
+    setBusy(false);
+  };
 
   useEffect(() => {
     if (finished.length >= 2 && (!baseline || !current)) {
@@ -48,15 +70,19 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
       setError('Выберите два разных завершённых запуска');
       return;
     }
+    const seq = ++requestSeq.current;
     setBusy(true);
     setError(null);
     try {
-      setResult(await apiClient.compareRuns(baseline, current));
+      const next = await apiClient.compareRuns(baseline, current);
+      if (seq === requestSeq.current) setResult(next);
     } catch (e: any) {
-      setResult(null);
-      setError(e?.message || 'Не удалось сравнить запуски');
+      if (seq === requestSeq.current) {
+        setResult(null);
+        setError(e?.message || 'Не удалось сравнить запуски');
+      }
     } finally {
-      setBusy(false);
+      if (seq === requestSeq.current) setBusy(false);
     }
   };
 
@@ -83,7 +109,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
       <div className="mx-auto max-w-5xl space-y-4">
         <div className="flex items-center gap-2">
           <GitCompare size={18} className="text-indigo-400" />
-          <h2 className="text-sm font-semibold text-white">Сравнение published runs</h2>
+          <h2 className="text-sm font-semibold text-white">Сравнение опубликованных запусков</h2>
         </div>
         <p className="text-xs text-slate-400">
           Сравнение не запускает сканеры и не считает partial coverage доказанным исправлением.
@@ -91,8 +117,8 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
         </p>
 
         <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
-          {select(baseline, setBaseline, 'Baseline (до)')}
-          {select(current, setCurrent, 'Current (после)')}
+          {select(baseline, changeBaseline, 'Baseline (до)')}
+          {select(current, changeCurrent, 'Current (после)')}
           <button
             onClick={compare}
             disabled={busy}
@@ -113,7 +139,12 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
           <div className="space-y-4">
             <div className={`rounded-xl border p-4 text-xs ${result.comparable ? 'border-emerald-900 bg-emerald-950/40 text-emerald-200' : 'border-amber-900 bg-amber-950/40 text-amber-200'}`}>
               <div className="font-semibold">
-                {result.comparable ? 'Сравнение сопоставимо' : 'Сравнение не сопоставимо — только inconclusive'}
+                {result.comparable
+                  ? 'Сравнение сопоставимо'
+                  : 'Недостаточно доказательств: исправление не подтверждено'}
+              </div>
+              <div className="mt-1 text-[11px] opacity-80">
+                До: {result.baselineRunId} · После: {result.currentRunId}
               </div>
               {result.reasons.length > 0 && (
                 <ul className="mt-2 list-disc space-y-1 pl-5">
@@ -139,7 +170,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
                           {STATUS_LABEL[item.status]}
                         </span>
                       </td>
-                      <td className="px-3 py-2 text-slate-400">{item.matchingBasis}</td>
+                      <td className="px-3 py-2 text-slate-400">{BASIS_LABEL[item.matchingBasis] || item.matchingBasis}</td>
                       <td className="px-3 py-2 text-slate-300">{item.reason}</td>
                     </tr>
                   ))}

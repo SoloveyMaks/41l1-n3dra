@@ -133,4 +133,16 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     }
     if not isinstance(result, dict) or not required.issubset(result):
         raise ComparisonError(502, "COMPARISON_BAD_OUTPUT", "compare-cli вернул неполный ComparisonDto")
-    return result
+    try:
+        from backend.app.storage.comparisons import ComparisonConflictError, ComparisonStore  # type: ignore
+    except ModuleNotFoundError:
+        # Feature-ветка без PG storage: вычисленный DTO честно не выдаётся за persisted.
+        return result
+    except Exception as exc:  # noqa: BLE001
+        raise ComparisonError(503, "COMPARISON_STORE_UNAVAILABLE", f"ComparisonStore недоступен: {exc}") from exc
+    try:
+        return ComparisonStore(workspace).save(result)
+    except ComparisonConflictError as exc:
+        raise ComparisonError(409, "COMPARISON_CONFLICT", str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise ComparisonError(503, "COMPARISON_STORE_UNAVAILABLE", f"ComparisonStore save failed: {exc}") from exc
