@@ -3,11 +3,13 @@ import {
   KeyRound, PackageSearch, FileCode2,
   Search, ChevronRight, CheckCircle2
 } from 'lucide-react';
-import { Finding, Severity } from '../types';
+import { AiScanResult, Finding, Severity } from '../types';
 import { EvidenceCard } from './EvidenceCard';
+import { AiHypothesesPanel } from './AiHypothesesPanel';
 
 interface FindingsViewProps {
   findings: Finding[];
+  aiScan?: AiScanResult | null;
   aiItems?: Array<{ findingId: string; explanation: string; remediation: string; suggestedFixedVersion?: string }>;
   aiStatus?: string;
   onOpenReport?: () => void;
@@ -66,7 +68,7 @@ function compareFindings(left: Finding, right: Finding, mode: SortMode): number 
   return compareText(left.id, right.id);
 }
 
-export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = [], aiStatus, onOpenReport }) => {
+export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiScan = null, aiItems = [], aiStatus, onOpenReport }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -197,6 +199,8 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, aiItems = 
           </div>
           </div>
         </div>
+
+        {aiScan && <AiHypothesesPanel aiScan={aiScan} />}
 
         {/* Findings List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2.5">

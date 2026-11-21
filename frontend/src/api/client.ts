@@ -1,10 +1,13 @@
 import {
+  AccountCredentials,
   ArtifactManifest,
   AdminOverview,
   ComparisonDto,
   Finding,
+  HistoryResponse,
   NodeDefinition,
   NodeRunRecord,
+  ProfileData,
   ReportData,
   RepositoryCheckResult,
   RepositoryWatch,
@@ -86,6 +89,26 @@ export const apiClient = {
   async login(accessCode: string, role: SessionRole = 'user'): Promise<SessionState> {
     // Код живёт только в состоянии формы; URL/localStorage его не касаются.
     return (await request('/session', jsonInit('POST', { accessCode, role }))).json();
+  },
+
+  async registerAccount(input: AccountCredentials): Promise<SessionState> {
+    return (await request('/auth/register', jsonInit('POST', input))).json();
+  },
+
+  async loginAccount(email: string, password: string): Promise<SessionState> {
+    return (await request('/auth/login', jsonInit('POST', { email, password }))).json();
+  },
+
+  async getMe(): Promise<SessionState> {
+    return (await request('/auth/me')).json();
+  },
+
+  async getHistory(limit = 20): Promise<HistoryResponse> {
+    return (await request(`/auth/history?limit=${encodeURIComponent(String(limit))}`)).json();
+  },
+
+  async getProfile(): Promise<ProfileData> {
+    return (await request('/profile')).json();
   },
 
   async getAdminOverview(): Promise<AdminOverview> {

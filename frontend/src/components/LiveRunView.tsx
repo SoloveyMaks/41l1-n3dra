@@ -64,7 +64,7 @@ const PHASES: Array<{ id: PhaseId; title: string }> = [
   { id: 'scanners', title: '2. Сканеры' },
   { id: 'facts', title: '3. Факты кода и карта доступа' },
   { id: 'verdict', title: '4. Политика и ветвление' },
-  { id: 'ai', title: '5. AI-объяснение' },
+  { id: 'ai', title: '5. AI-анализ' },
   { id: 'report', title: '6. Отчёт и паспорт' },
   { id: 'delivery', title: '7. Уведомление' },
   { id: 'other', title: 'Другие блоки' },
@@ -82,6 +82,7 @@ const KIND_META: Record<string, { title: string; phase: PhaseId; icon: IconCompo
   condition: { title: 'Ветвление по риску', phase: 'verdict', icon: GitFork, color: 'text-yellow-400' },
   branch_merge: { title: 'Сведение ветвей', phase: 'verdict', icon: GitMerge, color: 'text-indigo-400' },
   ai_explain: { title: 'AI-объяснение', phase: 'ai', icon: Sparkles, color: 'text-fuchsia-400' },
+  ai_scan: { title: 'AI-гипотезы', phase: 'ai', icon: Sparkles, color: 'text-fuchsia-300' },
   build_report: { title: 'Отчёт и паспорт проверки', phase: 'report', icon: FileText, color: 'text-cyan-400' },
   notify: { title: 'Уведомление', phase: 'delivery', icon: Send, color: 'text-sky-400' },
 };
@@ -330,6 +331,35 @@ function describeStage(nodeRun: NodeRunRecord): StageCopy {
     return { short: 'Ветви сведены, данные переданы дальше' };
   }
 
+  if (kind === 'ai_scan') {
+    const result = asObject(output.ai_scan_result);
+    const observations = asArray(result.observations);
+    const coverage = asObject(result.coverage);
+    const provenance = asObject(result.provenance);
+    const status = asString(result.status) || '—';
+    const coverageStatus = asString(coverage.status) || '—';
+    const model = asString(provenance.model);
+    const sent = asNumber(coverage.filesSent);
+    const selected = asNumber(coverage.filesSelected);
+    const providerErrors = asArray(coverage.providerErrors).map(asString).filter(Boolean);
+    const validationErrors = asArray(result.validationErrors).map(asString).filter(Boolean);
+    const incomplete = status !== 'succeeded' || coverageStatus !== 'complete';
+    return {
+      short: `Гипотез: ${observations.length} · ${status} · не findings`,
+      detail: `${model ? `Модель ${model}. ` : ''}Файлов отправлено ${sent}/${selected} · подавлено дублей: ${asNumber(result.suppressedDuplicates)}`,
+      chips: [
+        { label: 'Покрытие', value: coverageStatus, tone: incomplete ? 'warn' : 'ok' },
+        ...severityChips(observations),
+      ],
+      warning: incomplete
+        ? `AI-проверка неполная (${status}/${coverageStatus}). ${providerErrors[0] || validationErrors[0] || 'Гипотезы не влияют на вердикт.'}`
+        : validationErrors.length
+          ? `Валидация AI: ${validationErrors[0]}`
+          : undefined,
+      action: { kind: 'findings', label: 'Открыть AI-гипотезы' },
+    };
+  }
+
   if (kind === 'ai_explain') {
     const explain = asObject(output.explain_result);
     const items = asArray(explain.items);
@@ -425,6 +455,7 @@ const NODE_ID_KIND_HINTS: Array<[string, NodeKind]> = [
   ['node_merge', 'merge_findings'],
   ['node_policy', 'policy_gate'],
   ['node_cond', 'condition'],
+  ['node_ai_scan', 'ai_scan'],
   ['node_ai', 'ai_explain'],
   ['node_report', 'build_report'],
   ['node_notify', 'notify'],
@@ -449,6 +480,8 @@ function liveStageText(kind: NodeKind | null): string {
       return 'Собираем находки, факты кода и карту доступа…';
     case 'ai_explain':
       return 'Модель объясняет находки…';
+    case 'ai_scan':
+      return 'Модель ищет дополнительные гипотезы…';
     case 'build_report':
       return 'Собираем отчёт и паспорт проверки…';
     case 'notify':
