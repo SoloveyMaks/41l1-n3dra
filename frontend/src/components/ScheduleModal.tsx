@@ -873,6 +873,10 @@ const WatchList: React.FC<{
                     <dt className="text-slate-500">Статус доставки</dt>
                     <dd>{deliveryStatusLabel(watch.last_delivery_status)}</dd>
                   </div>
+                  <div>
+                    <dt className="text-slate-500">Последняя проверка</dt>
+                    <dd>{formatTime(watch.last_checked_at)}</dd>
+                  </div>
                 </>
               ) : (
                 <>
