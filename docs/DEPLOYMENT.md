@@ -91,12 +91,11 @@ quoted/export значения парсятся и переписываются 
   (cloudflared передаёт `X-Forwarded-Proto`, поэтому Secure cookie),
   `AI_PROVIDER=reformboss`, `AI_MODEL=deepseek-v4.1-flash-1017`,
   `VECTOR_RETRIEVAL_ENABLED=0`;
-- optional Team B: `CG26_HMAC_KEY` (отдельный persistent random secret),
-  `CG26_HMAC_KEY_VERSION=nedra-team-b-1`,
-  `CG26_ADVISORY_ROOT=/app/data/team-b-advisories`,
-  `CG26_ADVISORY_DB=/app/data/team-b-advisories/vulnerabilities.json`.
-  Advisory — доверенный server-side каталог в volume, не uploaded snapshot;
-  значения не печатаются;
+- optional Team B: `CG26_HMAC_KEY` (отдельный persistent random secret);
+  `CG26_HMAC_KEY_VERSION`, `CG26_ADVISORY_ROOT`, `CG26_ADVISORY_DB` получают
+  дефолты только при отсутствии, существующие custom значения сохраняются при
+  повторном `--write`. Advisory — доверенный server-side каталог в volume, не
+  uploaded snapshot; значения не печатаются;
 - значения не печатаются, access code не выводится ни в `--check`, ни в
   `--write`; model/key передаются только через env-file, не argv.
 

@@ -183,7 +183,7 @@ run_check() {
 run_write() {
   require_cmd podman
   require_cmd python3
-  local ref_key existing_ref password session_secret anchor_key access_code database_url tmp pairs_tmp
+  local ref_key existing_ref password session_secret anchor_key access_code database_url tmp pairs_tmp team_b_key team_b_version team_b_root team_b_db
   existing_ref=$(existing_value REFORMBOSS_API_KEY)
   if [ "$REFRESH_KEY" = "1" ] || [ -z "$existing_ref" ]; then
     require_source_key
@@ -206,6 +206,12 @@ run_write() {
   anchor_key=$(existing_or_generate CG_ANCHOR_HMAC_KEY generate_hex_32)
   access_code=$(existing_or_generate CG_ACCESS_CODE generate_hex_8)
   team_b_key=$(existing_or_generate CG26_HMAC_KEY generate_hex_32)
+  team_b_version=$(existing_value CG26_HMAC_KEY_VERSION)
+  [ -n "$team_b_version" ] || team_b_version="nedra-team-b-1"
+  team_b_root=$(existing_value CG26_ADVISORY_ROOT)
+  [ -n "$team_b_root" ] || team_b_root="/app/data/team-b-advisories"
+  team_b_db=$(existing_value CG26_ADVISORY_DB)
+  [ -n "$team_b_db" ] || team_b_db="${team_b_root}/vulnerabilities.json"
 
   mkdir -p "$NEDRA_RUNTIME_DIR"
   chmod 700 "$NEDRA_RUNTIME_DIR"
@@ -250,9 +256,9 @@ run_write() {
     printf 'AI_MODEL=deepseek-v4.1-flash-1017\n'
     printf 'VECTOR_RETRIEVAL_ENABLED=0\n'
     printf 'CG26_HMAC_KEY=%s\n' "$team_b_key"
-    printf 'CG26_HMAC_KEY_VERSION=nedra-team-b-1\n'
-    printf 'CG26_ADVISORY_ROOT=/app/data/team-b-advisories\n'
-    printf 'CG26_ADVISORY_DB=/app/data/team-b-advisories/vulnerabilities.json\n'
+    printf 'CG26_HMAC_KEY_VERSION=%s\n' "$team_b_version"
+    printf 'CG26_ADVISORY_ROOT=%s\n' "$team_b_root"
+    printf 'CG26_ADVISORY_DB=%s\n' "$team_b_db"
   } >>"$tmp"
 
   chmod 600 "$tmp"
