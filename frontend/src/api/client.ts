@@ -14,8 +14,12 @@ import {
  * Same-origin by default. Dev can set VITE_API_BASE, but the public judge build
  * must keep `/api` so the HttpOnly session cookie is sent to this origin.
  */
-const API_BASE = (((import.meta as any).env?.VITE_API_BASE as string | undefined) || '/api')
-  .replace(/\/+$/, '');
+// Same-origin by default; VITE_API_BASE_URL overrides the whole API base
+// (e.g. "/api" behind a proxy or "https://host/api" for a split deployment).
+const configuredBase = (import.meta as any).env?.VITE_API_BASE_URL?.trim();
+export const API_BASE = configuredBase
+  ? configuredBase.replace(/\/+$/, '')
+  : '/api';
 
 export class AuthRequiredError extends Error {
   authRequired = true;
