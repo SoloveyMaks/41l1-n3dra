@@ -75,14 +75,16 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r backend/requirements.txt
 cp .env.example .env
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/41l1_n3dra
-python -m backend.app.storage.migrate        # 001/002/004/005/006 (+003 при DB_ENABLE_VECTOR=1)
+python -m backend.app.storage.migrate        # 001/002/004/005/006 (+003/014/015 при DB_ENABLE_VECTOR=1)
 uvicorn backend.app.main:app --env-file .env --port 8000
 ```
 
 Backend сам применяет ledger-миграции при старте. `DB_ENABLE_VECTOR=1` включает
-optional `db/optional/003` только при доступном pgvector; fake vectors не
-создаются. Без `DATABASE_URL`/драйвера/доступной БД старт падает с понятной
-ошибкой, без DSN в тексте.
+optional `db/optional/003`, `014` и `015` только при доступном pgvector; fake
+vectors в реальные таблицы не пишутся. `015` — отдельный `draft`-only demo/fixture с
+synthetic-векторами для проверки exact-механики; он не входит в реальную выдачу
+и не является выбором embedding-модели. Без `DATABASE_URL`/драйвера/доступной БД
+старт падает с понятной ошибкой, без DSN в тексте.
 
 ```bash
 python -X utf8 -m analyzers.selftest                      # 74 проверки

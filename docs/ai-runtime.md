@@ -56,34 +56,57 @@ provenance модели. Любая ошибка провайдера, ключ�
 
 ## Optional exact retrieval
 
-SQL-контракт: `db/optional/003_exact_vector.up.sql` (`exact_similar_fixes`).
-Код: `backend/app/ai/vector_runtime.py`. Включён только при
+SQL-контракт: `db/optional/003_exact_vector.up.sql` (базовые таблицы) и
+`db/optional/014_exact_vector_contract.up.sql` (15-аргументная
+`exact_similar_fixes`). Код: `backend/app/ai/vector_runtime.py`, полный typed row —
+`backend/app/ai/vector_result.py`. Включён только при
 `VECTOR_RETRIEVAL_ENABLED=true`; иначе `retrieval.status=disabled`.
 
 Нужны явные значения: `VECTOR_RETRIEVAL_DSN` (или `DATABASE_URL`),
-`VECTOR_WORKSPACE_ID`, `VECTOR_EMBEDDING_SPEC_ID`, `VECTOR_EMBEDDING_MODEL`,
-`VECTOR_EMBEDDING_VERSION`, `VECTOR_EMBEDDING_DIMENSION`,
-`VECTOR_EMBEDDING_METRIC`, `VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION`,
+`VECTOR_WORKSPACE_ID`, `VECTOR_EMBEDDING_SPEC_ID`, `VECTOR_EMBEDDING_PROVIDER`,
+`VECTOR_EMBEDDING_MODEL`, `VECTOR_EMBEDDING_VERSION`,
+`VECTOR_EMBEDDING_DIMENSION`, `VECTOR_EMBEDDING_METRIC`,
+`VECTOR_EMBEDDING_QUERY_PREPARATION_VERSION`,
 `VECTOR_EMBEDDING_DOCUMENT_PREPARATION_VERSION`,
 `VECTOR_EMBEDDING_REDACTION_VERSION`, `VECTOR_EMBEDDING_BASE_URL`,
-`VECTOR_EMBEDDING_API_KEY`. Драйвер PostgreSQL (`psycopg` или `psycopg2`) —
-optional dependency.
+`VECTOR_EMBEDDING_API_KEY`; `VECTOR_RETRIEVAL_STATUS` по умолчанию `vetted`.
+Драйвер PostgreSQL (`psycopg` или `psycopg2`) — optional dependency.
+
+`VECTOR_WORKSPACE_ID` — только конфигурация корпуса. Retrieval запускается
+внутри `current_workspace_scope()` и требует точного совпадения UUID с этим
+scope; без scope или с чужим scope возвращается `unavailable` до SQL. Поэтому
+прямой вызов `AiService` вне request/scheduler тоже не достаёт корпус.
 
 В коде нет default embedding model/version/dimension/metric: размерность и
 модель нельзя выдумывать. Значения заполняются только после реального
-`POST /embeddings` и сверки с active row `embedding_specs`. Проверка каталога
-ReformBoss `/v1/models` не показывает embedding-модель, поэтому рабочие
-embeddings сейчас не заявляются, а retrieval остаётся `unavailable`, пока
-интегратор/D не даст подтверждённый endpoint и spec. Реальный POST
-`/v1/embeddings` с `text-embedding-3-small` вернул 403
+`POST /embeddings` и сверки с active row `embedding_specs`. Функция проверяет
+точное совпадение provider/model/model_version/metric и версий подготовки;
+несовпадение или другой dimension дают `unavailable`, а не «похожую» выдачу.
+Проверка каталога ReformBoss `/v1/models` не показывает embedding-модель,
+поэтому рабочие embeddings сейчас не заявляются, а retrieval остаётся
+`unavailable`, пока интегратор/D не даст подтверждённый endpoint и spec.
+Реальный POST `/v1/embeddings` с `text-embedding-3-small` вернул 403
 `token_model_not_allowed`; размерность из ответа не получена и не выдумывается.
 
-`VECTOR_RULE_FAMILY_MAP` переводит `ruleId` в `rule_family`; без маппинга
-используется сам `ruleId`. Значения language, framework и rule family должны
-совпадать с `remediation_examples`, иначе exact retrieval честно вернёт пустую
-выдачу. Запросы фильтруются по workspace, language, framework, rule family и
-spec. Меньше distance — лучше; distance не выдаётся за человеческую оценку
-применимости.
+Ряд exact retrieval содержит `source_ref`, `redacted_before`, `redacted_fix`,
+`rule_version`, `verification_basis`, `limitations`, `example_status`, `distance`,
+`metric`. Обязательные фильтры: workspace, language, framework, rule family,
+status; `limit` 1..20. `VECTOR_RULE_FAMILY_MAP` переводит `ruleId` в
+`rule_family`. Меньше distance — лучше; distance не выдаётся за человеческую
+оценку применимости. `vetted`-ряд дополнительно проходит provenance-пол в
+`014` (published scanner bundles, verified scopes, совпадающая подпись,
+resolved published comparison, review-поля, непустые limitations); это
+defense in depth, а не замена `RemediationStore.save()` или DB-грантов.
+
+`db/optional/015_vector_demo_fixture.up.sql` и
+`db/optional/fixtures/vector_demo_examples.json` — отдельный demo/fixture:
+5 draft-only примеров, 16-мерные synthetic token-hash векторы. Включается явно
+через `VECTOR_RETRIEVAL_DEMO_FIXTURE=1` и `VECTOR_RETRIEVAL_STATUS=draft`, не
+ходит в сеть и не требует ключа. Demo-таблицы не связаны с
+`remediation_examples`, схема запрещает `vetted`, а статус ответа всегда
+помечен как demo/fixture. Это проверка storage+exact-механики, не выбор модели и
+не доказательство пользы поиска. Подробности и root-сниппет для полей
+`SimilarFix` — в [vetted-vector-retrieval.md](vetted-vector-retrieval.md).
 
 Статусы: `disabled`, `unavailable`, `ready`, `ok`, `partial`. Ошибка retrieval
 никогда не меняет findings, вердикт или отчёт.
