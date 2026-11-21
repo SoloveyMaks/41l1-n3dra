@@ -1,3 +1,4 @@
+import bisect
 import hashlib
 import json
 import os
@@ -95,11 +96,12 @@ class ScaAnalyzer(BaseAnalyzer):
                 ))
 
         # 2. Parse all *.gradle.kts and *.gradle files
+        # Both Kotlin DSL calls and Groovy declarations are valid Gradle input.
         dep_pattern_single = re.compile(
-            r"""(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*\(\s*["']([^:"']+):([^:"']+):([^:"']+)["']\s*\)"""
+            r"""(?<![\w.])(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*(?:\(\s*)?["']([^:"']+):([^:"']+):([^:"']+)["']"""
         )
         dep_pattern_args = re.compile(
-            r"""(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*\(\s*group\s*=\s*["']([^"']+)["']\s*,\s*name\s*=\s*["']([^"']+)["']\s*,\s*version\s*=\s*["']([^"']+)["']\s*\)"""
+            r"""(?<![\w.])(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*(?:\(\s*)?group\s*[:=]\s*["']([^"']+)["']\s*,\s*name\s*[:=]\s*["']([^"']+)["']\s*,\s*version\s*[:=]\s*["']([^"']+)["']"""
         )
         dep_pattern_catalog = re.compile(
             r"""(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*libs\.([a-zA-Z0-9._]+)\s*\)"""
@@ -125,51 +127,55 @@ class ScaAnalyzer(BaseAnalyzer):
                     for token in lex(content).tokens:
                         if token.kind == "COMMENT":
                             code[token.start:token.end] = ["\n" if char == "\n" else " " for char in token.text]
-                    code_lines = "".join(code).splitlines(keepends=True)
+                    code_text = "".join(code)
+                    code_line_starts = [0]
+                    for offset, char in enumerate(code_text):
+                        if char == "\n":
+                            code_line_starts.append(offset + 1)
                     lines_of_code += len(raw_lines)
 
-                    for line_idx, line in enumerate(raw_lines):
-                        code_line = code_lines[line_idx]
-                        line_num = line_idx + 1
+                    def _location(offset: int) -> Tuple[int, int]:
+                        index = bisect.bisect_right(code_line_starts, offset) - 1
+                        return index, offset - code_line_starts[index]
 
-                        # Single string dependency: "group:name:version"
-                        for match in dep_pattern_single.finditer(code_line):
-                            group, name, version = match.groups()
-                            self._check_dependency(
-                                group=group, name=name, version=version,
-                                provenance="requested_exact",
-                                rel_path=rel_path, line_num=line_num, line=line,
-                                match=match, findings=findings, diagnostics=diagnostics
-                            )
+                    def _emit(match: Any, group: str, name: str, version: str, provenance: str) -> None:
+                        start_index, start_col = _location(match.start())
+                        end_index, end_col = _location(match.end())
+                        self._check_dependency(
+                            group=group, name=name, version=version,
+                            provenance=provenance,
+                            rel_path=rel_path,
+                            line_num=start_index + 1,
+                            end_line=end_index + 1,
+                            line=raw_lines[start_index] if start_index < len(raw_lines) else "",
+                            start_col=start_col,
+                            end_col=end_col,
+                            findings=findings, diagnostics=diagnostics
+                        )
 
-                        # Named arguments dependency: group = "...", name = "...", version = "..."
-                        for match in dep_pattern_args.finditer(code_line):
-                            group, name, version = match.groups()
-                            self._check_dependency(
-                                group=group, name=name, version=version,
-                                provenance="requested_exact",
-                                rel_path=rel_path, line_num=line_num, line=line,
-                                match=match, findings=findings, diagnostics=diagnostics
-                            )
+                    # Match the comment-stripped text, not one physical line: Gradle
+                    # declarations routinely span lines and must keep real coordinates.
+                    for match in dep_pattern_single.finditer(code_text):
+                        _emit(match, *match.groups(), "requested_exact")
 
-                        # Version catalog alias: libs.some.lib
-                        for match in dep_pattern_catalog.finditer(code_line):
-                            alias = match.group(1).replace(".", "_").replace("-", "_")
-                            if alias in version_catalog_libs:
-                                group, name, version = version_catalog_libs[alias]
-                                self._check_dependency(
-                                    group=group, name=name, version=version,
-                                    provenance="catalog_recorded",
-                                    rel_path=rel_path, line_num=line_num, line=line,
-                                    match=match, findings=findings, diagnostics=diagnostics
-                                )
-                            else:
-                                unresolved_deps += 1
-                                diagnostics.append(Diagnostic(
-                                    level="info",
-                                    message=f"Не удалось разрешить alias зависимости: libs.{match.group(1)} в {rel_path}:{line_num}",
-                                    source="ScaAnalyzer"
-                                ))
+                    # Named arguments dependency: group = "...", name = "...", version = "..."
+                    for match in dep_pattern_args.finditer(code_text):
+                        _emit(match, *match.groups(), "requested_exact")
+
+                    # Version catalog alias: libs.some.lib
+                    for match in dep_pattern_catalog.finditer(code_text):
+                        alias = match.group(1).replace(".", "_").replace("-", "_")
+                        if alias in version_catalog_libs:
+                            group, name, version = version_catalog_libs[alias]
+                            _emit(match, group, name, version, "catalog_recorded")
+                        else:
+                            unresolved_deps += 1
+                            line_num = _location(match.start())[0] + 1
+                            diagnostics.append(Diagnostic(
+                                level="info",
+                                message=f"Не удалось разрешить alias зависимости: libs.{match.group(1)} в {rel_path}:{line_num}",
+                                source="ScaAnalyzer"
+                            ))
 
                 except Exception as e:
                     diagnostics.append(Diagnostic(
@@ -198,7 +204,8 @@ class ScaAnalyzer(BaseAnalyzer):
         )
 
     def _check_dependency(self, group: str, name: str, version: str, provenance: str,
-                          rel_path: str, line_num: int, line: str, match: Any,
+                          rel_path: str, line_num: int, end_line: int, line: str,
+                          start_col: int, end_col: int,
                           findings: List[Finding], diagnostics: List[Diagnostic]) -> None:
         if not re.fullmatch(r"[0-9]+(?:[.][0-9]+)*(?:[-.](?:alpha|beta|milestone|rc|cr|snapshot|final|ga|release|sp)[.-]?[0-9]*)?", version, re.IGNORECASE):
             diagnostics.append(Diagnostic(
@@ -225,17 +232,15 @@ class ScaAnalyzer(BaseAnalyzer):
                 if not fixed_versions and adv.get("fixed_version"):
                     fixed_versions = [str(adv["fixed_version"])]
                 sources = [str(item) for item in adv.get("sources", []) if str(item)]
-                fingerprint = hashlib.sha256(f"sca:{rel_path}:{line_num}:{match.start()}:{coord}:{version}:{cve_id}".encode("utf-8")).hexdigest()[:16]
+                fingerprint = hashlib.sha256(f"sca:{rel_path}:{line_num}:{start_col}:{coord}:{version}:{cve_id}".encode("utf-8")).hexdigest()[:16]
                 finding_id = f"fnd_sca_{fingerprint}"
 
-                col_start = match.start() + 1
-                col_end = match.end() + 1
                 location = Location(
                     path=rel_path,
                     startLine=line_num,
-                    endLine=line_num,
-                    startColumn=col_start,
-                    endColumn=col_end,
+                    endLine=end_line,
+                    startColumn=start_col + 1,
+                    endColumn=end_col + 1,
                     byteRange=None
                 )
 
