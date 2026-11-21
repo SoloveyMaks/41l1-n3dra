@@ -14,13 +14,15 @@ Bearer-токен. Токен привязан к реальной привяз�
 | Метод | Путь | Ответ |
 |---|---|---|
 | `POST` | `/api/telegram/mini/auth` | `{token, expiresAt}` |
+| `POST` | `/api/telegram/mini/bind` | `{token, expiresAt}` |
 | `GET` | `/api/telegram/mini/bootstrap` | `{user, settings, scenarios, runs}` |
 | `PUT` | `/api/telegram/mini/settings` | `{deliveryMode, scenario}` |
 | `POST` | `/api/telegram/mini/runs` | `{runId}` (HTTP 202) |
 | `GET` | `/api/telegram/mini/runs/{run_id}` | `{run, findings}` |
 | `GET` | `/api/telegram/mini/runs/{run_id}/report.jsonc` | сохранённый отчёт |
 
-`/auth` — единственный публичный маршрут. Все остальные требуют
+`/auth` и `/bind` — публичные по cookie-сессии, но защищены проверенным
+`initData` (а `/bind` ещё и одноразовым кодом). Все остальные маршруты требуют
 `Authorization: Bearer <token>`.
 
 ### `POST /auth`
@@ -45,8 +47,53 @@ Bearer-токен. Токен привязан к реальной привяз�
   дубли ключей, битый `user`/`hash`, слишком большой или не-приватный чат;
 - `409 TELEGRAM_NOT_BOUND` — Telegram-пользователь подтверждён, но привязки
   к аккаунту нет (или аккаунт отключён / workspace не совпадает). Автопривязки
-  и создания аккаунта нет: сначала веб-кабинет → Telegram → код → `/start`;
+  и создания аккаунта нет: сначала веб-кабинет → Telegram → код → `/start`
+  или `POST /api/telegram/mini/bind`;
 - `503 TELEGRAM_MINIAPP_UNAVAILABLE` — не настроен бот/секрет.
+
+### `POST /bind`
+
+```json
+{"initData": "<Telegram.WebApp.initData>", "code": "<код из веб-кабинета>"}
+```
+
+Привязывает **этот приватный чат** к аккаунту, которому выдан код, и сразу
+возвращает обычный scoped Bearer:
+
+```json
+{"token": "v1.<payload>.<signature>", "expiresAt": 1795297200}
+```
+
+Порядок жёсткий:
+
+1. `initData` проверяется тем же алгоритмом, что `/auth` (подпись, свежесть,
+   дубли, private chat, `user.id`).
+2. Код валидируется по длине и передаётся в существующий
+   `consume_binding_code(code, chat_id=user.id, username)`. Код живёт только в
+   JSON-теле: не в URL, не в логах, не в хранилище клиента.
+3. Пока код не потреблён, привязка не создана и токен не выдаётся.
+4. После потребления читается `account.users`: аккаунт должен быть активен, а
+   его workspace совпадать с workspace привязки. Только после этого минтится
+   токен.
+5. `bootstrap`, `settings`, `runs` сразу работают с этой привязкой; настройки
+   общие с ботом — та же таблица `telegram.settings` (`deliveryMode` +
+   `scenario`), без второй копии.
+
+Ошибки:
+
+- `400 INVALID_BINDING_CODE` — код битый, истёк, уже использован другим чатом
+  или не существует. Сообщение всегда одинаковое;
+- `401 INVALID_INIT_DATA` — подпись/срок/чат не прошли проверку; код при этом
+  **не** расходуется;
+- `409 TELEGRAM_NOT_BOUND` — код принят, но аккаунт отключён или его workspace
+  недоступен; нужен новый код;
+- `429 RATE_LIMITED` — превышен лимит попыток: отдельно на client IP снаружи
+  и отдельно на verified Telegram user внутри.
+
+Код никогда не пишется в логи, ответы, URL или `localStorage`; в БД остаётся
+только его sha256, как и раньше. Автосоздания аккаунта и смены веб-пароля нет.
+Тот же одноразовый код можно отправить боту обычным сообщением (это поведение
+bot-слоя); Mini App использует `/bind` вместо команды.
 
 ### `GET /bootstrap`
 
@@ -179,6 +226,8 @@ polling и раздача frontend сохраняются.
 | `TELEGRAM_MINIAPP_INIT_MAX_AGE_SECONDS` | `3600` | максимальный возраст `initData` |
 | `CG_MINIAPP_MAX_CONCURRENT_RUNS` | `2` | одновременные импорты/запуски |
 | `CG_RATE_MINI_AUTH` | `20` | POST `/auth` в минуту на IP |
+| `CG_RATE_MINI_BIND` | `20` | POST `/bind` в минуту на IP |
+| `CG_RATE_MINI_BIND_USER` | `10` | POST `/bind` в минуту на verified Telegram user |
 | `CG_RATE_MINI_RUN` | `5` | POST `/runs` в минуту на IP |
 | `TELEGRAM_ENABLED` | `0` | polling бота; на HTTP Mini App не влияет |
 
@@ -190,6 +239,8 @@ polling и раздача frontend сохраняются.
   workspace или `initDataUnsafe` в бизнес-запросы.
 - При `401 TOKEN_REVOKED`/`INVALID_TOKEN` заново вызвать `/auth` с актуальным
   `Telegram.WebApp.initData` (он обновляется при открытии).
+- При `409 TELEGRAM_NOT_BOUND` показать поле кода из веб-кабинета и отправить
+  его в `/bind` вместе с `initData`; код не класть в URL и не сохранять.
 - На `/bootstrap` показывать `runs`/`scenarios` как есть; не досчитывать
   «пройдено/не пройдено» на клиенте.
 - Запуск — только по нажатию; никаких скрытых импортов при открытии страницы.
@@ -214,7 +265,8 @@ NEDRA_TEST_DATABASE_URL='postgresql://postgres:pass@/nedra?host=/tmp/nedra-pg/so
 
 Покрыто: валидная/подделанная/просроченная/дублированная `initData`,
 неверный бот-токен, чужой чат, TTL/роль/подпись токена, unbound → 409,
-rebind/unbind → 401, `binding_epoch` при записи settings, чужой workspace →
-404, маскинг evidence, `report.jsonc` без отчёта → 404, явный сценарий,
-HTTPS-валидация, перепривязка во время импорта (run не создаётся) и успешный
-старт с записью артефакта/run и вызовом executor.
+`bind` с валидным/просроченным/чужим кодом, сохранность кода при битой подписи,
+per-user rate limit, rebind/unbind → 401, `binding_epoch` при записи settings,
+чужой workspace → 404, маскинг evidence, `report.jsonc` без отчёта → 404,
+явный сценарий, HTTPS-валидация, перепривязка во время импорта (run не
+создаётся) и успешный старт с записью артефакта/run и вызовом executor.

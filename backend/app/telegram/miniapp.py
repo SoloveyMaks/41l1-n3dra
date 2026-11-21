@@ -8,6 +8,7 @@ re-checks the live Telegram binding and account.
 Contract (shared with the frontend):
 
     POST /auth                       {initData} -> {token, expiresAt}
+    POST /bind                       {initData, code} -> {token, expiresAt}
     GET  /bootstrap                  -> {user, settings, scenarios, runs}
     PUT  /settings                   -> {deliveryMode, scenario}
     POST /runs                       {repositoryUrl, scenarioId?} -> {runId}
@@ -33,6 +34,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from backend.app.api.session import allow_attempt
 from backend.app.artifacts.repository import RepositoryImportError
 from backend.app.artifacts.intake import SafeIntakeError
 from backend.app.contracts.schemas import RunSummary, WorkflowDraft
@@ -54,6 +56,7 @@ from backend.app.telegram.miniapp_auth import (
     INIT_DATA_MAX_BYTES,
     MiniAppAuth,
     MiniAppAuthError,
+    MiniBindError,
     MiniConfigError,
     MiniIdentity,
     MiniNotBound,
@@ -66,6 +69,8 @@ logger = logging.getLogger("TelegramMiniApp")
 
 MINI_PREFIX = "/api/telegram/mini"
 MAX_AUTH_BODY_BYTES = 16 * 1024
+MAX_BIND_CODE_LENGTH = 128
+MIN_BIND_CODE_LENGTH = 8
 MAX_REPOSITORY_URL = 2048
 MAX_SCENARIO_ID = 128
 RECENT_RUNS_LIMIT = 20
@@ -88,6 +93,8 @@ def _env_int(name: str, default: int, *, low: int, high: int) -> int:
 _RUN_SEMAPHORE = asyncio.Semaphore(
     _env_int("CG_MINIAPP_MAX_CONCURRENT_RUNS", DEFAULT_MAX_CONCURRENT_RUNS, low=1, high=8)
 )
+_BIND_RATE_LIMIT = _env_int("CG_RATE_MINI_BIND_USER", 10, low=1, high=100)
+_BIND_RATE_WINDOW = _env_int("CG_RATE_WINDOW_SECONDS", 60, low=1, high=3600)
 
 
 def _fail(status_code: int, code: str, message: str) -> None:
@@ -291,11 +298,87 @@ def create_miniapp_router(
                 409,
                 "TELEGRAM_NOT_BOUND",
                 "Telegram ещё не привязан к аккаунту. Откройте веб-кабинет, раздел Telegram, "
-                "создайте код привязки и отправьте боту /start <код>.",
+                "создайте код привязки и отправьте боту /start <код> или введите код здесь.",
             )
         except Exception as exc:  # noqa: BLE001 - no raw initData/token in errors
             logger.info("mini initData rejected: %s", type(exc).__name__)
             _fail(401, "INVALID_INIT_DATA", "initData не прошёл проверку; откройте Mini App заново")
+        return {"token": token, "expiresAt": int(expires_at)}
+
+    @router.post("/bind")
+    async def bind_account(request: Request) -> Dict[str, Any]:
+        """Bind this verified private chat with a cabinet code, then issue token.
+
+        The code is accepted only in the JSON body. Signature/freshness and the
+        private-chat/user checks are identical to /auth; no token is minted
+        until ``consume_binding_code`` succeeded and the bound account is
+        active in that workspace.
+        """
+        payload = await _json_body(request, max_bytes=MAX_AUTH_BODY_BYTES)
+        init_data = payload.get("initData")
+        if not isinstance(init_data, str) or not init_data:
+            _fail(400, "INVALID_INIT_DATA", "initData обязателен")
+        try:
+            init_data_size = len(init_data.encode("utf-8"))
+        except UnicodeEncodeError:
+            _fail(400, "INVALID_INIT_DATA", "initData содержит некорректный Unicode")
+        if init_data_size > INIT_DATA_MAX_BYTES:
+            _fail(400, "INVALID_INIT_DATA", "initData слишком большой")
+
+        try:
+            user = await asyncio.to_thread(auth_service.verify_init_data, init_data)
+        except asyncio.CancelledError:
+            raise
+        except MiniConfigError:
+            _fail(503, "TELEGRAM_MINIAPP_UNAVAILABLE", "Mini App временно недоступен: нет конфигурации бота")
+        except Exception as exc:  # noqa: BLE001 - initData/code never logged
+            logger.info("mini bind initData rejected: %s", type(exc).__name__)
+            _fail(401, "INVALID_INIT_DATA", "initData не прошёл проверку; откройте Mini App заново")
+
+        # The outer middleware already limits each client IP for /bind. This
+        # second window is per verified Telegram user, so rotating IPs cannot
+        # bypass one account's quota.
+        if not allow_attempt(
+            f"telegram:{user.id}",
+            "mini_bind_user",
+            limit=_BIND_RATE_LIMIT,
+            window_seconds=_BIND_RATE_WINDOW,
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "RATE_LIMITED",
+                    "message": "Слишком много попыток привязки; попробуйте позже",
+                },
+                headers={"Retry-After": str(_BIND_RATE_WINDOW)},
+            )
+
+        code = payload.get("code")
+        if not isinstance(code, str) or not (
+            MIN_BIND_CODE_LENGTH <= len(code.strip()) <= MAX_BIND_CODE_LENGTH
+        ):
+            _fail(400, "INVALID_BINDING_CODE", "Код привязки недействителен или истёк")
+
+        try:
+            _identity, expires_at, token = await asyncio.to_thread(
+                auth_service.bind_with_code, user, code
+            )
+        except asyncio.CancelledError:
+            raise
+        except MiniConfigError:
+            _fail(503, "TELEGRAM_MINIAPP_UNAVAILABLE", "Mini App временно недоступен: нет конфигурации бота")
+        except MiniNotBound:
+            _fail(
+                409,
+                "TELEGRAM_NOT_BOUND",
+                "Код принят, но аккаунт привязки отключён или его workspace недоступен. "
+                "Войдите в веб-кабинет и создайте новый код.",
+            )
+        except MiniBindError:
+            _fail(400, "INVALID_BINDING_CODE", "Код привязки недействителен или истёк")
+        except Exception as exc:  # noqa: BLE001 - no code/exception text leak
+            logger.warning("mini bind failed: %s", type(exc).__name__)
+            _fail(500, "BIND_UNAVAILABLE", "Не удалось выполнить привязку; попробуйте позже")
         return {"token": token, "expiresAt": int(expires_at)}
 
     @router.get("/bootstrap")
