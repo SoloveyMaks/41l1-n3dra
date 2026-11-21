@@ -586,6 +586,24 @@ export interface RunSummary {
   last_event_seq: number;
 }
 
+export interface RunRevisionResponse {
+  run_id: string;
+  revision_id: string;
+  available: boolean;
+  draft: WorkflowDraft | null;
+}
+
+// Actual state of GET /runs/{id}/security-map for one run. The map screen owns
+// the request; this is the only source of truth for the stage card, never the
+// execution pipeline.
+export type RunMapLoadStatus = 'loading' | 'ready' | 'partial' | 'empty' | 'error';
+
+export interface RunMapLoadState {
+  runId: string;
+  status: RunMapLoadStatus;
+  errorCode?: string;
+}
+
 export interface NodeRunRecord {
   id: string;
   run_id: string;

@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import {
   Play, Clock, FolderArchive, KeyRound, PackageSearch, FileCode2,
@@ -6,6 +6,7 @@ import {
   AlertCircle, Loader2, MinusCircle
 } from 'lucide-react';
 import { NodeKind, NodeRunStatus } from '../types';
+import './execution-motion.css';
 
 interface CustomNodeData {
   kind: NodeKind;
@@ -13,8 +14,13 @@ interface CustomNodeData {
   config: Record<string, any>;
   status?: NodeRunStatus;
   durationMs?: number;
+  startedAtMs?: number;
+  live?: boolean;
+  // `active` is false when the last record is still running but the run is
+  // already terminal; `stalled` carries that fact for an honest label.
+  active?: boolean;
+  stalled?: boolean;
   isSelected?: boolean;
-  current?: boolean;
 }
 
 const KIND_CONFIG: Record<NodeKind, { icon: any; color: string; bg: string; border: string }> = {
@@ -34,7 +40,21 @@ const KIND_CONFIG: Record<NodeKind, { icon: any; color: string; bg: string; bord
   notify: { icon: Send, color: 'text-sky-400', bg: 'bg-sky-950/40', border: 'border-sky-600' },
 };
 
-export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
+// One interval per visibly running node, not per canvas: parallel branches keep
+// independent clocks and do not re-render each other.
+function useRunningElapsed(active: boolean, startedAtMs?: number): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active, startedAtMs]);
+  if (!active || startedAtMs === undefined) return undefined;
+  return Math.max(0, now - startedAtMs);
+}
+
+export const CustomNode = memo(({ data, selected }: NodeProps) => {
   const nodeData = data as unknown as CustomNodeData;
   const cfg = KIND_CONFIG[nodeData.kind] || {
     icon: Play, color: 'text-gray-400', bg: 'bg-gray-900', border: 'border-gray-700'
@@ -42,29 +62,22 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
   const Icon = cfg.icon;
 
   const status = nodeData.status;
-  const current = nodeData.current ?? status === 'running';
+  const stalled = Boolean(nodeData.stalled);
+  // Live motion needs both a truthful active record and a live subscription.
+  const isCurrent = Boolean(nodeData.active) && Boolean(nodeData.live) && status === 'running' && !stalled;
+  const elapsedMs = useRunningElapsed(isCurrent, nodeData.startedAtMs);
+  const shownMs = isCurrent ? elapsedMs : nodeData.durationMs;
 
   return (
     <div
-      className={`relative min-w-[210px] rounded-xl shadow-xl backdrop-blur-md transition-all duration-200 border-2 ${
+      className={`exec-node min-w-[210px] rounded-xl shadow-xl backdrop-blur-md transition-all duration-200 border-2 ${
         selected ? 'ring-2 ring-indigo-400 scale-[1.02]' : ''
-      } ${
-        current
-          ? 'border-sky-400 shadow-[0_0_28px_rgba(56,189,248,0.35)]'
-          : status === 'succeeded'
-          ? 'border-emerald-500 shadow-emerald-500/10'
-          : status === 'failed'
-          ? 'border-rose-600 shadow-rose-600/20'
-          : status === 'skipped'
-          ? 'border-gray-700 opacity-50'
-          : cfg.border
-      } ${cfg.bg} bg-slate-900/90 text-slate-100 overflow-hidden`}
+      } ${cfg.border} ${cfg.bg} bg-slate-900/90 text-slate-100 overflow-hidden`}
+      data-status={status || 'pending'}
+      data-current={isCurrent ? 'true' : 'false'}
+      data-live={nodeData.live ? 'true' : 'false'}
+      data-stalled={stalled ? 'true' : 'false'}
     >
-      {current && (
-        <div className="absolute inset-x-0 top-0 h-0.5 overflow-hidden">
-          <div className="h-full w-1/2 animate-[wf-sweep_1.2s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-sky-300 to-transparent" />
-        </div>
-      )}
       {/* Input Handles */}
       {renderInputHandles(nodeData.kind)}
 
@@ -87,14 +100,18 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
         {/* Live Status Badge */}
         {status && (
           <div className="flex items-center gap-1 text-[10px] font-medium">
-            {current && (
-              <span className="rounded-full border border-sky-500/60 bg-sky-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-sky-200">
-                сейчас
+            {status === 'running' && !stalled && (
+              <span className="flex items-center gap-1 text-blue-400">
+                <Loader2 size={13} className="animate-spin" />
+                <span className="exec-node__live-dot" />
               </span>
             )}
-            {status === 'running' && (
-              <span className="flex items-center text-sky-300">
-                <Loader2 size={13} className="animate-spin" />
+            {status === 'running' && stalled && (
+              <span
+                className="flex items-center text-amber-400/90"
+                title="Запуск завершён, итоговый статус блока не пришёл"
+              >
+                <Clock size={13} />
               </span>
             )}
             {status === 'succeeded' && (
@@ -112,11 +129,11 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
                 <MinusCircle size={13} />
               </span>
             )}
-            {nodeData.durationMs !== undefined && nodeData.durationMs > 0 && (
-              <span className="text-[9px] text-slate-400">
-                {nodeData.durationMs < 1000
-                  ? `${Math.round(nodeData.durationMs)}ms`
-                  : `${(nodeData.durationMs / 1000).toFixed(1)}s`}
+            {shownMs !== undefined && shownMs > 0 && (
+              <span className="exec-node__clock text-[9px] text-slate-400">
+                {shownMs < 1000
+                  ? `${Math.round(shownMs)}ms`
+                  : `${(shownMs / 1000).toFixed(1)}s`}
               </span>
             )}
           </div>

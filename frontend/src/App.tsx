@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { WorkflowCanvas } from './components/WorkflowCanvas';
 import { NodePalette } from './components/NodePalette';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -31,36 +31,29 @@ import {
   AiScanResult,
   AppTab,
   ArtifactManifest,
+  ExecutionStatus,
   Finding,
   NodeKind,
   NodeRunRecord,
-  NodeRunStatus,
   ProfileData,
   ReportData,
   RunHistoryItem,
+  RunMapLoadState,
+  RunMapLoadStatus,
+  RunRevisionResponse,
   RunSummary,
   SessionRole,
   SessionState,
   WorkflowDraft,
+  WorkflowEdge,
   WorkflowNode,
 } from './types';
 import { apiClient, ApiError, AuthRequiredError } from './api/client';
+import { buildRunTelemetry } from './execution/runTelemetry';
+import type { RunTelemetry } from './execution/runTelemetry';
 import { artifactLabel, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
-
-const NODE_RUN_STATUSES: readonly NodeRunStatus[] = [
-  'pending',
-  'running',
-  'retrying',
-  'succeeded',
-  'failed',
-  'skipped',
-  'cancelled',
-];
-
-const isNodeRunStatus = (value: unknown): value is NodeRunStatus =>
-  typeof value === 'string' && (NODE_RUN_STATUSES as readonly string[]).includes(value);
 
 const EMPTY_DRAFT: WorkflowDraft = {
   schemaVersion: 1,
@@ -94,6 +87,48 @@ const extractAiScan = (nodes: NodeRunRecord[]): AiScanResult | null => {
   if (!raw || typeof raw !== 'object') return null;
   return raw as AiScanResult;
 };
+
+// Execution status may decorate a draft only when both describe the same
+// immutable graph. Positions and node config stay editable and do not change
+// topology; ids, kinds and edge endpoints must match exactly.
+const edgeGraphKey = (edge: WorkflowEdge): string =>
+  [edge.id, edge.source, edge.sourcePort ?? '', edge.target, edge.targetPort ?? ''].join('\u0000');
+
+const sameRunGraph = (revisionDraft: WorkflowDraft | null, currentDraft: WorkflowDraft): boolean => {
+  if (!revisionDraft) return false;
+  if (revisionDraft.nodes.length !== currentDraft.nodes.length) return false;
+  if (revisionDraft.edges.length !== currentDraft.edges.length) return false;
+  const revisionNodes = new Map(revisionDraft.nodes.map((node) => [node.id, node.kind]));
+  for (const node of currentDraft.nodes) {
+    if (revisionNodes.get(node.id) !== node.kind) return false;
+  }
+  const revisionEdges = new Set(revisionDraft.edges.map(edgeGraphKey));
+  return currentDraft.edges.every((edge) => revisionEdges.has(edgeGraphKey(edge)));
+};
+
+const EMPTY_RUN_TELEMETRY: RunTelemetry = { nodes: {}, edges: {}, lastSeq: 0, live: false };
+
+// Run status only moves forward: queued → running → terminal. A summary with a
+// lower rank is older than what is already applied, even when the request that
+// carries it was issued later (a reconnect reply or a slow details fetch).
+const TERMINAL_RUN_RANK = 2;
+const RUN_STATUS_RANK: Record<ExecutionStatus, number> = {
+  queued: 0,
+  running: 1,
+  succeeded: TERMINAL_RUN_RANK,
+  failed: TERMINAL_RUN_RANK,
+  cancelled: TERMINAL_RUN_RANK,
+  interrupted: TERMINAL_RUN_RANK,
+};
+
+// The map owner exposes `onLoadStateChange(status)` from SecurityMapScreen in
+// its own commit. This typed seam binds App to that agreed contract so the
+// merge does not have to touch the map component again.
+const SecurityMapScreenWithLoadState = SecurityMapScreen as React.FC<
+  React.ComponentProps<typeof SecurityMapScreen> & {
+    onLoadStateChange?: (status: RunMapLoadStatus) => void;
+  }
+>;
 
 export const App: React.FC = () => {
   const [adminSection, setAdminSection] = useState<AdminSection>('overview');
@@ -137,8 +172,16 @@ export const App: React.FC = () => {
   const [runsLoading, setRunsLoading] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<RunSummary | null>(null);
+  // Immutable graph the selected run was created from. null = unknown plan.
+  const [runRevision, setRunRevision] = useState<RunRevisionResponse | null>(null);
+  // Actual state of the security-map request for the selected run, reported by
+  // SecurityMapScreen. Absent means the map was not opened in this session.
+  const [mapLoadState, setMapLoadState] = useState<RunMapLoadState | null>(null);
   const [nodeRuns, setNodeRuns] = useState<NodeRunRecord[]>([]);
   const [events, setEvents] = useState<Array<{ seq: number; timestamp: string; type: string; nodeId?: string; payload: any }>>([]);
+  // Edge seq present when the current SSE subscription opened; anything above
+  // it arrived live. null means "not known yet", so history never animates.
+  const [liveBaselineSeq, setLiveBaselineSeq] = useState<number | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [aiScan, setAiScan] = useState<AiScanResult | null>(null);
   const [report, setReport] = useState<ReportData | null>(null);
@@ -146,11 +189,22 @@ export const App: React.FC = () => {
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  // Monotonic subscription generation. Every async reconnect step captures it,
+  // so a delayed summary from an old subscription can never open a second
+  // stream after the user reselected the same or another run.
+  const sseGenerationRef = useRef(0);
+  // Last applied event seq for the selected run; reconnect resumes after it.
+  const lastSeqRef = useRef(0);
   const selectedRunRef = useRef<string | null>(null);
+  // Highest run status applied for selectedRunRef. Guards against a delayed
+  // summary resurrecting a run that already reached terminal.
+  const runProgressRef = useRef<{ runId: string; rank: number } | null>(null);
   const artifactIdsRef = useRef<Set<string>>(new Set());
   const artifactFetchRef = useRef<Map<string, Promise<ArtifactManifest | null>>>(new Map());
   const artifactCacheRef = useRef<Map<string, ArtifactManifest>>(new Map());
   const runLoadSeq = useRef(0);
+  const revisionLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
   const adminOverviewSeq = useRef(0);
@@ -173,6 +227,13 @@ export const App: React.FC = () => {
   }, []);
 
   const closeSSE = useCallback(() => {
+    // Invalidate every pending callback of the old subscription before closing
+    // it. Reconnects compare this generation, not just the selected run id.
+    sseGenerationRef.current += 1;
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
@@ -240,6 +301,26 @@ export const App: React.FC = () => {
     return pending;
   }, []);
 
+  // The single writer for `currentRun`. A terminal summary is final: later
+  // replies with an active status are stale, and the stream must not reopen.
+  const applyRunSummary = useCallback((summary: RunSummary): boolean => {
+    const rank = RUN_STATUS_RANK[summary.execution_status] ?? 0;
+    const known = runProgressRef.current;
+    if (known && known.runId === summary.id && rank < known.rank) {
+      if (known.rank >= TERMINAL_RUN_RANK) closeSSE();
+      return false;
+    }
+    runProgressRef.current = { runId: summary.id, rank };
+    setCurrentRun(summary);
+    if (rank >= TERMINAL_RUN_RANK) {
+      setIsRunning(false);
+      // Terminal API truth invalidates a pending reconnect timer and any
+      // stream, so neither can restore a running state afterwards.
+      closeSSE();
+    }
+    return true;
+  }, [closeSSE]);
+
   const loadRunDetails = useCallback(async (runId: string) => {
     const seq = ++runLoadSeq.current;
     try {
@@ -275,14 +356,15 @@ export const App: React.FC = () => {
         ));
       }
 
-      setCurrentRun(runInfo);
+      const accepted = applyRunSummary(runInfo);
       setNodeRuns(nodes);
       setFindings(runFindings);
       setAiScan(extractAiScan(nodes));
       setReport(runReport);
-      setIsRunning(runInfo.execution_status === 'running' || runInfo.execution_status === 'queued');
-      if (runInfo.execution_status !== 'running' && runInfo.execution_status !== 'queued') {
-        void refreshRuns();
+      if (accepted) {
+        const active = runInfo.execution_status === 'running' || runInfo.execution_status === 'queued';
+        setIsRunning(active);
+        if (!active) void refreshRuns();
       }
     } catch (e: any) {
       if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
@@ -292,57 +374,132 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Не удалось загрузить запуск');
       }
     }
-  }, [ensureArtifact, refreshRuns, showNotice]);
+  }, [applyRunSummary, ensureArtifact, refreshRuns, showNotice]);
 
-  const connectSSE = useCallback((runId: string) => {
-    closeSSE();
-    const source = apiClient.createEventSource(runId, 0);
-    eventSourceRef.current = source;
-
-    const handleEvent = (message: MessageEvent) => {
-      if (selectedRunRef.current !== runId) return;
-      try {
-        const parsed = JSON.parse(message.data);
-        // Historical replay uses `node_id`; live broker uses `nodeId`. Live broker
-        // events carry no timestamp, so the client receive time keeps the
-        // running-stage duration honest instead of showing zero.
-        const event = {
-          ...parsed,
-          nodeId: parsed?.nodeId ?? parsed?.node_id,
-          timestamp: parsed?.timestamp ?? new Date().toISOString(),
-        };
-        setEvents((prev) => {
-          if (prev.some((item) => item.seq === event.seq)) return prev;
-          const next = [...prev, event];
-          return next.length > 1000 ? next.slice(-1000) : next;
-        });
-        if (event.type === 'run_status') {
-          const status = event.payload?.status;
-          if (status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted') {
-            setIsRunning(false);
-            closeSSE();
-            void loadRunDetails(runId);
-            void refreshRuns();
-          }
-        } else if (event.type === 'node_status') {
-          void loadRunDetails(runId);
-        } else if (event.type === 'ai_scan_result') {
-          void loadRunDetails(runId);
-        }
-      } catch (error) {
-        console.error('SSE parse error:', error);
-      }
-    };
-    // Backend sends named events (`event: run_status`), so EventSource does
-    // not dispatch them to `onmessage`; subscribe to the known event names too.
-    source.onmessage = handleEvent;
-    for (const eventName of ['run_status', 'node_status', 'artifact_status', 'finding_summary', 'coverage', 'edge_data', 'delivery_status', 'ai_scan_result']) {
-      source.addEventListener(eventName, handleEvent as EventListener);
+  const loadRunRevision = useCallback(async (runId: string) => {
+    const seq = ++revisionLoadSeq.current;
+    try {
+      const revision = await apiClient.getRunRevision(runId);
+      if (seq !== revisionLoadSeq.current || selectedRunRef.current !== runId) return;
+      setRunRevision(revision.available && revision.draft ? revision : null);
+    } catch {
+      if (seq !== revisionLoadSeq.current || selectedRunRef.current !== runId) return;
+      // An older server or a transient failure: the plan stays unknown, never
+      // the mutable draft. A revision already proven for this run is immutable
+      // and survives a repeated refresh failure.
+      setRunRevision((prev) => (prev && prev.run_id === runId ? prev : null));
     }
-    source.onerror = () => {
-      // Polling below remains the source of truth while a run is active.
+  }, []);
+
+  const handleMapLoadStateChange = useCallback((runId: string, status: RunMapLoadStatus) => {
+    // The callback carries no runId, so App tags it with the run being
+    // rendered. This keeps a late callback from repainting another run's card
+    // even if the map screen's own abort guard is ever bypassed.
+    if (runId !== selectedRunRef.current) return;
+    setMapLoadState({ runId, status });
+  }, []);
+
+  const connectSSE = useCallback((runId: string, baselineSeq: number | null) => {
+    closeSSE();
+    const generation = sseGenerationRef.current;
+    const isCurrent = () => generation === sseGenerationRef.current && selectedRunRef.current === runId;
+    setLiveBaselineSeq(baselineSeq);
+    let attempt = 0;
+
+    const open = () => {
+      if (!isCurrent()) return;
+      // A terminal summary already applied for this run cannot gain events;
+      // reopening the stream could only resurrect what is already finished.
+      const applied = runProgressRef.current;
+      if (applied && applied.runId === runId && applied.rank >= TERMINAL_RUN_RANK) return;
+      // Resume after the last applied seq: replayed history must not restart
+      // motion, and replayed terminal events must not resurrect old statuses.
+      const source = apiClient.createEventSource(runId, lastSeqRef.current);
+      eventSourceRef.current = source;
+
+      const handleEvent = (message: MessageEvent) => {
+        if (!isCurrent()) return;
+        try {
+          const parsed = JSON.parse(message.data);
+          // Historical replay uses `node_id`; live broker uses `nodeId`. Live broker
+          // events carry no timestamp, so the client receive time keeps the
+          // running-stage duration honest instead of showing zero.
+          const event = {
+            ...parsed,
+            nodeId: parsed?.nodeId ?? parsed?.node_id,
+            timestamp: parsed?.timestamp ?? new Date().toISOString(),
+          };
+          attempt = 0;
+          if (typeof event.seq === 'number' && event.seq > lastSeqRef.current) {
+            lastSeqRef.current = event.seq;
+          }
+          setEvents((prev) => {
+            if (prev.some((item) => item.seq === event.seq)) return prev;
+            const next = [...prev, event];
+            return next.length > 2000 ? next.slice(-2000) : next;
+          });
+          if (event.type === 'run_status') {
+            const status = event.payload?.status;
+            if (status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted') {
+              runProgressRef.current = { runId, rank: TERMINAL_RUN_RANK };
+              setIsRunning(false);
+              closeSSE();
+              void loadRunDetails(runId);
+              void refreshRuns();
+            }
+          } else if (event.type === 'node_status' || event.type === 'ai_scan_result') {
+            // API node runs fill duration/error fields and cover gaps when a
+            // live event never arrived.
+            void loadRunDetails(runId);
+          }
+        } catch (error) {
+          console.error('SSE parse error:', error);
+        }
+      };
+      // Backend sends named events (`event: run_status`), so EventSource does
+      // not dispatch them to `onmessage`; subscribe to the known event names too.
+      source.onmessage = handleEvent;
+      for (const eventName of ['run_status', 'node_status', 'artifact_status', 'finding_summary', 'coverage', 'edge_data', 'delivery_status', 'ai_scan_result']) {
+        source.addEventListener(eventName, handleEvent as EventListener);
+      }
+      source.onerror = () => {
+        source.close();
+        if (eventSourceRef.current === source) eventSourceRef.current = null;
+        if (!isCurrent() || reconnectTimerRef.current !== null) return;
+        attempt += 1;
+        const delay = Math.min(10000, 600 * 2 ** Math.min(attempt, 4));
+        reconnectTimerRef.current = window.setTimeout(async () => {
+          // The generation check is the first thing even before touching the
+          // timer ref: this callback may have waited on getRun while the user
+          // reselected the same run (A-B-A), which starts a newer generation.
+          if (!isCurrent()) return;
+          reconnectTimerRef.current = null;
+          // The broker cannot replay what it never delivered while offline, and
+          // events emitted during the gap are still history. Pull the run
+          // summary first so every seq up to its last_event_seq restores state
+          // without animating; then resume the stream after lastSeq.
+          try {
+            const summary = await apiClient.getRun(runId);
+            if (!isCurrent()) return;
+            // A later terminal state may have arrived while this GET was in
+            // flight. An older reply must not replace it, and a terminal one
+            // must not open a new stream.
+            if (!applyRunSummary(summary)) return;
+            if (!isCurrent()) return;
+            setLiveBaselineSeq(summary.last_event_seq ?? lastSeqRef.current);
+          } catch {
+            // Server still unreachable: keep the previous boundary; the next
+            // onerror retries and will establish it.
+          }
+          if (!isCurrent()) return;
+          void loadRunDetails(runId);
+          open();
+        }, delay);
+      };
     };
-  }, [closeSSE, loadRunDetails, refreshRuns]);
+
+    open();
+  }, [applyRunSummary, closeSSE, loadRunDetails, refreshRuns]);
 
   const validateDraft = useCallback(async (wfId: string, nextDraft: WorkflowDraft) => {
     const seq = ++validateSeq.current;
@@ -361,9 +518,15 @@ export const App: React.FC = () => {
   const resetRunSelection = () => {
     closeSSE();
     selectedRunRef.current = null;
+    runProgressRef.current = null;
+    lastSeqRef.current = 0;
+    setLiveBaselineSeq(null);
     runLoadSeq.current += 1;
+    revisionLoadSeq.current += 1;
     setCurrentRunId(null);
     setCurrentRun(null);
+    setRunRevision(null);
+    setMapLoadState(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -406,10 +569,12 @@ export const App: React.FC = () => {
         selectedRuns[0];
       if (latest) {
         selectedRunRef.current = latest.id;
+        lastSeqRef.current = 0;
         setCurrentRunId(latest.id);
-        setCurrentRun(latest);
+        applyRunSummary(latest);
         await loadRunDetails(latest.id);
-        connectSSE(latest.id);
+        void loadRunRevision(latest.id);
+        connectSSE(latest.id, latest.last_event_seq ?? null);
       } else {
         resetRunSelection();
       }
@@ -421,7 +586,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Сервер недоступен');
       }
     }
-  }, [connectSSE, loadRunDetails, showNotice, validateDraft]);
+  }, [applyRunSummary, connectSSE, loadRunDetails, loadRunRevision, showNotice, validateDraft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -548,13 +713,19 @@ export const App: React.FC = () => {
     }
     closeSSE();
     selectedRunRef.current = null;
+    runProgressRef.current = null;
+    lastSeqRef.current = 0;
+    setLiveBaselineSeq(null);
     runLoadSeq.current += 1;
+    revisionLoadSeq.current += 1;
     workflowSelectSeq.current += 1;
     adminOverviewSeq.current += 1;
     setAdminOverview(null);
     setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
     setCurrentRunId(null);
     setCurrentRun(null);
+    setRunRevision(null);
+    setMapLoadState(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -573,16 +744,29 @@ export const App: React.FC = () => {
     if (!runId) return;
     closeSSE();
     selectedRunRef.current = runId;
+    const listed = runs.find((run) => run.id === runId);
+    // Seed from the list row only to avoid opening a stream for a run the list
+    // already reports as finished. Details replace it with authoritative data.
+    runProgressRef.current = listed
+      ? { runId, rank: RUN_STATUS_RANK[listed.execution_status] ?? 0 }
+      : null;
+    lastSeqRef.current = 0;
+    revisionLoadSeq.current += 1;
     setCurrentRunId(runId);
     setCurrentRun(null);
+    setRunRevision(null);
+    setMapLoadState(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
     setReport(null);
     setEvents([]);
     setIsRunning(false);
-    connectSSE(runId);
+    // last_event_seq tells history apart from live motion. Unknown runs stay
+    // null until the API summary arrives, so replay cannot animate.
+    connectSSE(runId, runs.find((run) => run.id === runId)?.last_event_seq ?? null);
     void loadRunDetails(runId);
+    void loadRunRevision(runId);
   };
 
   const handleSelectWorkflow = async (nextWorkflowId: string) => {
@@ -772,8 +956,13 @@ export const App: React.FC = () => {
       if (!skipDraftSave) await apiClient.saveWorkflowDraft(workflowId, draft);
       const result = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
       selectedRunRef.current = result.runId;
+      runProgressRef.current = null;
+      lastSeqRef.current = 0;
+      revisionLoadSeq.current += 1;
       setCurrentRunId(result.runId);
       setCurrentRun(null);
+      setRunRevision(null);
+      setMapLoadState(null);
       setNodeRuns([]);
       setFindings([]);
       setAiScan(null);
@@ -783,7 +972,8 @@ export const App: React.FC = () => {
         if (session?.role === 'admin') setAdminSection('live');
         else setActiveTab('live');
       }
-      connectSSE(result.runId);
+      connectSSE(result.runId, 0);
+      void loadRunRevision(result.runId);
       await loadRunDetails(result.runId);
       await refreshRuns();
     } catch (e: any) {
@@ -842,35 +1032,43 @@ export const App: React.FC = () => {
     resetRunSelection();
   };
 
-  const nodeStatusMap = useMemo(() => {
-    const map: Record<string, NodeRunStatus> = {};
-    for (const nodeRun of nodeRuns) map[nodeRun.node_id] = nodeRun.status;
-    // Live SSE wins over a slower REST snapshot: node_status is the same fact,
-    // only fresher. Events are stored in seq order, so the last one wins.
-    for (const event of events) {
-      if (event.type !== 'node_status' || !event.nodeId) continue;
-      const status = event.payload?.status;
-      if (isNodeRunStatus(status)) map[event.nodeId] = status;
-    }
-    return map;
-  }, [nodeRuns, events]);
-
-  const edgeFlows = useMemo(() => {
-    const map: Record<string, { seq: number; source?: string; target?: string }> = {};
-    for (const event of events) {
-      if (event.type !== 'edge_data') continue;
-      const edgeId = event.payload?.edgeId;
-      if (typeof edgeId !== 'string') continue;
-      map[edgeId] = {
-        seq: event.seq,
-        source: typeof event.payload?.source === 'string' ? event.payload.source : undefined,
-        target: typeof event.payload?.target === 'string' ? event.payload.target : undefined,
-      };
-    }
-    return map;
-  }, [events]);
-
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
+
+  const runTelemetry = useMemo(
+    () => buildRunTelemetry({
+      events,
+      nodeRuns,
+      runStatus: currentRun?.execution_status,
+      baselineSeq: liveBaselineSeq,
+      isRunning,
+    }),
+    [events, nodeRuns, currentRun?.execution_status, liveBaselineSeq, isRunning],
+  );
+
+  // Canvas decoration belongs to the run's immutable graph, never to a mutable
+  // draft that happened to reuse node ids. A mismatch is explicit and silent:
+  // no statuses, no clocks, no pulses on the wrong graph.
+  const runRevisionDraft = runRevision?.draft ?? null;
+  const runPlanKnown = runRevisionDraft !== null;
+  const runGraphBound = runPlanKnown && sameRunGraph(runRevisionDraft, draft);
+  const canvasTelemetry = runGraphBound ? runTelemetry : EMPTY_RUN_TELEMETRY;
+  const runGraphNotice =
+    !currentRun || currentRun.id !== currentRunId || runGraphBound
+      ? null
+      : runPlanKnown
+        ? `Ревизия запуска ${runRevision?.revision_id || '—'} отличается от текущего черновика: статусы и анимация не наложены.`
+        : 'Ревизия графа запуска неизвестна: статусы и анимация не наложены на текущий черновик.';
+
+  // A run selected before its summary was known has no baseline yet. Once the
+  // API reports last_event_seq, replayed events become history and stop
+  // animating without touching already applied state.
+  useEffect(() => {
+    if (liveBaselineSeq !== null || !currentRun || currentRun.id !== currentRunId) return;
+    // A list row may omit last_event_seq; only the full run summary carries
+    // the replay boundary. Using 0 there would animate restored history.
+    if (typeof currentRun.last_event_seq !== 'number') return;
+    setLiveBaselineSeq(currentRun.last_event_seq);
+  }, [currentRun, currentRunId, liveBaselineSeq]);
 
   const isAdmin = session?.role === 'admin';
   const nodeFailureReason = nodeRuns.find((node) => node.error_message)?.error_message;
@@ -948,9 +1146,8 @@ export const App: React.FC = () => {
                 onDraftChange={handleDraftChange}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
-                nodeStatuses={nodeStatusMap}
-                edgeFlows={edgeFlows}
-                executionActive={isRunning}
+                telemetry={canvasTelemetry}
+                executionNotice={runGraphNotice}
                 validationIssues={validationIssues}
                 onSaveDraft={() => void handleSaveDraft()}
                 onResetToTemplate={() => void handleResetToTemplate()}
@@ -963,7 +1160,6 @@ export const App: React.FC = () => {
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleUserSelectArtifact}
-                onOpenMap={() => setActiveTab('map')}
               />
               {selectedNode && (
                 <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
@@ -984,9 +1180,16 @@ export const App: React.FC = () => {
               currentRun={currentRun}
               nodeRuns={nodeRuns}
               events={events}
-              plannedNodes={draft.nodes}
+              telemetry={runTelemetry}
+              plannedNodes={runRevisionDraft?.nodes ?? []}
+              planKnown={runPlanKnown}
+              graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
+              runMapState={mapLoadState}
               onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
-              onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+              onRefresh={currentRunId ? () => {
+                void loadRunDetails(currentRunId);
+                void loadRunRevision(currentRunId);
+              } : undefined}
               onOpenMap={() => setActiveTab('map')}
               onOpenFindings={() => setActiveTab('findings')}
               onOpenReport={() => setActiveTab('report')}
@@ -1005,7 +1208,15 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'map' && (
-            <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
+            <SecurityMapScreenWithLoadState
+              key={currentRunId ?? 'no-run'}
+              runId={currentRunId}
+              onLoadStateChange={
+                currentRunId
+                  ? (status) => handleMapLoadStateChange(currentRunId, status)
+                  : undefined
+              }
+            />
           )}
 
           {activeTab === 'report' && (
@@ -1070,10 +1281,7 @@ export const App: React.FC = () => {
           error={accountError}
           onClose={() => setIsAccountOpen(false)}
           onLogout={() => void handleLogout()}
-          onSelectRun={(runId) => {
-            handleSelectRun(runId);
-            setActiveTab('live');
-          }}
+          onSelectRun={handleSelectRun}
         />
         {noticeNode}
       </div>
@@ -1141,9 +1349,8 @@ export const App: React.FC = () => {
                 onDraftChange={handleDraftChange}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
-                nodeStatuses={nodeStatusMap}
-                edgeFlows={edgeFlows}
-                executionActive={isRunning}
+                telemetry={canvasTelemetry}
+                executionNotice={runGraphNotice}
                 validationIssues={validationIssues}
                 onSaveDraft={handleSaveDraft}
                 onResetToTemplate={handleResetToTemplate}
@@ -1156,7 +1363,6 @@ export const App: React.FC = () => {
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleSelectArtifact}
-                onOpenMap={() => setAdminSection('map')}
               />
               {selectedNode && (
                 <InspectorPanel
@@ -1196,9 +1402,16 @@ export const App: React.FC = () => {
             currentRun={currentRun}
             nodeRuns={nodeRuns}
             events={events}
-            plannedNodes={draft.nodes}
+            telemetry={runTelemetry}
+            plannedNodes={runRevisionDraft?.nodes ?? []}
+            planKnown={runPlanKnown}
+            graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
+            runMapState={mapLoadState}
             onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
-            onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+            onRefresh={currentRunId ? () => {
+              void loadRunDetails(currentRunId);
+              void loadRunRevision(currentRunId);
+            } : undefined}
             onOpenMap={() => setAdminSection('map')}
             onOpenFindings={() => setAdminSection('problems')}
             onOpenReport={() => setAdminSection('report')}
@@ -1216,7 +1429,17 @@ export const App: React.FC = () => {
           />
         );
       case 'map':
-        return <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />;
+        return (
+          <SecurityMapScreenWithLoadState
+            key={currentRunId ?? 'no-run'}
+            runId={currentRunId}
+            onLoadStateChange={
+              currentRunId
+                ? (status) => handleMapLoadStateChange(currentRunId, status)
+                : undefined
+            }
+          />
+        );
       case 'report':
         return (
           <ReportView

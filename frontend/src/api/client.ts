@@ -15,6 +15,7 @@ import {
   RepositoryWatch,
   RepositoryWebhookSetup,
   RunSummary,
+  RunRevisionResponse,
   SessionRole,
   SessionState,
   SqlPatternResult,
@@ -344,6 +345,10 @@ export const apiClient = {
 
   async getRunNodes(runId: string): Promise<NodeRunRecord[]> {
     return (await request(`/runs/${runId}/nodes`)).json();
+  },
+
+  async getRunRevision(runId: string): Promise<RunRevisionResponse> {
+    return (await request(`/runs/${runId}/revision`)).json();
   },
 
   async getRunFindings(runId: string): Promise<Finding[]> {

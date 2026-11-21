@@ -504,6 +504,28 @@ def get_run(run_id: str):
     return _strip_private_paths(run)
 
 
+@api_router.get("/runs/{run_id}/revision")
+def get_run_revision(run_id: str):
+    """Immutable workflow graph the run executed, or an explicit unknown plan.
+
+    A run pins `revision_id`; the mutable workflow draft may have moved on. The
+    UI must not decorate a changed draft with statuses that belong to a
+    different graph, so this endpoint is the only source of planned nodes.
+    """
+    run = db_repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    revision_id = str(run.get("revision_id") or "")
+    revision = db_repo.get_workflow_revision(revision_id) if revision_id else None
+    draft = _strip_private_paths((revision or {}).get("draft"))
+    return {
+        "run_id": run_id,
+        "revision_id": revision_id,
+        "available": draft is not None,
+        "draft": draft,
+    }
+
+
 @api_router.get("/runs/{run_id}/nodes")
 def get_run_nodes(run_id: str):
     if not db_repo.get_run(run_id):

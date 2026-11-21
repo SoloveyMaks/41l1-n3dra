@@ -1,86 +1,33 @@
 import React, { useEffect, useMemo, useCallback } from 'react';
 import {
   ReactFlow,
-  BaseEdge,
   Controls,
   Background,
   MiniMap,
-  MarkerType,
   useNodesState,
   useEdgesState,
   Connection,
   Edge,
-  EdgeProps,
   Node,
-  getBezierPath,
   BackgroundVariant,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 import { CustomNode } from './CustomNode';
-import { WorkflowDraft, WorkflowEdge, NodeRunStatus, ArtifactManifest } from '../types';
+import { ExecutionEdge, ExecutionEdgeData } from './ExecutionEdge';
+import { WorkflowDraft, WorkflowEdge } from '../types';
+import type { RunTelemetry } from '../execution/runTelemetry';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
 import { artifactRepository } from '../repository';
-
-export type EdgeFlow = { seq: number; source?: string; target?: string };
-type LiveEdgeData = { flowed?: boolean; inactive?: boolean; animate?: boolean };
-
-/**
- * Edge that moves only when the backend emitted `edge_data` for it. A moving
- * dot therefore means "data actually crossed this edge", not "this is the next
- * step in a guessed linear order".
- */
-function LiveEdge({
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  style,
-  markerEnd,
-  data,
-}: EdgeProps) {
-  const [path] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  });
-  const state = data as LiveEdgeData | undefined;
-  return (
-    <>
-      <BaseEdge path={path} markerEnd={markerEnd} style={style} />
-      {state?.animate ? (
-        <>
-          <circle r={4.6} fill="#a5f3fc" className="wf-flow-dot">
-            <animateMotion dur="1.35s" repeatCount="indefinite" path={path} />
-          </circle>
-          <circle r={2.1} fill="#22d3ee" className="wf-flow-dot">
-            <animateMotion
-              dur="1.35s"
-              begin="0.22s"
-              repeatCount="indefinite"
-              path={path}
-            />
-          </circle>
-        </>
-      ) : null}
-    </>
-  );
-}
 
 interface WorkflowCanvasProps {
   draft: WorkflowDraft;
   onDraftChange: (updated: WorkflowDraft) => void;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
-  nodeStatuses?: Record<string, NodeRunStatus>;
-  edgeFlows?: Record<string, EdgeFlow>;
-  executionActive?: boolean;
+  telemetry: RunTelemetry;
+  executionNotice?: string | null;
   validationIssues: Array<{ level: string; message: string }>;
   onSaveDraft: () => void;
   onResetToTemplate: () => void;
@@ -90,10 +37,9 @@ interface WorkflowCanvasProps {
   onSelectWorkflow: (workflowId: string) => void;
   onCreateWorkflow?: () => void;
   onGenerateWorkflow?: () => void;
-  artifacts: ArtifactManifest[];
+  artifacts: import('../types').ArtifactManifest[];
   currentArtifactId: string;
   onSelectArtifact: (artifactId: string) => void;
-  onOpenMap?: () => void;
 }
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -101,9 +47,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onDraftChange,
   selectedNodeId,
   onSelectNode,
-  nodeStatuses = {},
-  edgeFlows = {},
-  executionActive = false,
+  telemetry,
+  executionNotice,
   validationIssues,
   onSaveDraft,
   onResetToTemplate,
@@ -116,96 +61,99 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   artifacts,
   currentArtifactId,
   onSelectArtifact,
-  onOpenMap,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
-  const edgeTypes = useMemo(() => ({ liveEdge: LiveEdge }), []);
+  const edgeTypes = useMemo(() => ({ executionEdge: ExecutionEdge }), []);
   const selectedArtifact = artifacts.find((artifact) => artifact.id === currentArtifactId);
   const selectedRepository = artifactRepository(selectedArtifact);
-  const flowedEdgeIds = useMemo(() => new Set(Object.keys(edgeFlows)), [edgeFlows]);
-  const flowedSourceIds = useMemo(() => {
-    const sources = new Set<string>();
-    for (const edge of draft.edges) {
-      if (flowedEdgeIds.has(edge.id)) sources.add(edge.source);
-    }
-    return sources;
-  }, [draft.edges, flowedEdgeIds]);
-  const conditionSources = useMemo(
-    () => new Set(draft.nodes.filter((node) => node.kind === 'condition').map((node) => node.id)),
-    [draft.nodes],
-  );
-  const runningNodeIds = useMemo(
-    () =>
-      Object.entries(nodeStatuses)
-        .filter(([, status]) => status === 'running')
-        .map(([id]) => id),
-    [nodeStatuses],
-  );
 
-  // Map our domain WorkflowNode to ReactFlow Node
-  const initialRfNodes: Node[] = useMemo(() => {
+  // Graph structure only. Live status is layered on separately so an SSE event
+  // never resets positions or re-mounts edges mid-drag.
+  const baseNodes: Node[] = useMemo(() => {
     return draft.nodes.map((n) => ({
       id: n.id,
       type: 'customNode',
       position: n.position || { x: 100, y: 100 },
-      selected: n.id === selectedNodeId,
       data: {
         kind: n.kind,
         title: n.title || n.kind,
         config: n.config,
-        status: nodeStatuses[n.id] || 'pending',
-        current: nodeStatuses[n.id] === 'running',
       },
     }));
-  }, [draft.nodes, selectedNodeId, nodeStatuses]);
+  }, [draft.nodes]);
 
-  // Map our domain WorkflowEdge to ReactFlow Edge. Dots are shown only for
-  // edges the backend confirmed with `edge_data`; untaken condition branches are
-  // dimmed only when the other branch of the same condition actually carried data.
-  const initialRfEdges: Edge[] = useMemo(() => {
+  // Map our domain WorkflowEdge to ReactFlow Edge. The saved draft stays the
+  // only source of graph topology; telemetry only decorates an edge.
+  const baseEdges: Edge[] = useMemo(() => {
     return draft.edges.map((e) => {
-      const edgeColor =
-        e.sourcePort === 'true_branch'
-          ? '#34d399'
-          : e.sourcePort === 'false_branch'
-          ? '#f87171'
-          : '#818cf8';
-      const flowed = flowedEdgeIds.has(e.id);
-      const inactive =
-        conditionSources.has(e.source) && !flowed && flowedSourceIds.has(e.source);
-
+      const tone: ExecutionEdgeData['tone'] =
+        e.sourcePort === 'true_branch' ? 'true' : e.sourcePort === 'false_branch' ? 'false' : 'default';
       return {
         id: e.id,
+        type: 'executionEdge',
         source: e.source,
         sourceHandle: e.sourcePort,
         target: e.target,
         targetHandle: e.targetPort,
-        type: 'liveEdge',
-        animated: false,
-        markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
-        data: { flowed, inactive, animate: flowed && executionActive },
-        style: {
-          stroke: edgeColor,
-          strokeWidth: flowed ? 2.6 : 1.7,
-          opacity: inactive ? 0.22 : flowed ? 1 : 0.72,
-          strokeDasharray: inactive ? '5 4' : undefined,
-        },
-        className: flowed ? 'wf-edge--flowed' : inactive ? 'wf-edge--inactive' : undefined,
+        data: { tone, flow: 'idle', pulse: false },
       };
     });
-  }, [draft.edges, flowedEdgeIds, flowedSourceIds, conditionSources, executionActive]);
+  }, [draft.edges]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialRfNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialRfEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState(baseNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(baseEdges);
 
-  // Sync when draft changes from outside
+  // Rebuild topology only when the draft itself changes (load, add/remove,
+  // drag stop). Positions come from the draft, so this is not a snap.
   useEffect(() => {
-    setNodes(initialRfNodes);
-  }, [initialRfNodes, setNodes]);
+    setNodes(baseNodes);
+  }, [baseNodes, setNodes]);
 
   useEffect(() => {
-    setEdges(initialRfEdges);
-  }, [initialRfEdges, setEdges]);
+    setEdges(baseEdges);
+  }, [baseEdges, setEdges]);
+
+  // Overlay live node status without touching node positions.
+  useEffect(() => {
+    setNodes((current) =>
+      current.map((node) => {
+        const live = telemetry.nodes[node.id];
+        return {
+          ...node,
+          selected: node.id === selectedNodeId,
+          data: {
+            ...node.data,
+            status: live?.status || 'pending',
+            durationMs: live?.durationMs,
+            startedAtMs: live?.startedAtMs,
+            live: telemetry.live,
+            // A terminal run never animates an active node record: the record
+            // is history, not something executing right now.
+            active: Boolean(live) && !live?.stalled,
+            stalled: Boolean(live?.stalled),
+          },
+        };
+      }),
+    );
+  }, [selectedNodeId, telemetry, baseNodes, setNodes]);
+
+  // Overlay edge flow. Pulse is true only for edge_data received in this live
+  // subscription, so replaying history restores highlights without motion.
+  useEffect(() => {
+    setEdges((current) =>
+      current.map((edge) => {
+        const live = telemetry.edges[edge.id];
+        return {
+          ...edge,
+          data: {
+            ...edge.data,
+            flow: live?.state || 'idle',
+            pulse: Boolean(live?.pulse),
+          },
+        };
+      }),
+    );
+  }, [telemetry, baseEdges, setEdges]);
 
   // Handle new connections
   const onConnect = useCallback(
@@ -313,58 +261,28 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           <span className="hidden sm:inline text-slate-400 font-mono">{draft.nodes.length} блоков</span>
           <span className="hidden sm:inline text-slate-600">•</span>
           <span className="hidden sm:inline text-slate-400 font-mono">{draft.edges.length} связей</span>
-          <span className="hidden md:inline text-[10px] text-slate-500" title="Этот граф показывает, как обрабатываются файлы. Карта доступа показывает, кто и через какую проверку доходит до данных.">
-            обработка файлов
-          </span>
-          {onOpenMap && (
-            <button
-              onClick={onOpenMap}
-              className="rounded border border-indigo-800 bg-indigo-950/60 px-1.5 py-0.5 text-[11px] text-indigo-200 hover:bg-indigo-900"
-              title="Кто обращается → проверка доступа → маршрут → обработчик → данные. Это другой граф, не структура файлов."
-            >
-              Карта доступа →
-            </button>
-          )}
         </div>
 
         <div
           className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] shadow-lg backdrop-blur-md ${
             hasErrors
               ? 'bg-rose-950/90 border-rose-800 text-rose-300'
-              : runningNodeIds.length
-                ? 'bg-sky-950/90 border-sky-700 text-sky-200'
-                : 'bg-emerald-950/90 border-emerald-800 text-emerald-300'
+              : 'bg-emerald-950/90 border-emerald-800 text-emerald-300'
           }`}
-          title={
-            runningNodeIds.length
-              ? `Выполняется сейчас: ${runningNodeIds.length}. Параллельные ветки не упорядочиваются.`
-              : undefined
-          }
         >
-          {hasErrors ? (
-            <AlertCircle size={13} />
-          ) : runningNodeIds.length ? (
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-70" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-300" />
-            </span>
-          ) : (
-            <CheckCircle2 size={13} />
-          )}
-          <span>
-            {hasErrors
-              ? `Ошибок: ${validationIssues.filter((issue) => issue.level === 'error').length}`
-              : runningNodeIds.length
-                ? `Выполняется: ${runningNodeIds.length}`
-                : 'Граф валиден'}
-          </span>
-          {flowedEdgeIds.size > 0 && (
-            <span className="text-[10px] text-sky-300/80">
-              · данные прошли по {flowedEdgeIds.size}{' '}
-              {flowedEdgeIds.size === 1 ? 'связи' : 'связям'}
-            </span>
-          )}
+          {hasErrors ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
+          <span>{hasErrors ? `Ошибок: ${validationIssues.filter((issue) => issue.level === 'error').length}` : 'Граф валиден'}</span>
         </div>
+
+        {executionNotice && (
+          <div
+            className="pointer-events-auto flex max-w-md items-start gap-1.5 rounded-xl border border-amber-800 bg-amber-950/90 px-2.5 py-1.5 text-[11px] text-amber-200 shadow-lg backdrop-blur-md"
+            data-execution-binding="mismatch"
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <span>{executionNotice}</span>
+          </div>
+        )}
 
         <div className="pointer-events-auto ml-auto flex items-center gap-2">
         <button
@@ -414,7 +332,6 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
-        deleteKeyCode={null}
         fitView
         className="bg-slate-950"
       >

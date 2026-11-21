@@ -1,0 +1,157 @@
+/* Execution motion layer: namespaced selectors only, no Tailwind coupling.
+   Node and edge visuals are driven by data attributes supplied from live SSE
+   telemetry, so parallel branches animate independently. */
+
+.exec-node {
+  --exec-node-accent: #818cf8;
+  position: relative;
+}
+
+.exec-node[data-status='running']:not([data-stalled='true']) {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 1px rgb(96 165 250 / 45%), 0 18px 40px -18px rgb(59 130 246 / 60%);
+}
+
+.exec-node[data-status='running']:not([data-stalled='true'])::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgb(147 197 253 / 16%) 48%, transparent 66%);
+  background-size: 220% 100%;
+  animation: exec-node-sweep 1.8s linear infinite;
+}
+
+.exec-node[data-stalled='true'] {
+  border-color: #f59e0b;
+}
+
+.exec-node[data-status='succeeded'] {
+  border-color: #10b981;
+}
+
+.exec-node[data-status='failed'] {
+  border-color: #e11d48;
+  box-shadow: 0 0 0 1px rgb(225 29 72 / 30%), 0 18px 40px -20px rgb(225 29 72 / 55%);
+}
+
+.exec-node[data-status='skipped'] {
+  opacity: 0.5;
+}
+
+.exec-node[data-current='true'] {
+  outline: 1px solid rgb(96 165 250 / 55%);
+  outline-offset: 3px;
+}
+
+.exec-node__clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.exec-node__live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #60a5fa;
+  box-shadow: 0 0 0 0 rgb(96 165 250 / 70%);
+  animation: exec-node-ping 1.4s ease-out infinite;
+}
+
+.exec-edge {
+  --exec-edge-color: #818cf8;
+}
+
+.exec-edge__base {
+  stroke: var(--exec-edge-color);
+  stroke-width: 2;
+  opacity: 0.55;
+  transition: opacity 160ms ease, stroke-width 160ms ease;
+}
+
+.exec-edge__glow {
+  stroke: var(--exec-edge-color);
+  stroke-width: 6;
+  opacity: 0;
+  filter: blur(3px);
+  transition: opacity 200ms ease;
+}
+
+.exec-edge--traversed .exec-edge__base {
+  opacity: 1;
+  stroke-width: 2.4;
+}
+
+.exec-edge--traversed .exec-edge__glow {
+  opacity: 0.28;
+}
+
+.exec-edge--flowing .exec-edge__base {
+  opacity: 1;
+  stroke-width: 2.6;
+  stroke-dasharray: 7 7;
+  animation: exec-edge-dash 0.85s linear infinite;
+}
+
+.exec-edge--flowing .exec-edge__glow {
+  opacity: 0.45;
+}
+
+.exec-edge__dot {
+  fill: var(--exec-edge-color);
+  filter: drop-shadow(0 0 5px var(--exec-edge-color));
+}
+
+.exec-edge__dot--trail {
+  opacity: 0.45;
+}
+
+.exec-edge[data-tone='true'] .exec-edge__base {
+  opacity: 0.9;
+}
+
+.exec-edge[data-tone='false'] .exec-edge__base {
+  opacity: 0.35;
+  stroke-dasharray: 4 5;
+}
+
+@keyframes exec-node-sweep {
+  from {
+    background-position: 180% 0;
+  }
+  to {
+    background-position: -40% 0;
+  }
+}
+
+@keyframes exec-node-ping {
+  0% {
+    box-shadow: 0 0 0 0 rgb(96 165 250 / 65%);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgb(96 165 250 / 0%);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(96 165 250 / 0%);
+  }
+}
+
+@keyframes exec-edge-dash {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exec-node[data-status='running']::after,
+  .exec-edge--flowing .exec-edge__base {
+    animation: none;
+  }
+
+  .exec-node__live-dot {
+    animation: none;
+  }
+}
