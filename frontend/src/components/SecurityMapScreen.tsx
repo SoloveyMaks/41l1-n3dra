@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Network, RefreshCw } from 'lucide-react';
+import { Network } from 'lucide-react';
 import { SecurityMap } from '../../../ui/security-map/src/index.ts';
 import { sameScope } from '../../../ui/security-map/src/model.ts';
 import type {
@@ -141,35 +141,18 @@ export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) =
   }
 
   return (
-    <div className="flex-1 h-full overflow-y-auto bg-slate-950">
-      <div className="mx-auto w-full max-w-[1440px] p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <Network size={15} className="text-indigo-400" />
-            <span className="font-semibold text-slate-200">Карта безопасности</span>
-            <span className="font-mono text-[11px] text-slate-500">run: {runId}</span>
-          </div>
-          <button
-            onClick={() => setReloadKey((key) => key + 1)}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-700"
-          >
-            <RefreshCw size={13} />
-            <span>Обновить карту</span>
-          </button>
-        </div>
-
-        <SecurityMap
-          identity={identity ?? { workspaceId: '', runId, snapshotId: '' }}
-          data={data}
-          findings={findings}
-          loadState={loadState}
-          error={error}
-          sourceState={sourceState}
-          onOpenEvidence={openEvidence}
-          onRetrySource={openEvidence}
-          onRetry={() => setReloadKey((key) => key + 1)}
-        />
-      </div>
+    <div className="flex-1 h-full min-h-0 overflow-hidden bg-slate-950">
+      <SecurityMap
+        identity={identity ?? { workspaceId: '', runId, snapshotId: '' }}
+        data={data}
+        findings={findings}
+        loadState={loadState}
+        error={error}
+        sourceState={sourceState}
+        onOpenEvidence={openEvidence}
+        onRetrySource={openEvidence}
+        onRetry={() => setReloadKey((key) => key + 1)}
+      />
     </div>
   );
 };
