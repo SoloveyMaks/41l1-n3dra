@@ -214,15 +214,15 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
             Эталонная проверка
           </h3>
           <p className="mt-1 max-w-2xl text-xs text-slate-400">
-            Сервер сам загружает закреплённый эталон и опубликованный bundle выбранного запуска.
-            Клиент передаёт только id, не манифест, не bundle и не commit SHA.
+            Сравнение выполняется на сервере: закреплённый эталон сверяется с результатами
+            проверяемого запуска.
           </p>
         </div>
       </header>
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-xs text-slate-400">
-          Эталон (серверный манифест)
+          Закреплённый эталон
           <select
             value={referenceId}
             onChange={(event) => {
@@ -262,16 +262,14 @@ export const ReferenceChecksPanel: React.FC<ReferenceChecksPanelProps> = ({
       {reference && target ? (
         <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
           <span className="inline-flex items-center gap-1">
-            <GitBranch className="h-3 w-3" /> эталон {shortSha(reference.sha)}
+            <GitBranch className="h-3 w-3" /> закреплённый эталон {shortSha(reference.sha)}
           </span>
           <span className="inline-flex items-center gap-1">
-            <Server className="h-3 w-3" /> запуск {target.runId}
+            <Server className="h-3 w-3" /> проверяемый запуск выбран
           </span>
-          {target.artifactId ? <span>артефакт {target.artifactId}</span> : null}
-          <span className="text-slate-500">SHA цели определит сервер</span>
           {projectMismatch ? (
             <span className="inline-flex items-center gap-1 text-amber-300">
-              <AlertTriangle className="h-3 w-3" /> подписи проектов в UI различаются; сервер решит по provenance
+              <AlertTriangle className="h-3 w-3" /> проект эталона отличается от проекта запуска
             </span>
           ) : null}
         </div>
