@@ -29,6 +29,8 @@ succeeded, 26 evidence, map hash self-check). `main` — после приёмк
 - [Миграции и публикация](db/README.md), [runtime PostgreSQL](docs/postgres-runtime.md)
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
 - [SQL before/after proof](docs/sql-before-after.md), [что проверено](docs/data-contracts/verification.md)
+- [Анализаторы пакета B](analyzers/README.md) — SECRET/SCA/SAST и выгрузка `AnalysisBundle`
+- [Отчёт по анализаторам](docs/analyzers-report.md)
 
 ## Локальный запуск (PostgreSQL)
 
