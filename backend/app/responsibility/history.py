@@ -42,6 +42,11 @@ MAX_PRS_WITH_REVIEWS = 2
 MAX_REVIEWERS = 20
 MAX_REVIEWS_PER_PAGE = 100
 _ALLOWED_HOSTS = {"github.com": "github", "gitlab.com": "gitlab"}
+_PROVIDER_BY_HOST = {
+    "api.github.com": "github",
+    "github.com": "github",
+    "gitlab.com": "gitlab",
+}
 _GITHUB_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _GITLAB_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}$")
@@ -217,6 +222,13 @@ async def _read_limited_json_body(response: httpx.Response) -> Tuple[str, Option
         return "failed", None, "Provider оборвал ответ."
 
 
+def _provider_for_url(url: str) -> Optional[str]:
+    try:
+        return _PROVIDER_BY_HOST.get(urlsplit(url).netloc.lower())
+    except ValueError:
+        return None
+
+
 async def _fetch_json_page(
     client: httpx.AsyncClient, url: str, params: Dict[str, Any]
 ) -> Tuple[str, Any, str, Dict[str, str]]:
@@ -233,6 +245,11 @@ async def _fetch_json_page(
                 if status in {301, 302, 303, 307, 308}:
                     return "failed", None, "Provider вернул redirect; переход отклонён.", headers
                 if status == 429 or (status == 403 and headers.get("x-ratelimit-remaining") == "0"):
+                    provider = _provider_for_url(url)
+                    if provider is not None:
+                        # Central setter covers nested reviews/details too; one
+                        # 429 must stop further provider calls for the TTL.
+                        _COOLDOWN[provider] = time.monotonic() + PROVIDER_COOLDOWN_SECONDS
                     return "rate_limited", None, "Provider временно ограничил публичные запросы.", headers
                 if status in {401, 403, 404}:
                     return "unavailable", None, f"Provider ответил HTTP {status}.", headers
