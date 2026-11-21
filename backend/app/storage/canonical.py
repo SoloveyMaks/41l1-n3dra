@@ -17,8 +17,8 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from backend.app.storage.database import DatabaseUnavailable, _workspace_id, get_pool
 
@@ -1121,13 +1121,37 @@ class CanonicalPublisher:
             ).fetchone()
             if row is None:  # pragma: no cover
                 raise CanonicalPublishError("snapshot: insert was not persisted")
-            if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
-                raise CanonicalConflictError("snapshot: exists with a different artifact identity")
-            sealed = row["sealed_at"] is not None
-        else:
-            if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["artifactHash"]:
-                raise CanonicalConflictError("snapshot: exists with a different artifact identity")
-            sealed = row["sealed_at"] is not None
+
+        # The snapshot is content-addressed. Several intake artifacts (same
+        # extracted manifest, possibly different ZIP bytes/artifact hashes) may
+        # legitimately point to it. Their origins are recorded separately; the
+        # snapshot row keeps the first origin for compatibility.
+        conn.execute(
+            """
+            INSERT INTO data_contract.snapshot_content_hashes (
+                workspace_id, snapshot_id, artifact_hash
+            ) VALUES (%s, %s, %s)
+            ON CONFLICT (workspace_id, snapshot_id, artifact_hash) DO NOTHING
+            """,
+            (self.workspace_id, snapshot_id, identity["artifactHash"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO data_contract.snapshot_origins (
+                workspace_id, snapshot_id, artifact_id, artifact_hash
+            ) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (workspace_id, snapshot_id, artifact_id) DO NOTHING
+            """,
+            (self.workspace_id, snapshot_id, artifact_id, identity["artifactHash"]),
+        )
+        origin = conn.execute(
+            "SELECT artifact_hash FROM data_contract.snapshot_origins "
+            "WHERE workspace_id = %s AND snapshot_id = %s AND artifact_id = %s",
+            (self.workspace_id, snapshot_id, artifact_id),
+        ).fetchone()
+        if origin is None or origin["artifact_hash"] != identity["artifactHash"]:
+            raise CanonicalConflictError("snapshot: artifact origin differs")
+        sealed = row["sealed_at"] is not None
         if not sealed:
             for file in files:
                 conn.execute(
