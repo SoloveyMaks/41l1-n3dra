@@ -39,6 +39,9 @@
   отдельный административный shell для системных настроек.
 - `ui/security-map` — React Flow карта доступа и данных.
 - `packages/comparison` — сравнение published envelopes.
+- `analyzers/` — собственные SECRET/SCA/SAST и выгрузка `AnalysisBundle`.
+- `rag/` — файловое хранилище элементов и векторов: переиспользование находок,
+  узлов и проверенных правок между запусками без реляционной схемы.
 - `db/` — PostgreSQL-миграции; `data_contract` хранит канонические факты,
   `runtime` — API-состояние.
 - `deploy/`, `scripts/nedra-*.sh` — локальный контейнерный запуск.
@@ -59,6 +62,9 @@
 - [Report coverage](docs/report-coverage.md) — каноническая полнота отчёта
 - [Контракты данных](docs/data-contracts/README.md), [SQL ↔ DTO](docs/data-contracts/mapping.md)
 - [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
+- [Анализаторы пакета B](analyzers/README.md) — SECRET/SCA/SAST и `AnalysisBundle`
+- [RAG-хранилище элементов](rag/README.md) — переиспользование фактов между запусками
+- [Отчёт по анализаторам](docs/analyzers-report.md)
 
 ## Локальный запуск (PostgreSQL)
 
@@ -77,6 +83,21 @@ Backend сам применяет ledger-миграции при старте. `
 optional `db/optional/003` только при доступном pgvector; fake vectors не
 создаются. Без `DATABASE_URL`/драйвера/доступной БД старт падает с понятной
 ошибкой, без DSN в тексте.
+
+```bash
+python -X utf8 -m analyzers.selftest                      # 74 проверки
+python -X utf8 -m analyzers.compare <snapshot>             # 15/15, controls 6/6
+python -X utf8 -m analyzers.contract_export <snapshot>/training-project \
+    --db <snapshot>/vulnerability-database/vulnerabilities.json \
+    --out analyzers/examples/bundle.json --rag-store .rag/store
+node analyzers/validate_bundle.mjs analyzers/examples/bundle.json <snapshot>/training-project
+```
+
+`--rag-store` дополнительно индексирует выгрузку в файловое `rag/`: элементы
+получают id из содержания, поэтому второй прогон того же кода даёт
+`new: 0, reused: 148`. Это отдельный слой переиспользования, а не замена
+PostgreSQL-таблиц канонических фактов; ограничения — в
+[rag/README.md](rag/README.md).
 
 Frontend:
 

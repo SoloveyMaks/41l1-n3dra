@@ -87,3 +87,18 @@ spec. Меньше distance — лучше; distance не выдаётся за 
 
 Статусы: `disabled`, `unavailable`, `ready`, `ok`, `partial`. Ошибка retrieval
 никогда не меняет findings, вердикт или отчёт.
+
+## Локальный индекс элементов `rag/`
+
+Пока pgvector-путь `unavailable`, переиспользование элементов доступно
+офлайн: `rag/` индексирует `AnalysisBundle` и примеры правок в файловый
+append-only журнал (`events.jsonl`) и выводит векторы (`vectors.jsonl`) из
+версионированного spec `local/bm25-hash-tfidf/2` — hashed TF-IDF с BM25-весами,
+4096 измерений, cosine. Ни сети, ни БД, ни внешней модели.
+
+Id элемента выводится из содержания (`category|fingerprint`,
+`kind|symbolKey|path`, evidence hash, `exampleId`), поэтому повторный скан
+пишет новый run в `runs` вместо дубля: `new: 0, reused: N`. Форма ответа —
+тот же `SimilarFixesResult`; статусы примеров — те же `draft`/`vetted`/`retired`,
+и `vetted` по-прежнему требует реального scanner provenance. Подробности и
+ограничения — в [rag/README.md](../rag/README.md).

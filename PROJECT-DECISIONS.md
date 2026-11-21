@@ -110,6 +110,13 @@
 - Embeddings optional, retrieval выключен и сейчас `unavailable`: реальный `POST /v1/embeddings`
   вернул 403 `token_model_not_allowed`. Это векторные представления текста для
   точного поиска, без ANN-индекса. `embedding_specs` pending, fake vectors нет.
+- Память элементов (`rag/`) — файловая и не требует реляционной схемы:
+  append-only журнал + производные векторы, id из содержания
+  (`category|fingerprint`, `kind|symbolKey|path`, evidence hash, `exampleId`).
+  Повторный скан даёт `new: 0, reused: N`, поэтому карта, объяснение и правка
+  привязываются к элементу один раз. PostgreSQL хранит канонические факты, но не
+  векторы переиспользования; локальный spec `local/bm25-hash-tfidf/2` —
+  лексический adapter, а не согласованный D.
 - `vetted` remediation example требует реального scanner provenance, published
   fixed bundle, checked coverage и published comparison `resolved` для exact
   finding. Synthetic `contract_scenario` остаётся draft; AI-совет не становится

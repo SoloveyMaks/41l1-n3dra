@@ -1,0 +1,103 @@
+{
+  "schemaVersion": "1",
+  "producerVersion": "rag/0.1.0",
+  "note": "Примеры для exact retrieval. status=draft: сверены вручную с фикстурами self-test, но не имеют реального scanner provenance, поэтому не vetted. Значения секретов не хранятся.",
+  "examples": [
+    {
+      "exampleId": "fix-sql-injection-jdbc-bind",
+      "category": "SAST",
+      "ruleFamily": "sql-injection",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "status": "draft",
+      "sourceRef": "analyzers/selftest.py#SAST/A.kt",
+      "verificationBasis": "Синтетический проект self-test: небезопасный запрос рядом с параметризованным; анализатор находит только первый.",
+      "description": "Передавать пользовательское значение bind-параметром, а не склеивать его в текст SQL.",
+      "redactedFix": "jdbc.queryForList(\"SELECT name FROM item WHERE name = ?\", String::class.java, value)",
+      "limitations": [
+        "Не доказывает корректность схемы БД и типов параметров.",
+        "Проверено на синтетической фикстуре, не на production-коде."
+      ]
+    },
+    {
+      "exampleId": "fix-tls-keep-hostname-verifier",
+      "category": "SAST",
+      "ruleFamily": "tls-verification",
+      "language": "kotlin",
+      "framework": "jvm",
+      "status": "draft",
+      "sourceRef": "analyzers/selftest.py#SAST/B.kt",
+      "verificationBasis": "Синтетический проект self-test: клиент с always-true verifier рядом с обычным HTTPS-клиентом.",
+      "description": "Не переопределять hostnameVerifier на always-true; оставить системную проверку цепочки и имени хоста.",
+      "redactedFix": "val connection = URI(\"https://service.invalid\").toURL().openConnection() as HttpsURLConnection",
+      "limitations": [
+        "Не покрывает pinning и кастомные truststore.",
+        "Не заменяет проверку конфигурации на стороне сервера."
+      ]
+    },
+    {
+      "exampleId": "fix-cors-explicit-origin",
+      "category": "SAST",
+      "ruleFamily": "credentialed-cors",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "status": "draft",
+      "sourceRef": "analyzers/selftest.py#SAST/C.kt",
+      "verificationBasis": "Синтетический проект self-test: wildcard + allowCredentials рядом с явным origin.",
+      "description": "Не сочетать wildcard origin с allowCredentials; перечислить точные origin приложения.",
+      "redactedFix": "allowedOrigins = listOf(\"https://app.example\")\nallowCredentials = true",
+      "limitations": [
+        "Список origin должен поддерживаться вместе с доменами деплоя.",
+        "Не проверяет, что все маршруты действительно требуют credentials."
+      ]
+    },
+    {
+      "exampleId": "fix-route-authorization-explicit-role",
+      "category": "SAST",
+      "ruleFamily": "route-authorization",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "status": "draft",
+      "sourceRef": "analyzers/selftest.py#SAST/D.kt",
+      "verificationBasis": "Синтетический проект self-test: permitAll на экспорте рядом с authenticated/denyAll.",
+      "description": "Не открывать экспорт permitAll; требовать явную роль и сохранять denyAll по умолчанию.",
+      "redactedFix": "rules.requestMatchers(GET, \"/api/export/**\").hasRole(\"AUDITOR\")\nrules.anyRequest().denyAll()",
+      "limitations": [
+        "Имя роли и модель прав должны совпадать с политикой workspace.",
+        "Порядок правил важен: широкое правило выше узкого перекрывает его."
+      ]
+    },
+    {
+      "exampleId": "fix-object-authorization-owner-predicate",
+      "category": "SAST",
+      "ruleFamily": "object-authorization",
+      "language": "kotlin",
+      "framework": "spring-boot",
+      "status": "draft",
+      "sourceRef": "analyzers/selftest.py#SAST/F.kt",
+      "verificationBasis": "Синтетический проект self-test: чтение по id без owner-предиката рядом с чтением по principal.",
+      "description": "Добавить owner-предикат по аутентифицированному principal вместо одного идентификатора объекта.",
+      "redactedFix": "SELECT customer_id, note FROM orders WHERE order_id = ? AND customer_id = ?",
+      "limitations": [
+        "Колонка владельца должна быть объявлена политикой объекта, а не угадана по имени.",
+        "Не покрывает объекты, где владелец задаётся через роль или группу."
+      ]
+    },
+    {
+      "exampleId": "fix-secret-fallback-fail-closed",
+      "category": "SECRET",
+      "ruleFamily": "secret-fallback",
+      "language": "kotlin",
+      "framework": "jvm",
+      "status": "draft",
+      "sourceRef": "analyzers/selftest.py#SECRETS/Credentials.kt",
+      "verificationBasis": "Синтетический проект self-test: env-переменная с литеральным fallback рядом с плейсхолдерами.",
+      "description": "Не подставлять литеральный секрет при отсутствии переменной окружения; падать явно.",
+      "redactedFix": "val access = System.getenv(\"DEPOT_TOKEN\") ?: error(\"DEPOT_TOKEN is required\")",
+      "limitations": [
+        "Сообщение об ошибке не должно печатать значение переменной.",
+        "Наличие env-переменной не доказывает ротацию и срок жизни секрета."
+      ]
+    }
+  ]
+}
