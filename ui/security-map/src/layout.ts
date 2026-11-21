@@ -1,17 +1,100 @@
 import type { ViewEdge, ViewNode } from "./types";
+import type { ExplorationTree } from "./tree";
 
 export const NODE_WIDTH = 248;
 export const NODE_MIN_HEIGHT = 132;
 export const NODE_HEIGHT = NODE_MIN_HEIGHT;
 const H_GAP = 64;
 const V_GAP = 36;
-const COMPONENT_GAP = 54;
+const LANE_WIDTH = NODE_WIDTH + H_GAP;
+const TREE_GAP_X = 56;
+const TREE_LEVEL_HEIGHT = 196;
+
+export type LaneDefinition = {
+  index: number;
+  key: string;
+  title: string;
+  hint: string;
+};
 
 /**
- * Actual cards are 248px wide and clamp their title to two lines. This estimate
- * is deliberately slightly larger than the rendered card so the layered layout
- * never relies on a lucky font or a shorter label. The browser still uses the
- * measured size for fit-view and edge routing.
+ * The access story is read in the same direction as the analyzer graph:
+ * who → access rule → route → handler → operation/source → data.
+ * A rule sits left of the route because the analyzer records "rule applies to
+ * route" before the route is dispatched; the UI never reverses an edge.
+ */
+export const MAP_LANES: readonly LaneDefinition[] = [
+  {
+    index: 0,
+    key: "actor",
+    title: "1 · Кто обращается",
+    hint: "пользователь, роль или анонимный клиент",
+  },
+  {
+    index: 1,
+    key: "access",
+    title: "2 · Проверка доступа",
+    hint: "правило, шаблон и проверка перед маршрутом",
+  },
+  {
+    index: 2,
+    key: "route",
+    title: "3 · Маршрут",
+    hint: "метод и путь запроса",
+  },
+  {
+    index: 3,
+    key: "handler",
+    title: "4 · Обработчик",
+    hint: "код, который принимает запрос",
+  },
+  {
+    index: 4,
+    key: "operation",
+    title: "5 · Операция и вход",
+    hint: "SQL/IO-вызов и входное значение",
+  },
+  {
+    index: 5,
+    key: "data",
+    title: "6 · Данные",
+    hint: "таблица, поле или объект",
+  },
+  {
+    index: 6,
+    key: "problem",
+    title: "7 · Проблема",
+    hint: "находка, привязанная к узлу",
+  },
+] as const;
+
+const LANE_BY_KIND: Record<string, number> = {
+  actor: 0,
+  matcher: 1,
+  security_chain: 1,
+  guard: 1,
+  route: 2,
+  function: 3,
+  source: 4,
+  sink: 4,
+  config: 4,
+  data: 5,
+};
+
+export const laneIndexForKind = (kind: string): number =>
+  LANE_BY_KIND[kind] ?? 3;
+
+export const laneDefinition = (index: number): LaneDefinition =>
+  MAP_LANES.find((lane) => lane.index === index) ?? MAP_LANES[3];
+
+export const laneX = (index: number): number => index * LANE_WIDTH;
+
+export const PROBLEM_LANE = MAP_LANES.length - 1;
+
+/**
+ * Estimate is deliberately slightly larger than the rendered card: 112px for a
+ * short label, up to 155px for three lines. The browser still measures the
+ * real height for fit-view and edge routing.
  */
 export function estimateNodeHeight(node: ViewNode): number {
   const length = [...(node.label || "")].length;
@@ -19,263 +102,239 @@ export function estimateNodeHeight(node: ViewNode): number {
   return Math.max(NODE_MIN_HEIGHT, 104 + lines * 17);
 }
 
-const KIND_COLUMN: Record<string, number> = {
-  actor: 0,
-  route: 1,
-  security_chain: 2,
-  matcher: 2,
-  guard: 2,
-  function: 3,
-  source: 4,
-  sink: 5,
-  data: 6,
-  config: 4,
-};
-const kindColumn = (node: ViewNode) => KIND_COLUMN[node.kind] ?? 3;
-
 type Position = { x: number; y: number };
-type Placement = {
-  positions: Record<string, Position>;
-  centers: Map<number, number>;
-  heights: Map<number, number>;
-};
+type NodeBox = { node: ViewNode; height: number; center: number };
 
-function stronglyConnected(ids: string[], adjacency: Map<string, string[]>): string[][] {
-  let index = 0;
-  const indices = new Map<string, number>();
-  const lowlink = new Map<string, number>();
-  const stack: string[] = [];
-  const onStack = new Set<string>();
-  const components: string[][] = [];
+/** Deterministic stacked order inside one lane: labels, then ids. */
+const stackOrder = (a: ViewNode, b: ViewNode) =>
+  a.label.localeCompare(b.label) || a.id.localeCompare(b.id);
 
-  const visit = (node: string) => {
-    indices.set(node, index);
-    lowlink.set(node, index);
-    index += 1;
-    stack.push(node);
-    onStack.add(node);
 
-    for (const next of adjacency.get(node) ?? []) {
-      if (!indices.has(next)) {
-        visit(next);
-        lowlink.set(node, Math.min(lowlink.get(node)!, lowlink.get(next)!));
-      } else if (onStack.has(next)) {
-        lowlink.set(node, Math.min(lowlink.get(node)!, indices.get(next)!));
-      }
-    }
-
-    if (lowlink.get(node) === indices.get(node)) {
-      const component: string[] = [];
-      let current: string | undefined;
-      do {
-        current = stack.pop();
-        if (!current) break;
-        onStack.delete(current);
-        component.push(current);
-      } while (current !== node);
-      components.push(component.sort());
-    }
-  };
-
-  for (const node of ids) if (!indices.has(node)) visit(node);
-  return components;
-}
 
 /**
- * Deterministic layered layout over the real graph.
+ * Deterministic lane layout over the real graph.
  *
- * - SCCs keep cycles together; every known edge remains in the model.
- * - Ranks are the longest path from a kind-aware seed, so who → route → access
- *   → handler → data/operation reads left-to-right.
- * - Components are ordered by predecessor/successor barycenters over several
- *   deterministic sweeps to reduce crossings.
- * - Node heights are estimated per label and stacked, so cards cannot overlap
- *   vertically; columns cannot overlap horizontally.
+ * - x is fixed by node kind, so the chain never wanders between columns and
+ *   two routes always share the same vertical line.
+ * - y is packed per lane, then ordered by aligned barycenters of real
+ *   predecessors/successors. Cards never overlap and crossings drop because
+ *   shared actors/rules stay centred between their routes.
+ * - Every edge keeps its original source → target direction; no edge or node
+ *   is invented and cycles remain visible.
  */
 export function computeMapLayout(
   nodes: readonly ViewNode[],
   edges: readonly ViewEdge[],
 ): Record<string, Position> {
   if (!nodes.length) return {};
-  const orderedIds = nodes.map((node) => node.id).sort();
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const adjacency = new Map<string, string[]>(orderedIds.map((id) => [id, []]));
-  const incoming = new Map<string, string[]>(orderedIds.map((id) => [id, []]));
+  const incoming = new Map<string, Set<string>>(
+    nodes.map((node) => [node.id, new Set<string>()]),
+  );
+  const outgoing = new Map<string, Set<string>>(
+    nodes.map((node) => [node.id, new Set<string>()]),
+  );
   for (const edge of edges) {
     if (!byId.has(edge.fromId) || !byId.has(edge.toId)) continue;
-    adjacency.get(edge.fromId)?.push(edge.toId);
-    incoming.get(edge.toId)?.push(edge.fromId);
+    outgoing.get(edge.fromId)?.add(edge.toId);
+    incoming.get(edge.toId)?.add(edge.fromId);
   }
 
-  const components = stronglyConnected(orderedIds, adjacency);
-  const componentOf = new Map<string, number>();
-  components.forEach((component, index) =>
-    component.forEach((node) => componentOf.set(node, index)),
-  );
+  const laneOf = new Map<string, number>();
+  const lanes = new Map<number, NodeBox[]>();
+  for (const node of nodes) {
+    const index = laneIndexForKind(node.kind);
+    laneOf.set(node.id, index);
+    const list = lanes.get(index) ?? [];
+    list.push({ node, height: estimateNodeHeight(node), center: 0 });
+    lanes.set(index, list);
+  }
+  for (const lane of lanes.values()) lane.sort((a, b) => stackOrder(a.node, b.node));
 
-  const componentNodes = components.map((component) =>
-    component
-      .map((id) => byId.get(id)!)
-      .sort(
-        (a, b) =>
-          kindColumn(a) - kindColumn(b) ||
-          a.label.localeCompare(b.label) ||
-          a.id.localeCompare(b.id),
-      ),
-  );
-  const componentBase = componentNodes.map((items) =>
-    Math.max(...items.map(kindColumn)),
-  );
-  const componentLabel = componentNodes.map((items) => items[0]?.label ?? "");
-  const componentHeight = componentNodes.map((items) =>
-    items.reduce((total, item) => total + estimateNodeHeight(item), 0) +
-    Math.max(0, items.length - 1) * V_GAP,
-  );
-
-  const dag = new Map<number, Set<number>>(
-    components.map((_, index) => [index, new Set<number>()]),
-  );
-  const inverse = new Map<number, Set<number>>(
-    components.map((_, index) => [index, new Set<number>()]),
-  );
-  const indegree = new Array<number>(components.length).fill(0);
-  for (const edge of edges) {
-    const from = componentOf.get(edge.fromId);
-    const to = componentOf.get(edge.toId);
-    if (from === undefined || to === undefined || from === to) continue;
-    if (!dag.get(from)!.has(to)) {
-      dag.get(from)!.add(to);
-      inverse.get(to)!.add(from);
-      indegree[to] += 1;
+  const centers = new Map<string, number>();
+  for (const lane of lanes.values()) {
+    let y = 0;
+    for (const box of lane) {
+      box.center = y + box.height / 2;
+      centers.set(box.node.id, box.center);
+      y += box.height + V_GAP;
+    }
+    // Centre every lane around zero so the first sweep starts balanced.
+    const shift = (y - V_GAP) / 2;
+    for (const box of lane) {
+      box.center -= shift;
+      centers.set(box.node.id, box.center);
     }
   }
 
-  const rank = componentBase.slice();
-  const ready = components
-    .map((_, index) => index)
-    .filter((index) => indegree[index] === 0)
-    .sort(compareComponents(componentBase, componentLabel));
-  while (ready.length) {
-    const current = ready.shift()!;
-    for (const next of [...(dag.get(current) ?? [])].sort((a, b) => a - b)) {
-      rank[next] = Math.max(rank[next], rank[current] + 1);
-      indegree[next] -= 1;
-      if (indegree[next] === 0) {
-        ready.push(next);
-        ready.sort(compareComponents(componentBase, componentLabel));
-      }
-    }
-  }
-
-  const byRank = new Map<number, number[]>();
-  components.forEach((_, index) => {
-    const list = byRank.get(rank[index]) ?? [];
-    list.push(index);
-    byRank.set(rank[index], list);
-  });
-  for (const list of byRank.values()) {
-    list.sort(compareComponents(componentBase, componentLabel));
-  }
-
-  const place = (order: Map<number, number[]>): Placement => {
-    const positions: Record<string, Position> = {};
-    const centers = new Map<number, number>();
-    const heights = new Map<number, number>();
-    const columnHeights = [...order.entries()].map(([column, list]) => {
-      const total = list.reduce((sum, index) => sum + componentHeight[index], 0) +
-        Math.max(0, list.length - 1) * COMPONENT_GAP;
-      return [column, total] as const;
+  const placeLane = (
+    lane: NodeBox[],
+    desired: Map<string, number>,
+    ordered: Map<string, number>,
+  ): number[] => {
+    lane.sort((a, b) => {
+      const da = desired.get(a.node.id) ?? centers.get(a.node.id) ?? 0;
+      const db = desired.get(b.node.id) ?? centers.get(b.node.id) ?? 0;
+      return (
+        da - db ||
+        stackOrder(a.node, b.node) ||
+        (ordered.get(a.node.id) ?? 0) - (ordered.get(b.node.id) ?? 0)
+      );
     });
-    const maxHeight = Math.max(1, ...columnHeights.map(([, height]) => height));
-    for (const [column, list] of [...order.entries()].sort((a, b) => a[0] - b[0])) {
-      const total = columnHeights.find(([rankKey]) => rankKey === column)?.[1] ?? 0;
-      let y = (maxHeight - total) / 2;
-      for (const index of list) {
-        const blockHeight = componentHeight[index];
-        const blockTop = y;
-        let nodeY = blockTop;
-        for (const node of componentNodes[index]) {
-          const height = estimateNodeHeight(node);
-          positions[node.id] = {
-            x: column * (NODE_WIDTH + H_GAP),
-            y: nodeY,
-          };
-          nodeY += height + V_GAP;
-        }
-        centers.set(index, blockTop + blockHeight / 2);
-        heights.set(index, blockHeight);
-        y += blockHeight + COMPONENT_GAP;
-      }
+    const total =
+      lane.reduce((sum, box) => sum + box.height, 0) +
+      Math.max(0, lane.length - 1) * V_GAP;
+    const target =
+      lane.reduce(
+        (sum, box) =>
+          sum + (desired.get(box.node.id) ?? centers.get(box.node.id) ?? 0),
+        0,
+      ) / Math.max(1, lane.length);
+    let y = target - total / 2;
+    const placed: number[] = [];
+    for (const box of lane) {
+      box.center = y + box.height / 2;
+      centers.set(box.node.id, box.center);
+      placed.push(box.center);
+      y += box.height + V_GAP;
     }
-    return { positions, centers, heights };
+    return placed;
   };
 
-  let order = new Map<number, number[]>(
-    [...byRank.entries()].map(([column, list]) => [column, [...list]]),
-  );
-  let placement = place(order);
-
-  const orderedRanks = [...order.keys()].sort((a, b) => a - b);
-  for (let sweep = 0; sweep < 4; sweep += 1) {
-    // Downward barycenter: align against predecessors above.
-    for (const column of [...orderedRanks].reverse()) {
-      const list = order.get(column) ?? [];
-      list.sort(
-        byBarycenter(list, inverse, placement.centers, componentBase, componentLabel),
-      );
-      order = new Map(order).set(column, list);
-    }
-    placement = place(order);
-
-    // Upward barycenter: align against successors below.
-    for (const column of orderedRanks) {
-      const list = order.get(column) ?? [];
-      list.sort(
-        byBarycenter(list, dag, placement.centers, componentBase, componentLabel),
-      );
-      order = new Map(order).set(column, list);
-    }
-    placement = place(order);
+  const orderedLanes = [...lanes.keys()].sort((a, b) => a - b);
+  const order = new Map<string, number>();
+  for (const index of orderedLanes) {
+    lanes.get(index)!.forEach((box, position) => order.set(box.node.id, position));
   }
 
-  return placement.positions;
-}
-
-function compareComponents(
-  componentBase: number[],
-  componentLabel: string[],
-) {
-  return (a: number, b: number) =>
-    componentBase[a] - componentBase[b] ||
-    componentLabel[a].localeCompare(componentLabel[b]) ||
-    a - b;
-}
-
-function byBarycenter(
-  list: number[],
-  neighbours: Map<number, Set<number>>,
-  centers: Map<number, number>,
-  componentBase: number[],
-  componentLabel: string[],
-) {
-  const currentIndex = new Map(list.map((index, order) => [index, order]));
-  const weighted = new Map<number, number>();
-  for (const index of list) {
-    const values = [...(neighbours.get(index) ?? [])]
-      .map((parent) => centers.get(parent))
-      .filter((value): value is number => value !== undefined);
-    weighted.set(
-      index,
-      values.length
-        ? values.reduce((sum, value) => sum + value, 0) / values.length
-        : (centers.get(index) ?? currentIndex.get(index) ?? 0),
+  const desiredFor = (ids: Set<string>, fallback: number): number => {
+    if (!ids.size) return fallback;
+    return (
+      [...ids].reduce((sum, id) => sum + (centers.get(id) ?? 0), 0) / ids.size
     );
+  };
+
+  // Alternating sweeps: align each lane against the already-placed neighbours.
+  for (let sweep = 0; sweep < 6; sweep += 1) {
+    const forward = sweep % 2 === 0;
+    const sequence = forward ? orderedLanes : [...orderedLanes].reverse();
+    for (const index of sequence) {
+      const lane = lanes.get(index)!;
+      const desired = new Map<string, number>();
+      for (const box of lane) {
+        const reference = forward ? incoming : outgoing;
+        desired.set(
+          box.node.id,
+          desiredFor(
+            reference.get(box.node.id) ?? new Set<string>(),
+            centers.get(box.node.id) ?? 0,
+          ),
+        );
+      }
+      placeLane(lane, desired, order);
+    }
   }
-  return (a: number, b: number) =>
-    (weighted.get(a) ?? 0) - (weighted.get(b) ?? 0) ||
-    componentBase[a] - componentBase[b] ||
-    componentLabel[a].localeCompare(componentLabel[b]) ||
-    a - b;
+
+  const positions: Record<string, Position> = {};
+  for (const index of orderedLanes) {
+    for (const box of lanes.get(index)!) {
+      positions[box.node.id] = {
+        x: laneX(index),
+        y: Math.round(box.center - box.height / 2),
+      };
+    }
+  }
+  return positions;
+}
+
+/**
+ * Tidy top-down tree layout for "Дерево" mode. Only the first occurrence of a
+ * node becomes a card; repeated rows stay in the rail as crosslinks, so the
+ * canvas never draws the same fact twice.
+ */
+export function computeTreeLayout(
+  tree: ExplorationTree,
+  nodes: readonly ViewNode[],
+): { positions: Record<string, Position>; minY: number } {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const firstRow = new Map<string, { parentId: string | null; depth: number }>();
+  for (const row of tree.rows) {
+    if (row.cycle || row.crosslink) continue;
+    if (!firstRow.has(row.node.id)) {
+      firstRow.set(row.node.id, { parentId: row.parentId, depth: row.depth });
+    }
+  }
+  const children = new Map<string, string[]>();
+  for (const id of firstRow.keys()) children.set(id, []);
+  const roots: string[] = [];
+  for (const [id, row] of firstRow) {
+    if (row.parentId && firstRow.has(row.parentId)) {
+      children.get(row.parentId)?.push(id);
+    } else {
+      roots.push(id);
+    }
+  }
+  for (const list of children.values()) list.sort();
+  roots.sort();
+
+  const widths = new Map<string, number>();
+  const measure = (id: string, path: Set<string>): number => {
+    if (path.has(id)) return 1;
+    const known = widths.get(id);
+    if (known !== undefined) return known;
+    const nextPath = new Set(path).add(id);
+    const kids = (children.get(id) ?? []).filter((kid) => !nextPath.has(kid));
+    const width = kids.length
+      ? kids.reduce((sum, kid) => sum + measure(kid, nextPath), 0)
+      : 1;
+    widths.set(id, width);
+    return width;
+  };
+  for (const root of roots) measure(root, new Set());
+
+  const positions: Record<string, Position> = {};
+  const place = (id: string, cursor: number, depth: number, path: Set<string>): number => {
+    if (path.has(id)) {
+      positions[id] = {
+        x: cursor * (NODE_WIDTH + TREE_GAP_X),
+        y: depth * TREE_LEVEL_HEIGHT,
+      };
+      return cursor + 1;
+    }
+    const nextPath = new Set(path).add(id);
+    const kids = (children.get(id) ?? []).filter((kid) => !nextPath.has(kid));
+    const width = kids.length
+      ? kids.reduce((sum, kid) => sum + (widths.get(kid) ?? 1), 0)
+      : 1;
+    const centre = cursor + width / 2;
+    positions[id] = {
+      x: Math.round(centre * (NODE_WIDTH + TREE_GAP_X) - NODE_WIDTH / 2),
+      y: depth * TREE_LEVEL_HEIGHT,
+    };
+    let next = cursor;
+    for (const kid of kids) {
+      next = place(kid, next, depth + 1, nextPath);
+    }
+    // A leaf still occupies one horizontal slot. Without this the second leaf
+    // sibling is placed at the same x as the first one.
+    return Math.max(next, cursor + width);
+  };
+
+  let cursor = 0;
+  for (const root of roots) cursor = place(root, cursor, 0, new Set());
+
+  // Unknown tree nodes (only reachable through a cycle) still get a slot.
+  for (const id of firstRow.keys()) {
+    if (!positions[id] && byId.has(id)) {
+      positions[id] = {
+        x: cursor * (NODE_WIDTH + TREE_GAP_X),
+        y: 0,
+      };
+      cursor += 1;
+    }
+  }
+
+  return { positions, minY: 0 };
 }
 
 const SEVERITY_ORDER: Record<string, number> = {

@@ -32,6 +32,11 @@ function roundedPath(points: RoutePoint[]): string {
   return `${path} L ${last.x} ${last.y}`;
 }
 
+export type SecurityEdgeData = Partial<EdgeRoute> & {
+  evidenceCount?: number;
+  resolution?: string;
+};
+
 export function SecurityEdge({
   markerEnd,
   style,
@@ -39,7 +44,7 @@ export function SecurityEdge({
   data,
   selected,
 }: EdgeProps) {
-  const route = data as Partial<EdgeRoute> | undefined;
+  const route = data as SecurityEdgeData | undefined;
   const points = route?.points ?? [];
   const fallbackMid = points.length
     ? points[Math.floor(points.length / 2)]
@@ -47,6 +52,8 @@ export function SecurityEdge({
   const labelPoint = route?.labelPoint ?? fallbackMid;
   const path = roundedPath(points);
   if (!path) return null;
+  const evidenceCount = route?.evidenceCount ?? 0;
+  const unresolved = route?.resolution ? route.resolution !== "resolved" : false;
 
   return (
     <>
@@ -66,12 +73,22 @@ export function SecurityEdge({
       {label ? (
         <EdgeLabelRenderer>
           <div
-            className={`sm-edge-label${selected ? " is-selected" : ""}`}
+            className={`sm-edge-label${selected ? " is-selected" : ""}${
+              unresolved ? " is-unresolved" : ""
+            }${evidenceCount ? "" : " is-unevidenced"}`}
             style={{
               transform: `translate(-50%, -50%) translate(${labelPoint.x}px, ${labelPoint.y}px)`,
             }}
+            title={
+              evidenceCount
+                ? `Основание связи: ${evidenceCount} сохранённых фрагмента`
+                : "У связи нет сохранённого фрагмента-основания"
+            }
           >
-            {label}
+            <span className="sm-edge-label-text">{label}</span>
+            <span className="sm-edge-evidence">
+              {evidenceCount ? `${evidenceCount} док.` : "нет док."}
+            </span>
           </div>
         </EdgeLabelRenderer>
       ) : null}

@@ -6,6 +6,7 @@ import {
   MarkerType,
   MiniMap,
   ReactFlow,
+  ViewportPortal,
   applyNodeChanges,
   type Edge,
   type Node,
@@ -22,12 +23,33 @@ import type {
   SourceState,
 } from "./types";
 import { sameScope } from "./model";
-import { NODE_WIDTH, computeMapLayout, estimateNodeHeight, initialFocusNodeIds } from "./layout";
+import {
+  MAP_LANES,
+  NODE_WIDTH,
+  PROBLEM_LANE,
+  computeMapLayout,
+  computeTreeLayout,
+  estimateNodeHeight,
+  initialFocusNodeIds,
+  laneIndexForKind,
+  laneX,
+} from "./layout";
 import { NodeIcon, nodeMeta, toneColor } from "./NodeIcon";
 import { SecurityNode, type SecurityNodeData } from "./SecurityNode";
+import { FindingNode, type FindingNodeData } from "./FindingNode";
 import { SecurityEdge } from "./SecurityEdge";
 import { buildEdgeRoutes } from "./edgeRouting";
 import { buildExplorationTree, type TreeRow } from "./tree";
+import {
+  basisText,
+  confidenceText,
+  coverageText,
+  edgeKindText,
+  plural,
+  resolutionText,
+  severityText,
+  statusText,
+} from "./labels";
 import "@xyflow/react/dist/style.css";
 import "./style.css";
 
@@ -43,44 +65,6 @@ export type MapViewProps = {
   onLayoutChange?: (layout: SecurityMapLayout) => void;
   onRetry: () => void;
   onRetrySource?: (request: EvidenceRequest) => void;
-};
-
-const resolutionText = {
-  resolved: "подтверждена",
-  partial: "частично подтверждена",
-  unknown: "связь не установлена",
-} as const;
-
-const severityText: Record<string, string> = {
-  critical: "критично",
-  high: "высокий риск",
-  medium: "средний риск",
-  low: "низкий риск",
-  info: "информация",
-};
-
-const statusText: Record<string, string> = {
-  confirmed: "подтверждено",
-  inconclusive: "не подтверждено",
-  open: "открыто",
-  dismissed: "отклонено",
-};
-
-const confidenceText: Record<string, string> = {
-  high: "высокая уверенность",
-  medium: "средняя уверенность",
-  low: "низкая уверенность",
-};
-
-const coverageText: Record<string, string> = {
-  complete: "Проверенный объём завершён",
-  partial: "Проверено неполностью",
-  unknown: "Покрытие неизвестно",
-};
-
-const basisText: Record<string, string> = {
-  source: "по исходнику",
-  policy_assumption: "Предположение, нужно подтверждение",
 };
 
 const sourceStatusText: Record<string, string> = {
@@ -122,16 +106,12 @@ const findingConfidenceOrder: Record<string, number> = {
   low: 2,
 };
 
-const edgeKindText: Record<string, string> = {
-  routes_to: "Обращается",
-  matches: "Подходит под правило",
-  permits: "Разрешает",
-  requires: "Требует",
-  calls: "Вызывает",
-  flows_to: "Передаёт данные",
-  guards: "Проверяет",
-  reads: "Читает",
-  writes: "Изменяет",
+const severityColor: Record<string, string> = {
+  critical: "#fb7185",
+  high: "#fb923c",
+  medium: "#fbbf24",
+  low: "#38bdf8",
+  info: "#94a3b8",
 };
 
 const humanCoverageWarning = (warning: string): string => {
@@ -158,15 +138,9 @@ const edgeText = (edge: MapViewModel["edges"][number]) =>
 const sameRequest = (a: EvidenceRequest, b: EvidenceRequest) =>
   sameScope(a, b) && a.evidenceId === b.evidenceId;
 
-const plural = (n: number, one: string, few: string, many: string) => {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
-};
-
 const DEFAULT_VIEWPORT = { x: 32, y: 88, zoom: 0.7 };
+const FINDING_NODE_PREFIX = "finding:";
+const FINDING_LINK_PREFIX = "finding-link:";
 
 const positionFromLayout = (
   layout: SecurityMapLayout | undefined,
@@ -237,11 +211,16 @@ export function MapView(props: MapViewProps) {
     () => computeMapLayout(model.nodes, model.edges),
     [model.nodes, model.edges],
   );
+  const overviewPositions = useRef<Record<string, { x: number; y: number }>>({
+    ...computed,
+    ...(layout?.nodePositions ?? {}),
+  });
   const [mapNodes, setMapNodes] = useState<Node[]>(() =>
     model.nodes.map((item) =>
       nodeFor(item, positionFromLayout(layout, computed, item.id)),
     ),
   );
+  const [findingNodes, setFindingNodes] = useState<Node[]>([]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState(layout?.viewport ?? DEFAULT_VIEWPORT);
   const [miniMapOpen, setMiniMapOpen] = useState(
@@ -290,17 +269,19 @@ export function MapView(props: MapViewProps) {
     const route = focusIds.find((id) => byId.get(id)?.kind === "route");
     return route ? [route] : readableFocusIds.slice(0, 1);
   }, [focusIds, readableFocusIds, model.nodes]);
-  const explorationRoots = useMemo(
-    () => buildExplorationTree(model.nodes, model.edges, new Set()).roots,
-    [model.nodes, model.edges],
+  const allExpanded = useMemo(
+    () => new Set(model.nodes.map((node) => node.id)),
+    [model.nodes],
   );
   const treeModel = useMemo(
     () => buildExplorationTree(model.nodes, model.edges, expandedTree),
     [model.nodes, model.edges, expandedTree],
   );
-  useEffect(() => {
-    setExpandedTree(new Set(explorationRoots));
-  }, [model.revision, explorationRoots.join("|")]);
+  const treePositions = useMemo(
+    () => computeTreeLayout(treeModel, model.nodes).positions,
+    [treeModel, model.nodes],
+  );
+  const treeVisibleKey = [...treeModel.visibleIds].sort().join("|");
   const searchAll = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
@@ -313,10 +294,14 @@ export function MapView(props: MapViewProps) {
     () => new Set(searchAll.map((node) => node.id)),
     [searchAll],
   );
+  const searchMatchKey = [...searchMatchIds].sort().join("|");
   const nodesMeasured =
     mapNodes.length > 0 &&
     mapNodes.every((node) => Boolean(node.measured?.width && node.measured?.height));
-  const nodeTypes = useMemo(() => ({ securityNode: SecurityNode }), []);
+  const nodeTypes = useMemo(
+    () => ({ securityNode: SecurityNode, findingNode: FindingNode }),
+    [],
+  );
   const edgeTypes = useMemo(() => ({ securityEdge: SecurityEdge }), []);
   const canvasKey = `${Math.round(canvasSize.width / 50)}x${Math.round(canvasSize.height / 50)}`;
   const [localSelection, setLocalSelection] = useState<Selection | null>(null);
@@ -326,12 +311,35 @@ export function MapView(props: MapViewProps) {
   const lastFocusedKey = useRef<string | null>(null);
 
   useEffect(() => {
-    setMapNodes(
-      model.nodes.map((item) =>
-        nodeFor(item, positionFromLayout(layout, computed, item.id)),
-      ),
+    if (viewMode === "tree") setExpandedTree(allExpanded);
+  }, [viewMode, model.revision, allExpanded]);
+
+  useEffect(() => {
+    const positions = viewMode === "tree" ? treePositions : overviewPositions.current;
+    setMapNodes((previous) => {
+      const previousById = new Map(previous.map((node) => [node.id, node]));
+      return model.nodes.map((item) => {
+        const stored = previousById.get(item.id);
+        const position =
+          positions[item.id] ??
+          computed[item.id] ??
+          stored?.position ?? { x: 0, y: 0 };
+        return stored ? { ...stored, position } : nodeFor(item, position);
+      });
+    });
+  }, [model.revision, model.nodes, viewMode, treePositions, computed]);
+
+  useEffect(() => {
+    if (!layout?.nodePositions) return;
+    overviewPositions.current = { ...computed, ...layout.nodePositions };
+    if (viewMode !== "overview") return;
+    setMapNodes((previous) =>
+      previous.map((node) => ({
+        ...node,
+        position: overviewPositions.current[node.id] ?? node.position,
+      })),
     );
-  }, [layout?.viewId, JSON.stringify(layout?.nodePositions), model.revision, model.nodes.length, model.edges.length]);
+  }, [layout?.viewId, JSON.stringify(layout?.nodePositions), computed, viewMode]);
 
   useEffect(() => {
     const element = canvasRef.current;
@@ -350,24 +358,16 @@ export function MapView(props: MapViewProps) {
     return () => observer.disconnect();
   }, []);
 
+  const scopeKey = `${model.scope.workspaceId}:${model.scope.runId}:${model.scope.snapshotId}`;
+  const lastScopeKey = useRef(scopeKey);
   useEffect(() => {
+    if (lastScopeKey.current === scopeKey) return;
+    lastScopeKey.current = scopeKey;
     setLocalSelection(null);
     setOpenRequest(null);
-  }, [model.scope.workspaceId, model.scope.runId, model.scope.snapshotId]);
-
-  const autoSelectionKey = `${model.scope.workspaceId}:${model.scope.runId}:${model.scope.snapshotId}:${model.revision}`;
-  useEffect(() => {
-    if (props.selection !== undefined) return;
-    if (autoSelectedKey.current === autoSelectionKey) return;
-    autoSelectedKey.current = autoSelectionKey;
-    setOpenRequest(null);
-    if (primaryFinding) {
-      skipDetailsScroll.current = true;
-      setLocalSelection({ kind: "finding", id: primaryFinding.id });
-    } else {
-      setLocalSelection(null);
-    }
-  }, [props.selection, autoSelectionKey, primaryFinding]);
+    // A new scope may bring new findings; let auto-focus choose again.
+    autoSelectedKey.current = null;
+  }, [scopeKey]);
 
   const selection =
     props.selection === undefined
@@ -387,6 +387,21 @@ export function MapView(props: MapViewProps) {
     selection?.kind === "finding"
       ? model.findings.find((item) => item.id === selection.id)
       : undefined;
+
+  const autoSelectionKey = `${model.scope.workspaceId}:${model.scope.runId}:${model.scope.snapshotId}:${model.revision}`;
+  useEffect(() => {
+    if (props.selection !== undefined) return;
+    if (autoSelectedKey.current === autoSelectionKey) return;
+    if (!primaryFinding) {
+      // Do not consume the key: findings may arrive after the map payload.
+      setLocalSelection(null);
+      return;
+    }
+    autoSelectedKey.current = autoSelectionKey;
+    setOpenRequest(null);
+    skipDetailsScroll.current = true;
+    setLocalSelection({ kind: "finding", id: primaryFinding.id });
+  }, [props.selection, autoSelectionKey, primaryFinding]);
 
   useEffect(() => {
     setOpenRequest(null);
@@ -432,6 +447,17 @@ export function MapView(props: MapViewProps) {
       else next.add(id);
       return next;
     });
+  };
+
+  const switchMode = (next: "overview" | "tree") => {
+    if (next === viewMode) return;
+    if (viewMode === "overview") {
+      overviewPositions.current = Object.fromEntries(
+        mapNodes.map((item) => [item.id, item.position]),
+      );
+    }
+    setViewMode(next);
+    if (next === "tree") setExpandedTree(allExpanded);
   };
 
   const selectSearchResult = (id: string) => {
@@ -500,6 +526,24 @@ export function MapView(props: MapViewProps) {
     </div>
   );
 
+  const findingByNode = useMemo(() => {
+    const summary = new Map<string, { count: number; severity?: string }>();
+    for (const item of model.findings) {
+      for (const id of item.nodeIds) {
+        const current = summary.get(id) ?? { count: 0 };
+        const worse =
+          current.severity === undefined ||
+          (findingSeverityOrder[item.severity] ?? 9) <
+            (findingSeverityOrder[current.severity] ?? 9);
+        summary.set(id, {
+          count: current.count + 1,
+          severity: worse ? item.severity : current.severity,
+        });
+      }
+    }
+    return summary;
+  }, [model.findings]);
+
   const selectedNodeIds = new Set<string>();
   if (node) selectedNodeIds.add(node.id);
   if (edge) {
@@ -507,8 +551,17 @@ export function MapView(props: MapViewProps) {
     selectedNodeIds.add(edge.toId);
   }
   if (finding) finding.nodeIds.forEach((id) => selectedNodeIds.add(id));
+  // The highlighted path belongs to the selected finding, not to the primary
+  // one: its own anchors decide which chain is emphasised.
+  const selectedFindingFocusIds = useMemo(
+    () =>
+      finding && finding.nodeIds.length
+        ? initialFocusNodeIds(model.nodes, model.edges, model.findings, finding.id)
+        : [],
+    [finding, model.nodes, model.edges, model.findings],
+  );
   const adjacentIds = new Set(selectedNodeIds);
-  if (finding) focusIds.forEach((id) => adjacentIds.add(id));
+  if (finding) selectedFindingFocusIds.forEach((id) => adjacentIds.add(id));
   for (const item of model.edges) {
     if (selectedNodeIds.has(item.fromId)) adjacentIds.add(item.toId);
     if (selectedNodeIds.has(item.toId)) adjacentIds.add(item.fromId);
@@ -517,6 +570,9 @@ export function MapView(props: MapViewProps) {
   const unknownEdges = model.edges.filter((item) => item.resolution === "unknown");
   const partialEdges = model.edges.filter((item) => item.resolution === "partial");
   const unresolvedEdges = [...unknownEdges, ...partialEdges];
+  const unlinkedFindingCount = model.findings.filter(
+    (item) => item.nodeIds.length === 0,
+  ).length;
   const unknownNodeIds = new Set(
     unknownEdges.flatMap((item) => [item.fromId, item.toId]),
   );
@@ -531,14 +587,17 @@ export function MapView(props: MapViewProps) {
   if (edge) connectedEdges.add(edge.id);
   if (finding) {
     for (const item of model.edges) {
-      if (focusIds.includes(item.fromId) && focusIds.includes(item.toId)) {
+      if (
+        selectedFindingFocusIds.includes(item.fromId) &&
+        selectedFindingFocusIds.includes(item.toId)
+      ) {
         connectedEdges.add(item.id);
       }
     }
   }
+  const adjacencyKey = [...adjacentIds].sort().join("|");
+  const unknownNodeKey = [...unknownNodeIds].sort().join("|");
 
-  const treeVisibleKey = [...treeModel.visibleIds].sort().join("|");
-  const searchMatchKey = [...searchMatchIds].sort().join("|");
   useEffect(() => {
     setMapNodes((current) =>
       current.map((stored) => {
@@ -546,18 +605,19 @@ export function MapView(props: MapViewProps) {
         if (!item) return stored;
         const data = stored.data as unknown as SecurityNodeData;
         const treeHidden = viewMode === "tree" && !treeModel.visibleIds.has(item.id);
+        const summary = findingByNode.get(item.id);
         return {
           ...stored,
           selected: node?.id === item.id,
           data: {
             ...data,
-            findingCount: model.findings.filter((candidate) =>
-              candidate.nodeIds.includes(item.id),
-            ).length,
+            findingCount: summary?.count ?? 0,
+            severity: summary?.severity,
             unknown: unknownNodeIds.has(item.id),
             neighbour: adjacentIds.has(item.id) && node?.id !== item.id,
             dimmed: (hasSelection && !adjacentIds.has(item.id)) || treeHidden,
             searchMatch: searchMatchIds.has(item.id),
+            treeMode: viewMode === "tree",
           },
         };
       }),
@@ -566,7 +626,7 @@ export function MapView(props: MapViewProps) {
     selection?.kind,
     selection?.id,
     model.revision,
-    model.nodes.length,
+    model.nodes,
     model.edges.length,
     model.findings.length,
     focusIds.join("|"),
@@ -575,22 +635,166 @@ export function MapView(props: MapViewProps) {
     viewMode,
     treeVisibleKey,
     searchMatchKey,
+    findingByNode,
+    unknownNodeKey,
+    adjacencyKey,
+    hasSelection,
+    node?.id,
   ]);
+
+  const findingPositions = useMemo(() => {
+    if (viewMode !== "overview") return {};
+    const anchorCenter = new Map<string, number>();
+    for (const item of mapNodes) {
+      const data = item.data as unknown as SecurityNodeData;
+      const height =
+        item.measured?.height ??
+        estimateNodeHeight({
+          id: item.id,
+          kind: data.kind,
+          label: data.label,
+          symbolKey: "",
+          evidenceRefs: [],
+          producerVersion: "",
+        });
+      anchorCenter.set(item.id, item.position.y + height / 2);
+    }
+    const ordered = model.findings
+      .map((item) => {
+        const anchors = item.nodeIds
+          .map((id) => anchorCenter.get(id))
+          .filter((value): value is number => value !== undefined);
+        const center = anchors.length
+          ? anchors.reduce((sum, value) => sum + value, 0) / anchors.length
+          : null;
+        return { item, center };
+      })
+      .sort((a, b) => {
+        if (a.center === null && b.center === null)
+          return (
+            (findingSeverityOrder[a.item.severity] ?? 9) -
+              (findingSeverityOrder[b.item.severity] ?? 9) ||
+            a.item.label.localeCompare(b.item.label)
+          );
+        if (a.center === null) return 1;
+        if (b.center === null) return -1;
+        return (
+          a.center - b.center ||
+          (findingSeverityOrder[a.item.severity] ?? 9) -
+            (findingSeverityOrder[b.item.severity] ?? 9) ||
+          a.item.label.localeCompare(b.item.label)
+        );
+      });
+    const placed: Record<string, { x: number; y: number }> = {};
+    let nextTop = 0;
+    for (const { item, center } of ordered) {
+      // A finding without findingNodeLinks has no path and would look like a
+      // disconnected "end of chain". It stays in the rail, explicitly unlinked.
+      if (!item.nodeIds.length) continue;
+      const desiredTop = (center ?? nextTop + 96) - 60;
+      const top = Math.max(desiredTop, nextTop);
+      placed[item.id] = { x: laneX(PROBLEM_LANE), y: top };
+      nextTop = top + 132;
+    }
+    return placed;
+  }, [mapNodes, model.findings, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "overview") {
+      setFindingNodes((previous) => (previous.length ? [] : previous));
+      return;
+    }
+    setFindingNodes((previous) => {
+      const measured = new Map(previous.map((item) => [item.id, item.measured]));
+      return model.findings
+        .filter((item) => item.nodeIds.length > 0)
+        .map((item) => {
+          const id = `${FINDING_NODE_PREFIX}${item.id}`;
+          const active =
+            !hasSelection ||
+            finding?.id === item.id ||
+            item.nodeIds.some((nodeId) => adjacentIds.has(nodeId));
+          const data: FindingNodeData = {
+            label: item.label,
+            severity: item.severity,
+            status: item.status,
+            confidence: item.confidence,
+            evidenceCount: item.evidenceRefs.length,
+            anchorCount: item.nodeIds.length,
+            anchored: true,
+            dimmed: !active,
+            neighbour:
+              hasSelection &&
+              finding?.id !== item.id &&
+              item.nodeIds.some((nodeId) => adjacentIds.has(nodeId)),
+          };
+          return {
+            id,
+            type: "findingNode",
+            position: findingPositions[item.id] ?? {
+              x: laneX(PROBLEM_LANE),
+              y: 0,
+            },
+            data,
+            draggable: false,
+            style: { width: NODE_WIDTH },
+            measured: measured.get(id),
+            ariaLabel: `Проблема: ${item.label}`,
+          } satisfies Node;
+        });
+    });
+  }, [
+    findingPositions,
+    model.findings,
+    viewMode,
+    selection?.kind,
+    selection?.id,
+    adjacencyKey,
+    hasSelection,
+    finding?.id,
+  ]);
+
+  const visibleFactNodes = useMemo(
+    () =>
+      viewMode === "tree"
+        ? mapNodes.filter((item) => treeModel.visibleIds.has(item.id))
+        : mapNodes,
+    [viewMode, mapNodes, treeModel],
+  );
+  const displayNodes = useMemo(() => {
+    const treeMode = viewMode === "tree";
+    const factNodes = visibleFactNodes.map((item) => {
+      const data = item.data as unknown as SecurityNodeData;
+      return data.treeMode === treeMode
+        ? item
+        : { ...item, data: { ...data, treeMode } };
+    });
+    return treeMode ? factNodes : [...factNodes, ...findingNodes];
+  }, [viewMode, visibleFactNodes, findingNodes]);
 
   const edgeRoutes = useMemo(
     () => buildEdgeRoutes(mapNodes, model.edges),
     [mapNodes, model.edges],
   );
 
-  const flowEdges: Edge[] = model.edges.map((item) => {
+  const visibleEdges = useMemo(
+    () =>
+      viewMode === "tree"
+        ? model.edges.filter(
+            (item) =>
+              treeModel.visibleIds.has(item.fromId) &&
+              treeModel.visibleIds.has(item.toId),
+          )
+        : model.edges,
+    [viewMode, model.edges, treeModel],
+  );
+
+  const flowEdges: Edge[] = visibleEdges.map((item) => {
     const selected = edge?.id === item.id;
     const highlighted = selected || (!hasSelection ? false : connectedEdges.has(item.id));
-    const inTree =
-      treeModel.visibleIds.has(item.fromId) && treeModel.visibleIds.has(item.toId);
-    const treeDimmed = viewMode === "tree" && !inTree;
     const crosslink =
-      viewMode === "tree" && inTree && !treeModel.treeEdgeIds.has(item.id);
-    const dimmed = (hasSelection && !highlighted) || treeDimmed;
+      viewMode === "tree" && !treeModel.treeEdgeIds.has(item.id);
+    const dimmed = (hasSelection && !highlighted) || (viewMode === "tree" && crosslink);
     const colour =
       item.resolution === "resolved"
         ? selected
@@ -602,52 +806,136 @@ export function MapView(props: MapViewProps) {
           ? "#fbbf24"
           : "#f59e0b";
     const route = edgeRoutes.get(item.id);
+    const treeEdge = viewMode === "tree";
+    const evidenceLabel = item.evidenceRefs.length
+      ? `${item.evidenceRefs.length} док.`
+      : "нет док.";
     return {
       id: item.id,
-      type: "securityEdge",
+      type: treeEdge ? "default" : "securityEdge",
       source: item.fromId,
       target: item.toId,
-      label: edgeText(item),
+      ...(treeEdge
+        ? { sourceHandle: "tree-out", targetHandle: "tree-in" }
+        : {}),
+      label: treeEdge
+        ? `${edgeText(item)} · ${evidenceLabel}`
+        : edgeText(item),
+      labelStyle: treeEdge
+        ? { fill: "#cbd5e1", fontSize: 9, fontWeight: 600 }
+        : undefined,
+      labelBgStyle: treeEdge
+        ? { fill: "#0b1220", fillOpacity: 0.92 }
+        : undefined,
+      labelBgPadding: treeEdge ? ([4, 2] as [number, number]) : undefined,
       ariaLabel: `Связь ${edgeText(item)}`,
       selected,
       markerEnd: { type: MarkerType.ArrowClosed, color: colour },
-      data: route
-        ? { points: route.points, labelPoint: route.labelPoint }
-        : undefined,
+      data: treeEdge
+        ? undefined
+        : route
+          ? {
+              points: route.points,
+              labelPoint: route.labelPoint,
+              evidenceCount: item.evidenceRefs.length,
+              resolution: item.resolution,
+            }
+          : {
+              evidenceCount: item.evidenceRefs.length,
+              resolution: item.resolution,
+            },
       style: {
         stroke: colour,
         strokeWidth: selected ? 3.2 : 1.7,
         strokeDasharray:
           crosslink || item.resolution !== "resolved" ? "7 6" : undefined,
-        opacity: dimmed ? 0.32 : 1,
+        opacity: dimmed ? 0.3 : 1,
       },
       interactionWidth: 36,
       className: `sm-edge sm-edge--${item.resolution}${selected ? " is-selected" : ""}${
         crosslink ? " is-crosslink" : ""
-      }`,
+      }${viewMode === "tree" && !crosslink ? " is-tree-edge" : ""}`,
     };
   });
 
+  const findingLinks: Edge[] = useMemo(() => {
+    if (viewMode !== "overview") return [];
+    const nodeX = new Map(mapNodes.map((item) => [item.id, item.position.x]));
+    const links: Edge[] = [];
+    for (const item of model.findings) {
+      const anchors = item.nodeIds.filter((id) => nodeX.has(id));
+      if (!anchors.length) continue;
+      // One presented link keeps the map readable; the card states how many
+      // real findingNodeLinks exist and the details panel lists them all.
+      const anchor = [...anchors].sort(
+        (a, b) =>
+          (nodeX.get(b) ?? 0) - (nodeX.get(a) ?? 0) || a.localeCompare(b),
+      )[0];
+      const colour = severityColor[item.severity.toLowerCase()] ?? "#94a3b8";
+      links.push({
+        id: `${FINDING_LINK_PREFIX}${item.id}:${anchor}`,
+        source: anchor,
+        sourceHandle: "out",
+        target: `${FINDING_NODE_PREFIX}${item.id}`,
+        targetHandle: "in",
+        type: "default",
+        style: {
+          stroke: colour,
+          strokeWidth: 1.2,
+          strokeDasharray: "3 5",
+          opacity: hasSelection && finding?.id !== item.id ? 0.18 : 0.62,
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: colour },
+        selectable: false,
+        focusable: false,
+        interactionWidth: 0,
+      });
+    }
+    return links;
+  }, [model.findings, mapNodes, viewMode, hasSelection, finding?.id]);
+
+  const allFlowEdges = useMemo(
+    () => [...flowEdges, ...findingLinks],
+    [flowEdges, findingLinks],
+  );
+
   const commitLayout = (
     currentNodes: Node[],
-    viewport: { x: number; y: number; zoom: number } | undefined =
+    nextViewport: { x: number; y: number; zoom: number } | undefined =
       layout?.viewport,
   ) => {
     const nodePositions = Object.fromEntries(
-      currentNodes.map((item) => [item.id, item.position]),
+      currentNodes
+        .filter((item) => !item.id.startsWith(FINDING_NODE_PREFIX))
+        .map((item) => [item.id, item.position]),
     );
     props.onLayoutChange?.({
       scope: model.scope,
       viewId: layout?.viewId ?? "security-map",
       nodePositions,
-      ...(viewport ? { viewport } : {}),
+      ...(nextViewport ? { viewport: nextViewport } : {}),
     });
   };
 
   const onNodesChange = (changes: NodeChange<Node>[]) => {
-    const next = applyNodeChanges(changes, mapNodes);
+    const changeId = (change: NodeChange<Node>) =>
+      "id" in change ? change.id : change.item.id;
+    const findingChanges = changes.filter((item) =>
+      changeId(item).startsWith(FINDING_NODE_PREFIX),
+    );
+    const factChanges = changes.filter(
+      (item) => !changeId(item).startsWith(FINDING_NODE_PREFIX),
+    );
+    if (findingChanges.length) {
+      setFindingNodes((previous) => applyNodeChanges(findingChanges, previous));
+    }
+    if (!factChanges.length) return;
+    const next = applyNodeChanges(factChanges, mapNodes);
     setMapNodes(next);
-    if (changes.some((item) => item.type === "position" && !item.dragging)) {
+    if (factChanges.some((item) => item.type === "position" && !item.dragging)) {
+      overviewPositions.current = Object.fromEntries(
+        next.map((item) => [item.id, item.position]),
+      );
       commitLayout(next);
     }
   };
@@ -658,12 +946,18 @@ export function MapView(props: MapViewProps) {
     maxZoom = 0.9,
   ) => {
     if (!flow || !ids.length) return;
-    const positions = layout?.nodePositions ?? computeMapLayout(model.nodes, model.edges);
+    const positions =
+      viewMode === "tree" ? treePositions : overviewPositions.current;
+    const measured = new Map(
+      [...mapNodes, ...findingNodes].map((item) => [item.id, item.measured]),
+    );
     const selected = ids.flatMap((id) => {
-      const position = positions[id];
+      const position =
+        positions[id] ??
+        computed[id] ??
+        findingNodes.find((item) => item.id === id)?.position;
       if (!position) return [];
-      const stored = mapNodes.find((node) => node.id === id);
-      return [{ position, measured: stored?.measured }];
+      return [{ position, measured: measured.get(id) }];
     });
     if (!selected.length) return;
     const pad = 24;
@@ -714,7 +1008,10 @@ export function MapView(props: MapViewProps) {
       ids.add(edge.fromId);
       ids.add(edge.toId);
     }
-    if (finding) finding.nodeIds.forEach((id) => ids.add(id));
+    if (finding) {
+      finding.nodeIds.forEach((id) => ids.add(id));
+      ids.add(`${FINDING_NODE_PREFIX}${finding.id}`);
+    }
     if (ids.size) {
       focusViewport([...ids], 0.55, 1.15);
       return;
@@ -738,17 +1035,46 @@ export function MapView(props: MapViewProps) {
     return () => window.clearTimeout(timer);
   }, [flow, nodesMeasured, modelFocusKey, canvasSize.width]);
 
+  // Fit-all belongs to a real user mode switch only. Keying this effect on
+  // `flow` alone used to re-run it after onInit/StrictMode remount and wipe the
+  // readable initial focus with a fit of the whole graph. The fit also waits for
+  // the switched layout to reach the canvas: ReactFlow re-initialises on a
+  // canvas resize, and a fit against the previous instance is lost.
+  const previousViewMode = useRef(viewMode);
+  const pendingModeFit = useRef(false);
+  useEffect(() => {
+    if (previousViewMode.current === viewMode) return;
+    previousViewMode.current = viewMode;
+    pendingModeFit.current = true;
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (!pendingModeFit.current || !flow || !nodesMeasured) return;
+    const timer = window.setTimeout(() => {
+      pendingModeFit.current = false;
+      void flow.fitView({ padding: 0.14, minZoom: 0.05, maxZoom: 1.2, duration: 220 });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [viewMode, flow, nodesMeasured, mapNodes]);
+
   const reset = () => {
     const nextPositions = computeMapLayout(model.nodes, model.edges);
-    const next = model.nodes.map((item) =>
-      nodeFor(item, nextPositions[item.id] ?? { x: 0, y: 0 }),
+    overviewPositions.current = nextPositions;
+    setMapNodes((previous) =>
+      previous.map((item) => ({
+        ...item,
+        position:
+          (viewMode === "tree" ? treePositions : nextPositions)[item.id] ??
+          item.position,
+      })),
     );
-    setMapNodes(next);
-    props.onLayoutChange?.({
-      scope: model.scope,
-      viewId: layout?.viewId ?? "security-map",
-      nodePositions: nextPositions,
-    });
+    if (viewMode === "overview") {
+      props.onLayoutChange?.({
+        scope: model.scope,
+        viewId: layout?.viewId ?? "security-map",
+        nodePositions: nextPositions,
+      });
+    }
     requestAnimationFrame(() => {
       lastFocusedKey.current = modelFocusKey;
       const ids = initialReadableIds();
@@ -759,6 +1085,25 @@ export function MapView(props: MapViewProps) {
 
   const findingCountByNode = (id: string) =>
     model.findings.filter((item) => item.nodeIds.includes(id)).length;
+
+  const laneTop = useMemo(() => {
+    const tops = [...mapNodes, ...findingNodes].map((item) => item.position.y);
+    return (tops.length ? Math.min(...tops) : 0) - 96;
+  }, [mapNodes, findingNodes]);
+  const laneHeight = useMemo(() => {
+    const boxes = [...mapNodes, ...findingNodes].map(
+      (item) =>
+        item.position.y + (item.measured?.height ?? 140),
+    );
+    return (boxes.length ? Math.max(...boxes) : 0) - laneTop + 40;
+  }, [mapNodes, findingNodes, laneTop]);
+  const usedLanes = useMemo(() => {
+    const used = new Set(model.nodes.map((item) => laneIndexForKind(item.kind)));
+    if (model.findings.some((item) => item.nodeIds.length > 0)) {
+      used.add(PROBLEM_LANE);
+    }
+    return MAP_LANES.filter((lane) => used.has(lane.index));
+  }, [model.nodes, model.findings]);
 
   return (
     <section className="security-map" aria-label="Карта безопасности">
@@ -831,14 +1176,14 @@ export function MapView(props: MapViewProps) {
             <button
               type="button"
               aria-pressed={viewMode === "overview"}
-              onClick={() => setViewMode("overview")}
+              onClick={() => switchMode("overview")}
             >
               Обзор
             </button>
             <button
               type="button"
               aria-pressed={viewMode === "tree"}
-              onClick={() => setViewMode("tree")}
+              onClick={() => switchMode("tree")}
             >
               Дерево
             </button>
@@ -882,11 +1227,26 @@ export function MapView(props: MapViewProps) {
       </header>
 
       <div className="sm-intro">
-        <span>Откуда приходит запрос, как проверяется доступ и какие данные затрагиваются.</span>
-        <span>Нажмите на стрелку, чтобы увидеть основание.</span>
-        <span className="sm-layer-legend" aria-label="Порядок групп карты">
-          <b>Кто</b><i>→</i><b>Маршрут</b><i>→</i><b>Доступ</b><i>→</i><b>Обработчик</b><i>→</i><b>Данные / операция</b>
+        <span>
+          {viewMode === "overview"
+            ? "Цепочка: кто обращается → проверка доступа → маршрут → обработчик → операция → данные → проблема."
+            : "Дерево связей доступа — не структура файлов. Оно показывает, кто и через что доходит до данных."}
         </span>
+        <span>
+          {viewMode === "overview"
+            ? "Нажмите на стрелку, чтобы увидеть её основание."
+            : "Корень — кто обращается; ветки — правила, маршруты, обработчики и данные."}
+        </span>
+        {viewMode === "overview" ? (
+          <span className="sm-layer-legend" aria-label="Порядок групп карты">
+            <b>Кто</b><i>→</i><b>Доступ</b><i>→</i><b>Маршрут</b><i>→</i><b>Обработчик</b>
+            <i>→</i><b>Операция</b><i>→</i><b>Данные</b><i>→</i><b>Проблема</b>
+          </span>
+        ) : (
+          <span className="sm-layer-legend" aria-label="О режиме дерева">
+            <b>Дерево связей</b><i>·</i><b>файлы показаны как доказательства, а не как порядок доступа</b>
+          </span>
+        )}
       </div>
 
       {unresolvedEdges.length > 0 && (
@@ -907,6 +1267,24 @@ export function MapView(props: MapViewProps) {
               : "Связи подтверждены частично — проверьте основание. Открыть первую связь →"}
           </small>
         </button>
+      )}
+
+      {unlinkedFindingCount > 0 && (
+        <div className="sm-unlinked-note" role="note">
+          <b>
+            {unlinkedFindingCount}{" "}
+            {plural(unlinkedFindingCount, "проблема", "проблемы", "проблем")}
+          </b>{" "}
+          {plural(
+            unlinkedFindingCount,
+            "не привязана",
+            "не привязаны",
+            "не привязаны",
+          )}{" "}
+          к узлам карты: путь для{" "}
+          {plural(unlinkedFindingCount, "неё", "них", "них")} не строится. Они
+          остаются в списке «Проблемы» и не выдаются за конец цепочки.
+        </div>
       )}
 
       {model.provenance === "manual_source_review" && (
@@ -935,22 +1313,42 @@ export function MapView(props: MapViewProps) {
       <div className={`sm-workspace ${railOpen ? "has-rail" : ""} ${mobileView === "details" ? "show-details" : ""}`}>
         <aside className={`sm-rail ${railOpen ? "is-open" : ""}`} aria-label="Путь и проблемы">
           <div className="sm-rail-head">
-            <span>{viewMode === "tree" ? "Дерево исследования" : "Путь и проблемы"}</span>
+            <span>{viewMode === "tree" ? "Дерево связей" : "Путь и проблемы"}</span>
             <button onClick={() => setRailOpen(false)} aria-label="Закрыть список">×</button>
           </div>
           {viewMode === "tree" && (
             <section className="sm-rail-section sm-tree-section">
               <h2>
-                Соседи <span>{treeModel.rows.length}</span>
+                Связи <span>{treeModel.rows.length}</span>
               </h2>
               <p className="sm-rail-empty sm-tree-meta">
                 Корни: {treeModel.roots.length} · сироты: {treeModel.orphans.length} · перекрёстные связи:{" "}
                 {treeModel.crosslinkEdgeIds.size}
               </p>
+              <div className="sm-tree-tools">
+                <button type="button" onClick={() => setExpandedTree(allExpanded)}>
+                  Раскрыть всё
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExpandedTree(new Set(treeModel.roots))}
+                >
+                  Только корни
+                </button>
+              </div>
+              <p className="sm-tree-note">
+                <b>Это не структура файлов.</b> Дерево строится по связям доступа:
+                корень — кто обращается, ниже — правила, маршруты, обработчики и
+                данные. Путь в файлах показывает только, где лежит доказательство;
+                один маршрут может проходить через несколько файлов.
+              </p>
               <div className="sm-tree">
                 {treeModel.rows.map((row: TreeRow, index) => {
                   const meta = nodeMeta(row.node.kind);
                   const expanded = expandedTree.has(row.node.id);
+                  const rowEdge = row.edgeId
+                    ? model.edges.find((item) => item.id === row.edgeId)
+                    : undefined;
                   return (
                     <div
                       key={`${row.rootId}:${row.node.id}:${row.depth}:${index}`}
@@ -990,7 +1388,29 @@ export function MapView(props: MapViewProps) {
                           <small>
                             {meta.label}
                             {row.depth === 0 ? " · корень" : ` · шаг ${row.depth}`}
+                            {rowEdge
+                              ? ` · ${edgeText(rowEdge)}`
+                              : ""}
                           </small>
+                          {rowEdge ? (
+                            <small
+                              className={
+                                rowEdge.evidenceRefs.length ? "" : "is-missing"
+                              }
+                            >
+                              {rowEdge.evidenceRefs.length
+                                ? `${rowEdge.evidenceRefs.length} ${plural(
+                                    rowEdge.evidenceRefs.length,
+                                    "доказательство",
+                                    "доказательства",
+                                    "доказательств",
+                                  )}`
+                                : "нет фрагмента-основания"}
+                              {rowEdge.resolution !== "resolved"
+                                ? ` · ${resolutionText[rowEdge.resolution]}`
+                                : ""}
+                            </small>
+                          ) : null}
                         </span>
                         {row.cycle ? <em className="sm-tree-badge">цикл</em> : null}
                         {row.crosslink ? <em className="sm-tree-badge">crosslink</em> : null}
@@ -999,6 +1419,17 @@ export function MapView(props: MapViewProps) {
                   );
                 })}
               </div>
+              <details className="sm-tech sm-tree-diff">
+                <summary>Структура файлов ≠ карта доступа</summary>
+                <p>
+                  Структура файлов отвечает «где лежит код». Карта доступа
+                  отвечает «кто и через какую проверку доходит до данных».
+                </p>
+                <p>
+                  Папка и файл не доказывают доступ. Доказательство — конкретный
+                  фрагмент с путём и строками; он открывается из узла или связи.
+                </p>
+              </details>
               {treeModel.orphans.length > 0 && (
                 <p className="sm-tree-meta">
                   Сироты: {treeModel.orphans.map((id) => model.nodes.find((node) => node.id === id)?.label).filter(Boolean).join(", ")}
@@ -1020,6 +1451,16 @@ export function MapView(props: MapViewProps) {
                   <small>
                     {model.nodes.find((candidate) => candidate.id === item.fromId)?.label} →{" "}
                     {model.nodes.find((candidate) => candidate.id === item.toId)?.label}
+                  </small>
+                  <small className={item.evidenceRefs.length ? "" : "is-missing"}>
+                    {item.evidenceRefs.length
+                      ? `${item.evidenceRefs.length} ${plural(
+                          item.evidenceRefs.length,
+                          "доказательство",
+                          "доказательства",
+                          "доказательств",
+                        )}`
+                      : "нет фрагмента-основания"}
                   </small>
                 </span>
                 <em className={`sm-resolution sm-resolution--${item.resolution}`}>
@@ -1043,6 +1484,11 @@ export function MapView(props: MapViewProps) {
                     {statusText[item.status] ?? item.status} ·{" "}
                     {severityText[item.severity] ?? item.severity} ·{" "}
                     {confidenceText[item.confidence] ?? item.confidence}
+                  </small>
+                  <small className={item.nodeIds.length ? "" : "is-missing"}>
+                    {item.nodeIds.length
+                      ? `привязано к узлам: ${item.nodeIds.length}`
+                      : "не привязано к узлам карты"}
                   </small>
                 </span>
               </button>
@@ -1071,13 +1517,28 @@ export function MapView(props: MapViewProps) {
             ) : (
               <ReactFlow
                 onInit={setFlow}
-                nodes={mapNodes}
-                edges={flowEdges}
+                nodes={displayNodes}
+                edges={allFlowEdges}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 onNodesChange={onNodesChange}
-                onNodeClick={(_, item) => choose({ kind: "node", id: item.id })}
-                onEdgeClick={(_, item) => choose({ kind: "edge", id: item.id })}
+                onNodeClick={(_, item) => {
+                  if (item.id.startsWith(FINDING_NODE_PREFIX)) {
+                    choose({ kind: "finding", id: item.id.slice(FINDING_NODE_PREFIX.length) });
+                    return;
+                  }
+                  choose({ kind: "node", id: item.id });
+                }}
+                onEdgeClick={(_, item) => {
+                  if (item.id.startsWith(FINDING_LINK_PREFIX)) {
+                    const [, findingId] = item.id
+                      .slice(FINDING_LINK_PREFIX.length)
+                      .split(":");
+                    if (findingId) choose({ kind: "finding", id: findingId });
+                    return;
+                  }
+                  choose({ kind: "edge", id: item.id });
+                }}
                 onPaneClick={clearSelection}
                 onNodeDragStop={(_, item) => {
                   const next = mapNodes.map((candidate) =>
@@ -1086,14 +1547,18 @@ export function MapView(props: MapViewProps) {
                       : candidate,
                   );
                   setMapNodes(next);
+                  overviewPositions.current = Object.fromEntries(
+                    next.map((candidate) => [candidate.id, candidate.position]),
+                  );
                   commitLayout(next);
                 }}
                 onMoveEnd={(_, nextViewport) => {
                   setViewport(nextViewport);
-                  commitLayout(mapNodes, nextViewport);
+                  if (viewMode === "overview") commitLayout(mapNodes, nextViewport);
                 }}
                 nodesConnectable={false}
                 edgesReconnectable={false}
+                nodesDraggable={viewMode === "overview"}
                 deleteKeyCode={null}
                 key={canvasKey}
                 fitView={false}
@@ -1110,11 +1575,39 @@ export function MapView(props: MapViewProps) {
                   size={1.2}
                   color="#334155"
                 />
+                {viewMode === "overview" ? (
+                  <ViewportPortal>
+                    {usedLanes.map((lane) => (
+                      <div
+                        key={lane.key}
+                        className={`sm-lane${
+                          lane.index === PROBLEM_LANE ? " sm-lane--problem" : ""
+                        }`}
+                        style={{
+                          transform: `translate(${laneX(lane.index)}px, ${laneTop}px)`,
+                        }}
+                      >
+                        <div className="sm-lane-head">
+                          <span className="sm-lane-title">{lane.title}</span>
+                          <span className="sm-lane-hint">{lane.hint}</span>
+                        </div>
+                        <div
+                          className="sm-lane-guide"
+                          style={{ height: laneHeight }}
+                        />
+                      </div>
+                    ))}
+                  </ViewportPortal>
+                ) : null}
                 <Controls className="sm-controls" showInteractive={false} />
                 {miniMapOpen && (
                   <MiniMap
                     className="sm-minimap"
                     nodeColor={(item) => {
+                      if (item.type === "findingNode")
+                        return severityColor[
+                          (item.data as unknown as FindingNodeData).severity
+                        ] ?? "#f59e0b";
                       const data = item.data as unknown as SecurityNodeData;
                       return toneColor[data.tone] ?? "#64748b";
                     }}
@@ -1159,10 +1652,39 @@ export function MapView(props: MapViewProps) {
                 <span className={`sm-status sm-status--${edge.resolution}`}>{resolutionText[edge.resolution]}</span>
                 <span className="sm-pill">{edgeKindText[edge.kind] ?? "Связь"}</span>
                 <span className="sm-pill">{basisText[edge.basis] ?? edge.basis}</span>
+                <span className={`sm-pill${edge.evidenceRefs.length ? "" : " is-missing"}`}>
+                  {edge.evidenceRefs.length
+                    ? `${edge.evidenceRefs.length} ${plural(
+                        edge.evidenceRefs.length,
+                        "доказательство",
+                        "доказательства",
+                        "доказательств",
+                      )}`
+                    : "нет доказательства"}
+                </span>
               </div>
               <p className={edge.resolution === "resolved" ? "" : "sm-amber-text"}>{edge.resolutionReason}</p>
+              {edge.resolution === "unknown" && (
+                <p className="sm-amber-text">
+                  Связь не установлена. Это пробел анализа, а не подтверждение,
+                  что доступ безопасен.
+                </p>
+              )}
+              {!edge.evidenceRefs.length && (
+                <p className="sm-amber-text">
+                  У связи нет сохранённого фрагмента-основания: утверждение
+                  анализатора без отдельного доказательства.
+                </p>
+              )}
               <h3>Доказательства связи</h3>
-              {evidenceButtons(edge.evidenceRefs)}
+              {edge.evidenceRefs.length ? (
+                evidenceButtons(edge.evidenceRefs)
+              ) : (
+                <p className="sm-muted">
+                  Фрагментов нет. Смотрите доказательства узлов по обе стороны
+                  связи; они не заменяют основание перехода.
+                </p>
+              )}
               <details className="sm-tech">
                 <summary>Технические данные</summary>
                 <dl>
@@ -1188,6 +1710,12 @@ export function MapView(props: MapViewProps) {
                 </span>
               </div>
               <p className="sm-node-hint">{nodeMeta(node.kind).hint}</p>
+              {!node.evidenceRefs.length && (
+                <p className="sm-amber-text">
+                  У узла нет сохранённого фрагмента: его роль известна из связи,
+                  но подтвердить её отдельным кодом нельзя.
+                </p>
+              )}
               <h3>Связанные проблемы</h3>
               {model.findings.filter((item) => item.nodeIds.includes(node.id)).map((item) => (
                 <button className="sm-link-button" key={item.id} onClick={() => choose({ kind: "finding", id: item.id })}>
@@ -1231,7 +1759,11 @@ export function MapView(props: MapViewProps) {
                 ))}
               </div>
               <h3>Доказательства проблемы</h3>
-              {evidenceButtons(finding.evidenceRefs)}
+              {finding.evidenceRefs.length ? (
+                evidenceButtons(finding.evidenceRefs)
+              ) : (
+                <p className="sm-muted">У проблемы нет сохранённых фрагментов.</p>
+              )}
             </>
           )}
           {evidence && (

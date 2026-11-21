@@ -26,3 +26,20 @@ html, body, #root {
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
+
+@keyframes wf-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+.wf-flow-dot {
+  filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.9));
+  pointer-events: none;
+}
+.wf-edge--flowed .react-flow__edge-path,
+.wf-edge--flowed path {
+  filter: drop-shadow(0 0 4px rgba(34, 211, 238, 0.45));
+}
+.wf-edge--inactive {
+  pointer-events: none;
+}

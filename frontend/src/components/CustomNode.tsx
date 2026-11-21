@@ -14,6 +14,7 @@ interface CustomNodeData {
   status?: NodeRunStatus;
   durationMs?: number;
   isSelected?: boolean;
+  current?: boolean;
 }
 
 const KIND_CONFIG: Record<NodeKind, { icon: any; color: string; bg: string; border: string }> = {
@@ -41,14 +42,15 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
   const Icon = cfg.icon;
 
   const status = nodeData.status;
+  const current = nodeData.current ?? status === 'running';
 
   return (
     <div
-      className={`min-w-[210px] rounded-xl shadow-xl backdrop-blur-md transition-all duration-200 border-2 ${
+      className={`relative min-w-[210px] rounded-xl shadow-xl backdrop-blur-md transition-all duration-200 border-2 ${
         selected ? 'ring-2 ring-indigo-400 scale-[1.02]' : ''
       } ${
-        status === 'running'
-          ? 'border-blue-500 shadow-blue-500/20 animate-pulse'
+        current
+          ? 'border-sky-400 shadow-[0_0_28px_rgba(56,189,248,0.35)]'
           : status === 'succeeded'
           ? 'border-emerald-500 shadow-emerald-500/10'
           : status === 'failed'
@@ -58,6 +60,11 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
           : cfg.border
       } ${cfg.bg} bg-slate-900/90 text-slate-100 overflow-hidden`}
     >
+      {current && (
+        <div className="absolute inset-x-0 top-0 h-0.5 overflow-hidden">
+          <div className="h-full w-1/2 animate-[wf-sweep_1.2s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-sky-300 to-transparent" />
+        </div>
+      )}
       {/* Input Handles */}
       {renderInputHandles(nodeData.kind)}
 
@@ -80,9 +87,14 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
         {/* Live Status Badge */}
         {status && (
           <div className="flex items-center gap-1 text-[10px] font-medium">
+            {current && (
+              <span className="rounded-full border border-sky-500/60 bg-sky-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-sky-200">
+                сейчас
+              </span>
+            )}
             {status === 'running' && (
-              <span className="flex items-center text-blue-400 animate-spin">
-                <Loader2 size={13} />
+              <span className="flex items-center text-sky-300">
+                <Loader2 size={13} className="animate-spin" />
               </span>
             )}
             {status === 'succeeded' && (

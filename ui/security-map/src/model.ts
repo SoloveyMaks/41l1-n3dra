@@ -221,9 +221,9 @@ export function productionModel(
     findings: findings.map((f) => ({
       id: f.id,
       label: findingTitle(f.ruleId, f.confidence, f.status),
-      status: f.status,
-      severity: f.severity,
-      confidence: f.confidence,
+      status: f.status.toLowerCase(),
+      severity: f.severity.toLowerCase(),
+      confidence: f.confidence.toLowerCase(),
       reasons: [f.severityBasis, f.confidenceBasis, ...f.coverageWarnings],
       evidenceRefs: [
         ...new Set([

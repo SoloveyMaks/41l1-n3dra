@@ -137,9 +137,9 @@ export function adaptPickupIllustration(
     findings: input.findings.map((f) => ({
       id: f.id,
       label: input.nodes.find((n) => n.id === "n-finding")?.label ?? f.id,
-      status: f.status,
-      severity: f.severity,
-      confidence: f.confidence,
+      status: f.status.toLowerCase(),
+      severity: f.severity.toLowerCase(),
+      confidence: f.confidence.toLowerCase(),
       reasons: [f.severityBasis, f.confidenceBasis, ...f.coverageWarnings],
       evidenceRefs: [
         ...new Set([
