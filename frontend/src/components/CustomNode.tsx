@@ -194,8 +194,9 @@ function renderInputHandles(kind: NodeKind) {
       return (
         <>
           <Handle type="target" position={Position.Left} id="findings_bundle" style={{ top: '15%' }} className="!bg-teal-500 !w-2.5 !h-2.5" />
-          <Handle type="target" position={Position.Left} id="policy_result" style={{ top: '50%' }} className="!bg-emerald-500 !w-2.5 !h-2.5" />
-          <Handle type="target" position={Position.Left} id="explain_result" style={{ top: '85%' }} className="!bg-fuchsia-500 !w-2.5 !h-2.5" />
+          <Handle type="target" position={Position.Left} id="policy_result" style={{ top: '38%' }} className="!bg-emerald-500 !w-2.5 !h-2.5" />
+          <Handle type="target" position={Position.Left} id="explain_result" style={{ top: '62%' }} className="!bg-fuchsia-500 !w-2.5 !h-2.5" />
+          <Handle type="target" position={Position.Left} id="ai_scan_result" style={{ top: '85%' }} className="!bg-fuchsia-300 !w-2.5 !h-2.5" />
         </>
       );
     case 'notify':
