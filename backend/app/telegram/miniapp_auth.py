@@ -7,7 +7,8 @@ in a private Telegram chat ``chat_id`` equals the user id. No binding is ever
 created or guessed here; an unbound account gets an explicit error.
 
 The issued token is a short-lived, server-signed bearer (15 minutes max),
-bound to ``chat_id/user_id/workspace_id/binding_epoch``. It is not a normal
+bound to ``chat_id/user_id/workspace_id/binding_epoch``. Its signed prefix and
+payload version are ``v2``; ``v1`` tokens are rejected. It is not a normal
 account session: it cannot be used instead of the cookie session and carries
 ``role=user`` only. Every Mini App request re-reads the live binding and the
 active account, so unbind/rebind revokes outstanding tokens without a store.
@@ -45,6 +46,8 @@ TOKEN_MAX_BYTES = 4096
 TOKEN_MAX_FUTURE_IAT = 60
 TOKEN_SECRET_ENV = "TELEGRAM_MINIAPP_TOKEN_SECRET"
 TOKEN_ROLE = "user"
+TOKEN_PREFIX = "v2"
+TOKEN_PAYLOAD_VERSION = 2
 
 _HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _AUTH_DATE_RE = re.compile(r"^\d{1,12}$")
@@ -143,7 +146,7 @@ def _b64decode(value: str) -> bytes:
 def derive_token_secret(bot_token: str) -> bytes:
     """Stable server secret when the operator did not set an explicit one."""
     return hmac.new(
-        b"nedra-miniapp-token-v1", bot_token.encode("utf-8"), hashlib.sha256
+        b"nedra-miniapp-token-v2", bot_token.encode("utf-8"), hashlib.sha256
     ).digest()
 
 
@@ -290,7 +293,7 @@ def mint_mini_token(
     issued = int(time.time() if now is None else now)
     expires = issued + ttl
     payload = {
-        "v": 1,
+        "v": TOKEN_PAYLOAD_VERSION,
         "cid": int(identity.chat_id),
         "uid": str(_as_uuid(identity.user_id, "user_id")),
         "wid": str(_as_uuid(identity.workspace_id, "workspace_id")),
@@ -302,7 +305,7 @@ def mint_mini_token(
     }
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     body = _b64encode(raw)
-    signed = f"v1.{body}"
+    signed = f"{TOKEN_PREFIX}.{body}"
     signature = _b64encode(hmac.new(secret, signed.encode("ascii"), hashlib.sha256).digest())
     return f"{signed}.{signature}", expires
 
@@ -323,7 +326,8 @@ def verify_mini_token(
     if not isinstance(token, str) or not token or len(token) > TOKEN_MAX_BYTES:
         raise MiniTokenError("token is missing or too large")
     parts = token.split(".")
-    if len(parts) != _TOKEN_PARTS or parts[0] != "v1":
+    if len(parts) != _TOKEN_PARTS or parts[0] != TOKEN_PREFIX:
+        # v1 tokens predate the current claim set; they are not accepted.
         raise MiniTokenError("token version is invalid")
     if not _B64_RE.fullmatch(parts[1]) or not _B64_RE.fullmatch(parts[2]):
         raise MiniTokenError("token encoding is invalid")
@@ -339,7 +343,7 @@ def verify_mini_token(
         raise MiniTokenError("token payload is malformed") from exc
     if not isinstance(payload, dict):
         raise MiniTokenError("token payload is malformed")
-    if payload.get("v") != 1 or payload.get("role") != TOKEN_ROLE:
+    if payload.get("v") != TOKEN_PAYLOAD_VERSION or payload.get("role") != TOKEN_ROLE:
         raise MiniTokenError("token claims are invalid")
 
     chat_id = _strict_int(payload.get("cid"))

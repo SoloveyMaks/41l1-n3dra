@@ -455,7 +455,15 @@ def create_miniapp_router(
         identity, _token = await require_identity(request)
         try:
             with telegram_workspace_scope(identity.workspace_id):
-                settings = await asyncio.to_thread(repo.get_settings, identity.chat_id)
+                # Identity arguments make the row lookup fail closed to defaults
+                # if this chat was rebound between authorization and this read.
+                settings = await asyncio.to_thread(
+                    repo.get_settings,
+                    identity.chat_id,
+                    user_id=identity.user_id,
+                    workspace_id=identity.workspace_id,
+                    binding_epoch=identity.binding_epoch,
+                )
                 workflows = await asyncio.to_thread(db.list_workflows)
                 runs = await asyncio.to_thread(db.list_runs, RECENT_RUNS_LIMIT)
             await assert_live(identity)
@@ -539,7 +547,13 @@ def create_miniapp_router(
             run_id: Optional[str] = None
             try:
                 with telegram_workspace_scope(identity.workspace_id):
-                    settings = await asyncio.to_thread(repo.get_settings, identity.chat_id)
+                    settings = await asyncio.to_thread(
+                        repo.get_settings,
+                        identity.chat_id,
+                        user_id=identity.user_id,
+                        workspace_id=identity.workspace_id,
+                        binding_epoch=identity.binding_epoch,
+                    )
                     if payload.get("scenarioId") is not None:
                         scenario = _scenario_id(payload.get("scenarioId"))
                     else:
