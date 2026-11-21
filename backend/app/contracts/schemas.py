@@ -119,6 +119,21 @@ class Diagnostic(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RuleObservation(BaseModel):
+    """Per-file outcome of one actually instrumented analyzer rule.
+
+    Only rules present here were observed. A missing rule must not be treated
+    as checked; `not_applicable`, `skipped` and `error` are not negative proof.
+    """
+    rule_id: str
+    rule_version: str = "1.0.0"
+    path: str
+    status: str = "not_applicable"  # checked | not_applicable | skipped | error
+    invocations: int = 0
+    findings: int = 0
+    reason: str = ""
+
+
 class Coverage(BaseModel):
     files_scanned: int = 0
     files_skipped: int = 0
@@ -126,6 +141,7 @@ class Coverage(BaseModel):
     rules_executed: List[str] = Field(default_factory=list)
     parser_errors: int = 0
     unresolved_dependencies: int = 0
+    rule_observations: List[RuleObservation] = Field(default_factory=list)
 
 
 class ScanResult(BaseModel):
