@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | P1-1 | высокое (исправлен) | исправлено `113bfeff`; S-1/S-2/S-3 открыты | До `113bfeff` повторная загрузка того же архива давала тот же `snapshotId`, но новый `artifactId`, и canonical publish падал с конфликтом. После `006_snapshot_origins` второй artifact/run принимается; остаточные DB-gaps S-1/S-2 ниже | `backend/app/storage/canonical.py` (fix `113bfeff`); `db/migrations/006_snapshot_origins.up.sql`; старый конфликт — pre-fix `canonical.py:1125` |
 | S-1 | среднее | открыто | `snapshot_content_hashes` принимает произвольный hash без artifact; `runs` затем ссылается на него | `db/migrations/006_snapshot_origins.up.sql:7-14`; проверено temp DB |
-| S-2 | низкое | открыто | `TRUNCATE snapshot_origins` проходит: provenance intake можно стереть | `db/migrations/006_snapshot_origins.up.sql:62-69`; проверено temp DB |
+| S-2 | низкое | открыто | `TRUNCATE snapshot_origins` проходит при TRUNCATE-праве/владельце: provenance intake можно стереть | `db/migrations/006_snapshot_origins.up.sql:62-69`; проверено temp DB |
 | S-3 | среднее | открыто | В `migrate.py MARKERS` нет 006: ручное применение через psql + старт backend = повторный `CREATE TABLE` и падение | `backend/app/storage/migrate.py:23-32`; воспроизведено на temp DB |
 | P1-2 | высокое | исправлено `9083f04` (code review); live e2e не прогнан | Runtime показывает PASS как итог, хотя canonical bundle остаётся `partial` и может быть не опубликован; API/отчёт не отдают `publication`/coverage рядом с вердиктом. `expectedScopesVerified=false` — принятое честное ограничение, его нельзя поднимать в `true` без доказанных scopes | `backend/app/engine/executor.py:300-320`, `593-606`; `backend/app/storage/database.py:468-500`; `backend/app/api/router.py:420-433`, `601-609`; `backend/app/reports/builder.py:44-46` |
 | P2-0 | среднее (продукт) | принятое ограничение | Сравнения и `vetted` недостижимы, пока `expectedScopesVerified=false`: comparison всегда `comparable=false`, `RemediationStore` требует `expected_scopes_verified=true`. Это известная незавершённость, не подделка данных; UI/API должны называть причину явно | `backend/app/codefacts/publish.py:96`; `packages/comparison/index.mjs:369-374`; `backend/app/storage/remediation.py:215-223` |
@@ -45,6 +45,17 @@ backend/app/storage/runtime_guards.sql
 SQL probes выполнялись с `ON_ERROR_STOP=1`, каждый негативный probe — в `BEGIN … ROLLBACK`. Живые проверки comparison engine — `node v22.23.3` на `docs/data-contracts/illustrative-bundle.json`. Чистые функции identity/masking проверены Python-вызовом; ядро сессий/ролей — Python-вызовом с заглушкой `fastapi` (без запуска сервера). Вердикт-guard `9083f04` проверен чтением кода/диффа и сверкой с `docs/verdict-consistency.md`; полный executor run не запускался.
 
 Не проверено: полный backend e2e (в системном Python нет `psycopg`), реальные сканеры на чужом коде, сетевой AI/embedding provider, production RLS/роли, поведение под нагрузкой. Выводы P1-1/P1-2 опираются на код и воспроизведение чистых функций/движка, а не на полный API-прогон.
+
+### Граница доверия: БД-владелец vs приложение
+
+Все «immutable»-гарантии ниже действуют для обычных разрешённых SQL-операций приложения и роли с DML/DDL-правами на таблицы, но **не являются защитой от DB owner/superuser**. Владелец БД может:
+
+- `ALTER TABLE ... DISABLE TRIGGER` / `DROP TRIGGER`, `DROP CONSTRAINT`, `DROP FUNCTION`;
+- `SET session_replication_role = replica` и обойти row-триггеры;
+- переписать `data_contract`/`runtime` строки, `TRUNCATE` таблицы, изменить `public.schema_migrations`;
+- прочитать raw rows и отключить любые проверки.
+
+Это не дефект миграций и не обещание аудита: криптографической защиты от суперпользователя нет. S-1 — обычный `INSERT` приложения/роли (guard отсутствует), поэтому это реальный gap. S-2 — `TRUNCATE` (нужно TRUNCATE-право, обычно у владельца), row-триггеры на него не срабатывают, поэтому provenance теряется. S-3 — ошибка прикладного migration-пути, не суперпользователя. Минимальный фикс — добавить constraint/trigger/marker, **не ослабляя** существующие manifest/hash/immutability guards; для реального admin отдельно нужен least-privilege runtime role и запрет DDL на прикладной роли.
 
 ## 3. Что подтверждено как корректное
 
@@ -118,7 +129,7 @@ if str(row["artifact_id"]) != artifact_id or row["artifact_hash"] != identity["a
 **Остаточные DB-gaps (S-1/S-2):**
 
 - **S-1 (среднее):** `INSERT INTO snapshot_content_hashes` принимает произвольный `artifact_hash` без artifact/origin; после этого `runs` с этим hash принимается FK. Приложение так не пишет, но DB-инвариант «hash принадлежит реальному artifact» ослаблен. Нужен trigger/CHECK, требующий существующий `snapshot_origins` (или artifact) для content hash.
-- **S-2 (низкое):** `TRUNCATE snapshot_origins` проходит (нет `forbid_truncate` для новых таблиц), provenance intake можно стереть; `TRUNCATE snapshot_content_hashes` без CASCADE блокируется FK, с CASCADE — `runs is immutable (TRUNCATE forbidden)`. Добавить `forbid_truncate` на `snapshot_origins` (и content hashes для симметрии).
+- **S-2 (низкое):** `TRUNCATE snapshot_origins` проходит при наличии TRUNCATE-права (обычно владелец таблицы): нет `forbid_truncate` для новых таблиц, provenance intake можно стереть; `TRUNCATE snapshot_content_hashes` без CASCADE блокируется FK, с CASCADE — `runs is immutable (TRUNCATE forbidden)`. Добавить `forbid_truncate` на `snapshot_origins` (и content hashes для симметрии).
 - **S-3 (среднее, миграционный путь):** `backend/app/storage/migrate.py:23-32` не содержит marker для `006_snapshot_origins.up.sql`. `db/README.md` разрешает manual `psql`; после такого применения ledger пуст, marker не найден, следующий старт backend выполняет 006 повторно и падает на `relation "snapshot_content_hashes" already exists` (воспроизведено на temp DB). Нужен marker `to_regclass('data_contract.snapshot_content_hashes') IS NOT NULL` и обновление списка миграций в `db/README.md`.
 
 Направление фикса (оставшееся): content-addressed artifact identity уже есть; закрыть S-1/S-2 и добавить regression «тот же zip дважды» в прикладной путь.
@@ -307,6 +318,7 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 11. Подключить `ai_explanations`/`RemediationStore` к API или убрать их из заявлений о продукте (P3-3).
 12. До реального admin добавить server-side session store/revocation: logout сейчас не отзывает подписанный admin-токен до TTL (A-1).
 13. Закрыть `POST /api/webhook-test` admin-гардом или явно описать его как публичный тестовый приёмник; не считать `role` tenant-изоляцией (A-2, A-3).
+14. Запускать backend под least-privilege ролью без DDL/TRUNCATE и явно документировать, что DB owner/superuser может обойти guards; аудит это не покрывает.
 
 ## 8. Что не подтверждено
 
