@@ -2,11 +2,31 @@
 
 Проверен локальный `dev` после merge, исходный source HEAD `8f35d301a863b3b066f88bea24e24b52bc0a6090`. Область: `backend/app/responsibility/**`, `backend/app/api/responsibility.py`, интеграция и `ResponsibilityPanel`; baseline/auth/TG и уже подтверждённые root ASGI tenant/build proof не повторялись. Проверки делались на disposable PG и synthetic ZIP, без внешних provider-запросов, токенов или отправок.
 
+## PR/reviewers targeted review: 5f0b549
+
+Точный source commit `5f0b5490543927433844eec3f48d2fdd762a6b65`, review merge HEAD `0d17a4f4c03127fb4951effbc9d6ddbb20f6b070`. Предыдущие resource blockers не исправлены этим commit и повторно не запускались. **Release acceptance остаётся открытой до owner fix SHA и targeted recheck.** Внешние provider запросы не выполнялись; ниже прямой вызов owning reducer на synthetic review events, без mock network/pytest.
+
+### Medium — COMMENTED скрывает прежнее решение APPROVED/CHANGES_REQUESTED
+
+`backend/app/responsibility/history.py:180-197` выбирает последний review event по времени, а не последнее решение. Реальный `_review_last_decisions` с `APPROVED` в 01:00 и последующим `COMMENTED` в 02:00 от того же reviewer, для совпадающего head SHA и merge в 03:00, вернул только `COMMENTED, appliesToMerge=true`. Комментарий не отзывает approval/changes-requested решение, но действовавшее решение исчезает из DTO/UI. Нужны независимые decision state и comments/history либо корректное свёртывание только decision transitions.
+
+### Medium — скрытая pagination допускает неполную review историю как полную
+
+`history.py:284-295` получает только первую страницу `reviews?per_page=100`, `_fetch_json` выбрасывает response pagination headers, а `_review_last_decisions` ставит truncated только по числу уникальных reviewer (`:198-201`). Прямой reducer probe со 100 reviews одного reviewer вернул одну строку и `truncated=false`; при существующей второй странице позднее decision будет пропущено, а UI не покажет ограничение и может пометить старое решение «учтено к merge». Подтверждена потеря сигнала неполноты; реальный PR с >100 reviews в этой проверке не запрашивался. Нужен bounded page budget, явный `reviewsTruncated` при недочитанной pagination и запрет выдавать неполную историю за окончательное merged decision.
+
+### Source-read: точная association, bounds и ограничения identity
+
+* Вызов `_fetch_pull_requests(provider, project, commit_sha)` (`history.py:463-466`) использует **snapshot S**, тогда как `history.commit.sha` — **last-file C**. Код association не подменяет S на C. Но DTO рядом с PR не несёт `associationCommitSha`, а UI раскрывает PR под «История изменения» внутри карточки last-file C; явный basis SHA рядом с PR нужен для исключения неверного прочтения. Это source/UI clarity limitation, не доказанная ошибочная provider association.
+* Максимум **3 PR**, detail/reviews только первых **2**, reviews page **100**, output unique reviewers **24** (`MAX_REVIEWERS`), что не равно запрошенному критерию 20. Остальные PR честно `not_loaded`; `pullRequestsTruncated` включается при четвёртом PR. За один cache miss GitHub делает до **6** read requests (file history, PR list, 2 details, 2 reviews); 256 completed cache entries не ограничивают in-flight число запросов, нет singleflight/global semaphore/provider cooldown. Cache key включает path, поэтому PR lookup S повторяется для разных файлов.
+* Wrong-head APPROVED → `appliesToMerge=false`; review после merge исключён; unmerged PR → false — подтверждено прямыми reducer вызовами. UI явно показывает историческое/не доказанное состояние, author/committer не названы виновными.
+* DTO identity хранит только displayName/login, email field не копируется. GitLab author/committer name ошибочно передаётся и как login (`history.py:449-450`), поэтому UI может показать вымышленное `@Full Name`; name из commit не доказывает публичный GitLab username. GitLab reviews честно `unsupported`.
+* Уже подтверждённые post-download byte cap и синхронный async-service work остаются в 5f0b549; новые PR read requests увеличивают цену cache miss. Большой внешний HTTP response/нагрузка provider здесь не запускались.
+
 ## Подтверждённые проблемы
 
 ### High — CODEOWNERS matcher может блокировать event loop на коротком файле
 
-`backend/app/responsibility/codeowners.py:22-52` превращает `*` в `[^/]*`, `**` в `.*` и запускает обычный backtracking regex синхронно. На реальном `SafeArtifactIntake` → frozen snapshot → `load_and_match_codeowners` synthetic CODEOWNERS размером 60 bytes (`*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b @owner`) и безопасном path из 60 `a` за 2 секунды matcher не завершился; child process пришлось остановить. Вызов идёт из `async build_responsibility` через `service.py:118-125`, поэтому один специально сформированный CODEOWNERS может занять общий ASGI loop. Нужен линейный glob matcher или жёсткий лимит сложности/времени в worker thread.
+`backend/app/responsibility/codeowners.py:22-52` превращает `*` в `[^/]*`, `**` в `.*` и запускает обычный backtracking regex синхронно. На реальном `SafeArtifactIntake` → frozen snapshot → `load_and_match_codeowners` synthetic CODEOWNERS размером 60 bytes (точная генерация: `"*" + "a*" * 25 + "b @owner\n"`) и безопасном path из 60 `a` за 2 секунды matcher не завершился; child process пришлось остановить. Вызов идёт из `async build_responsibility` через `service.py:118-125`, поэтому один специально сформированный CODEOWNERS может занять общий ASGI loop. Нужен линейный glob matcher или жёсткий лимит сложности/времени в worker thread.
 
 ### Medium — CODEOWNERS даёт неверную атрибуцию для root `**` и inline comments
 
@@ -15,7 +35,7 @@
 * `**/A.kt @all-levels` не совпал с root path `A.kt`, хотя CODEOWNERS wildcard `**/A.kt` должен включать корень и вложенные каталоги; fallback `* @fallback` был возвращён.
 * Строка `*.kt @backend # explanation` вернула owners `[@backend, #, explanation]`, то есть текст inline comment стал псевдовладельцами. UI затем показывает их как владельцев (`ResponsibilityPanel.tsx`), а `_suggest_role` добавляет их в basis (`service.py:68-87`).
 
-Это конкретные ложные ownership hints, не доказательство доступа к чужим данным. Проверенный matcher также подтвердил, что `/src/` сопоставляется только с `src`-деревом, а пустая ownerless строка не отменяет более раннее `*` — эти два поведения ожидаемы для принятой семантики.
+Также фактический вывод предыдущего proof требует исправления первоначального текста отчёта: `/src/ @root-team` ошибочно совпал с `nested/src/A.kt` (ведущий `/` потерян), а строка `/src/` без owners не сняла прежнее `* @fallback`. Ранее эти два результата были ошибочно названы ожидаемыми; это неверно для GitHub CODEOWNERS root anchoring и явного снятия ownership. Это дополнительные воспроизведённые неправильные ownership hints, не доказательство доступа к чужим данным.
 
 ### Medium — лимит CODEOWNERS entries обходится второй перечиткой
 
