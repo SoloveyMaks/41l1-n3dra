@@ -137,15 +137,15 @@ def _team_b_modules() -> List[str]:
     return names
 
 
-def _trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
-    """Resolve the catalog exactly as Team B does before running its scan.
+def _fallback_trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
+    """Standalone copy of Team B's resolver, used only when the adapter is absent.
 
     Mirrors ``backend.app.integrations.team_b._trusted_advisory_path``: only the
     server-controlled ``CG26_ADVISORY_DB`` (bounded by ``CG26_ADVISORY_ROOT``)
     or the packaged snapshot can be selected. The uploaded project never
     influences this choice.
     """
-    packaged = _TEAM_B_ROOT / "data" / "trusted-advisories.json"
+    packaged = _TEAM_B_ROOT / "advisory-snapshot" / "trusted-advisories.json"
     raw = os.getenv("CG26_ADVISORY_DB", "").strip()
     warning: Optional[str] = None
     path: Optional[Path] = packaged
@@ -180,6 +180,25 @@ def _trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
         "доверенный advisory snapshot не найден; SCA работает без каталога, "
         "SECRET/SAST продолжают анализ"
     )
+
+
+def _trusted_advisory_path() -> Tuple[Optional[Path], Optional[str]]:
+    """Return Team B's selected catalog; fall back only without its contract."""
+    try:
+        from backend.app.integrations.team_b import (
+            _trusted_advisory_path as team_b_resolver,
+        )
+    except ImportError:
+        return _fallback_trusted_advisory_path()
+    try:
+        resolved = team_b_resolver()
+    except Exception:
+        return _fallback_trusted_advisory_path()
+    if isinstance(resolved, tuple) and len(resolved) == 2:
+        return resolved
+    # Older adapters returned only Optional[Path]; their resolver lacks the
+    # packaged-file and warning semantics, so use the conservative copy.
+    return _fallback_trusted_advisory_path()
 
 
 def _catalog_metadata(path: Optional[Path]) -> Tuple[Optional[str], str]:
