@@ -1018,6 +1018,7 @@ export const App: React.FC = () => {
               currentRun={currentRun}
               nodeRuns={nodeRuns}
               events={events}
+              telemetry={runTelemetry}
               plannedNodes={draft.nodes}
               onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
               onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
@@ -1224,6 +1225,7 @@ export const App: React.FC = () => {
             currentRun={currentRun}
             nodeRuns={nodeRuns}
             events={events}
+            telemetry={runTelemetry}
             plannedNodes={draft.nodes}
             onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
             onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}

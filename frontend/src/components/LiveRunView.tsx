@@ -3,9 +3,10 @@ import {
   Play, CheckCircle2, AlertCircle, Loader2, MinusCircle, Clock,
   Terminal, Eye, ChevronRight, RefreshCw, FolderArchive, KeyRound,
   PackageSearch, FileCode2, GitMerge, ShieldAlert, GitFork, Sparkles,
-  FileText, Send,
+  FileText, Send, Network,
 } from 'lucide-react';
 import { NodeKind, NodeRunRecord, RunSummary, WorkflowNode } from '../types';
+import type { NodeTelemetry, RunTelemetry } from '../execution/runTelemetry';
 
 type LiveEvent = {
   seq: number;
@@ -21,6 +22,7 @@ interface LiveRunViewProps {
   currentRun: RunSummary | null;
   nodeRuns: NodeRunRecord[];
   events: LiveEvent[];
+  telemetry: RunTelemetry;
   plannedNodes?: WorkflowNode[];
   onSelectNode: (nodeId: string) => void;
   onRefresh?: () => void;
@@ -59,10 +61,19 @@ type Stage = StageCopy & {
   live?: boolean;
 };
 
+type MapRequestState = 'waiting' | 'ready' | 'blocked';
+
+type MapRequest = {
+  state: MapRequestState;
+  short: string;
+  detail?: string;
+  actionLabel?: string;
+};
+
 const PHASES: Array<{ id: PhaseId; title: string }> = [
   { id: 'snapshot', title: '1. Снимок проекта' },
   { id: 'scanners', title: '2. Сканеры' },
-  { id: 'facts', title: '3. Факты кода и карта доступа' },
+  { id: 'facts', title: '3. Факты кода' },
   { id: 'verdict', title: '4. Политика и ветвление' },
   { id: 'ai', title: '5. AI-анализ' },
   { id: 'report', title: '6. Отчёт и паспорт' },
@@ -77,7 +88,7 @@ const KIND_META: Record<string, { title: string; phase: PhaseId; icon: IconCompo
   secret_scan: { title: 'Сканер секретов', phase: 'scanners', icon: KeyRound, color: 'text-amber-400' },
   sca_scan: { title: 'Сканер зависимостей', phase: 'scanners', icon: PackageSearch, color: 'text-orange-400' },
   kotlin_sast: { title: 'Kotlin SAST', phase: 'scanners', icon: FileCode2, color: 'text-rose-400' },
-  merge_findings: { title: 'Факты кода и карта доступа', phase: 'facts', icon: GitMerge, color: 'text-teal-400' },
+  merge_findings: { title: 'Факты кода', phase: 'facts', icon: GitMerge, color: 'text-teal-400' },
   policy_gate: { title: 'Политика и вердикт', phase: 'verdict', icon: ShieldAlert, color: 'text-emerald-400' },
   condition: { title: 'Ветвление по риску', phase: 'verdict', icon: GitFork, color: 'text-yellow-400' },
   branch_merge: { title: 'Сведение ветвей', phase: 'verdict', icon: GitMerge, color: 'text-indigo-400' },
@@ -140,6 +151,12 @@ const CHIP_TONE: Record<NonNullable<Chip['tone']>, string> = {
   warn: 'border-amber-900/70 bg-amber-950/40 text-amber-300',
   ok: 'border-emerald-900/70 bg-emerald-950/40 text-emerald-300',
   muted: 'border-slate-800 bg-slate-900/70 text-slate-400',
+};
+
+const MAP_STATE_META: Record<MapRequestState, { label: string; chip: string }> = {
+  waiting: { label: 'Ждёт факты кода', chip: 'bg-amber-950 text-amber-300 border-amber-800' },
+  ready: { label: 'По запросу', chip: 'bg-indigo-950 text-indigo-300 border-indigo-800' },
+  blocked: { label: 'Недоступна', chip: 'bg-rose-950 text-rose-300 border-rose-800' },
 };
 
 const asObject = (value: unknown): Record<string, unknown> =>
@@ -211,9 +228,45 @@ function severityChips(findings: unknown[]): Chip[] {
     }));
 }
 
+function codeFactsMapUnavailable(nodeRun: NodeRunRecord): string | undefined {
+  const output = asObject(nodeRun.output_data_masked);
+  const bundle = asObject(output.findings_bundle);
+  for (const item of asArray(bundle.diagnostics)) {
+    const diagnostic = asObject(item);
+    if (
+      asString(diagnostic.source) === 'codefacts' &&
+      asString(asObject(diagnostic.details).code) === 'CF-MAP-UNAVAILABLE'
+    ) {
+      return asString(diagnostic.message) || 'ошибка code facts';
+    }
+  }
+  return undefined;
+}
+
 function describeStage(nodeRun: NodeRunRecord): StageCopy {
   const output = asObject(nodeRun.output_data_masked);
   const kind: string = nodeRun.kind;
+
+  // Never describe a failed or skipped block from empty output: a failed
+  // scanner would otherwise read as "0 findings, 0 files".
+  if (nodeRun.status === 'failed') {
+    return {
+      short: 'Ошибка выполнения блока',
+      detail: nodeRun.error_message || 'Сервер не передал текст ошибки.',
+    };
+  }
+  if (nodeRun.status === 'skipped') {
+    return {
+      short: 'Пропущен: нет активных входных данных',
+      detail: 'Ветка не выбрана или вход не сработал; шаг не влиял на результат.',
+    };
+  }
+  if (nodeRun.status === 'cancelled') {
+    return {
+      short: 'Отменён вместе с запуском',
+      detail: 'Результат по этому шагу не публиковался.',
+    };
+  }
 
   if (kind === 'manual_trigger' || kind === 'schedule_trigger') {
     const trigger = asObject(output.out);
@@ -268,9 +321,7 @@ function describeStage(nodeRun: NodeRunRecord): StageCopy {
     const codeFactsDiagnostics = diagnostics.filter(
       (item) => asString(asObject(item).source) === 'codefacts',
     );
-    const mapUnavailable = codeFactsDiagnostics.find(
-      (item) => asString(asObject(asObject(item).details).code) === 'CF-MAP-UNAVAILABLE',
-    );
+    const mapUnavailableMessage = codeFactsMapUnavailable(nodeRun);
     const codeFactRules = rules.filter(
       (rule) => typeof rule === 'string' && rule.startsWith('CF-'),
     ).length;
@@ -279,18 +330,18 @@ function describeStage(nodeRun: NodeRunRecord): StageCopy {
     const firstCodeFactMessage = asString(asObject(codeFactsDiagnostics[0]).message);
     return {
       short: `Находок: ${findings.length} · файлов: ${asNumber(coverage.files_scanned)} · CF-правил: ${codeFactRules}`,
-      detail: `Связи карты строятся по этому снимку; диагностика: ${diagnostics.length}.`,
+      detail: 'Факты кода собраны. Карта доступа строится отдельно по запросу при открытии.',
       chips: [
         { label: 'Правил', value: String(rules.length), tone: 'muted' },
+        { label: 'Карта', value: 'по запросу', tone: 'muted' },
         { label: 'Ошибок парсера', value: String(parserErrors), tone: parserErrors ? 'warn' : 'muted' },
         { label: 'Зависимостей без версии', value: String(unresolved), tone: unresolved ? 'warn' : 'muted' },
       ],
-      warning: mapUnavailable
-        ? `Карта доступа не построена: ${asString(asObject(mapUnavailable).message) || 'ошибка code facts'}`
+      warning: mapUnavailableMessage
+        ? `Карта доступа не построена: ${mapUnavailableMessage}`
         : codeFactsDiagnostics.length
           ? `Факты кода: ${codeFactsDiagnostics.length} ${plural(codeFactsDiagnostics.length, 'замечание', 'замечания', 'замечаний')}. ${firstCodeFactMessage}`
           : undefined,
-      action: { kind: 'map', label: 'Открыть карту доступа' },
     };
   }
 
@@ -425,6 +476,69 @@ function describeStage(nodeRun: NodeRunRecord): StageCopy {
   };
 }
 
+// The access map is assembled by GET /runs/{id}/security-map, so no SSE event
+// ever says "map built". This state only reports whether the facts stage
+// produced map source; it never fakes a build.
+function describeMapRequest(nodeRuns: NodeRunRecord[], runIsActive: boolean): MapRequest {
+  const facts = [...nodeRuns].reverse().find((nodeRun) => nodeRun.kind === 'merge_findings');
+  if (!facts) {
+    return runIsActive
+      ? {
+          state: 'waiting',
+          short: 'Карта станет доступна после сбора фактов кода.',
+          detail: 'Этап «Факты кода» ещё не завершён; отдельного события построения карты нет.',
+        }
+      : {
+          state: 'blocked',
+          short: 'В этом запуске нет записанного этапа фактов кода.',
+          detail: 'Карта доступа отдаётся только при наличии опубликованных фактов.',
+        };
+  }
+  const unavailable = codeFactsMapUnavailable(facts);
+  if (unavailable) {
+    return {
+      state: 'blocked',
+      short: 'Карта недоступна: ошибка фактов кода.',
+      detail: unavailable,
+    };
+  }
+  if (facts.status === 'failed') {
+    return {
+      state: 'blocked',
+      short: 'Факты кода не собраны: этап завершился ошибкой.',
+      detail: facts.error_message || 'Карту строить не из чего.',
+    };
+  }
+  if (facts.status === 'skipped') {
+    return {
+      state: 'blocked',
+      short: 'Этап фактов кода пропущен.',
+      detail: 'В этом запуске не было активных входных данных для карты.',
+    };
+  }
+  if (facts.status !== 'succeeded') {
+    return {
+      state: 'waiting',
+      short: 'Идёт сбор фактов кода; карта станет доступна после этапа.',
+      detail: 'Статус построения карты не приходит отдельным SSE-событием.',
+    };
+  }
+  if (runIsActive) {
+    return {
+      state: 'waiting',
+      short: 'Факты кода собраны; карта станет доступна после завершения запуска.',
+      detail: 'Канонический набор публикуется в конце запуска, а карта собирается по запросу при открытии.',
+    };
+  }
+  return {
+    state: 'ready',
+    short: 'Карта строится сервером в момент открытия.',
+    detail:
+      'Отдельного SSE-события построения карты нет: endpoint собирает карту по запросу из опубликованных фактов.',
+    actionLabel: 'Открыть карту (построится сейчас)',
+  };
+}
+
 function buildStage(nodeRun: NodeRunRecord): Stage {
   const meta: { title: string; phase: PhaseId; icon: IconComponent; color: string } =
     KIND_META[nodeRun.kind] || {
@@ -496,44 +610,112 @@ function liveStageText(kind: NodeKind | null): string {
   }
 }
 
-function buildLiveStage(
+function buildTelemetryStage(
   nodeId: string,
-  startedAt: string,
+  state: NodeTelemetry,
   runId: string,
   plannedNodes: WorkflowNode[],
   nowMs: number,
 ): Stage {
   const kind = inferNodeKind(nodeId, plannedNodes);
   const meta = kind ? KIND_META[kind] : undefined;
-  const startMs = Date.parse(startedAt);
-  const durationMs = Number.isNaN(startMs) ? 0 : Math.max(0, nowMs - startMs);
+  const status = displayStatus(state.status);
+  const startedAtMs = state.startedAtMs;
+  const durationMs =
+    status === 'running'
+      ? startedAtMs !== undefined
+        ? Math.max(0, nowMs - startedAtMs)
+        : asNumber(state.durationMs)
+      : asNumber(state.durationMs);
+  const startedAt = startedAtMs !== undefined ? new Date(startedAtMs).toISOString() : undefined;
   const nodeRun: NodeRunRecord = {
-    id: `live:${nodeId}`,
+    id: `telemetry:${nodeId}`,
     run_id: runId,
     node_id: nodeId,
     kind: kind ?? 'notify',
-    status: 'running',
+    status: state.status,
     started_at: startedAt,
     duration_ms: durationMs,
     input_data_masked: {},
     output_data_masked: {},
   };
+  const short =
+    status === 'running'
+      ? liveStageText(kind)
+      : status === 'failed'
+        ? 'Блок завершился ошибкой'
+        : status === 'skipped'
+          ? 'Пропущен: нет активных входных данных'
+          : status === 'cancelled'
+            ? 'Отменён вместе с запуском'
+            : status === 'succeeded'
+              ? 'Блок завершён, результат ещё загружается'
+              : 'Ожидает запуска';
+  const detail =
+    status === 'running'
+      ? startedAt
+        ? `Событие старта получено в ${formatClock(startedAt)}. Итог появится после завершения блока.`
+        : 'Статус выполнения получен из SSE.'
+      : status === 'failed'
+        ? state.error || 'Сервер не передал текст ошибки.'
+        : status === 'succeeded'
+          ? 'Статус уже подтверждён SSE; запись блока с выходными данными ещё не загружена.'
+          : undefined;
   return {
     nodeRun,
     title: meta?.title || `Блок ${nodeId}`,
     phase: meta?.phase || 'other',
-    status: 'running',
+    status,
     durationMs,
     icon: meta?.icon || Play,
     color: meta?.color || 'text-slate-400',
-    short: liveStageText(kind),
-    detail: `Событие старта получено в ${formatClock(startedAt)}. Итог появится после завершения блока.`,
+    short,
+    detail,
     chips: [],
-    live: true,
+    live: status === 'running',
+  };
+}
+
+// Planned nodes are shown as queued only while the run is active and only for
+// nodes that have not produced any telemetry yet. A completed run never grows
+// invented stages: its real node_runs already include skipped blocks.
+function buildPlannedStage(node: WorkflowNode, runId: string): Stage {
+  const meta = KIND_META[node.kind];
+  const nodeRun: NodeRunRecord = {
+    id: `queued:${node.id}`,
+    run_id: runId,
+    node_id: node.id,
+    kind: node.kind,
+    status: 'pending',
+    duration_ms: 0,
+    input_data_masked: {},
+    output_data_masked: {},
+  };
+  return {
+    nodeRun,
+    title: meta?.title || node.title || node.kind,
+    phase: meta?.phase || 'other',
+    status: 'queued',
+    durationMs: 0,
+    icon: meta?.icon || Play,
+    color: meta?.color || 'text-slate-400',
+    short: 'Ожидает запуска',
+    detail: 'План сценария: исполнитель ещё не присылал статус этого блока.',
+    chips: [],
   };
 }
 
 const PHASE_RANK = new Map<PhaseId, number>(PHASES.map((phase, index) => [phase.id, index]));
+
+function compareStages(left: Stage, right: Stage): number {
+  const phaseDiff =
+    (PHASE_RANK.get(left.phase) ?? PHASES.length) - (PHASE_RANK.get(right.phase) ?? PHASES.length);
+  if (phaseDiff !== 0) return phaseDiff;
+  const leftStart = left.nodeRun.started_at || '';
+  const rightStart = right.nodeRun.started_at || '';
+  if (leftStart !== rightStart) return leftStart.localeCompare(rightStart);
+  return left.nodeRun.node_id.localeCompare(right.nodeRun.node_id);
+}
 
 function eventLabel(type: string): string {
   const labels: Record<string, string> = {
@@ -560,6 +742,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   currentRun,
   nodeRuns,
   events,
+  telemetry,
   plannedNodes = [],
   onSelectNode,
   onRefresh,
@@ -587,57 +770,42 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   }, [runIsActive]);
 
   const recordedStages = useMemo(
-    () =>
-      nodeRuns
-        .map(buildStage)
-        .sort((left, right) => {
-          const phaseDiff = (PHASE_RANK.get(left.phase) ?? PHASES.length) -
-            (PHASE_RANK.get(right.phase) ?? PHASES.length);
-          if (phaseDiff !== 0) return phaseDiff;
-          const leftStart = left.nodeRun.started_at || '';
-          const rightStart = right.nodeRun.started_at || '';
-          if (leftStart !== rightStart) return leftStart.localeCompare(rightStart);
-          return left.nodeRun.node_id.localeCompare(right.nodeRun.node_id);
-        }),
+    () => nodeRuns.map(buildStage).sort(compareStages),
     [nodeRuns],
   );
 
-  const latestRunning = useMemo(() => {
-    const running = new Map<string, string>();
-    for (const event of events) {
-      if (event.type !== 'node_status' || !event.nodeId) continue;
-      const status = asString(asObject(event.payload).status);
-      if (status === 'running' || status === 'retrying') {
-        running.set(event.nodeId, event.timestamp || '');
-      } else if (status) {
-        running.delete(event.nodeId);
-      }
-    }
-    return running;
-  }, [events]);
-
-  const liveStages = useMemo(() => {
-    if (!runIsActive || !currentRun) return [];
+  // Real per-node statuses from SSE + API. These also cover a reload where the
+  // API node_runs list has not caught up with the latest node_status event.
+  const telemetryStages = useMemo(() => {
+    if (!currentRun) return [];
     const recordedIds = new Set(recordedStages.map((stage) => stage.nodeRun.node_id));
-    return [...latestRunning.entries()]
-      .filter(([nodeId]) => !recordedIds.has(nodeId))
-      .map(([nodeId, startedAt]) =>
-        buildLiveStage(nodeId, startedAt, currentRun.id, plannedNodes, now),
+    return Object.entries(telemetry.nodes)
+      .filter(([nodeId, state]) => !recordedIds.has(nodeId) && state.status !== 'pending')
+      .map(([nodeId, state]) =>
+        buildTelemetryStage(nodeId, state, currentRun.id, plannedNodes, now),
       );
-  }, [runIsActive, currentRun, recordedStages, latestRunning, plannedNodes, now]);
+  }, [currentRun, recordedStages, telemetry.nodes, plannedNodes, now]);
+
+  // Upcoming plan blocks are honest "queued" cards only while the run is
+  // active. A finished run shows recorded/skipped nodes instead of a fake plan.
+  const queuedStages = useMemo(() => {
+    if (!runIsActive || !currentRun) return [];
+    const seen = new Set(
+      [...recordedStages, ...telemetryStages].map((stage) => stage.nodeRun.node_id),
+    );
+    return plannedNodes
+      .filter((node) => !seen.has(node.id))
+      .map((node) => buildPlannedStage(node, currentRun.id));
+  }, [runIsActive, currentRun, recordedStages, telemetryStages, plannedNodes]);
 
   const stages = useMemo(
-    () =>
-      [...recordedStages, ...liveStages].sort((left, right) => {
-        const phaseDiff = (PHASE_RANK.get(left.phase) ?? PHASES.length) -
-          (PHASE_RANK.get(right.phase) ?? PHASES.length);
-        if (phaseDiff !== 0) return phaseDiff;
-        const leftStart = left.nodeRun.started_at || '';
-        const rightStart = right.nodeRun.started_at || '';
-        if (leftStart !== rightStart) return leftStart.localeCompare(rightStart);
-        return left.nodeRun.node_id.localeCompare(right.nodeRun.node_id);
-      }),
-    [recordedStages, liveStages],
+    () => [...recordedStages, ...telemetryStages, ...queuedStages].sort(compareStages),
+    [recordedStages, telemetryStages, queuedStages],
+  );
+
+  const mapRequest = useMemo(
+    () => describeMapRequest(nodeRuns, runIsActive),
+    [nodeRuns, runIsActive],
   );
 
   const groupedStages = useMemo(
@@ -745,6 +913,51 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
         .filter((status) => statusCounts[status] > 0)
         .map((status) => ({ status, width: (statusCounts[status] / totalStages) * 100 }))
     : [];
+
+  const mapMeta = MAP_STATE_META[mapRequest.state];
+  const mapCard = (
+    <section className="space-y-2" data-map-state={mapRequest.state}>
+      <div className="flex items-center gap-2 px-1">
+        <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+          Карта доступа
+        </h3>
+        <span className="text-[10px] text-slate-600">request-time</span>
+      </div>
+      <div className="rounded-xl border border-slate-800 bg-slate-900/80">
+        <div className="flex items-start gap-2.5 p-3">
+          <div className="mt-0.5 rounded-lg border border-slate-700/70 bg-slate-950/50 p-1.5 text-indigo-300">
+            <Network size={16} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-slate-100">Карта доступа</span>
+              <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${mapMeta.chip}`}>
+                {mapMeta.label}
+              </span>
+              <span className="text-[10px] font-mono text-slate-500">без SSE-события</span>
+            </div>
+            <p className="mt-1 text-[11px] leading-snug text-slate-300">{mapRequest.short}</p>
+            {mapRequest.detail && (
+              <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{mapRequest.detail}</p>
+            )}
+          </div>
+        </div>
+        {mapRequest.actionLabel && onOpenMap && (
+          <div className="flex items-center justify-end border-t border-slate-800/80 px-3 py-1.5">
+            <button
+              type="button"
+              onClick={() => openAction('map')}
+              className="flex items-center gap-1 text-[10px] font-medium text-indigo-300 hover:text-indigo-200"
+            >
+              {mapRequest.actionLabel}
+              <ChevronRight size={11} />
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
 
   return (
     <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-950">
@@ -873,7 +1086,8 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
               )}
 
               {groupedStages.map((phase) => (
-                <section key={phase.id} className="space-y-2">
+                <React.Fragment key={phase.id}>
+                <section className="space-y-2">
                   <div className="flex items-center gap-2 px-1">
                     <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
                     <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -892,6 +1106,8 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                       return (
                         <div
                           key={stage.nodeRun.id}
+                          data-stage-id={stage.nodeRun.node_id}
+                          data-stage-status={stage.status}
                           className={`rounded-xl border transition-all ${
                             isSelected
                               ? 'bg-slate-800 border-indigo-500 shadow-md ring-1 ring-indigo-400/50'
@@ -919,7 +1135,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                                     {status.label}
                                   </span>
                                   <span className="text-[10px] font-mono text-slate-500">
-                                    {formatDuration(stage.durationMs)}
+                                    {stage.status === 'queued' ? 'не начат' : formatDuration(stage.durationMs)}
                                   </span>
                                 </div>
                                 <p className="mt-1 text-[11px] leading-snug text-slate-300">{stage.short}</p>
@@ -968,7 +1184,10 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                     })}
                   </div>
                 </section>
+                {phase.id === 'facts' && mapCard}
+                </React.Fragment>
               ))}
+              {!groupedStages.some((phase) => phase.id === 'facts') && mapCard}
             </div>
           </div>
 
