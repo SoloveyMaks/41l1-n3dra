@@ -175,7 +175,7 @@ def create_session(request: Request, response: Response,
                    payload: Optional[Dict[str, Any]] = None):
     payload = payload or {}
     role = payload.get("role", ROLE_USER)
-    if role not in {ROLE_USER, ROLE_ADMIN}:
+    if not isinstance(role, str) or role not in {ROLE_USER, ROLE_ADMIN}:
         raise HTTPException(status_code=400, detail="role должен быть user или admin")
     code = payload.get("accessCode", payload.get("access_code"))
     code_value = code if isinstance(code, str) else None

@@ -37,7 +37,22 @@ POST /api/session {"accessCode":"<admin-code>","role":"admin"}
 
 POST /api/session {"accessCode":"<user-code>","role":"admin"}
 401 Неверный код администратора
+
+POST /api/session {"accessCode":"кириллица-неверно","role":"user"}
+401 Неверный код доступа
+POST /api/session {"accessCode":"😀-wrong","role":"admin"}
+401 Неверный код администратора
+POST /api/session {"accessCode":"<user-code>","role":[]}
+400 role должен быть user или admin
+POST /api/session {"accessCode":"<user-code>","role":{}}
+400 role должен быть user или admin
 ```
+
+Поле `role` принимается только строкой `user` или `admin`: список, объект,
+число, `null` и прочие значения дают `400`, а не внутреннюю ошибку. Коды
+сравниваются как UTF-8 bytes постоянным временем; неверный тип кода или
+не-ASCII/emoji ввод дают обычный `401`, без вывода значений кодов в ответ или
+логи.
 
 Без admin-кода:
 
@@ -140,6 +155,8 @@ admin-маршрутах — `403`.
   guard прошёл (400 из-за отсутствия `CG_TRAINING_PROJECT`);
 - user code в body с `role:admin` — 401, повышения нет;
 - старый v1-токен — user, admin-маршрут 403; подмена подписи — 401;
+- role `[]`/`{}`/число/null — 400; неверная кириллица/emoji в user/admin
+  коде — 401, без 500 и без печати секретов;
 - public без admin-кода — startup OK, `adminAvailable:false`, admin login 503;
 - admin-код, равный user-коду, — admin-вход выключен.
 

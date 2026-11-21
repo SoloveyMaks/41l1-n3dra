@@ -93,7 +93,7 @@ def verify_admin_code(value: Optional[str]) -> bool:
         return False
     if not isinstance(value, str):
         return False
-    return hmac.compare_digest(value.strip(), expected)
+    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
 
 
 def public_config_error() -> Optional[str]:
@@ -115,7 +115,7 @@ def verify_access_code(value: Optional[str]) -> bool:
         return not public_demo()
     if not isinstance(value, str):
         return False
-    return hmac.compare_digest(value.strip(), expected)
+    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
 
 
 def auth_required() -> bool:
@@ -144,7 +144,7 @@ def _sign(payload: str) -> str:
 
 def issue_session(workspace: Optional[str] = None, role: str = ROLE_USER) -> str:
     ws = workspace or workspace_id()
-    if role not in ROLES:
+    if not isinstance(role, str) or role not in ROLES:
         raise ValueError("role должен быть user или admin")
     issued = int(time.time())
     nonce = secrets.token_urlsafe(12)
