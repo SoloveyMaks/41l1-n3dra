@@ -155,13 +155,25 @@ class TelegramRuntime:
             "lastError": self._last_error,
         }
 
+    async def _repo(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Run a sync storage call off the event loop.
+
+        Binding row locks are held by delivery/rebind transactions; any sync
+        psycopg call waiting on them must never block polling, heartbeat, or
+        another HTTP request.
+        """
+        return await asyncio.to_thread(getattr(self.repo, name), *args, **kwargs)
+
+    async def _db(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(getattr(self.db, name), *args, **kwargs)
+
     # --- polling / outbox ---------------------------------------------
     async def _poll_loop(self) -> None:
         if self.api is None:
             return
         key = self.api.bot_key
         try:
-            offset = self.repo.get_cursor(key, 0)
+            offset = await self._repo("get_cursor", key, 0)
         except Exception as exc:  # noqa: BLE001 - DB hiccup must not kill polling forever
             logger.warning("telegram cursor read failed: %s", self._safe_error(exc))
             offset = 0
@@ -201,7 +213,7 @@ class TelegramRuntime:
                     offset = max(offset, update_id + 1)
             if updates:
                 try:
-                    self.repo.set_cursor(key, offset)
+                    await self._repo("set_cursor", key, offset)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("telegram cursor write failed: %s", self._safe_error(exc))
 
@@ -263,17 +275,17 @@ class TelegramRuntime:
             text = ""
         username = sender.get("username") if isinstance(sender.get("username"), str) else None
 
-        if not self.repo.claim_update(update_id, chat_id):
+        if not await self._repo("claim_update", update_id, chat_id):
             return
         try:
             await self._dispatch_text(chat_id, username, text, update_id)
-            self.repo.finish_update(update_id, "done")
+            await self._repo("finish_update", update_id, "done")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             safe = self._safe_error(exc)
             try:
-                self.repo.finish_update(update_id, "failed", safe)
+                await self._repo("finish_update", update_id, "failed", safe)
             except Exception:
                 logger.warning("could not record failed telegram update")
             logger.warning("telegram update %s failed: %s", update_id, safe)
@@ -316,9 +328,9 @@ class TelegramRuntime:
         username: Optional[str],
         argument: str,
     ) -> None:
-        binding = self.repo.get_binding(chat_id)
+        binding = await self._repo("get_binding", chat_id)
         if argument:
-            bound = self.repo.consume_binding_code(argument, chat_id, username)
+            bound = await self._repo("consume_binding_code", argument, chat_id, username)
             if bound is None:
                 await self._reply(
                     chat_id,
@@ -340,11 +352,11 @@ class TelegramRuntime:
         await self._reply(chat_id, "Аккаунт уже привязан.\n\n" + HELP_TEXT)
 
     async def _handle_settings(self, chat_id: int, argument: str) -> None:
-        binding = self.repo.get_binding(chat_id)
+        binding = await self._repo("get_binding", chat_id)
         if binding is None:
             await self._reply(chat_id, "Сначала привяжите аккаунт: /start <код>.")
             return
-        settings = self.repo.get_settings(chat_id)
+        settings = await self._repo("get_settings", chat_id)
         if not argument:
             scenarios = await self._scenarios(binding.workspace_id)
             lines = [
@@ -362,7 +374,7 @@ class TelegramRuntime:
         mode = argument.strip().lower()
         if mode in {"alerts", "jsonc", "both"}:
             try:
-                self.repo.set_settings(
+                await self._repo("set_settings",
                     chat_id, user_id=binding.user_id,
                     workspace_id=binding.workspace_id,
                     binding_epoch=binding.binding_epoch,
@@ -383,7 +395,7 @@ class TelegramRuntime:
                 await self._reply(chat_id, "Такой сценарий не найден в вашем workspace.")
                 return
             try:
-                self.repo.set_settings(
+                await self._repo("set_settings",
                     chat_id, user_id=binding.user_id,
                     workspace_id=binding.workspace_id,
                     binding_epoch=binding.binding_epoch,
@@ -397,13 +409,13 @@ class TelegramRuntime:
         await self._reply(chat_id, "Использование: /settings alerts|jsonc|both или /settings scenario <id>")
 
     async def _handle_status(self, chat_id: int) -> None:
-        binding = self.repo.get_binding(chat_id)
+        binding = await self._repo("get_binding", chat_id)
         if binding is None:
             await self._reply(chat_id, "Аккаунт не привязан. /start <код>.")
             return
-        settings = self.repo.get_settings(chat_id)
+        settings = await self._repo("get_settings", chat_id)
         runs = await self._recent_runs(binding.workspace_id)
-        jobs = self.repo.list_jobs(
+        jobs = await self._repo("list_jobs",
             binding.chat_id, binding.user_id, binding.workspace_id,
             binding.binding_epoch, limit=3,
         )
@@ -435,11 +447,11 @@ class TelegramRuntime:
         repo_url: str,
         update_id: int,
     ) -> None:
-        binding = self.repo.get_binding(chat_id)
+        binding = await self._repo("get_binding", chat_id)
         if binding is None:
             await self._reply(chat_id, "Сначала привяжите аккаунт: /start <код>.")
             return
-        settings = self.repo.get_settings(chat_id)
+        settings = await self._repo("get_settings", chat_id)
         if not settings.scenario:
             scenarios = await self._scenarios(binding.workspace_id)
             lines = ["Сначала выберите сценарий: /settings scenario <id>"]
@@ -452,7 +464,7 @@ class TelegramRuntime:
             await self._reply(chat_id, "Выбранный сценарий больше не существует в вашем workspace.")
             return
         try:
-            job = self.repo.create_job(
+            job = await self._repo("create_job",
                 source_update_id=update_id,
                 chat_id=chat_id,
                 user_id=binding.user_id,
@@ -507,7 +519,7 @@ class TelegramRuntime:
                 return
 
     async def _run_job(self, job_id: str) -> None:
-        job = self.repo.claim_job(
+        job = await self._repo("claim_job",
             job_id, JOB_LEASE_SECONDS, MAX_JOB_RECOVERY_ATTEMPTS
         )
         if job is None:
@@ -516,38 +528,38 @@ class TelegramRuntime:
             self._heartbeat_job(job), name=f"telegram-heartbeat-{job_id}"
         )
         try:
-            if not self.repo.job_lease_valid(job):
+            if not await self._repo("job_lease_valid", job):
                 return
             with telegram_workspace_scope(job.workspace_id):
                 manifest = await self.importer(job.repo_url)
                 # A stale/restarted worker must not create a second run.
-                if not self.repo.job_lease_valid(job):
+                if not await self._repo("job_lease_valid", job):
                     return
-                self.db.save_artifact(manifest)
-                workflow = self.db.get_workflow(job.workflow_id)
+                await self._db("save_artifact", manifest)
+                workflow = await self._db("get_workflow", job.workflow_id)
                 if not workflow or not workflow.get("draft"):
                     raise ValueError("workflow недоступен")
                 revision_id = workflow.get("latest_revision_id")
                 if not revision_id:
                     raise ValueError("workflow revision недоступна")
                 run_id = str(uuid.uuid4())
-                self.db.create_run(
+                await self._db("create_run",
                     run_id=run_id,
                     workflow_id=job.workflow_id,
                     revision_id=str(revision_id),
                     artifact_id=str(manifest["id"]),
                     trigger_type="telegram",
                 )
-                if not self.repo.job_lease_valid(job):
+                if not await self._repo("job_lease_valid", job):
                     return
-                updated = self.repo.set_job_status(
+                updated = await self._repo("set_job_status",
                     job_id, "running", run_id=run_id,
                     binding_epoch=job.binding_epoch,
                     lease_token=job.lease_token,
                 )
                 if updated is None:
                     return
-                if not self.repo.job_lease_valid(job):
+                if not await self._repo("job_lease_valid", job):
                     return
                 await self.executor.execute_run(
                     run_id=run_id,
@@ -557,13 +569,13 @@ class TelegramRuntime:
                     workflow_id=job.workflow_id,
                     revision_id=str(revision_id),
                 )
-                if not self.repo.job_lease_valid(job):
+                if not await self._repo("job_lease_valid", job):
                     return
-                run = self.db.get_run(run_id)
+                run = await self._db("get_run", run_id)
                 if not run:
                     raise ValueError("run не найден после выполнения")
                 terminal = str(run.get("execution_status") or "failed")
-                finished = self.repo.set_job_status(
+                finished = await self._repo("set_job_status",
                     job_id,
                     "succeeded" if terminal == "succeeded" else "failed",
                     run_id=run_id,
@@ -575,7 +587,7 @@ class TelegramRuntime:
                     await self._enqueue_notifications(job, run_id)
         except asyncio.CancelledError:
             try:
-                self.repo.set_job_status(
+                await self._repo("set_job_status",
                     job_id, "cancelled", error="runtime stopped",
                     binding_epoch=job.binding_epoch,
                     lease_token=job.lease_token,
@@ -588,7 +600,7 @@ class TelegramRuntime:
             safe = self._safe_error(exc)
             logger.warning("telegram job %s failed: %s", job_id, safe)
             try:
-                updated = self.repo.set_job_status(
+                updated = await self._repo("set_job_status",
                     job_id, "failed", error=safe,
                     binding_epoch=job.binding_epoch,
                     lease_token=job.lease_token,
@@ -596,7 +608,7 @@ class TelegramRuntime:
             except Exception:
                 updated = None
                 logger.warning("could not record failed telegram job")
-            if updated is not None and self.repo.job_is_current(job):
+            if updated is not None and await self._repo("job_is_current", job):
                 await self._best_effort_message(
                     job.chat_id,
                     "Импорт или запуск не удался. Детерминированный анализ не затронут.",
@@ -606,17 +618,17 @@ class TelegramRuntime:
             await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def _enqueue_notifications(self, job: Any, run_id: str) -> None:
-        if not self.repo.job_is_current(job):
+        if not await self._repo("job_is_current", job):
             return
-        settings = self.repo.get_settings(job.chat_id)
+        settings = await self._repo("get_settings", job.chat_id)
         if settings.delivery_mode in ("alerts", "both"):
-            self.repo.enqueue_outbox(
+            await self._repo("enqueue_outbox",
                 job.chat_id, run_id, "alert",
                 user_id=job.user_id, workspace_id=job.workspace_id,
                 binding_epoch=job.binding_epoch,
             )
         if settings.delivery_mode in ("jsonc", "both"):
-            self.repo.enqueue_outbox(
+            await self._repo("enqueue_outbox",
                 job.chat_id, run_id, "jsonc",
                 user_id=job.user_id, workspace_id=job.workspace_id,
                 binding_epoch=job.binding_epoch,
@@ -624,14 +636,15 @@ class TelegramRuntime:
 
     # --- delivery ------------------------------------------------------
     async def process_outbox_once(self, limit: int = 5) -> int:
-        items = self.repo.claim_outbox(limit=limit)
+        items = await self._repo("claim_outbox", limit=limit)
         for item in items:
             await self._deliver_outbox(item)
         return len(items)
 
     async def _deliver_outbox(self, item: OutboxItem) -> None:
-        def complete(status: str, **kwargs: Any) -> bool:
-            return self.repo.finish_outbox(
+        async def complete(status: str, **kwargs: Any) -> bool:
+            return await self._repo(
+                "finish_outbox",
                 item.id, status,
                 user_id=item.user_id or None,
                 workspace_id=item.workspace_id or None,
@@ -639,12 +652,13 @@ class TelegramRuntime:
                 **kwargs,
             )
 
+        guard_conn = None
         try:
             if not item.user_id or not item.workspace_id:
-                complete("cancelled", error="owner missing")
+                await complete("cancelled", error="owner missing")
                 return
-            if not self.repo.delivery_is_current(item):
-                complete("cancelled", error="owner changed")
+            if not await self._repo("delivery_is_current", item):
+                await complete("cancelled", error="owner changed")
                 return
             if self.api is None:
                 raise TelegramUnavailable("telegram is not configured")
@@ -655,8 +669,12 @@ class TelegramRuntime:
                     text = await self._alert_text(item.run_id)
                     caption = None
                 elif item.kind == "jsonc":
-                    report = build_jsonc_report(self.db, item.run_id, item.workspace_id)
-                    write_jsonc_report(report, item.workspace_id, item.run_id)
+                    report = await asyncio.to_thread(
+                        build_jsonc_report, self.db, item.run_id, item.workspace_id
+                    )
+                    await asyncio.to_thread(
+                        write_jsonc_report, report, item.workspace_id, item.run_id
+                    )
                     text = None
                     caption = (
                         f"NEDRA JSONC: run {item.run_id}\n"
@@ -665,11 +683,14 @@ class TelegramRuntime:
                     )
                 else:
                     raise ValueError("unknown outbox kind")
-            # Final gate: locks the binding row until finish_outbox, so a
-            # concurrent re-bind cannot claim the old delivery in between.
-            with self.repo.delivery_guard(item) as current:
+            # Acquire the binding row lock in a worker thread: waiting for a
+            # concurrent re-bind must not freeze the event loop/heartbeat.
+            guard_conn, current = await asyncio.to_thread(
+                self.repo.acquire_delivery_guard, item
+            )
+            try:
                 if not current:
-                    complete("cancelled", error="owner changed")
+                    await complete("cancelled", error="owner changed")
                     return
                 if item.kind == "alert":
                     await self.api.send_message(item.chat_id, text or "")
@@ -678,11 +699,16 @@ class TelegramRuntime:
                         item.chat_id, report.filename, report.content,
                         caption=caption or "",
                     )
-                if not complete("sent"):
+                if not await complete("sent"):
                     logger.warning("telegram outbox %s finished after cancellation", item.id)
+            finally:
+                await asyncio.to_thread(
+                    self.repo.release_delivery_guard, guard_conn
+                )
+                guard_conn = None
         except asyncio.CancelledError:
             try:
-                complete("pending", error="runtime stopped", retry_delay_seconds=5)
+                await complete("pending", error="runtime stopped", retry_delay_seconds=5)
             except Exception:
                 pass
             raise
@@ -690,21 +716,21 @@ class TelegramRuntime:
             safe = self._safe_error(exc)
             attempts = int(item.attempts)
             if attempts >= MAX_OUTBOX_ATTEMPTS:
-                complete("failed", error=safe)
+                await complete("failed", error=safe)
                 logger.warning("telegram outbox %s exhausted: %s", item.id, safe)
             else:
                 delay = min(
                     OUTBOX_RETRY_MAX_SECONDS,
                     OUTBOX_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
                 )
-                complete("pending", error=safe, retry_delay_seconds=delay)
+                await complete("pending", error=safe, retry_delay_seconds=delay)
                 logger.warning("telegram outbox %s retry in %ss: %s", item.id, delay, safe)
 
     async def _alert_text(self, run_id: str) -> str:
-        run = self.db.get_run(run_id)
+        run = await self._db("get_run", run_id)
         if not run:
             raise ValueError("run missing")
-        ai_count = self._ai_hypothesis_count(run_id)
+        ai_count = await self._ai_hypothesis_count(run_id)
         return "\n".join([
             "NEDRA scan",
             f"Run: {run.get('id')}",
@@ -719,9 +745,9 @@ class TelegramRuntime:
             "JSONC-файл отправляется отдельно, если включён режим jsonc/both.",
         ])
 
-    def _ai_hypothesis_count(self, run_id: str) -> int:
+    async def _ai_hypothesis_count(self, run_id: str) -> int:
         try:
-            for node_run in self.db.get_node_runs(run_id):
+            for node_run in await self._db("get_node_runs", run_id):
                 if node_run.get("kind") != "ai_scan":
                     continue
                 output = node_run.get("output_data_masked") or {}
@@ -753,7 +779,7 @@ class TelegramRuntime:
     async def _scenarios(self, workspace: str) -> List[Dict[str, str]]:
         try:
             with telegram_workspace_scope(workspace):
-                workflows = self.db.list_workflows()
+                workflows = await self._db("list_workflows")
         except Exception:
             return []
         return [
@@ -765,14 +791,14 @@ class TelegramRuntime:
     async def _workflow(self, workspace: str, workflow_id: str) -> Optional[Dict[str, Any]]:
         try:
             with telegram_workspace_scope(workspace):
-                return self.db.get_workflow(workflow_id)
+                return await self._db("get_workflow", workflow_id)
         except Exception:
             return None
 
     async def _recent_runs(self, workspace: str) -> List[Dict[str, Any]]:
         try:
             with telegram_workspace_scope(workspace):
-                return self.db.list_runs(limit=5)
+                return await self._db("list_runs", limit=5)
         except Exception:
             return []
 

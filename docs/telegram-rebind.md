@@ -66,15 +66,37 @@ pending/sending строки прошлого владельца могли пе
   того же владельца возвращается в `pending`.
 - Payload (`alert`/`jsonc`) строится по `item.workspace_id`, а не по текущему
   binding: scope из current binding запрещён.
-- `delivery_guard(item)` открывает транзакцию и делает
-  `SELECT ... FOR UPDATE` на строке binding. Rebind делает тот же lock, поэтому
-  порядок линеаризуется:
+- `acquire_delivery_guard(item)` открывает транзакцию и делает
+  `SELECT ... FOR UPDATE` на строке binding; `release_delivery_guard(conn)`
+  отпускает её. Оба вызова идут через `asyncio.to_thread`, поэтому ожидание
+  rebind-а не блокирует event loop. Rebind делает тот же lock, поэтому порядок
+  линеаризуется:
   - sender взял lock первым → сообщение уходит, пока старый владелец ещё
     актуален, затем rebind;
   - rebind взял lock первым → sender видит новый epoch и отменяет доставку.
 - `finish_outbox` принимает owner/epoch и не переводит `cancelled` в `sent`;
   старая claimed доставка не может ни отправиться под новым владельцем, ни
   «завершиться» после отмены.
+
+## Event loop и DB waits
+
+Sync psycopg может ждать row lock. В async-коде он теперь всегда уходит в
+`asyncio.to_thread`:
+
+- runtime: `_repo()`/`_db()` для binding/job/outbox/settings/run DB-вызовов;
+- `_handle_start` вызывает `consume_binding_code` в worker thread — именно здесь
+  раньше был deadlock: sender держал `FOR UPDATE` через `await send`, а rebind
+  блокировал event loop;
+- API `/telegram/binding`, `/telegram/me`, `/telegram/unbind`,
+  `/telegram/settings`, `/telegram/scenarios` тоже не держат DB-вызовы на loop;
+- delivery-guard acquisition/release выполняются в worker threads, сама
+  транзакция с `FOR UPDATE` живёт через `await send`; rebind ждёт её в своём
+  thread, heartbeat/recovery продолжают тикать.
+
+Порядок остаётся fencing-корректным: если sender взял row lock первым, отправка
+происходит, пока старый owner ещё актуален; если rebind взял lock первым,
+sender видит новый epoch и отменяет доставку. Снять guard без замены нельзя —
+это вернуло бы утечку прошлого владельца.
 
 ## Restart recovery (012)
 
@@ -176,6 +198,27 @@ TELEGRAM RECOVERY SMOKE OK
 подхватывается. Миграция 012 на legacy-БД сохранила running job,
 `recovery_attempts=0`, lease null и разрешила `interrupted`.
 
+## Event-loop evidence
+
+Живой PG17, локальный Bot API stub (без внешних sends):
+
+```text
+recovery012: queued start + stale importing retry
+concurrent delivery/rebind: heartbeat ticks 41 old pending cancelled
+new owner report sent, stale old pending not sent
+API unbind completed off-loop, heartbeat ticks 21
+TG ASYNC SMOKE OK
+```
+
+Сценарий: delivery держит binding `FOR UPDATE` и fake `send_message` уходит в
+`asyncio.sleep(0.2)`; одновременно настоящий `_handle_start` с валидным кодом B
+вызывает `consume_binding_code` в worker thread. Event-loop ticker продолжает
+тикать (41 тик), rebind завершается после отправки, старый pending outbox
+отменяется, новый B run доставляется только B. Отдельно `/api/telegram/unbind`
+ждёт ту же строку в worker thread: 21 тик heartbeat, unbind 200, delivery
+завершается. Recovery 012 после перевода DB-вызовов в threads не
+регрессировал.
+
 ## Ограничения
 
 1. Перенос аккаунта в другой chat (не тот же) по-прежнему удаляет старое
@@ -184,5 +227,6 @@ TELEGRAM RECOVERY SMOKE OK
    отдельная модель «одного активного chat», не затронутая observed A→B
    rebind.
 2. Внешний Bot API в тесте не вызывался: проверены binding/job/outbox/guard
-   уровни; `delivery_guard` сериализует отправку и rebind по строке binding.
+   уровни; `acquire_delivery_guard`/`release_delivery_guard` сериализуют
+   отправку и rebind по строке binding.
 3. `binding_epoch` не отдаётся в публичный DTO; это внутренний fencing token.

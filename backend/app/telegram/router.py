@@ -18,6 +18,7 @@ Example root wiring:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -88,7 +89,9 @@ def create_telegram_router(
     @router.post("/binding")
     async def create_binding(request: Request) -> Dict[str, Any]:
         who = await principal(request)
-        issued = repo.issue_binding_code(who["userId"], who["workspaceId"])
+        issued = await asyncio.to_thread(
+            repo.issue_binding_code, who["userId"], who["workspaceId"]
+        )
         username = _bot_username()
         return {
             **issued,
@@ -101,7 +104,7 @@ def create_telegram_router(
     @router.get("/me")
     async def get_me(request: Request) -> Dict[str, Any]:
         who = await principal(request)
-        binding = repo.get_binding_by_user(who["userId"])
+        binding = await asyncio.to_thread(repo.get_binding_by_user, who["userId"])
         if binding is None:
             return {
                 "bound": False,
@@ -110,7 +113,7 @@ def create_telegram_router(
                 "externalStatus": runtime.status().get("externalStatus"),
                 "proxyConfigured": bool(runtime.status().get("proxyConfigured")),
             }
-        settings = repo.get_settings(binding.chat_id)
+        settings = await asyncio.to_thread(repo.get_settings, binding.chat_id)
         return {
             "bound": True,
             "chatId": binding.chat_id,
@@ -128,14 +131,14 @@ def create_telegram_router(
     @router.post("/unbind")
     async def unbind(request: Request) -> Dict[str, Any]:
         who = await principal(request)
-        removed = repo.delete_binding_for_user(who["userId"])
+        removed = await asyncio.to_thread(repo.delete_binding_for_user, who["userId"])
         return {"bound": False, "removed": removed}
 
     @router.get("/scenarios")
     async def scenarios(request: Request) -> Dict[str, Any]:
         who = await principal(request)
         with telegram_workspace_scope(who["workspaceId"]):
-            workflows = db.list_workflows()
+            workflows = await asyncio.to_thread(db.list_workflows)
         return {
             "items": [
                 {"id": str(item.get("id")), "name": str(item.get("name") or "")}
@@ -147,7 +150,7 @@ def create_telegram_router(
     @router.put("/settings")
     async def update_settings(request: Request, payload: SettingsRequest) -> Dict[str, Any]:
         who = await principal(request)
-        binding = repo.get_binding_by_user(who["userId"])
+        binding = await asyncio.to_thread(repo.get_binding_by_user, who["userId"])
         if binding is None:
             raise HTTPException(
                 status_code=409,
@@ -156,14 +159,15 @@ def create_telegram_router(
         scenario = payload.scenario
         if scenario:
             with telegram_workspace_scope(who["workspaceId"]):
-                workflow = db.get_workflow(scenario)
+                workflow = await asyncio.to_thread(db.get_workflow, scenario)
             if workflow is None:
                 raise HTTPException(
                     status_code=400,
                     detail={"code": "SCENARIO_NOT_FOUND", "message": "Сценарий не найден в workspace"},
                 )
         try:
-            settings = repo.set_settings(
+            settings = await asyncio.to_thread(
+                repo.set_settings,
                 binding.chat_id,
                 user_id=who["userId"],
                 workspace_id=who["workspaceId"],
