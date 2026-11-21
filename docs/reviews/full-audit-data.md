@@ -156,9 +156,9 @@ Sentinel `telegram.binding_epoch_sequence_v1()` возвращает `016`. В m
 
 Точная зависимость: owner commit `52c34600884b1fba8ca96c875bf1d6ddc120689e`, файлы `backend/app/notifications/schema.sql` и `dispatch_guard.sql`. Базовый schema.sql текущего checkout побайтно совпадает с этим commit; forward-файл в моём checkout **ещё отсутствует** и должен приехать пакетом notifications. Чужие SQL/store не изменялись и не копировались из другого checkout.
 
-`storage/database.py` поднимает runtime version с 5 до 6. Публичный `initialize_notification_schema(conn=None)` — единственная точка установки notification schema. Из `init_db` он вызывается **внутри той же connection transaction**, куда сходятся fresh, legacy и upgrade v2/v3/v4/v5/v6; переданный conn не коммитится и не закрывается helper'ом, поэтому version marker, base и forward SQL коммитятся/откатываются вместе. Без conn helper открывает собственное pooled connection, и commit делает выход из его контекста. В обоих режимах порядок один: прочитать оба файла (неполный пакет падает до транзакции и lock), взять `pg_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))`, выполнить base затем forward и проверить boolean NOT NULL `retry_cancelled`, enabled BEFORE ROW INSERT/UPDATE dispatch trigger (tgtype 23) и AFTER ROW INSERT/UPDATE capture trigger (tgtype 21) с ожидаемыми function OIDs. Ошибка прерывает startup; один version=6 без guards не считается готовностью, проверка повторяется на каждом init.
+`storage/database.py` поднимает runtime version с 5 до 6. Публичный `initialize_notification_schema(conn=None)` — единственная точка установки notification schema. Из `init_db` он вызывается **внутри той же connection transaction**, куда сходятся fresh, legacy и upgrade v2/v3/v4/v5/v6; переданный conn не коммитится и не закрывается helper'ом, поэтому version marker, base и forward SQL коммитятся/откатываются вместе. Без conn helper открывает собственное pooled connection, и commit делает выход из его контекста. Установка идёт через readiness/version gate: сначала **без lock и без DDL** проверяется точный контракт — `retry_cancelled boolean NOT NULL DEFAULT false` (через `pg_attrdef` + `pg_get_expr`), строка marker `legacy_active_consent_purge_v1` в `runtime.notification_migrations`, enabled `lock_run_completion_dispatch` (tgtype 23) и `capture_run_completion` (tgtype 21) с ожидаемыми function OIDs. Если контракт точный, helper возвращается: ни advisory wait, ни DDL, поэтому обычный startup больше не берёт ACCESS EXCLUSIVE на `runtime.runs` и не создаёт deadlock-цикл с run completion/workspace dispatch. Иначе — bounded `pg_try_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))` (50×0.1s ≈ 5s), re-check, затем ровно одно выполнение base+forward под `SET LOCAL lock_timeout='5s'` с восстановлением прежнего значения, verify. Нет lock, SQLSTATE 55P03 или verify false → `DatabaseUnavailable`: startup останавливается, бесконечного ожидания нет. Один version=6 без guards не считается готовностью.
 
-Notifications owner commit `87e906710bb1f1c2d136f98774ea792ac449d8cc` заменяет SQL в `store.initialize()` на вызов `initialize_notification_schema()` без conn. Это повторный идемпотентный entry point одного SQL-контракта, не отдельная версия/копия миграции; runtime v6 не добавляет другие notification DDL. Этот commit не является предком HEAD текущего checkout, поэтому интеграция обоих коммитов обязательна: data-helper без notifications-пакета и notifications-store без data-helper'а по отдельности не запускаются. Первая установка forward отменяет legacy active consent только если retry_cancelled ещё отсутствует, поэтому повторный initialize не отменяет новые pending. Правильность этого SQL и гонок не утверждается без PostgreSQL; acceptance owner package ожидает независимого review координатора.
+Notifications owner commit `87e906710bb1f1c2d136f98774ea792ac449d8cc` заменяет SQL в `store.initialize()` на вызов `initialize_notification_schema()` без conn. Это повторный entry point одного SQL-контракта, не отдельная версия/копия миграции; runtime v6 не добавляет другие notification DDL. Этот commit не является предком HEAD текущего checkout, поэтому интеграция обоих коммитов обязательна: data-helper без notifications-пакета и notifications-store без data-helper'а по отдельности не запускаются. По согласованному с независимым review контракту forward пишет marker `legacy_active_consent_purge_v1`: первый marker-run помечает `pending/sending` `retry_cancelled=true` и переводит неавторизованные в `skipped` (authorized in-flight сохраняют статус, `finish()` по lease записывает реальный исход), повторный запуск при наличии marker строки не трогает. Этот marker входит в readiness gate data-helper'а, поэтому guard с marker обязателен в том же merge; старый guard без marker не пройдёт verify, и startup остановится fail-closed. Правильность SQL и гонок без PostgreSQL не утверждается.
 
 ### Выполненная проверка и ограничения follow-up
 
@@ -179,23 +179,32 @@ SQL parser/сервер PostgreSQL недоступен, SQL не исполня
 
 База правки: `5c3ca788ae1a28ded8f77777d4c9e47866e9d44b`. В `backend/app/storage/database.py` внутренний `_ensure_notification_schema(conn)` заменён публичным `initialize_notification_schema(conn=None)`: переданный conn используется как чужая транзакция без commit/close, при `conn=None` helper сам входит в pooled connection (commit — на выходе из контекста). Чтение base+forward вынесено до открытия connection/lock, lock-ключ стал константой `NOTIFICATION_DDL_LOCK`, verification-блок оставлен в общем `_apply_notification_schema`. `init_db` всех веток вызывает helper с conn; runtime version 6 не менялся. Правка закоммичена как `d2ba6210b684ecb3465ec01f82136c41ed5f0c54`. `store.initialize()` в этом checkout всё ещё старый, потому что notifications-commit `87e9067` не предок HEAD; его содержимое и SQL не изменялись.
 
-Проверка без базы:
+Проверка gate без базы:
 
 ```sh
-PYTHONPATH=. python3 /tmp/nedra-audit-data/followup2_probe.py
+PYTHONPATH=. /tmp/nedra-reports-venv/bin/python /tmp/nedra-audit-data/followup2_probe.py
 ```
 
 Фактический вывод — `ALL PROBES PASSED`:
 
-- A: при отсутствующем в checkout `dispatch_guard.sql` helper падает `FileNotFoundError` до вызова `get_pool` (подменён на assert), то есть неполный пакет не открывает транзакцию;
-- B: с переданным conn на нём выполнены ровно 4 statement в порядке advisory-xact-lock → base → forward → verification, параметр lock равен `nedra-completion-notifications-v1`, conn не commit/close;
-- C: `conn=None` открывает и закрывает pooled connection ровно один раз, statements те же, helper сам commit/close не вызывает;
-- D: `ready=false` от verification даёт `DatabaseUnavailable` с остановкой startup;
-- E: AST helper'а не содержит `.commit`/`.close`, `init_db` содержит `initialize_notification_schema(conn)`, `_ensure_notification_schema` отсутствует, версия 6 и ветка `version == 5` на месте;
-- F: определения триггеров в exact-файлах соответствуют проверяемым tgtype 23 (BEFORE INSERT/UPDATE) и 21 (AFTER INSERT/UPDATE);
-- G: повторный запуск объявлен безопасным самим SQL (`IF NOT EXISTS`, `CREATE OR REPLACE`, `DROP TRIGGER IF EXISTS`, а forward добавляет колонку только при её отсутствии внутри `pg_attribute`-проверки).
+- A: при отсутствующем в checkout `dispatch_guard.sql` helper падает `FileNotFoundError` до вызова `get_pool`, то есть неполный пакет не открывает транзакцию;
+- B: точный контракт уже установлен → только catalog reads (`ready` → marker-table → marker-row), без try-lock, без DDL, переданный conn не commit/close;
+- C: контракт не установлен → `pg_try_advisory_xact_lock`, re-check, ровно один base+forward под `set_config('lock_timeout','5s',true)`, verify и восстановление прежнего `lock_timeout`; conn не commit/close;
+- D: lock не получен → ровно 50 попыток try-lock + `pg_sleep(0.1)`, затем `DatabaseUnavailable`, DDL не выполнялся (бесконечного ожидания нет);
+- E: другой startup установил контракт во время ожидания → re-check после lock возвращает без DDL;
+- F: DDL lock timeout (SQLSTATE 55P03) → `DatabaseUnavailable`, startup остановлен;
+- G: scripts выполнились, но verify false → `DatabaseUnavailable`;
+- H: readiness SQL содержит `pg_attrdef`, `pg_get_expr(...) IN ('false', '''f''::boolean')`, `attnotnull`, boolean-тип и marker-константу; helper использует только try-lock, `init_db` вызывает helper, `.commit`/`.close` в helper отсутствуют.
 
-Ограничения и открытая зависимость: `backend/app/notifications/dispatch_guard.sql` **отсутствует в этом checkout и не добавлен мной** — это файл notifications owner (exact blob `6dbb2b18…` из `52c3460`), он должен приехать merge'ем `audit-all-notifications-1122`. До этого helper аварийно останавливает startup (fail-closed, не тихий legacy-режим); store.initialize после merge получит тот же entry point. Executed PostgreSQL нет: транзакционный commit/rollback, каталог-проверки, advisory-lock конкуренция, триггерные тела, повторный initialize и v5→v6 upgrade остаются недоказанными и требуют disposable БД у координатора. Та же база проверена локальным probe, но не живой БД; утверждений о прохождении миграции нет.
+Ограничения и открытая зависимость: `backend/app/notifications/dispatch_guard.sql` **отсутствует в этом checkout и не добавлен мной** — это файл notifications owner. После согласования F2/F3/F8 (reviewer task_1493987bbae8, сообщения msg_75ba2d09c713/msg_0b17cad904ae) readiness gate требует marker `legacy_active_consent_purge_v1`, поэтому в merge обязателен guard-ревизия с этим marker; blob `52c3460` без marker verify не пройдёт и startup остановится fail-closed. До этого helper аварийно останавливает startup (не тихий legacy-режим); store.initialize после merge получит тот же entry point. Executed PostgreSQL нет: транзакционный commit/rollback, каталог-проверки, advisory-lock конкуренция, триггерные тела, повторный initialize и v5→v6 upgrade остаются недоказанными и требуют disposable БД у координатора. Та же база проверена локальным probe, но не живой БД; утверждений о прохождении миграции нет.
+
+### F3/F8: readiness gate вместо DDL на каждом startup
+
+Независимый review (`f2c0a621732eec275569d03bee4a460cec681767`, `docs/reviews/full-audit-notifications-independent.md`) нашёл F3: helper на каждом startup заново исполнял `schema.sql` с `DROP/CREATE TRIGGER` на `runtime.runs`. Это требует ACCESS EXCLUSIVE на таблицу runs и держит блокирующий advisory wait, что даёт deadlock-цикл с workspace advisory lock и terminal run completion; повторный `init_db`+`store.initialize` дублирует DDL. F8: проверялся только `attnotnull`, а не `DEFAULT false`.
+
+Исправление в `storage/database.py`: перед любым DDL выполняется catalog-only readiness (`_notification_contract_ready`): `retry_cancelled` boolean NOT NULL с default false (`pg_attrdef`/`pg_get_expr`), marker-row, оба триггера с ожидаемыми tgtype/function OID/enabled. Ready → возврат без advisory wait и без DDL. Not ready → bounded `pg_try_advisory_xact_lock` 50×0.1s, повторная проверка, одно применение base+forward под `SET LOCAL lock_timeout='5s'` (значение восстанавливается) и verify; нет lock/SQLSTATE 55P03/verify false → `DatabaseUnavailable`. Обычный startup теперь делает только catalog reads, поэтому не берёт lock на runs; первая установка/upgrade остаётся ограниченной по времени и падает fail-closed вместо бесконечного ожидания.
+
+Согласование: reviewer подтверждает marker/готовность и сам правит `store.py`/`dispatch_guard.sql` (F2/F4); data-зона — `database.py`/`migrate`. Точный notifications head с marker на момент этой правки ещё не назван, поэтому combined acceptance остаётся pending до его merge. Живого доказательства отсутствия deadlock/гонок нет — только статическая и fake-conn проверка gate; PostgreSQL запрещён.
 
 ### Compatibility delta: main `98c276e` и перенумерация 013→016
 
@@ -237,6 +246,14 @@ PYTHONPATH=. /tmp/nedra-reports-venv/bin/python /tmp/nedra-audit-data/followup2_
 4. Существующая sequence с `CYCLE`/другим типом/иным описанием останавливает `016`; таблица без bigint `binding_epoch` останавливает `016`; отсутствие `telegram.bindings` останавливает `016`; в обоих случаях ledger-строка `016` не появляется.
 5. БД, где `013_custom_checks` уже применён из main, получает только `016`; дубликата нет.
 6. БД, где sequence вручную ушла выше persisted max, не откатывается назад: `greatest(persisted_max+1, last_value+is_called)`.
+
+**Gate acceptance (F3/F8), disposable DB:**
+
+1. Ready startup не делает DDL: OID триггеров `lock_run_completion_dispatch`/`capture_run_completion` до и после второго старта совпадают; в `pg_locks` нет `AccessExclusiveLock` на `runtime.runs`; advisory-ключ `hashtext('nedra-completion-notifications-v1')` не берётся.
+2. Default: `retry_cancelled boolean NOT NULL DEFAULT false` виден в `\d+ runtime.completion_notifications`; при отсутствии default readiness false.
+3. Marker: строка `legacy_active_consent_purge_v1` в `runtime.notification_migrations`; удаление marker на disposable DB возвращает один purge-прогон guard'а, повторный startup его не повторяет.
+4. Bounded: при удержании notification advisory lock другой сессией startup завершается `DatabaseUnavailable` за ~5s без DDL и без бесконечного ожидания; при удержании ACCESS EXCLUSIVE на `runtime.runs` первый install падает по `lock_timeout` fail-closed.
+5. Guard без marker (старый `52c3460`) не проходит verify → `DatabaseUnavailable`, а не тихое повторение DDL.
 
 **Обязательные negative checks:** отсутствующий `backend/app/notifications/dispatch_guard.sql` → `FileNotFoundError` до открытия транзакции/lock (fail-closed); guards не установились → `DatabaseUnavailable`; версия runtime, не входящая в 2–6, → `DatabaseUnavailable` без молчаливой работы; `store.initialize()` без data-helper'а → ImportError.
 

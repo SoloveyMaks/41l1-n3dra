@@ -43,6 +43,10 @@ RUNTIME_HOOK_SCHEMA_PATH = Path(__file__).with_name("runtime_repository_hooks.sq
 NOTIFICATION_SCHEMA_PATH = Path(__file__).parents[1] / "notifications" / "schema.sql"
 NOTIFICATION_GUARD_PATH = NOTIFICATION_SCHEMA_PATH.with_name("dispatch_guard.sql")
 NOTIFICATION_DDL_LOCK = "nedra-completion-notifications-v1"
+NOTIFICATION_CONTRACT_MARKER = "legacy_active_consent_purge_v1"
+NOTIFICATION_DDL_WAIT_ATTEMPTS = 50
+NOTIFICATION_DDL_WAIT_SECONDS = 0.1
+NOTIFICATION_DDL_LOCK_TIMEOUT = "5s"
 RUNTIME_SCHEMA_VERSION = 6
 LEGACY_RUNTIME_SCHEMA = "runtime_legacy_v1"
 RUNTIME_DDL_LOCK_KEY = int.from_bytes(
@@ -224,35 +228,100 @@ def _create_schema_meta(conn) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS runtime.schema_meta (version integer PRIMARY KEY)")
 
 
-def _apply_notification_schema(conn, scripts: List[str]) -> None:
-    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (NOTIFICATION_DDL_LOCK,))
-    for script in scripts:
-        conn.execute(script)
-    ready = conn.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM pg_attribute
-             WHERE attrelid = to_regclass('runtime.completion_notifications')
-               AND attname = 'retry_cancelled' AND NOT attisdropped
-               AND atttypid = 'boolean'::regtype AND attnotnull
-        ) AND EXISTS (
-            SELECT 1 FROM pg_trigger
-             WHERE tgrelid = to_regclass('runtime.runs')
-               AND tgname = 'lock_run_completion_dispatch'
-               AND NOT tgisinternal AND tgenabled = 'O'
-               AND tgtype = 23
-               AND tgfoid = to_regprocedure('runtime.lock_run_completion_dispatch()')
-        ) AND EXISTS (
-            SELECT 1 FROM pg_trigger
-             WHERE tgrelid = to_regclass('runtime.runs')
-               AND tgname = 'capture_run_completion'
-               AND NOT tgisinternal AND tgenabled = 'O'
-               AND tgtype = 21
-               AND tgfoid = to_regprocedure('runtime.capture_run_completion()')
-        ) AS ready
-        """
+_NOTIFICATION_READY_SQL = """
+    SELECT EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+          JOIN pg_attrdef AS d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+         WHERE a.attrelid = to_regclass('runtime.completion_notifications')
+           AND a.attname = 'retry_cancelled' AND NOT a.attisdropped
+           AND a.atttypid = 'boolean'::regtype AND a.attnotnull
+           AND pg_get_expr(d.adbin, d.adrelid) IN ('false', '''f''::boolean')
+    ) AND EXISTS (
+        SELECT 1 FROM pg_trigger
+         WHERE tgrelid = to_regclass('runtime.runs')
+           AND tgname = 'lock_run_completion_dispatch'
+           AND NOT tgisinternal AND tgenabled = 'O'
+           AND tgtype = 23
+           AND tgfoid = to_regprocedure('runtime.lock_run_completion_dispatch()')
+    ) AND EXISTS (
+        SELECT 1 FROM pg_trigger
+         WHERE tgrelid = to_regclass('runtime.runs')
+           AND tgname = 'capture_run_completion'
+           AND NOT tgisinternal AND tgenabled = 'O'
+           AND tgtype = 21
+           AND tgfoid = to_regprocedure('runtime.capture_run_completion()')
+    ) AS ready
+"""
+
+
+def _notification_contract_ready(conn) -> bool:
+    """True when the exact installed contract needs no further DDL.
+
+    Checks the column type/nullability/default ``false``, the applied forward
+    marker row and the enabled trigger/function pairs. This is a catalog-only
+    read: it takes no advisory lock and runs no DDL, so a normal startup cannot
+    block run completion or dispatch.
+    """
+    row = conn.execute(_NOTIFICATION_READY_SQL).fetchone()
+    if not row or not row["ready"]:
+        return False
+    present = conn.execute(
+        "SELECT to_regclass('runtime.notification_migrations') IS NOT NULL AS present"
     ).fetchone()
-    if not ready or not ready["ready"]:
+    if not present or not present["present"]:
+        return False
+    marker = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM runtime.notification_migrations WHERE name = %s) AS applied",
+        (NOTIFICATION_CONTRACT_MARKER,),
+    ).fetchone()
+    return bool(marker and marker["applied"])
+
+
+def _wait_notification_ddl_lock(conn) -> None:
+    """Take the notification DDL lock with a bounded wait, then fail closed."""
+    for _ in range(NOTIFICATION_DDL_WAIT_ATTEMPTS):
+        locked = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s)) AS locked",
+            (NOTIFICATION_DDL_LOCK,),
+        ).fetchone()["locked"]
+        if locked:
+            return
+        conn.execute("SELECT pg_sleep(%s)", (NOTIFICATION_DDL_WAIT_SECONDS,))
+    raise DatabaseUnavailable(
+        "Notification schema lock не получен за 5s; startup остановлен"
+    )
+
+
+def _apply_notification_schema(conn, scripts: List[str]) -> None:
+    if _notification_contract_ready(conn):
+        return
+    _wait_notification_ddl_lock(conn)
+    # Another startup may have installed the contract while this one waited.
+    if _notification_contract_ready(conn):
+        return
+    previous_timeout = conn.execute(
+        "SELECT current_setting('lock_timeout') AS value"
+    ).fetchone()["value"]
+    conn.execute(
+        "SELECT set_config('lock_timeout', %s, true)",
+        (NOTIFICATION_DDL_LOCK_TIMEOUT,),
+    )
+    try:
+        for script in scripts:
+            conn.execute(script)
+    except DatabaseUnavailable:
+        raise
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) == "55P03":
+            raise DatabaseUnavailable(
+                "Notification DDL не получил lock за 5s; startup остановлен"
+            ) from None
+        raise
+    conn.execute(
+        "SELECT set_config('lock_timeout', %s, true)",
+        (previous_timeout,),
+    )
+    if not _notification_contract_ready(conn):
         raise DatabaseUnavailable("Notification schema/dispatch guards не установлены; startup остановлен")
 
 
@@ -262,7 +331,8 @@ def initialize_notification_schema(conn=None) -> None:
     ``conn`` is the caller's transaction (``init_db``): it is used as-is, so
     runtime version 6 and both scripts commit or roll back together, and this
     function never commits or closes it.  Without ``conn`` an owned pooled
-    connection runs the same statements and commits on its way out.
+    connection runs the same statements and commits on its way out.  A caller
+    that finds the marker contract already installed gets catalog reads only.
     """
     # Read both files before touching the database: an incomplete notification
     # package must fail the startup before any transaction or lock is opened.
