@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.app.codefacts.identity import sha256_hex
+from backend.app.security.redaction import mask_uri_credentials
 
 TEXT_EXTENSIONS = {
     ".kt", ".kts", ".java", ".properties", ".yaml", ".yml", ".json", ".env",
@@ -23,20 +24,18 @@ TEXT_EXTENSIONS = {
 }
 
 MAX_SNIPPET_CHARS = 600
-REDACTION_VERSION = "cg-redaction/1"
+REDACTION_VERSION = "cg-redaction/2"
 
 _PEM_RE = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
     re.DOTALL,
 )
-_URI_CRED_RE = re.compile(
-    r"(?P<scheme>\b(?:jdbc:[a-z]+|https?|postgres(?:ql)?|mysql|amqp|redis)://)"
-    r"(?P<user>[^:@\s/]+):(?P<pass>[^@\s/]+)@",
-    re.IGNORECASE,
-)
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)(?P<key>\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|"
     r"private[_-]?key|access[_-]?key)\b\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\s\"',;]{4,})"
+)
+_ENV_DEFAULT_RE = re.compile(
+    r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*):(?P<value>[^}]*)\}"
 )
 _BEARER_RE = re.compile(r"(?i)(Authorization\s*[:=]\s*[\"']?Bearer\s+)([A-Za-z0-9._~+/=-]{12,})")
 _LONG_TOKEN_RE = re.compile(r"\b(?=[A-Za-z0-9+/_=-]*\d)(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_=-]{32,}\b")
@@ -68,12 +67,13 @@ def mask_text(text: str) -> str:
     if not text:
         return ""
     text = _PEM_RE.sub("[REDACTED PRIVATE KEY]", text)
-    text = _URI_CRED_RE.sub(
-        lambda m: f"{m.group('scheme')}{mask_token(m.group('user'))}:{mask_token(m.group('pass'))}@",
-        text,
-    )
+    text = mask_uri_credentials(text)
     text = _SECRET_ASSIGN_RE.sub(
         lambda m: f"{m.group('key')}{m.group('quote')}{mask_token(m.group('value'))}",
+        text,
+    )
+    text = _ENV_DEFAULT_RE.sub(
+        lambda m: "${" + m.group("name") + ":****}",
         text,
     )
     text = _BEARER_RE.sub(lambda m: f"{m.group(1)}{mask_token(m.group(2))}", text)

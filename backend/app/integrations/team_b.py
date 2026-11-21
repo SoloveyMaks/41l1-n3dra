@@ -24,6 +24,7 @@ from backend.app.codefacts.identity import (
 )
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import map_from_analysis_bundle
+from backend.app.codefacts.source import REDACTION_VERSION
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.schemas import (
     Confidence,
@@ -329,7 +330,7 @@ def persist_team_b_run(*, run_id: str, artifact_id: str, workspace: str,
         "map": mapped["map"],
         "findings": mapped["findings"],
         "analysisBundle": bundle,
-        "redactionVersion": "cg-redaction/1",
+        "redactionVersion": REDACTION_VERSION,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "limitations": [
             "Team B static analyzers; Kotlin/Gradle не исполнялись.",

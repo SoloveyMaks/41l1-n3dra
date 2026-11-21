@@ -34,6 +34,7 @@ from backend.app.artifacts.sample_source import build_zip_from_directory
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
+from backend.app.codefacts.source import REDACTION_VERSION
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.node_registry import get_node_definitions
 from backend.app.contracts.schemas import Finding, WorkflowDraft
@@ -479,7 +480,7 @@ def _load_published_map(run_id: str, workspace: str,
     mapped = map_from_analysis_bundle(published["bundle"])
     if not mapped:
         return None
-    mapped["redactionVersion"] = "cg-redaction/1"
+    mapped["redactionVersion"] = REDACTION_VERSION
     return mapped
 
 
@@ -555,7 +556,7 @@ def get_evidence(run_id: str, evidence_id: str, request: Request):
         "sourceHash": evidence["sourceHash"],
         "location": evidence["location"],
         "maskedFragment": evidence["redactedSnippet"],
-        "redactionVersion": payload.get("redactionVersion", "cg-redaction/1"),
+        "redactionVersion": payload.get("redactionVersion", REDACTION_VERSION),
     }
 
 

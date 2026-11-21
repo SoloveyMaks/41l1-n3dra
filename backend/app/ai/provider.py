@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from backend.app.contracts.schemas import AiProvenance
+from backend.app.security.redaction import mask_uri_credentials
 
 
 class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -51,9 +52,9 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}"), "***"),
     (re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1***"),
     (re.compile(r"(?i)\b((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,;\"']+"), r"\1***"),
+    (re.compile(r"(\$\{[A-Za-z_][A-Za-z0-9_]*:)[^}]+\}"), r"\1****}"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "***"),
-    (re.compile(r"(?i)(://)[^@\s/]+@"), r"\1***@"),
     (
         re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
         "[PRIVATE KEY REDACTED]",
@@ -63,7 +64,7 @@ _SECRET_PATTERNS = (
 
 def mask_sensitive_text(text: str) -> str:
     """Best-effort masking for anything that leaves the process."""
-    masked = text or ""
+    masked = mask_uri_credentials(text or "")
     for pattern, replacement in _SECRET_PATTERNS:
         masked = pattern.sub(replacement, masked)
     return masked

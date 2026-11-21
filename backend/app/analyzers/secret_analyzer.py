@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from backend.app.analyzers.base import BaseAnalyzer
+from backend.app.codefacts.source import mask_text
 from backend.app.contracts.schemas import (
     Confidence, Coverage, Diagnostic, Finding, FindingStatus,
     Location, ScanResult, Severity, TraceStep
@@ -22,14 +23,6 @@ TEXT_EXTENSIONS = {
 }
 
 MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
-
-
-def mask_secret(secret: str) -> str:
-    if len(secret) <= 4:
-        return "****"
-    if len(secret) <= 8:
-        return secret[0] + "****" + secret[-1]
-    return secret[:3] + "****" + secret[-3:]
 
 
 def compute_secret_hmac(secret: str) -> str:
@@ -140,25 +133,20 @@ class SecretAnalyzer(BaseAnalyzer):
                             matches = pattern.finditer(line)
                             for match in matches:
                                 full_match_str = match.group(0)
-                                # Identify matched secret group
-                                if rule_id == "SECRET-URI-CREDENTIALS":
-                                    user_part = match.group(1)
-                                    pass_part = match.group(2)
-                                    masked_val = f"***:{mask_secret(pass_part)}@"
-                                    raw_for_hmac = pass_part
-                                elif rule_id == "SECRET-PRIVATE-KEY":
-                                    masked_val = "-----BEGIN PRIVATE KEY [REDACTED]-----"
+                                # The secret exists only for the fingerprint; it never leaves this scope.
+                                if rule_id == "SECRET-PRIVATE-KEY":
                                     raw_for_hmac = "PRIVATE_KEY_PEM"
+                                elif rule_id == "SECRET-URI-CREDENTIALS":
+                                    raw_for_hmac = full_match_str
                                 else:
-                                    raw_secret = match.group(1) if match.lastindex and match.lastindex >= 1 else full_match_str
-                                    masked_val = mask_secret(raw_secret)
-                                    raw_for_hmac = raw_secret
+                                    raw_for_hmac = (
+                                        match.group(1)
+                                        if match.lastindex and match.lastindex >= 1
+                                        else full_match_str
+                                    )
 
-                                # Safe evidence line
-                                redacted_evidence = line.strip().replace(
-                                    match.group(1) if match.lastindex and match.lastindex >= 1 else full_match_str,
-                                    masked_val
-                                )
+                                # Mask the whole line, including every @ in userinfo.
+                                redacted_evidence = mask_text(line.strip())
 
                                 col_start = match.start() + 1
                                 col_end = match.end() + 1
@@ -194,7 +182,7 @@ class SecretAnalyzer(BaseAnalyzer):
                                     trace=[
                                         TraceStep(
                                             step=1,
-                                            description=f"В файле {rel_path} обнаружен секрет: {masked_val}",
+                                            description=f"В файле {rel_path} обнаружен секрет по правилу {rule_id}",
                                             location=location
                                         )
                                     ],
