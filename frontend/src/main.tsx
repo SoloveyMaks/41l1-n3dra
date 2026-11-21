@@ -2,6 +2,7 @@ import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import MiniApp from './miniapp/MiniApp.tsx'
 
 class RootErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -30,10 +31,12 @@ class RootErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
   }
 }
 
+const isMiniApp = (window.location.pathname.replace(/\/+$/, '') || '/') === '/miniapp'
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <RootErrorBoundary>
-      <App />
+      {isMiniApp ? <MiniApp /> : <App />}
     </RootErrorBoundary>
   </StrictMode>,
 )
