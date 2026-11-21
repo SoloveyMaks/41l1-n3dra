@@ -175,11 +175,16 @@ comparable, reasons) и items: совпадение идемпотентно, л
 произвольный текст: published source и **обязательный** published fixed bundle,
 оба с `origin='scanner'` и `expected_scopes_verified=true`, совместимые
 `static_signature`, checked coverage выбранного `category/path/rule` в обоих
-run-ах и отсутствие того же fingerprint в fixed run. Только тогда плюс
+run-ах и отсутствие того же fingerprint в fixed run. Дополнительно нужен
+published `comparison_items.status='resolved'` именно для этого
+`sourceFindingId` против fixed run/snapshot: `changed` не считается resolved, и
+исчезновение одного fingerprint без этого не доказательство. Только тогда плюс
 `verificationBasis`, `reviewedBy`, `reviewedAt`, `limitations`. Synthetic
 `contract_scenario`/`manual_fixture` не может стать vetted; 0 findings после regex
-без checked coverage — тоже. Content hash и source/verification identity
-фиксируются, повтор exampleId с другой identity — conflict.
+без checked coverage — тоже. Content hash, source/verification identity и
+`limitations` фиксируются; повтор exampleId с другой identity — conflict.
+`reviewedAt` нормализуется в UTC до сравнения, поэтому `Z` и `+00:00` дают один
+момент и не ломают идемпотентный save.
 
 Подготовлены 3 remediation examples, все **draft**: SQL before/after с живым
 `SastAnalyzer` (before `KOTLIN-SQL-INJECTION`, after 0 findings) и два варианта
@@ -225,11 +230,18 @@ workspace и убедитесь, что `get_run`/`get_artifact` по её id в
 `runtime_legacy_v1` после обновления остаётся бэкапом; удалить вручную, когда
 убедились, что данные читаются. Данные в нём не теряются и не переписываются.
 
-`005_canonical_envelope.up.sql` отделяет source envelope от canonical и
-бэкфиллит старые строки `canonical_envelope = source_envelope` (у них ещё не было
-downgrade-копии). Если старая строка публиковалась с downgrade, её canonical
-coverage совпадает с source только формально; для честного canonical её нужно
-перепубликовать. Новые публикации сразу пишут обе копии и оба hash.
+`005_canonical_envelope.up.sql` отделяет source envelope от canonical и для
+старых pre-005 строк **восстанавливает** `canonical_envelope` из уже сохранённых
+`scan_outcomes.coverage_summary` и `graph_coverage.coverage`: те же status/scopes/
+limits, что в SQL. Source, `document_hash` и `envelope_hash` не меняются, republish
+не нужен. Если fact-строка отсутствует, соответствующее coverage консервативно
+помечается `partial` с reason `reconstructed: missing ...`, а не выдаётся за
+complete. Новые публикации сразу пишут обе копии и оба hash.
+
+`provenance.bundleHash` — авторитетный SQL `analysis_bundles.bundle_hash`; его
+нельзя пересчитать из canonical/source envelope и нельзя подменять
+`canonicalHash` (это hash jsonb-копии). UI/validator должны валидировать только
+форму hash и брать значение из storage, а не recompute из coverage.
 
 ## Секреты в ошибках
 
