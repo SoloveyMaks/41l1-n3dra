@@ -8,16 +8,319 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
-from backend.app.reports.language import completeness_label, naturalize
+from backend.app.reports.language import completeness_label, evidence_markdown, naturalize
 from backend.app.storage.database import DatabaseRepository
 
 EXPORT_SCHEMA_VERSION = "nedra-report-export/1"
+
+_SECRET_KEY_WORDS = {
+    "key", "apikey", "accesskey", "secret", "clientsecret", "token", "password",
+    "passwd", "pwd", "authorization", "credential", "credentials", "privatekey",
+    "bearer",
+}
+_SECRET_QUERY_KEYS = {"key", "sig", "signature"}
+_NON_SECRET_SUFFIX_WORDS = {
+    "count", "counts", "id", "ids", "name", "names", "type", "types",
+    "limit", "limits", "max", "min", "total", "length", "size", "usage",
+    "expires", "expiry", "ttl", "at", "version", "versions",
+}
+_PATH_LIKE_KEY_WORDS = {
+    "path", "paths", "url", "urls", "uri", "uris", "endpoint", "endpoints",
+    "route", "routes", "query", "queries", "param", "params", "parameter",
+    "parameters", "baseurl",
+}
+_URL_IN_TEXT_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_BARE_SECRET_PAIR_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9][A-Za-z0-9_.-]*)(\s*[=:]\s*)([^\s,;&\"']+)"
+)
+# A scheme-less reference inside an error string: an absolute path
+# (`/token/<secret>`) or `host.tld/token/<secret>`. A bare word such as
+# `key/value` is ordinary prose and never treated as a path.
+_BARE_PATH_IN_TEXT_RE = re.compile(
+    r"(?<![\w:/.@-])(?:"
+    r"/[^\s\"'<>`()\[\],]+"
+    r"|[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}/[^\s\"'<>`()\[\],]+"
+    r")"
+)
+_PROVENANCE_MAX_DEPTH = 12
+_COVERAGE_STATUS_LABELS = {
+    "complete": "полное",
+    "partial": "частичное",
+    "unavailable": "недоступно",
+    "unknown": "неизвестно",
+}
+
+
+def _name_words(name: str) -> List[str]:
+    """Split CamelCase/snake_case/kebab-case into lowercase words."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
+    return [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
+
+
+def _is_secret_name(name: str, extra_words=()) -> bool:
+    """A credential name, but `promptTokens`/`tokenCount`/`apiKeyId` stay safe."""
+    words = _name_words(name)
+    for index, word in enumerate(words):
+        if word not in _SECRET_KEY_WORDS and word not in extra_words:
+            continue
+        rest = words[index + 1:]
+        if rest and all(item in _NON_SECRET_SUFFIX_WORDS for item in rest):
+            continue
+        return True
+    return False
+
+
+def _is_secret_field(name: str) -> bool:
+    return _is_secret_name(name)
+
+
+def _is_secret_query_key(name: str) -> bool:
+    return _is_secret_name(name, _SECRET_QUERY_KEYS)
+
+
+def _redact_query(query: str) -> str:
+    """Drop values of credential-looking params, keep every other byte as-is."""
+    pairs: List[str] = []
+    changed = False
+    for raw in query.split("&"):
+        key, separator, value = raw.partition("=")
+        if separator and value and _is_secret_query_key(unquote_plus(key)):
+            pairs.append(f"{key}=***")
+            changed = True
+        else:
+            pairs.append(raw)
+    return "&".join(pairs) if changed else query
+
+
+def _redact_path(path: str) -> str:
+    """Drop credential values in path segments while keeping the endpoint shape.
+
+    Covers `/token/<secret>`, `/api/key/<secret>`, matrix params
+    (`;api_key=<secret>`) and `key=value`/`key:value` inside a segment. Known
+    token formats (`sk-…`, `AKIA…`, `ghp_…`) are masked even without a marker.
+    """
+    if not path:
+        return path
+    segments = path.split("/")
+    redacted: List[str] = []
+    previous_is_marker = False
+    for raw in segments:
+        if not raw:
+            redacted.append(raw)
+            continue
+        pieces: List[str] = []
+        for piece in raw.split(";"):
+            key, separator, value = piece.partition("=")
+            if not separator:
+                key, separator, value = piece.partition(":")
+            if separator and value and _is_secret_query_key(unquote_plus(key)):
+                pieces.append(f"{key}{separator}***")
+            else:
+                pieces.append(mask_sensitive_text(piece))
+        segment = ";".join(pieces)
+        if previous_is_marker and segment != "***":
+            segment = "***"
+        redacted.append(segment)
+        decoded = unquote_plus(raw)
+        previous_is_marker = (
+            not any(separator in decoded for separator in "=:;")
+            and _is_secret_query_key(decoded)
+        )
+    return "/".join(redacted)
+
+
+def _sanitize_url(url: str) -> str:
+    """Drop URL userinfo, path and query credentials, keep safe provenance."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return mask_sensitive_text(url)
+    netloc = parts.netloc
+    if "@" in netloc:
+        # Keep the raw authority after userinfo: it preserves IPv6 brackets and
+        # odd ports that `parts.port` would reject on historical values.
+        host = netloc.rsplit("@", 1)[1]
+        netloc = f"***@{host}" if host else "***"
+    return urlunsplit(
+        (parts.scheme, netloc, _redact_path(parts.path),
+         _redact_query(parts.query), parts.fragment)
+    )
+
+
+def _sanitize_reference(value: str) -> str:
+    """Sanitize a URL, a bare path, or a query-like provenance value."""
+    if "://" in value:
+        return _sanitize_text(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return _redact_path(value)
+    netloc = parts.netloc
+    if "@" in netloc:
+        host = netloc.rsplit("@", 1)[1]
+        netloc = f"***@{host}" if host else "***"
+    if netloc or parts.query:
+        return urlunsplit(
+            ("", netloc, _redact_path(parts.path), _redact_query(parts.query), parts.fragment)
+        )
+    if "/" not in value and "=" in value:
+        return _redact_query(value)
+    return _redact_path(value)
+
+
+def _is_path_like_key(name: str) -> bool:
+    return any(word in _PATH_LIKE_KEY_WORDS for word in _name_words(name))
+
+
+def _mask_bare_pairs(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        key = match.group(1)
+        if not _is_secret_query_key(key):
+            return match.group(0)
+        value = match.group(3)
+        # `mask_sensitive_text` already redacts the token after a scheme word.
+        if "authorization" in _name_words(key) and value.lower() in ("bearer", "basic"):
+            return match.group(0)
+        return f"{key}{match.group(2)}***"
+
+    return _BARE_SECRET_PAIR_RE.sub(replace, text)
+
+
+def _sanitize_prose(value: str) -> str:
+    """Prose without a URL scheme: bare secret pairs and credential paths."""
+    text = _mask_bare_pairs(mask_sensitive_text(value))
+    return _BARE_PATH_IN_TEXT_RE.sub(
+        lambda match: _sanitize_reference(match.group(0)), text
+    )
+
+
+def _sanitize_text(value: str) -> str:
+    """Mask secrets in prose without letting the text masker eat URL params."""
+    chunks: List[str] = []
+    cursor = 0
+    for match in _URL_IN_TEXT_RE.finditer(value):
+        chunks.append(_sanitize_prose(value[cursor:match.start()]))
+        chunks.append(_sanitize_url(match.group(0)))
+        cursor = match.end()
+    chunks.append(_sanitize_prose(value[cursor:]))
+    return "".join(chunks)
+
+
+def _sanitize_provenance(value: Any, key: str = "", depth: int = 0) -> Any:
+    """Recursively strip credentials from provenance while keeping safe fields.
+
+    Export is the last boundary before a file leaves the process, so a
+    historical row must not carry URL userinfo, path/query credentials or
+    secret-named fields into JSONC/DOCX. Token counts and endpoint shape stay.
+    """
+    if depth > _PROVENANCE_MAX_DEPTH:
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for name, item in value.items():
+            name = str(name)
+            if _is_secret_field(name) and item not in (None, ""):
+                cleaned[name] = "[REDACTED]"
+            else:
+                cleaned[name] = _sanitize_provenance(item, name, depth + 1)
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_provenance(item, key, depth + 1) for item in value]
+    if isinstance(value, str):
+        if _is_secret_field(key) and value:
+            return "[REDACTED]"
+        if _is_path_like_key(key) and value:
+            return _sanitize_reference(value)
+        return _sanitize_text(value)
+    return value
+
+
+def _contradictory_coverage_warning(passport: Dict[str, Any]) -> Optional[str]:
+    """A passport may claim confirmed completeness while naming another status."""
+    if not passport.get("completeness_known"):
+        return None
+    status = str(passport.get("coverage_status") or "unknown")
+    if status == "complete":
+        return None
+    label = _COVERAGE_STATUS_LABELS.get(status, status)
+    return (
+        "Сохранённый паспорт противоречив: полнота помечена как подтверждённая, "
+        f"но статус покрытия — «{label}». Полнота считается не установленной."
+    )
+
+
+def _display_passport(passport: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Conservative display copy; canonical JSONC passport stays untouched."""
+    result = dict(passport or {})
+    warning = _contradictory_coverage_warning(result)
+    if warning:
+        result["completeness_known"] = False
+        warnings = result.get("coverage_warnings")
+        result["coverage_warnings"] = [
+            *(warnings if isinstance(warnings, list) else []),
+            warning,
+        ]
+    return result
+
+
+def _passport_count(passport: Dict[str, Any], key: str) -> Optional[int]:
+    """A saved count, or None when the passport did not store that measurement."""
+    if key not in passport:
+        return None
+    value = passport.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _passport_rules_count(passport: Dict[str, Any]) -> Optional[int]:
+    if "rules_executed" not in passport:
+        return None
+    rules = passport.get("rules_executed")
+    return len(rules) if isinstance(rules, list) else None
+
+
+def _count_display(value: Optional[int]) -> Any:
+    return "—" if value is None else value
+
+
+def _rewrite_unknown_coverage(text: str, passport: Dict[str, Any]) -> str:
+    """Never present an absent saved measurement as a measured zero."""
+    scanned = _passport_count(passport, "files_scanned")
+    skipped = _passport_count(passport, "files_skipped")
+    if scanned is None or skipped is None:
+        text = re.sub(
+            r"(?m)^Просканировано файлов: \d+; пропущено: \d+\.",
+            "Просканировано файлов: "
+            f"{'неизвестно' if scanned is None else scanned}; пропущено: "
+            f"{'неизвестно' if skipped is None else skipped}.",
+            text,
+        )
+    measurements = {
+        "Проверено файлов": scanned,
+        "Пропущено файлов": skipped,
+        "Строк кода": _passport_count(passport, "lines_of_code"),
+        "Запущено правил": _passport_rules_count(passport),
+        "Ошибок парсера": _passport_count(passport, "parser_errors"),
+        "Неразрешённых зависимостей": _passport_count(passport, "unresolved_dependencies"),
+    }
+    for label, value in measurements.items():
+        if value is None:
+            text = re.sub(
+                rf"(?m)^\| {re.escape(label)} \| [^|]* \|$",
+                f"| {label} | неизвестно |",
+                text,
+            )
+    return text
+
 
 _VERDICT_LABELS = {
     "pass": "нарушений не обнаружено",
@@ -128,7 +431,7 @@ def _safe_trace(value: Any) -> List[Dict[str, Any]]:
             continue
         steps.append({
             "step": item.get("step"),
-            "description": mask_sensitive_text(naturalize(str(item.get("description") or ""))),
+            "description": _sanitize_text(naturalize(str(item.get("description") or ""))),
             "location": _safe_location(item.get("location")),
         })
     return steps
@@ -142,9 +445,9 @@ def _safe_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
         "ruleId": finding.get("ruleId") or finding.get("rule_id"),
         "ruleVersion": finding.get("ruleVersion") or finding.get("rule_version"),
         "severity": finding.get("severity"),
-        "severityBasis": mask_sensitive_text(naturalize(str(finding.get("severityBasis") or ""))),
+        "severityBasis": _sanitize_text(naturalize(str(finding.get("severityBasis") or ""))),
         "confidence": finding.get("confidence"),
-        "confidenceBasis": mask_sensitive_text(naturalize(str(finding.get("confidenceBasis") or ""))),
+        "confidenceBasis": _sanitize_text(naturalize(str(finding.get("confidenceBasis") or ""))),
         "status": finding.get("status") or "inconclusive",
         "primaryLocation": _safe_location(finding.get("primaryLocation")),
         "relatedLocations": [
@@ -154,7 +457,7 @@ def _safe_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
         "redactedEvidence": mask_text(str(finding.get("redactedEvidence") or "")),
         "advisoryIds": list(finding.get("advisoryIds") or []),
         "coverageWarnings": [
-            mask_sensitive_text(str(item)) for item in (finding.get("coverageWarnings") or [])
+            _sanitize_text(str(item)) for item in (finding.get("coverageWarnings") or [])
         ],
     }
 
@@ -183,9 +486,9 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
             "status": item.get("status"),
             "primaryLocation": _safe_location(item.get("primaryLocation")),
             "redactedEvidence": mask_text(str(item.get("redactedEvidence") or "")),
-            "rationale": mask_sensitive_text(naturalize(str(item.get("rationale") or ""))),
-            "remediation": mask_sensitive_text(naturalize(str(item.get("remediation") or ""))),
-            "grounding": item.get("grounding"),
+            "rationale": _sanitize_text(naturalize(str(item.get("rationale") or ""))),
+            "remediation": _sanitize_text(naturalize(str(item.get("remediation") or ""))),
+            "grounding": _sanitize_provenance(item.get("grounding")),
         })
     observations.sort(
         key=lambda item: (
@@ -193,7 +496,7 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
             str(item.get("id") or ""),
         )
     )
-    coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else None
+    coverage = _sanitize_provenance(result.get("coverage")) if isinstance(result.get("coverage"), dict) else None
     limitations = [
         "Гипотеза не подтверждена детерминированными сканерами и не меняет итог проверки.",
         "Модель видела только выбранный фрагмент проекта с удалёнными секретами, а не весь репозиторий.",
@@ -208,14 +511,14 @@ def _safe_ai_scan(result: Any) -> Dict[str, Any]:
                 f"Часть файлов отправлена не полностью: {len(coverage['truncatedFiles'])}."
             )
         for error in (coverage.get("providerErrors") or [])[:5]:
-            limitations.append(f"Ошибка провайдера: {mask_sensitive_text(str(error))}")
+            limitations.append(f"Ошибка провайдера: {_sanitize_text(str(error))}")
     return {
         "status": result.get("status") or "disabled",
         "verified": False,
         "countsAsFindings": False,
         "limitations": limitations,
         "observations": observations,
-        "provenance": result.get("provenance"),
+        "provenance": _sanitize_provenance(result.get("provenance")),
         "coverage": coverage,
     }
 
@@ -307,9 +610,9 @@ def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
 
     technical = {
         "exportSchemaVersion": EXPORT_SCHEMA_VERSION,
-        "aiAnalysis": official.get("aiAnalysis"),
-        "aiScan": ai_scan.get("provenance"),
-        "aiScanCoverage": ai_scan.get("coverage"),
+        "aiAnalysis": _sanitize_provenance(official.get("aiAnalysis")),
+        "aiScan": _sanitize_provenance(ai_scan.get("provenance")),
+        "aiScanCoverage": _sanitize_provenance(ai_scan.get("coverage")),
     }
     return ExportBundle(
         run=run,
@@ -328,6 +631,14 @@ def load_export_bundle(db: DatabaseRepository, run_id: str) -> ExportBundle:
 def build_jsonc(bundle: ExportBundle) -> bytes:
     """Strict-JSON report (JSONC-compatible; no comments, no duplicate source)."""
     run = bundle.run
+    limitations = [
+        "Отчёт собран по сохранённым результатам; повторный анализ и обращения к модели не выполнялись.",
+        "Итог проверки относится к подтверждённому покрытию, а не ко всему проекту.",
+        *bundle.ai_scan.get("limitations", []),
+    ]
+    coverage_warning = _contradictory_coverage_warning(bundle.passport)
+    if coverage_warning:
+        limitations.append(coverage_warning)
     document = {
         "schemaVersion": EXPORT_SCHEMA_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -356,11 +667,7 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
         "securityPassport": bundle.passport,
         "policyResult": bundle.policy,
         "technicalProvenance": bundle.technical,
-        "limitations": [
-            "Отчёт собран по сохранённым результатам; повторный анализ и обращения к модели не выполнялись.",
-            "Итог проверки относится к подтверждённому покрытию, а не ко всему проекту.",
-            *bundle.ai_scan.get("limitations", []),
-        ],
+        "limitations": limitations,
     }
     return json.dumps(document, ensure_ascii=False, indent=2, default=str).encode("utf-8")
 
@@ -371,28 +678,49 @@ def build_markdown(bundle: ExportBundle) -> str:
     from backend.app.reports.builder import ReportBuilder
 
     verdict = bundle.run.get("security_verdict") or "pending"
-    passport = SecurityPassport.model_validate({**bundle.passport, "verdict": verdict})
+    display = _display_passport(bundle.passport)
+    passport = SecurityPassport.model_validate({**display, "verdict": verdict})
     policy = PolicyResult.model_validate({**bundle.policy, "verdict": verdict})
     analysis = bundle.official.get("aiAnalysis") or {}
     items = [
-        item["ai_enrichment"]
+        _sanitize_provenance(item["ai_enrichment"])
         for item in (_frozen_findings(bundle.official) or [])
         if isinstance(item, dict) and isinstance(item.get("ai_enrichment"), dict)
     ]
     explanation = ExplainResult(
         status=analysis.get("status") or "disabled",
-        model=analysis.get("model") or "",
-        summary=analysis.get("summary") or "",
+        model=_sanitize_text(str(analysis.get("model") or "")),
+        summary=_sanitize_text(str(analysis.get("summary") or "")),
         items=items,
     ) if analysis.get("status") not in (None, "disabled") else None
     text = ReportBuilder().build_readable_markdown(
         str(bundle.run.get("id") or ""), bundle.workflow_name, passport, policy,
         [Finding.model_validate(item) for item in bundle.findings], explanation,
         execution_status=str(bundle.run.get("execution_status") or "queued"),
-        ai_scan=bundle.ai_scan,
     )
+    text = _rewrite_unknown_coverage(text, bundle.passport)
     if bundle.report is None:
         text += "\n\nСохранённый отчёт не сформирован; показаны только сохранённые результаты запуска.\n"
+    text += "\n\n## Гипотезы ИИ-сканера\n\n"
+    text += "Гипотезы не подтверждены, не входят в счётчики находок и не меняют итог проверки.\n"
+    scan_status = str(bundle.ai_scan.get("status") or "disabled")
+    text += f"\nСтатус ИИ-сканера: {_AI_SCAN_STATUS_LABELS.get(scan_status, scan_status)}.\n"
+    for item in bundle.ai_scan.get("observations") or []:
+        text += (
+            f"\n### {item.get('ruleClass')} — {_severity_label(item.get('severity'))}\n"
+            f"\n- **ID гипотезы:** `{item.get('id')}`"
+            f"\n- **Где:** `{_location_text(item.get('primaryLocation'))}`"
+            f"\n- **Почему:** {item.get('rationale') or 'без пояснения'}"
+            f"\n- **Что проверить:** {item.get('remediation') or 'без рекомендации'}\n"
+        )
+        if item.get("redactedEvidence"):
+            text += evidence_markdown(item["redactedEvidence"])
+    if not bundle.ai_scan.get("observations"):
+        text += "\nИИ-сканер не сформировал гипотез для этого запуска.\n"
+    if bundle.ai_scan.get("limitations"):
+        text += "\n**Ограничения:**\n"
+    for limitation in bundle.ai_scan.get("limitations") or []:
+        text += f"\n- {_sanitize_text(naturalize(str(limitation)))}"
     return text + "\n"
 
 
@@ -620,7 +948,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
 
     heading = doc.add_heading("Основные показатели", level=1)
     heading.paragraph_format.keep_with_next = True
-    passport = bundle.passport
+    passport = _display_passport(bundle.passport)
     _table(
         doc,
         ["Показатель", "Значение"],
@@ -634,10 +962,10 @@ def build_docx(bundle: ExportBundle) -> bytes:
             ["Подтверждено", bundle.counts["confirmed"]],
             ["Потенциально", bundle.counts["potential"]],
             ["Не определено", bundle.counts["inconclusive"]],
-            ["Проверено файлов", passport.get("files_scanned", "—")],
-            ["Пропущено файлов", passport.get("files_skipped", "—")],
-            ["Запущено правил", len(passport.get("rules_executed") or [])],
-            ["Строк кода", passport.get("lines_of_code", "—")],
+            ["Проверено файлов", _count_display(_passport_count(passport, "files_scanned"))],
+            ["Пропущено файлов", _count_display(_passport_count(passport, "files_skipped"))],
+            ["Запущено правил", _count_display(_passport_rules_count(passport))],
+            ["Строк кода", _count_display(_passport_count(passport, "lines_of_code"))],
             [
                 "Полнота проверки",
                 completeness_label(
@@ -653,9 +981,12 @@ def build_docx(bundle: ExportBundle) -> bytes:
 
     reasons = bundle.policy.get("reasons") if isinstance(bundle.policy.get("reasons"), list) else []
     doc.add_heading("Что проверено", level=1)
+    scanned = _passport_count(passport, "files_scanned")
+    skipped = _passport_count(passport, "files_skipped")
     doc.add_paragraph(
-        f"Просканировано файлов: {passport.get('files_scanned', 0)}; "
-        f"пропущено: {passport.get('files_skipped', 0)}. "
+        "Просканировано файлов: "
+        f"{'неизвестно' if scanned is None else scanned}; пропущено: "
+        f"{'неизвестно' if skipped is None else skipped}. "
         "Результат относится только к указанным правилам и проверенным областям."
     )
     rules = passport.get("rules_executed") or []
@@ -667,19 +998,19 @@ def build_docx(bundle: ExportBundle) -> bytes:
         heading = doc.add_heading("Почему такой итог", level=1)
         heading.paragraph_format.keep_with_next = True
         for reason in reasons:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(reason))), style="List Bullet")
     coverage_reasons = passport.get("coverage_reasons") if isinstance(passport.get("coverage_reasons"), list) else []
     if coverage_reasons:
         heading = doc.add_heading("Что осталось за пределами проверки", level=1)
         heading.paragraph_format.keep_with_next = True
         for reason in coverage_reasons:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(reason))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(reason))), style="List Bullet")
     coverage_warnings = passport.get("coverage_warnings") or []
     if coverage_warnings:
         heading = doc.add_heading("Предупреждения по покрытию", level=2)
         heading.paragraph_format.keep_with_next = True
         for warning in coverage_warnings:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(warning))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(warning))), style="List Bullet")
 
     heading = doc.add_heading("Находки", level=1)
     heading.paragraph_format.keep_with_next = True
@@ -744,7 +1075,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
             doc.add_paragraph("Ограничения:")
             finding_warnings = finding.get("coverageWarnings") or []
             for warning in finding_warnings:
-                doc.add_paragraph(mask_sensitive_text(naturalize(str(warning))), style="List Bullet")
+                doc.add_paragraph(_sanitize_text(naturalize(str(warning))), style="List Bullet")
             if not finding_warnings:
                 doc.add_paragraph(
                     "Отдельные ограничения этой находки не указаны; общие ограничения покрытия сохраняются."
@@ -830,7 +1161,7 @@ def build_docx(bundle: ExportBundle) -> bytes:
     if limitations:
         doc.add_paragraph("Ограничения:")
         for limitation in limitations:
-            doc.add_paragraph(mask_sensitive_text(naturalize(str(limitation))), style="List Bullet")
+            doc.add_paragraph(_sanitize_text(naturalize(str(limitation))), style="List Bullet")
 
     heading = doc.add_heading("Приложение А. Технические сведения", level=1)
     heading.paragraph_format.keep_with_next = True
