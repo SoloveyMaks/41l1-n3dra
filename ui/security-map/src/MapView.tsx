@@ -22,15 +22,19 @@ import type {
   SourceState,
 } from "./types";
 import { sameScope } from "./model";
-import { NODE_WIDTH, computeMapLayout, initialFocusNodeIds } from "./layout";
+import { NODE_WIDTH, computeMapLayout, estimateNodeHeight, initialFocusNodeIds } from "./layout";
 import { NodeIcon, nodeMeta, toneColor } from "./NodeIcon";
 import { SecurityNode, type SecurityNodeData } from "./SecurityNode";
+import { SecurityEdge } from "./SecurityEdge";
+import { buildEdgeRoutes } from "./edgeRouting";
+import { buildExplorationTree, type TreeRow } from "./tree";
 import "@xyflow/react/dist/style.css";
 import "./style.css";
 
 export type MapViewProps = {
   model: MapViewModel;
   loadState: LoadState;
+  logoUrl?: string;
   layout?: SecurityMapLayout;
   selection?: ScopedSelection | null;
   sourceState?: SourceState;
@@ -226,6 +230,9 @@ export function MapView(props: MapViewProps) {
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
   const [railOpen, setRailOpen] = useState(false);
   const [mobileView, setMobileView] = useState<"map" | "details">("map");
+  const [viewMode, setViewMode] = useState<"overview" | "tree">("overview");
+  const [expandedTree, setExpandedTree] = useState<Set<string>>(() => new Set<string>());
+  const [searchQuery, setSearchQuery] = useState("");
   const computed = useMemo(
     () => computeMapLayout(model.nodes, model.edges),
     [model.nodes, model.edges],
@@ -283,10 +290,34 @@ export function MapView(props: MapViewProps) {
     const route = focusIds.find((id) => byId.get(id)?.kind === "route");
     return route ? [route] : readableFocusIds.slice(0, 1);
   }, [focusIds, readableFocusIds, model.nodes]);
+  const explorationRoots = useMemo(
+    () => buildExplorationTree(model.nodes, model.edges, new Set()).roots,
+    [model.nodes, model.edges],
+  );
+  const treeModel = useMemo(
+    () => buildExplorationTree(model.nodes, model.edges, expandedTree),
+    [model.nodes, model.edges, expandedTree],
+  );
+  useEffect(() => {
+    setExpandedTree(new Set(explorationRoots));
+  }, [model.revision, explorationRoots.join("|")]);
+  const searchAll = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    return model.nodes.filter((node) =>
+      `${node.label} ${node.kind} ${node.symbolKey}`.toLowerCase().includes(query),
+    );
+  }, [searchQuery, model.nodes]);
+  const searchResults = searchAll.slice(0, 8);
+  const searchMatchIds = useMemo(
+    () => new Set(searchAll.map((node) => node.id)),
+    [searchAll],
+  );
   const nodesMeasured =
     mapNodes.length > 0 &&
     mapNodes.every((node) => Boolean(node.measured?.width && node.measured?.height));
   const nodeTypes = useMemo(() => ({ securityNode: SecurityNode }), []);
+  const edgeTypes = useMemo(() => ({ securityEdge: SecurityEdge }), []);
   const canvasKey = `${Math.round(canvasSize.width / 50)}x${Math.round(canvasSize.height / 50)}`;
   const [localSelection, setLocalSelection] = useState<Selection | null>(null);
   const [openRequest, setOpenRequest] = useState<EvidenceRequest | null>(null);
@@ -384,12 +415,35 @@ export function MapView(props: MapViewProps) {
   const choose = (value: Selection) => {
     setOpenRequest(null);
     setLocalSelection(value);
+    if (viewMode === "tree" && value.kind === "node") {
+      setExpandedTree((previous: Set<string>) => new Set(previous).add(value.id));
+    }
     props.onSelect?.(value);
     if (typeof window !== "undefined" && window.matchMedia("(max-width: 1100px)").matches) {
       setRailOpen(false);
       setMobileView("details");
     }
   };
+
+  const toggleTree = (id: string) => {
+    setExpandedTree((previous: Set<string>) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectSearchResult = (id: string) => {
+    choose({ kind: "node", id });
+    setSearchQuery("");
+    setExpandedTree((previous: Set<string>) => new Set(previous).add(id));
+    focusViewport([id], 0.7, 1.2);
+  };
+
+  useEffect(() => {
+    if (viewMode === "tree") setRailOpen(true);
+  }, [viewMode]);
 
   const clearSelection = () => {
     setLocalSelection(null);
@@ -483,12 +537,15 @@ export function MapView(props: MapViewProps) {
     }
   }
 
+  const treeVisibleKey = [...treeModel.visibleIds].sort().join("|");
+  const searchMatchKey = [...searchMatchIds].sort().join("|");
   useEffect(() => {
     setMapNodes((current) =>
       current.map((stored) => {
         const item = model.nodes.find((candidate) => candidate.id === stored.id);
         if (!item) return stored;
         const data = stored.data as unknown as SecurityNodeData;
+        const treeHidden = viewMode === "tree" && !treeModel.visibleIds.has(item.id);
         return {
           ...stored,
           selected: node?.id === item.id,
@@ -499,7 +556,8 @@ export function MapView(props: MapViewProps) {
             ).length,
             unknown: unknownNodeIds.has(item.id),
             neighbour: adjacentIds.has(item.id) && node?.id !== item.id,
-            dimmed: hasSelection && !adjacentIds.has(item.id),
+            dimmed: (hasSelection && !adjacentIds.has(item.id)) || treeHidden,
+            searchMatch: searchMatchIds.has(item.id),
           },
         };
       }),
@@ -514,50 +572,59 @@ export function MapView(props: MapViewProps) {
     focusIds.join("|"),
     layout?.viewId,
     JSON.stringify(layout?.nodePositions),
+    viewMode,
+    treeVisibleKey,
+    searchMatchKey,
   ]);
+
+  const edgeRoutes = useMemo(
+    () => buildEdgeRoutes(mapNodes, model.edges),
+    [mapNodes, model.edges],
+  );
 
   const flowEdges: Edge[] = model.edges.map((item) => {
     const selected = edge?.id === item.id;
     const highlighted = selected || (!hasSelection ? false : connectedEdges.has(item.id));
-    const dimmed = hasSelection && !highlighted;
+    const inTree =
+      treeModel.visibleIds.has(item.fromId) && treeModel.visibleIds.has(item.toId);
+    const treeDimmed = viewMode === "tree" && !inTree;
+    const crosslink =
+      viewMode === "tree" && inTree && !treeModel.treeEdgeIds.has(item.id);
+    const dimmed = (hasSelection && !highlighted) || treeDimmed;
     const colour =
       item.resolution === "resolved"
         ? selected
           ? "#c4b5fd"
-          : "#64748b"
+          : crosslink
+            ? "#fbbf24"
+            : "#64748b"
         : item.resolution === "partial"
           ? "#fbbf24"
           : "#f59e0b";
+    const route = edgeRoutes.get(item.id);
     return {
       id: item.id,
+      type: "securityEdge",
       source: item.fromId,
       target: item.toId,
       label: edgeText(item),
       ariaLabel: `Связь ${edgeText(item)}`,
       selected,
       markerEnd: { type: MarkerType.ArrowClosed, color: colour },
+      data: route
+        ? { points: route.points, labelPoint: route.labelPoint }
+        : undefined,
       style: {
         stroke: colour,
         strokeWidth: selected ? 3.2 : 1.7,
-        strokeDasharray: item.resolution === "resolved" ? undefined : "7 6",
+        strokeDasharray:
+          crosslink || item.resolution !== "resolved" ? "7 6" : undefined,
         opacity: dimmed ? 0.32 : 1,
       },
-      labelStyle: {
-        fill: item.resolution === "resolved" ? "#cbd5e1" : "#fcd34d",
-        fontSize: 10,
-        fontWeight: selected ? 700 : 550,
-        textDecoration: selected ? "underline" : "none",
-      },
-      labelBgStyle: {
-        fill: "#0b1220",
-        fillOpacity: 1,
-        stroke: item.resolution === "resolved" ? "#334155" : "#92400e",
-        strokeWidth: 0.8,
-      },
-      labelBgPadding: [7, 4],
-      labelBgBorderRadius: 5,
       interactionWidth: 36,
-      className: `sm-edge sm-edge--${item.resolution}${selected ? " is-selected" : ""}`,
+      className: `sm-edge sm-edge--${item.resolution}${selected ? " is-selected" : ""}${
+        crosslink ? " is-crosslink" : ""
+      }`,
     };
   });
 
@@ -698,7 +765,11 @@ export function MapView(props: MapViewProps) {
       <header className="sm-topbar">
         <div className="sm-brand">
           <span className="sm-brand-icon">
-            <NodeIcon kind="route" size={19} />
+            {props.logoUrl ? (
+              <img src={props.logoUrl} alt="NEDRA" className="sm-brand-logo" />
+            ) : (
+              <NodeIcon kind="route" size={19} />
+            )}
           </span>
           <div>
             <span className="sm-eyebrow">КАРТА ДОСТУПА / СТАТИЧЕСКИЙ АНАЛИЗ</span>
@@ -717,7 +788,61 @@ export function MapView(props: MapViewProps) {
             {plural(model.evidence.length, "доказательство", "доказательства", "доказательств")}
           </span>
         </div>
+        <div className="sm-search">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setSearchQuery("");
+            }}
+            placeholder="Поиск узла…"
+            aria-label="Поиск узлов карты"
+          />
+          {searchQuery.trim() ? (
+            <div className="sm-search-results" role="listbox" aria-label="Результаты поиска">
+              {searchResults.length ? (
+                searchResults.map((item) => {
+                  const meta = nodeMeta(item.kind);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      onClick={() => selectSearchResult(item.id)}
+                    >
+                      <NodeIcon kind={item.kind} size={14} />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{meta.label}</small>
+                      </span>
+                    </button>
+                  );
+                })
+              ) : (
+                <p>Узлы не найдены</p>
+              )}
+            </div>
+          ) : null}
+        </div>
         <div className="sm-actions">
+          <div className="sm-mode-toggle" role="group" aria-label="Режим карты">
+            <button
+              type="button"
+              aria-pressed={viewMode === "overview"}
+              onClick={() => setViewMode("overview")}
+            >
+              Обзор
+            </button>
+            <button
+              type="button"
+              aria-pressed={viewMode === "tree"}
+              onClick={() => setViewMode("tree")}
+            >
+              Дерево
+            </button>
+          </div>
           <span
             className={`sm-health ${unresolvedEdges.length ? "is-warn" : model.coverage.status === "complete" ? "is-ok" : "is-partial"}`}
           >
@@ -759,6 +884,9 @@ export function MapView(props: MapViewProps) {
       <div className="sm-intro">
         <span>Откуда приходит запрос, как проверяется доступ и какие данные затрагиваются.</span>
         <span>Нажмите на стрелку, чтобы увидеть основание.</span>
+        <span className="sm-layer-legend" aria-label="Порядок групп карты">
+          <b>Кто</b><i>→</i><b>Маршрут</b><i>→</i><b>Доступ</b><i>→</i><b>Обработчик</b><i>→</i><b>Данные / операция</b>
+        </span>
       </div>
 
       {unresolvedEdges.length > 0 && (
@@ -807,9 +935,77 @@ export function MapView(props: MapViewProps) {
       <div className={`sm-workspace ${railOpen ? "has-rail" : ""} ${mobileView === "details" ? "show-details" : ""}`}>
         <aside className={`sm-rail ${railOpen ? "is-open" : ""}`} aria-label="Путь и проблемы">
           <div className="sm-rail-head">
-            <span>Путь и проблемы</span>
+            <span>{viewMode === "tree" ? "Дерево исследования" : "Путь и проблемы"}</span>
             <button onClick={() => setRailOpen(false)} aria-label="Закрыть список">×</button>
           </div>
+          {viewMode === "tree" && (
+            <section className="sm-rail-section sm-tree-section">
+              <h2>
+                Соседи <span>{treeModel.rows.length}</span>
+              </h2>
+              <p className="sm-rail-empty sm-tree-meta">
+                Корни: {treeModel.roots.length} · сироты: {treeModel.orphans.length} · перекрёстные связи:{" "}
+                {treeModel.crosslinkEdgeIds.size}
+              </p>
+              <div className="sm-tree">
+                {treeModel.rows.map((row: TreeRow, index) => {
+                  const meta = nodeMeta(row.node.kind);
+                  const expanded = expandedTree.has(row.node.id);
+                  return (
+                    <div
+                      key={`${row.rootId}:${row.node.id}:${row.depth}:${index}`}
+                      className={`sm-tree-row${row.cycle ? " is-cycle" : ""}${
+                        row.crosslink ? " is-crosslink" : ""
+                      }`}
+                      style={{ paddingLeft: `${8 + row.depth * 12}px` }}
+                    >
+                      <button
+                        type="button"
+                        className="sm-tree-toggle"
+                        onClick={() => toggleTree(row.node.id)}
+                        disabled={!row.hasChildren}
+                        aria-label={
+                          row.hasChildren
+                            ? expanded
+                              ? `Свернуть соседей ${row.node.label}`
+                              : `Раскрыть соседей ${row.node.label}`
+                            : "Нет соседей"
+                        }
+                      >
+                        {row.hasChildren ? (expanded ? "−" : "+") : "·"}
+                      </button>
+                      <button
+                        type="button"
+                        className="sm-tree-item"
+                        onClick={() => {
+                          choose({ kind: "node", id: row.node.id });
+                          focusViewport([row.node.id], 0.7, 1.2);
+                        }}
+                      >
+                        <span className="sm-tree-icon">
+                          <NodeIcon kind={row.node.kind} size={13} />
+                        </span>
+                        <span className="sm-tree-copy">
+                          <strong>{row.node.label}</strong>
+                          <small>
+                            {meta.label}
+                            {row.depth === 0 ? " · корень" : ` · шаг ${row.depth}`}
+                          </small>
+                        </span>
+                        {row.cycle ? <em className="sm-tree-badge">цикл</em> : null}
+                        {row.crosslink ? <em className="sm-tree-badge">crosslink</em> : null}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              {treeModel.orphans.length > 0 && (
+                <p className="sm-tree-meta">
+                  Сироты: {treeModel.orphans.map((id) => model.nodes.find((node) => node.id === id)?.label).filter(Boolean).join(", ")}
+                </p>
+              )}
+            </section>
+          )}
           <section className="sm-rail-section">
             <h2>Маршрут <span>{model.edges.length}</span></h2>
             {model.edges.map((item, index) => (
@@ -878,6 +1074,7 @@ export function MapView(props: MapViewProps) {
                 nodes={mapNodes}
                 edges={flowEdges}
                 nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
                 onNodesChange={onNodesChange}
                 onNodeClick={(_, item) => choose({ kind: "node", id: item.id })}
                 onEdgeClick={(_, item) => choose({ kind: "edge", id: item.id })}

@@ -12,6 +12,7 @@ export type SecurityNodeData = {
   unknown?: boolean;
   neighbour?: boolean;
   dimmed?: boolean;
+  searchMatch?: boolean;
 };
 
 const plural = (n: number, one: string, few: string, many: string) => {
@@ -31,9 +32,10 @@ export const SecurityNode = memo(({ data, selected }: NodeProps) => {
     <div
       className={`sm-node sm-node--${tone}${selected ? " is-selected" : ""}${
         node.neighbour ? " is-neighbour" : ""
-      }${node.dimmed ? " is-dimmed" : ""}`}
+      }${node.dimmed ? " is-dimmed" : ""}${node.searchMatch ? " is-search-match" : ""}`}
       data-kind={node.kind}
       data-tone={tone}
+      title={node.label}
     >
       <Handle
         type="target"

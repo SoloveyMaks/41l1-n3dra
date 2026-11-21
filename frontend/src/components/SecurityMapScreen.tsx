@@ -205,6 +205,7 @@ export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) =
         data={data}
         findings={findings}
         loadState={loadState}
+        logoUrl="/nedra.svg"
         error={error}
         sourceState={sourceState}
         onOpenEvidence={openEvidence}
