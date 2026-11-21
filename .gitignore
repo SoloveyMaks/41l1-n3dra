@@ -11,3 +11,4 @@ artifacts/
 *.zip
 *.log
 .DS_Store
+.rag/

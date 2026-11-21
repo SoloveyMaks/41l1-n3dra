@@ -42,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", default=None, help="run UUID from intake")
     parser.add_argument("--snapshot-id", default=None, help="snapshot UUID from intake")
     parser.add_argument("--workflow-revision-id", default=None, help="workflow revision UUID")
+    parser.add_argument(
+        "--rag-store",
+        default=None,
+        help="optional local RAG store directory; the produced bundle is indexed there",
+    )
     args = parser.parse_args(argv)
 
     project = Project(args.root)
@@ -71,6 +76,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"coverage: {[(scan['category'], scan['coverage']['status']) for scan in bundle['scanResults']]}")
     print(f"bundle: {out}")
+
+    if args.rag_store:
+        from rag.store import Store
+
+        store = Store(args.rag_store)
+        indexed = store.ingest_bundle(bundle)
+        stats = store.stats()
+        print(
+            "rag: "
+            f"{indexed['elements']} elements, {indexed['new']} new, {indexed['reused']} reused, "
+            f"{stats['vectors']} vectors, spec {stats['specId']}"
+        )
+        print(f"rag store: {store.path}")
+
     return 0
 
 
