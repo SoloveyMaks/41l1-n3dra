@@ -204,7 +204,7 @@ PYTHONPATH=. /tmp/nedra-reports-venv/bin/python /tmp/nedra-audit-data/followup2_
 
 Исправление в `storage/database.py`: перед любым DDL выполняется catalog-only readiness (`_notification_contract_ready`): `retry_cancelled` boolean NOT NULL с default false (`pg_attrdef`/`pg_get_expr`), marker-row, оба триггера с ожидаемыми tgtype/function OID/enabled. Ready → возврат без advisory wait и без DDL. Not ready → bounded `pg_try_advisory_xact_lock` 50×0.1s, повторная проверка, одно применение base+forward под `SET LOCAL lock_timeout='5s'` (значение восстанавливается) и verify; нет lock/SQLSTATE 55P03/verify false → `DatabaseUnavailable`. Обычный startup теперь делает только catalog reads, поэтому не берёт lock на runs; первая установка/upgrade остаётся ограниченной по времени и падает fail-closed вместо бесконечного ожидания.
 
-Согласование: reviewer подтверждает marker/готовность и сам правит `store.py`/`dispatch_guard.sql` (F2/F4); data-зона — `database.py`/`migrate`. Точный notifications head с marker на момент этой правки ещё не назван, поэтому combined acceptance остаётся pending до его merge. Живого доказательства отсутствия deadlock/гонок нет — только статическая и fake-conn проверка gate; PostgreSQL запрещён.
+Согласование: reviewer подтверждает marker/готовность и сам правит `store.py`/`dispatch_guard.sql` (F2/F4); data-зона — `database.py`/`migrate`. Точный notifications head с marker на момент этой правки ещё не назван, поэтому combined acceptance остаётся pending до его merge. Живого доказательства отсутствия deadlock/гонок нет — только статическая и fake-conn проверка gate; PostgreSQL запрещён. Исправление закоммичено как `cbfc878626dee8f6e5d0f65bf1d5213c5f7cedfd`.
 
 ### Compatibility delta: main `98c276e` и перенумерация 013→016
 
