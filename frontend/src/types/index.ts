@@ -124,6 +124,13 @@ export interface NodeDefinition {
   default_config: Record<string, any>;
 }
 
+export interface SessionState {
+  authenticated: boolean;
+  authRequired: boolean;
+  workspaceId: string;
+  expiresInSec: number;
+}
+
 export interface ArtifactManifest {
   id: string;
   filename: string;

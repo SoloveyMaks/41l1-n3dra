@@ -24,7 +24,7 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -33,6 +33,7 @@ from backend.app.codefacts.identity import (
     manifest_hash,
     sha256_hex,
     snapshot_uuid,
+    storage_manifest_hash,
     workspace_id,
 )
 from backend.app.codefacts.store import CodeFactsStore
@@ -49,6 +50,7 @@ MAX_FILE_BYTES = int(os.getenv("CG_MAX_FILE_BYTES", str(25 * 1024 * 1024)))
 MAX_COMPRESSION_RATIO = int(os.getenv("CG_MAX_COMPRESSION_RATIO", "200"))
 MAX_PATH_DEPTH = int(os.getenv("CG_MAX_PATH_DEPTH", "32"))
 MAX_PATH_LENGTH = 512
+ARTIFACT_TTL_SECONDS = int(os.getenv("CG_ARTIFACT_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 CHUNK = 1024 * 1024
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -157,13 +159,15 @@ def build_snapshot_from_directory(root: Path, workspace: str) -> Dict[str, Any]:
     if not files:
         raise SafeIntakeError("В артефакте нет файлов")
     files.sort(key=lambda item: tuple(item["path"].split("/")))
-    mhash = manifest_hash(files)
-    sid = snapshot_uuid(mhash)
+    source_hash = manifest_hash(files)
+    mhash = storage_manifest_hash(files)
+    sid = snapshot_uuid(mhash, workspace)
     return {
         "schemaVersion": "cg-snapshot/1",
         "workspaceId": workspace,
         "snapshotId": sid,
         "manifestHash": mhash,
+        "sourceManifestHash": source_hash,
         "files": files,
         "createdAt": _now(),
     }
@@ -349,13 +353,15 @@ class SafeArtifactIntake:
                 raise
 
             records.sort(key=lambda item: tuple(item["path"].split("/")))
-            mhash = manifest_hash(records)
-            sid = snapshot_uuid(mhash)
+            source_hash = manifest_hash(records)
+            mhash = storage_manifest_hash(records)
+            sid = snapshot_uuid(mhash, workspace)
             snapshot = {
                 "schemaVersion": "cg-snapshot/1",
                 "workspaceId": ws,
                 "snapshotId": sid,
                 "manifestHash": mhash,
+                "sourceManifestHash": source_hash,
                 "artifactHash": archive_hash,
                 "files": records,
                 "createdAt": _now(),
@@ -378,6 +384,9 @@ class SafeArtifactIntake:
             "gradle_file_count": _count_gradle(paths),
             "extracted_path": str(target_dir),
             "created_at": _now(),
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=max(60, ARTIFACT_TTL_SECONDS))
+            ).isoformat(),
             "workspace_id": ws,
             "snapshot_id": sid,
             "snapshot_manifest_hash": mhash,
@@ -395,6 +404,7 @@ class SafeArtifactIntake:
             "gradleFileCount": manifest["gradle_file_count"],
             "filename": safe_name,
             "createdAt": manifest["created_at"],
+            "expiresAt": manifest["expires_at"],
         }
         self.store.save_artifact_meta(ws, artifact_id, meta)
         return manifest

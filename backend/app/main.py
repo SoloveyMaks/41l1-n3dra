@@ -14,23 +14,29 @@ from backend.app.api.session import (
     session_from_request,
     set_session_cookie,
     secret_is_ephemeral,
+    public_demo,
+    public_config_error,
 )
 
 logger = logging.getLogger("App")
 
-# Same-origin public demo: unsafe API methods require a signed session cookie.
-# POST /api/session is the explicit bootstrap; GET requests from the same origin
-# receive the cookie automatically so the built frontend keeps working.
-_SESSION_EXEMPT = {"/api/session", "/api/webhook-test"}
+# Local mode keeps the same-origin CSRF/session guard and may auto-issue a cookie
+# on GET. Public demo (CG_PUBLIC_DEMO=1) requires the access-code login and never
+# auto-issues a cookie; all /api except /api/session and /api/health stay closed.
+_LOCAL_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health", "/api/webhook-test"}
+_PUBLIC_SESSION_EXEMPT = {"/api/session", "/api/session/logout", "/api/health"}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    config_error = public_config_error()
+    if config_error:
+        raise RuntimeError(config_error)
     if secret_is_ephemeral():
         logger.warning(
             "CG_SESSION_SECRET не задан: используется эфемерный секрет процесса. "
-            "Для публичного demo задайте секрет в окружении вне репозитория."
+            "Это допустимо только для локального режима; для CG_PUBLIC_DEMO=1 секрет обязателен."
         )
     scheduler.start()
     yield
@@ -64,22 +70,31 @@ async def same_origin_session(request: Request, call_next):
     if not path.startswith("/api"):
         return await call_next(request)
     if request.method == "OPTIONS":
-        # CORS middleware (если настроен allowlist) должен сам ответить на preflight.
         return await call_next(request)
     if not request_origin_allowed(request):
         return JSONResponse({"detail": "Запрос с чужого origin запрещён"}, status_code=403)
 
+    public = public_demo()
+    exempt = _PUBLIC_SESSION_EXEMPT if public else _LOCAL_SESSION_EXEMPT
     session = session_from_request(request)
     is_safe = request.method in _SAFE_METHODS
-    exempt = path in _SESSION_EXEMPT
-    if not is_safe and not exempt and not session:
+
+    if public:
+        if path not in exempt and not session:
+            return JSONResponse(
+                {"detail": "Требуется вход по коду доступа", "authRequired": True},
+                status_code=401,
+            )
+        return await call_next(request)
+
+    if not is_safe and path not in exempt and not session:
         return JSONResponse(
-            {"detail": "Нужна same-origin сессия: сначала POST /api/session"},
+            {"detail": "Нужна same-origin сессия: сначала POST /api/session", "authRequired": False},
             status_code=401,
         )
 
     response = await call_next(request)
-    if is_safe and not session and not exempt:
+    if is_safe and not session and path not in exempt:
         set_session_cookie(response, issue_session(), request)
         response.headers["Cache-Control"] = "no-store"
     return response
