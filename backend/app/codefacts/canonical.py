@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -366,7 +367,7 @@ class CanonicalMapBuilder:
             return None
         try:
             return make_location(
-                source, int(loc.startLine), int(loc.endLine),
+                replace(source, text=source.raw.decode("utf-8")), int(loc.startLine), int(loc.endLine),
                 int(loc.startColumn), int(loc.endColumn),
             )
         except (ValueError, IndexError):
@@ -528,7 +529,7 @@ class CanonicalMapBuilder:
                     continue
                 anchor["secretHmac"] = hmac_evidence(
                     self._anchor_key, "SECRET", finding.ruleId,
-                    primary_location["path"], str(primary_location["line"]), context,
+                    primary_location["path"], str(primary_location["line"]), context, finding.fingerprint,
                 )
             fingerprint = _fingerprint(category, finding.ruleId, anchor)
             if fingerprint in seen_fingerprints:

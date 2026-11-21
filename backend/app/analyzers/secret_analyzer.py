@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import List, Tuple
@@ -14,8 +15,7 @@ from backend.app.contracts.schemas import (
     Location, ScanResult, Severity, TraceStep
 )
 
-# Secret HMAC key for internal session hashing (prevents rainbow table attacks on short passwords)
-HMAC_SECRET_KEY = b"cyber-garden-2026-secret-hmac-salt"
+_LOCAL_HMAC_KEY = secrets.token_bytes(32)
 
 TEXT_EXTENSIONS = {
     ".kt", ".kts", ".java", ".properties", ".yaml", ".yml",
@@ -27,7 +27,9 @@ MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
 
 
 def compute_secret_hmac(secret: str) -> str:
-    return hmac.new(HMAC_SECRET_KEY, secret.encode("utf-8", errors="ignore"), hashlib.sha256).hexdigest()[:16]
+    configured = (os.getenv("CG26_HMAC_KEY") or os.getenv("CG_ANCHOR_HMAC_KEY") or os.getenv("CG_SESSION_SECRET") or "").strip()
+    key = configured.encode("utf-8") if configured else _LOCAL_HMAC_KEY
+    return hmac.new(key, secret.encode("utf-8", errors="ignore"), hashlib.sha256).hexdigest()[:16]
 
 
 class SecretAnalyzer(BaseAnalyzer):
