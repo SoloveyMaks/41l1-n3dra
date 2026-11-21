@@ -119,7 +119,17 @@ def create_telegram_router(
                 "externalStatus": runtime.status().get("externalStatus"),
                 "proxyConfigured": bool(runtime.status().get("proxyConfigured")),
             }
-        settings = await asyncio.to_thread(repo.get_settings, binding.chat_id)
+        settings = await asyncio.to_thread(
+            repo.get_settings, binding.chat_id, user_id=who["userId"],
+            workspace_id=who["workspaceId"], binding_epoch=binding.binding_epoch,
+        )
+        fresh = await asyncio.to_thread(repo.get_binding_by_user, who["userId"])
+        if fresh is None or (
+            fresh.chat_id != binding.chat_id
+            or fresh.workspace_id != who["workspaceId"]
+            or fresh.binding_epoch != binding.binding_epoch
+        ):
+            return {"bound": False, "settings": None}
         return {
             "bound": True,
             "chatId": binding.chat_id,

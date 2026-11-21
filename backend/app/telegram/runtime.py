@@ -596,6 +596,12 @@ class TelegramRuntime:
                 return item.get("name") or scenario_id
         return f"{scenario_id} (недоступен)"
 
+    async def _binding_settings(self, binding: Any):
+        return await self._repo(
+            "get_settings", binding.chat_id, user_id=binding.user_id,
+            workspace_id=binding.workspace_id, binding_epoch=binding.binding_epoch,
+        )
+
     async def _current_view(self, binding: Any, text: str, markup: Any) -> tuple:
         fresh = await self._repo("get_binding", binding.chat_id)
         if fresh is None or (
@@ -610,7 +616,7 @@ class TelegramRuntime:
     async def _main_view(
         self, binding: Any, sender_id: int, notice: Optional[str] = None,
     ) -> tuple:
-        settings = await self._repo("get_settings", binding.chat_id)
+        settings = await self._binding_settings(binding)
         scenarios = await self._scenarios(binding.workspace_id)
         lines = []
         if notice:
@@ -636,7 +642,7 @@ class TelegramRuntime:
         page: int = 0,
         notice: Optional[str] = None,
     ) -> tuple:
-        settings = await self._repo("get_settings", binding.chat_id)
+        settings = await self._binding_settings(binding)
         scenarios = await self._scenarios(binding.workspace_id)
         pages = scenario_page_count(len(scenarios), SCENARIO_PAGE_SIZE)
         safe_page = max(0, min(int(page), pages - 1))
@@ -665,7 +671,7 @@ class TelegramRuntime:
         return await self._current_view(binding, "\n".join(lines), markup)
 
     async def _status_view(self, binding: Any, sender_id: int) -> tuple:
-        settings = await self._repo("get_settings", binding.chat_id)
+        settings = await self._binding_settings(binding)
         scenarios = await self._scenarios(binding.workspace_id)
         runs = await self._recent_runs(binding.workspace_id)
         jobs = await self._repo("list_jobs",
@@ -1100,7 +1106,7 @@ class TelegramRuntime:
         if binding is None:
             await self._render_binding(chat_id, chat_id, None)
             return
-        settings = await self._repo("get_settings", chat_id)
+        settings = await self._binding_settings(binding)
         if not settings.scenario:
             text, markup = await self._settings_view(
                 binding, chat_id,
@@ -1273,7 +1279,7 @@ class TelegramRuntime:
     async def _enqueue_notifications(self, job: Any, run_id: str) -> None:
         if not await self._repo("job_is_current", job):
             return
-        settings = await self._repo("get_settings", job.chat_id)
+        settings = await self._binding_settings(job)
         if settings.delivery_mode in ("alerts", "both"):
             await self._repo("enqueue_outbox",
                 job.chat_id, run_id, "alert",

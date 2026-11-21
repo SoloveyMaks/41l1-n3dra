@@ -463,15 +463,27 @@ class TelegramRepository:
             ).fetchone()
         return row is not None
 
-    def get_settings(self, chat_id: int) -> Settings:
+    def get_settings(self, chat_id: int, *, user_id: Optional[str] = None,
+                     workspace_id: Optional[str] = None,
+                     binding_epoch: Optional[int] = None) -> Settings:
+        if any(value is not None for value in (user_id, workspace_id, binding_epoch)):
+            if user_id is None or workspace_id is None or binding_epoch is None:
+                raise ValueError("Нужна полная идентичность привязки")
         with get_pool().connection() as conn:
             row = conn.execute(
                 "SELECT s.* FROM telegram.settings s "
                 "JOIN telegram.bindings b ON b.chat_id = s.chat_id "
                 "JOIN account.users u ON u.user_id = b.user_id "
                 "AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL "
-                "WHERE s.chat_id = %s",
-                (int(chat_id),),
+                "WHERE s.chat_id = %s "
+                "AND (%s::uuid IS NULL OR b.user_id = %s) "
+                "AND (%s::uuid IS NULL OR b.workspace_id = %s) "
+                "AND (%s::bigint IS NULL OR b.binding_epoch = %s)",
+                (int(chat_id), _uuid(user_id, "userId") if user_id else None,
+                 _uuid(user_id, "userId") if user_id else None,
+                 _uuid(workspace_id, "workspaceId") if workspace_id else None,
+                 _uuid(workspace_id, "workspaceId") if workspace_id else None,
+                 binding_epoch, binding_epoch),
             ).fetchone()
         return _settings(row, int(chat_id))
 
