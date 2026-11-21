@@ -89,9 +89,15 @@ def create_telegram_router(
     @router.post("/binding")
     async def create_binding(request: Request) -> Dict[str, Any]:
         who = await principal(request)
-        issued = await asyncio.to_thread(
-            repo.issue_binding_code, who["userId"], who["workspaceId"]
-        )
+        try:
+            issued = await asyncio.to_thread(
+                repo.issue_binding_code, who["userId"], who["workspaceId"]
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "ACCOUNT_UNAVAILABLE", "message": "Аккаунт недоступен"},
+            ) from None
         username = _bot_username()
         return {
             **issued,
