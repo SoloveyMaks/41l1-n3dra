@@ -59,7 +59,7 @@ function BindForm({
           />
         </div>
         <p id="mini-bind-hint" className="mini-help">
-          Нажмите Start в боте NEDRA — он пришлёт код обычным сообщением. Код действует один раз.
+          Откройте веб-кабинет NEDRA → Telegram и создайте код привязки. Введите его здесь. Код действует один раз.
         </p>
       </div>
 
@@ -121,11 +121,9 @@ export function GateScreen({ kind, message, onRetry, onOpenCabinet, onReopen, bi
           <p className="mini-note">
             Логин и пароль здесь не запрашиваются. Вход возможен только через Telegram.
           </p>
-          {noInitData && (
-            <button type="button" className="mini-btn mini-btn--primary mini-btn--block" onClick={onRetry}>
-              <RotateCcw size={17} /> Попробовать снова
-            </button>
-          )}
+          <button type="button" className="mini-btn mini-btn--primary mini-btn--block" onClick={onRetry}>
+            <RotateCcw size={17} /> Попробовать снова
+          </button>
           <button type="button" className="mini-btn mini-btn--ghost mini-btn--block" onClick={onOpenCabinet}>
             <ExternalLink size={16} /> Открыть веб-кабинет
           </button>
