@@ -16,8 +16,10 @@
 - Три независимых review приняты: logic, visual, structure FINAL. Все шесть
   исходных структурных препятствий закрыты в проверенных путях; это не полный
   аудит и не release-wide approval.
-- Production deploy `c705` выполняет app owner. **Public updated не заявлен**;
-  public smoke pending, до подтверждения публичный стенд — `9862e19`.
+- Deploy `c705` **остановлен checksum mismatch** для applied 006 и безопасно
+  откатан на `9862e19`; public updated не заявлен. Новая попытка pending
+  forward `007` и проверки восстановленной копии; SQL/ledger не правились. Детали —
+  [deployment final](docs/deployment-final.md).
 - Root build PASS. `main`, публичная приёмка и полный аудит ещё pending.
 - `main` — после приёмки. Merge/push делает координатор, не worker.
 
@@ -127,8 +129,9 @@
 - Роль — операторское ограничение поверх одного общего workspace. Аккаунтов,
   списков доступа, приватных кабинетов и multi-tenant-изоляции нет.
   `user` не меняет сценарий, расписания, AI-тест и training.
-- Public updated не подтверждён: deploy `c705` идёт, до public smoke считаем
-  публичный стенд `9862e19`. Не выдавать локальный `dev` за опубликованный.
+- Public updated не подтверждён: deploy `c705` остановлен и откатан, до
+  public smoke считаем публичный стенд `9862e19`. Не выдавать локальный `dev`
+  за опубликованный.
 - `dev` собирается локально через `scripts/nedra-*.sh`: PostgreSQL + pgvector и
   backend в rootless Podman; backend только на `127.0.0.1:18080`.
 - Секреты и коды живут только в `~/.config/nedra/runtime.env` (mode 600). Они не
@@ -148,8 +151,8 @@
   Это не полный аудит и не release-wide approval.
 - Неблокирующие визуальные остатки: короткие edge labels и часть
   comparison-текста на 390; конструктор на 390 повторно не проверялся.
-- Production deploy `c705` идёт; public updated не подтверждён, public smoke
-  нового UI pending.
+- Deploy `c705` остановлен checksum mismatch и откатан; новая попытка pending
+  `007`; public updated не подтверждён, public smoke нового UI pending.
 - Семантика parser/anchor и полнота runtime graph (`runtime-configuration`,
   `runtime-guards`, `binaries-and-archives`) не доказаны. Такие gaps остаются
   видимыми; graph comparison может быть `inconclusive`.

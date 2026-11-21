@@ -12,8 +12,10 @@
 - Три независимых review приняты: logic, visual, structure FINAL. Все шесть
   исходных структурных препятствий закрыты в проверенных путях; это не полный
   аудит и не release-wide approval.
-- Production deploy `c705` выполняет app owner. **Public updated не заявлен**;
-  public smoke pending, до подтверждения публичный стенд — `9862e19`.
+- FINAL продукта принят. Deploy `c705` **остановлен checksum mismatch** для
+  applied 006 и безопасно откатан на `9862e19`; public updated не заявлен,
+  public smoke pending. Новая попытка — pending forward `007` и проверки
+  проверки восстановленной копии; детали в [deployment final](docs/deployment-final.md).
 - Root build PASS. `main` и финальная приёмка ещё pending.
 
 ## Проверить проект за 3 шага
@@ -107,9 +109,11 @@ cd frontend && npm ci && npm run build       # production build
 
 ## Ограничения
 
-Публичный deploy `c705` ещё не подтверждён: deploy идёт, public smoke pending.
-Неблокирующие visual-остатки — короткие edge labels, часть comparison-текста на
-390; конструктор на 390 повторно не проверялся. Полные ограничения, три review и
+Публичный deploy `c705` не подтверждён: попытка остановлена checksum mismatch,
+выполнен безопасный откат на `9862e19` (healthy 200, старый asset). Новая
+попытка pending `007`; public smoke ещё не выполнялся. Неблокирующие
+visual-остатки — короткие edge labels, часть comparison-текста на 390;
+конструктор на 390 повторно не проверялся. Полные ограничения, три review и
 чеклист deploy/public smoke — в [release handoff](docs/RELEASE-HANDOFF.md).
 
 Хост публичного стенда — локальный ПК; `Linger=no`, после reboot нужен

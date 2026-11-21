@@ -5,8 +5,9 @@
 
 Состояние на 21.11.2026. Exact candidate запушен в `origin/dev`; FINAL Sol structure
 принят, все три review приняты. В проверенных путях закрыты шесть исходных
-структурных препятствий; это не полный аудит. Deploy exact candidate идёт, public updated
-не заявлен; до public smoke публичный стенд — `9862e19`.
+структурных препятствий; это не полный аудит. Deploy остановлен checksum
+mismatch и безопасно откатан на `9862e19`; public updated не заявлен. Новая
+попытка pending `007`; детали — [deployment final](deployment-final.md).
 
 ## 1. Основные термины
 
@@ -312,8 +313,8 @@ Parser ratio — отдельное legacy-поле; оно не являетс�
   словарь не выдаёт их за аккаунты, списки доступа или multi-tenant.
 - FINAL принят: три review приняты, шесть исходных структурных препятствий
   закрыты в проверенных путях. Это не полный аудит и не release-wide approval.
-- Deploy exact candidate идёт; public updated не заявлен. Public smoke pending, до
-  подтверждения публичный стенд — `9862e19`.
+- Deploy остановлен checksum mismatch и откатан на `9862e19`; новая попытка
+  pending `007`. Public updated не заявлен, public smoke pending.
 - Векторные представления текста — точный поиск без ANN-индекса; сейчас 403,
   активных спек 0.
 - Общее сравнение остаётся `inconclusive`; SQL-проверка узкая; синтетический источник

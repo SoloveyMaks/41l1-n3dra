@@ -40,11 +40,12 @@ React + Vite SPA для проверки безопасности Kotlin/Spring 
   не являются работающим ограничением.
 - Общее сравнение остаётся `inconclusive`; проверка SQL узкая. Синтетический
   источник не даёт `comparable=true`.
-- Текущий candidate запушен в `origin/dev`; FINAL structure принят, все три
-  review приняты, шесть исходных структурных препятствий закрыты в проверенных
-  путях. Production deploy идёт; **public updated не заявлен**, public smoke
-  pending, до подтверждения публичный стенд — `9862e19`. Это не полный аудит.
-  Полный статус — в [release handoff](../docs/RELEASE-HANDOFF.md).
+- FINAL structure принят; три review приняты, шесть исходных структурных
+  препятствий закрыты в проверенных путях. Deploy `c705` остановлен checksum
+  mismatch и безопасно откатан на `9862e19`; **public updated не заявлен**.
+  Новая попытка pending `007`, public smoke ещё не выполнялся. Это не полный
+  аудит; полный статус — в [deployment final](../docs/deployment-final.md) и
+  [release handoff](../docs/RELEASE-HANDOFF.md).
 
 ## Сборка
 

@@ -11,11 +11,12 @@ production-обещание.
 | --- | --- | --- | --- |
 | Публичный стенд | `9862e19` | Старый интерфейс: один общий код, редактор, без user/admin | Только старый маршрут из примечания ниже |
 | Локальная `dev` | exact candidate | User/admin; FINAL Sol structure принят, все три review приняты, шесть исходных структурных препятствий закрыты в проверенных путях | Ограниченная демонстрация; не полный аудит и не release-wide approval |
-| Публикация | deploy exact candidate идёт | Public updated не заявлен; public smoke pending | До подтверждения публичный стенд — `9862e19` |
+| Публикация | попытка остановлена, выполнен откат | Checksum mismatch applied 006; public updated не заявлен, новая попытка pending `007` | Публичный стенд — `9862e19`, healthy 200 |
 
 Главный walkthrough ниже — **exact candidate** из `origin/dev`; app source не
-менялся после `b6abde4`. Три review приняты; FINAL закрыл оба остатка AFTER85. Это не
-полный аудит и не финальная приёмка.
+менялся после `b6abde4`. Три review приняты; FINAL закрыл оба остатка AFTER85.
+Deploy остановлен checksum mismatch и безопасно откатан на `9862e19`; новая
+попытка pending `007`. Это не полный аудит и не финальная приёмка.
 
 ## Главное за 30 секунд
 
@@ -250,8 +251,9 @@ polling 172 → 173 = backend 173; выбранная проверка сохр�
 
 ## Pending
 
-- Deploy exact candidate идёт; public updated не заявлен, публичный стенд до
-  подтверждения — `9862e19`. Нужен public smoke нового UI.
+- Deploy exact candidate остановлен checksum mismatch; безопасный откат на
+  `9862e19` (healthy 200). Public updated не заявлен; новая попытка pending
+  `007`, public smoke нового UI ещё не выполнялся.
 - Неблокирующие visual-остатки: короткие edge labels, часть comparison-текста
   на 390; конструктор на 390 повторно не проверялся.
 - `main` и финальная приёмка не заявлены; «все проверки пройдены» не говорим.
@@ -280,7 +282,8 @@ user/admin и новый простой путь: их там нет. Публи
 - «Ролей нет» — неверно для локального `dev`: `user`/`admin` реализованы.
 - «Публичный стенд уже с user/admin» — он на `9862e19`, там старый UI.
 - «Есть аккаунты, списки доступа, multi-tenant» — нет, общий workspace.
-- «Public updated» — не заявлен: deploy exact candidate идёт, public smoke pending.
+- «Public updated» — не заявлен: deploy остановлен и откатан, новая попытка
+  pending `007`, public smoke pending.
 - «`pass` значит ноль проблем» — нет: блокирующих нет, проблемы ниже порога
   могут остаться.
 - «100% полноты значит полную проверку» — нет; смотрите каноническое покрытие
@@ -304,8 +307,8 @@ user/admin и новый простой путь: их там нет. Публи
 Это не блокеры ограниченной демонстрации на exact candidate, но обещать их
 закрытыми нельзя.
 
-1. **Deploy exact candidate и public smoke.** Public updated не заявлен; до подтверждения
-   публичный стенд — `9862e19`.
+1. **Forward `007` и повторный deploy.** Первая попытка остановлена checksum
+   mismatch и откатана; public updated не заявлен, public smoke pending.
 2. **Неблокирующие visual-остатки.** Короткие edge labels и часть
    comparison-текста на 390; конструктор на 390 повторно не проверялся.
 3. **Проверка redaction после deploy.** FINAL/AFTER85 закрыли проверенные
@@ -326,7 +329,8 @@ user/admin и новый простой путь: их там нет. Публи
 - [ ] redaction проверен на карточке, evidence, AI, экспорте и инспекторе.
 - [ ] exact candidate из release handoff; app source unchanged `b6`; FINAL
   принят; root build PASS.
-- [ ] deploy/public smoke ещё pending — не выдавать за public updated.
+- [ ] deploy остановлен и откатан; новая попытка pending `007`, public smoke
+  pending — не выдавать за public updated.
 
 Для админки:
 
@@ -345,6 +349,7 @@ user/admin и новый простой путь: их там нет. Публи
 - [Sol logic](reviews/sol-logic.md) — принят
 - [Sol visual](reviews/sol-visual.md) — принят
 - [Sol structure](reviews/sol-structure.md) — принят FINAL
+- [Deployment final](deployment-final.md) — остановка deploy и откат
 - [Report coverage](report-coverage.md)
 - [Admin access and roles](admin-access.md)
 - [Release handoff](RELEASE-HANDOFF.md)

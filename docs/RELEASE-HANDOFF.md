@@ -14,8 +14,14 @@
 - Три независимых review приняты: logic, visual, structure FINAL. Все шесть
   исходных структурных препятствий закрыты **в проверенных путях**. Это не
   полный аудит и не release-wide approval.
-- Production deploy `c705` сейчас выполняет app owner. **Public updated не
-  заявлен**; до public smoke публичный стенд считаем прежним `9862e19`.
+- FINAL продукта принят и не отменяется. Production deploy `c705` **остановлен
+  checksum mismatch** для applied 006; приложение безопасно откатано на
+  `9862e19`. **Public updated не заявлен**; public smoke pending.
+- Новая попытка — pending forward `007` и проверки восстановленной копии; SQL/ledger не
+  правились, reset/подмена истории запрещены. Детали и rollback evidence —
+  [deployment final](deployment-final.md).
+- Review 18082 healthy на `b6`, не тронут. Runtime env сохраняет admin code
+  600/dir700, `CG26_*`; значения не печатались.
 - Root build PASS. `main`/финальная приёмка не выполнялись.
 - Хост — локальный ПК; `Linger=no`, после reboot нужен пользовательский login.
 
@@ -61,7 +67,8 @@ reports не переписаны; старые сохранённые отчё�
 | Structure FINAL | выполнен и принят (`8d8e0ca`) |
 | Все 6 structural blockers в проверенных путях | закрыты |
 | Root build / app source | PASS; source unchanged `b6` |
-| Deploy `c705` | выполняется app owner |
+| Deploy `c705` | попытка остановлена checksum mismatch; безопасный откат выполнен |
+| Forward `007` + проверка восстановленной копии | pending, storage owner |
 | Public updated | **не заявлен** |
 | Public smoke | pending |
 | `main` / финальная приёмка | pending |
@@ -167,8 +174,8 @@ node packages/comparison/compare-cli.mjs \
 
 ## Перед main и публикацией
 
-1. Дождаться завершения deploy `c705` и подтвердить exact revision на публичном
-   стенде. **Не объявлять public updated до подтверждения.**
+1. Дождаться forward `007` и проверки восстановленной копии; затем повторить deploy без
+   reset/подмены ledger. **Не объявлять public updated до подтверждения.**
 2. Выполнить публичный smoke нового UI: user/admin, три шага, проблемы, карта,
    сравнение, отчёт, redaction.
 3. Проверить, что public smoke не изменил ограничения: shared workspace,
@@ -179,8 +186,10 @@ node packages/comparison/compare-cli.mjs \
 
 ## Оставшиеся ограничения
 
-- Public updated не подтверждён; deploy `c705` ещё выполняется.
-- Public smoke нового UI pending; public остаётся `9862e19` до подтверждения.
+- Public updated не подтверждён; deploy `c705` остановлен checksum mismatch и
+  откатан. Новая попытка pending `007`; public остаётся `9862e19`, откат
+  healthy 200 со старым asset. DB backup сохранён, SQL/ledger не правились.
+- Public smoke нового UI pending.
 - Неблокирующие visual-остатки: короткие edge labels, часть comparison-текста
   на 390; конструктор на 390 повторно не проверялся.
 - Общее сравнение остаётся `inconclusive`; SQL-проверка узкая; vetted 0.
