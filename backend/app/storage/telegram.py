@@ -186,6 +186,15 @@ class TelegramRepository:
         ).fetchone()
         return row is not None
 
+    def _lock_job_owner(self, conn: Any, job_id: Any) -> bool:
+        owner = conn.execute(
+            "SELECT * FROM telegram.jobs WHERE job_id = %s", (job_id,),
+        ).fetchone()
+        return owner is not None and self._lock_owner(
+            conn, owner["chat_id"], owner["user_id"], owner["workspace_id"],
+            owner["binding_epoch"],
+        )
+
     def issue_binding_code(
         self,
         user_id: str,
@@ -581,6 +590,8 @@ class TelegramRepository:
             return None
         token = secrets.token_urlsafe(18)
         with get_pool().connection() as conn:
+            if not self._lock_job_owner(conn, parsed):
+                return None
             row = conn.execute(
                 """
                 UPDATE telegram.jobs j
@@ -616,6 +627,9 @@ class TelegramRepository:
         if not job.lease_token:
             return False
         with get_pool().connection() as conn:
+            if not self._lock_owner(conn, job.chat_id, _uuid(job.user_id, "userId"),
+                                    _uuid(job.workspace_id, "workspaceId"), job.binding_epoch):
+                return False
             row = conn.execute(
                 """
                 UPDATE telegram.jobs j
@@ -798,15 +812,8 @@ class TelegramRepository:
         parsed = uuid.UUID(str(job_id))
         terminal = status in ("succeeded", "failed", "cancelled", "interrupted")
         with get_pool().connection() as conn:
-            if not terminal:
-                owner = conn.execute(
-                    "SELECT * FROM telegram.jobs WHERE job_id = %s", (parsed,),
-                ).fetchone()
-                if owner is None or not self._lock_owner(
-                    conn, owner["chat_id"], owner["user_id"], owner["workspace_id"],
-                    owner["binding_epoch"],
-                ):
-                    return None
+            if not terminal and not self._lock_job_owner(conn, parsed):
+                return None
             row = conn.execute(
                 """
                 UPDATE telegram.jobs j
