@@ -1015,9 +1015,12 @@ class CanonicalPublisher:
         )
         _require(revision_id == identity["workflowRevisionId"], "workflow: revisionId differs from identity")
         definition = _obj(item.get("definition"), "workflow.definition")
+        computed_hash = definition_hash(definition)
         definition_hash_value = item.get("definitionHash", item.get("definition_hash"))
         if definition_hash_value is None:
-            definition_hash_value = definition_hash(definition)
+            definition_hash_value = computed_hash
+        _require(_sha(definition_hash_value, "workflow.definitionHash") == computed_hash,
+                 "workflow: definitionHash differs from definition")
         return {
             "workflowId": _uuid(item.get("workflowId", item.get("workflow_id")), "workflow.workflowId"),
             "name": _text(item.get("name"), "workflow.name"),
