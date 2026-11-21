@@ -69,6 +69,7 @@ def create_scenario_builder_router(
                 headers={"Retry-After": "5"},
             )
         inflight += 1
+        deferred_release = False
         acquired = False
         future: Optional[asyncio.Future] = None
         loop = asyncio.get_running_loop()
@@ -100,6 +101,7 @@ def create_scenario_builder_router(
             future = asyncio.ensure_future(asyncio.to_thread(builder.preview, payload.prompt))
 
             def release_after_thread(done: asyncio.Future) -> None:
+                nonlocal inflight
                 # A timed-out HTTP coroutine must not free the slot while the
                 # blocking provider thread is still running.
                 try:
@@ -107,6 +109,7 @@ def create_scenario_builder_router(
                 except BaseException:
                     pass
                 semaphore.release()
+                inflight -= 1
 
             try:
                 result = await asyncio.wait_for(
@@ -115,6 +118,7 @@ def create_scenario_builder_router(
                 )
             except asyncio.TimeoutError:
                 future.add_done_callback(release_after_thread)
+                deferred_release = True
                 acquired = False
                 raise HTTPException(
                     status_code=504,
@@ -125,6 +129,7 @@ def create_scenario_builder_router(
                 ) from None
             except asyncio.CancelledError:
                 future.add_done_callback(release_after_thread)
+                deferred_release = True
                 acquired = False
                 raise
             except BaseException:
@@ -174,7 +179,8 @@ def create_scenario_builder_router(
                 },
             ) from None
         finally:
-            inflight -= 1
+            if not deferred_release:
+                inflight -= 1
             if acquired:
                 semaphore.release()
 
