@@ -190,6 +190,10 @@ export const apiClient = {
     return (await request('/artifacts')).json();
   },
 
+  async getArtifact(artifactId: string): Promise<ArtifactManifest> {
+    return (await request(`/artifacts/${encodeURIComponent(artifactId)}`)).json();
+  },
+
   async listWorkflows(): Promise<any[]> {
     return (await request('/workflows')).json();
   },
