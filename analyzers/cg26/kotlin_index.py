@@ -347,7 +347,7 @@ def parse_params(tokens: list[Token], matching: dict[int, int]) -> list[Param]:
         annotations: list[Annotation] = []
         cursor = 0
         while cursor < len(part) and part[cursor].is_op("@"):
-            annotation, cursor = parse_annotation(part, cursor, matching)
+            annotation, cursor = parse_annotation(part, cursor, build_matching(part))
             annotations.append(annotation)
         while cursor < len(part) and part[cursor].kind == "IDENT" and part[cursor].text in MODIFIERS:
             cursor += 1
@@ -475,7 +475,9 @@ class KotlinFileParser:
                 continue
             if token.is_ident("import") or token.is_ident("package"):
                 pending = []
-                index = find_statement_end(tokens, index, end)
+                index += 1
+                while index < end and tokens[index].kind != "NL" and not tokens[index].is_op(";"):
+                    index += 1
                 continue
             if token.kind == "IDENT" and token.text in {"class", "interface", "object"}:
                 next_index = index + 1
