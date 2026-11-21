@@ -131,6 +131,7 @@ class TelegramRuntime:
             "started": self._started,
             "externalStatus": self._external_status,
             "botUsername": self._bot_username,
+            "proxyConfigured": bool(self.api is not None and self.api.proxy_configured),
             "lastError": self._last_error,
         }
 

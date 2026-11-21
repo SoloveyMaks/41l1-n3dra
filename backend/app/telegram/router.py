@@ -108,6 +108,7 @@ def create_telegram_router(
                 "settings": None,
                 "botUsername": _bot_username(),
                 "externalStatus": runtime.status().get("externalStatus"),
+                "proxyConfigured": bool(runtime.status().get("proxyConfigured")),
             }
         settings = repo.get_settings(binding.chat_id)
         return {
@@ -121,6 +122,7 @@ def create_telegram_router(
             },
             "botUsername": _bot_username(),
             "externalStatus": runtime.status().get("externalStatus"),
+            "proxyConfigured": bool(runtime.status().get("proxyConfigured")),
         }
 
     @router.post("/unbind")

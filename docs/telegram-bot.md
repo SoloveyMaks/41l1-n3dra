@@ -1,10 +1,10 @@
 # Telegram bot: binding, repository runs and JSONC delivery
 
 **Status:** implemented on branch `SoloveyMaks/ai-scanner-plan`; router/startup
-integration is left to root. External Telegram Bot API is blocked in this
-environment (getMe timeout), so only the internally reachable parts of the
-transport could be live-checked. No token value was printed, copied or
-committed.
+integration is left to root. Direct Telegram Bot API is blocked in this
+environment; an existing HTTP proxy on `127.0.0.1:14600` was confirmed to reach
+`getMe` (`@chilli_nedra_bot`, bot id `9239629524`). No token value was printed,
+copied or committed.
 
 ## 1. Files
 
@@ -75,17 +75,25 @@ Resolution order:
 2. `TELEGRAM_BOT_TOKEN_FILE`, default `~/.config/nedra/telegram-bot.token`.
 3. `TELEGRAM_BOT_TOKEN=...` in 0600 `~/.config/nedra/runtime.env`.
 
+Bot API egress uses **only** `TELEGRAM_PROXY_URL` (optional, bare
+`http(s)://host:port`, no credentials/path/query). The httpx client sets
+`trust_env=False`, so global `HTTP(S)_PROXY` and LLM/client proxy settings do
+not leak into Telegram traffic. Direct access is attempted when the variable is
+absent.
+
 Token files must be mode 0600; broader permissions fail closed. The token is
 never put in argv, git, logs, exceptions, API responses or the DB. `repr` is
 `TelegramBotAPI(<redacted>)`; HTTP/URL errors are redacted before logging.
 `TELEGRAM_API_BASE` must be HTTPS; `TELEGRAM_BOT_KEY` is only a logical cursor
 key.
 
-External check in this environment: `getMe` hit the 20s bounded timeout and the
-runtime reported `externalStatus="blocked"`, `lastError="telegram getMe timeout"`.
-No proxy/network/tunnel was changed. Direct Telegram send is therefore **not
-live-verified**; the outbox retry path was verified against an unreachable local
-endpoint instead.
+External check in this environment: direct `getMe` failed, while
+`TELEGRAM_PROXY_URL=http://127.0.0.1:14600` reached Telegram. Runtime startup
+reported `externalStatus="ready"`, `botUsername="chilli_nedra_bot"`,
+`proxyConfigured=true`. No proxy/network/tunnel was changed; the proxy was
+already running. Outbound `sendMessage`/`sendDocument` to a real chat was not
+exercised (no authorized live chat was available); the outbox retry path was
+verified against an unreachable local endpoint.
 
 ## 4. HTTP endpoints
 
@@ -231,20 +239,24 @@ files and was never printed.
   `GET /telegram/scenarios` returns workspace workflow, `PUT /telegram/settings`
   200, invalid mode 400, `POST /telegram/unbind` removed binding.
 
-### External Telegram check
+### External Telegram check through proxy
 
-- `load_bot_settings` found the token (not printed).
-- `getMe` timed out after 20s; runtime status
-  `{"configured":true,"externalStatus":"blocked","lastError":"telegram getMe timeout"}`.
+- `load_bot_settings` found the token (not printed) and proxy
+  `http://127.0.0.1:14600`.
+- `getMe` succeeded: `username=chilli_nedra_bot`, `bot_id=9239629524`.
+- Runtime startup through proxy: `externalStatus="ready"`,
+  `botUsername="chilli_nedra_bot"`, `proxyConfigured=true` (DB
+  `tg_proxy_986c1357`), then graceful stop.
 - Outbox delivery against an unreachable local endpoint left both rows
   `pending`, `attempts=1`, sanitized error `All connection attempts failed`;
   the run itself was already `succeeded`.
 
 ## 9. Honest limitations
 
-- Direct Bot API delivery was not verified because the network path to Telegram
-  is blocked. Poller/webhook delivery requires a reachable Telegram endpoint;
-  the code reports `blocked` instead of claiming success.
+- Direct Bot API is blocked; production/local live checks need
+  `TELEGRAM_PROXY_URL=http://127.0.0.1:14600` (or another working server-side
+  proxy). The runtime reports `blocked` if the configured path fails instead of
+  claiming success. Real message/document delivery to a chat was not exercised.
 - The bot uses long polling, not webhooks. If a webhook is configured on the
   bot, root must call `deleteWebhook` once; this module does not change global
   bot state automatically.
