@@ -1,32 +1,124 @@
 # 41l1-n3dra
 
-AI Security Workflow для Cyber Garden 2026: собственные проверки Kotlin/Spring Boot, визуальный workflow и объяснения с доказательствами.
+Проверка безопасности Kotlin/Spring Boot: собственные SECRET/SCA/SAST,
+понятный результат, карта доступа, сравнение проверок и отчёт. Пользователь
+загружает ZIP и запускает готовый сценарий; конструктор и системные настройки
+живут в отдельной админке.
 
-**Сейчас в ветке:** схема PostgreSQL, DTO, миграции, exact retrieval pgvector, подключаемый React Flow SecurityMap и модуль сравнения immutable bundles. Карта проверена на ручном pickup-preview; настоящий scanner/API и общий интерфейс ещё требуют интеграции A/B. Схема `0.1` остаётся предложением для согласования A/B/D.
+## Статус
+
+- **Публичный стенд обновлён:** https://nedra.soloveyka.bond работает, health
+  200; публичная revision `63ca8c1`, asset `index-DA9FQkXU.js`.
+- Финальная проверка продукта принята: три review (logic, visual, structure) и
+  независимый migration review на PostgreSQL 16 — PASS. Шесть исходных
+  структурных препятствий закрыты в проверенных путях.
+- `007` применена обычным startup, ledger 6; историческая `006` не изменена,
+  DB backup 600, volumes не тронуты.
+- Проверенный прототип доступен для показа с ограничениями ниже. Это не полный
+  security-аудит и не все функции.
+- `main` merge ещё pending у root; текущий `dev` выше `63ca8c1` содержит только
+  docs.
+
+## Проверить проект за 3 шага
+
+Откройте https://nedra.soloveyka.bond, войдите по пользовательскому коду.
+
+1. **Выберите проект** — ZIP или «Попробовать пример». Поддерживается
+   Kotlin/Spring Boot.
+2. **Запустите проверку** — используется существующий сохранённый сценарий.
+   Пользователь не редактирует граф и не вызывает `PUT draft`.
+3. **Посмотрите результат** — проблемы, фрагмент кода, карта доступа, сравнение
+   проверок и отчёт.
+
+Админка открывается отдельным кодом и сгруппирована так: **Обзор**,
+**Проекты и проверки**, **Сценарий** (конструктор и расписания), **Результаты**,
+**Система** (анализаторы/покрытие, AI и память, доступ и состояние).
+
+## Что внутри
+
+- `backend/` — FastAPI, executor, SECRET/SCA/SAST, code facts, каноническая
+  публикация в PostgreSQL, сравнение, AI-объяснения и отчёты.
+- `frontend/` — React/Vite: трёхшаговый пользовательский экран и отдельный
+  админский shell. Конструктор — в админке, не на главном экране.
+- `ui/security-map` — React Flow карта доступа и данных.
+- `packages/comparison` — сравнение published envelopes.
+- `db/` — PostgreSQL-миграции; `data_contract` хранит канонические факты,
+  `runtime` — API-состояние.
+- `deploy/`, `scripts/nedra-*.sh` — локальный контейнерный запуск.
 
 ## Начать здесь
 
-- [Решения проекта и порядок сборки](PROJECT-DECISIONS.md)
-- [Пакет C: данные и карта](docs/c-data-handoff.md)
-- [Анализаторы пакета B](analyzers/README.md) — SECRET/SCA/SAST и выгрузка `AnalysisBundle`
-- [Отчёт по анализаторам](docs/analyzers-report.md)
-- [Общие DTO и открытые вопросы](docs/data-contracts/README.md)
-- [Миграции и сохранение результатов](db/README.md)
-- [Первый путь карты: pickup export](docs/security-map/INTEGRATION.md)
-- [Подключение и запуск компонента карты](docs/security-map/COMPONENT.md)
-- [Модуль сравнения до/после](docs/data-contracts/COMPARISON-ENGINE.md)
-- [Что реально проверено](docs/data-contracts/verification.md)
+- [Интерфейс: пользователь и администратор](docs/interface-structure.md)
+- [Решения проекта](PROJECT-DECISIONS.md)
+- [Release handoff](docs/RELEASE-HANDOFF.md)
+- [Сценарий показа для жюри](docs/JURY-WALKTHROUGH.md)
+- [Словарь продукта](docs/PRODUCT-GLOSSARY.md)
+- [Sol logic](docs/reviews/sol-logic.md) — принят AFTER85
+- [Sol visual](docs/reviews/sol-visual.md) — принят AFTER85
+- [Sol structure](docs/reviews/sol-structure.md) — принят FINAL
+- [Sol migration](docs/reviews/sol-migration.md) — 007/PG16 PASS
+- [Report coverage](docs/report-coverage.md) — каноническая полнота отчёта
+- [Контракты данных](docs/data-contracts/README.md), [SQL ↔ DTO](docs/data-contracts/mapping.md)
+- [Локальный деплой](docs/DEPLOYMENT.md), [AI/retrieval](docs/ai-runtime.md)
 
-## Ближайшая интеграция
+## Локальный запуск (PostgreSQL)
 
-A создаёт snapshot/run и masked-source API и подключает готовый компонент карты; B отдаёт настоящие findings/code facts/coverage; C сохраняет bundle и сравнивает совместимые результаты; D объясняет существующие находки и возвращает проверенные ссылки. Общие schemas/миграции ведёт C, app/router/manifests — A.
+PostgreSQL 16+; pgvector не обязателен. Python 3.11+ (в контейнере 3.12).
 
-Рабочие ветки собираем в `dev`, готовый кандидат после сквозной приёмки — в `main`. Публикация для жюри и свой домен — позже. Эта ветка `task/data-foundation` не выполняет merge или deploy.
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r backend/requirements.txt
+cp .env.example .env
+export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/41l1_n3dra
+python -m backend.app.storage.migrate        # 001/002/004/005/006 (+003 при DB_ENABLE_VECTOR=1)
+uvicorn backend.app.main:app --env-file .env --port 8000
+```
 
-## Проверка пакета
+Backend сам применяет ledger-миграции при старте. `DB_ENABLE_VECTOR=1` включает
+optional `db/optional/003` только при доступном pgvector; fake vectors не
+создаются. Без `DATABASE_URL`/драйвера/доступной БД старт падает с понятной
+ошибкой, без DSN в тексте.
 
-SQL рассчитан на PostgreSQL 16+. Основные миграции применяются по порядку `001`, `002`; optional `003` требует установленный pgvector. Команды и ограничения — в [db/README.md](db/README.md). Не применять к чужой рабочей БД без разбора.
+Frontend:
 
-JSON Schema Draft 2020-12 — источник формата; TypeScript генерируется командой `node docs/data-contracts/generate-types.mjs`. Semantic validator проверяет ссылки и координаты дополнительно к Schema. Локальные probes PostgreSQL/pgvector, AJV и TypeScript прошли; внешняя embedding model и scanner integration ещё не проверены.
+```bash
+cd frontend && npm ci && npm run build       # production build
+# отдельный dev-сервер: npm run dev          # /api проксируется на :8000
+```
 
-Учебный источник — [TBagirov/training, зафиксированный snapshot](https://github.com/TBagirov/training/tree/fe1fcbe212669783480666b9b60147c8a8c6eef4). Он не включён в ветку. В `pickup-path.illustration.json` сохранены source repository/commit/root, hashes и ranges для воспроизведения проверки. Ground truth не является входом анализатора. Fixture — ручная иллюстрация, не scanner output.
+Локальная сессия: `POST /api/session` с `role: "user"` или `role: "admin"`.
+Админский вход требует отдельный `CG_ADMIN_ACCESS_CODE`; если он не задан или
+совпадает с пользовательским, `adminAvailable: false`. Публичный режим
+`CG_PUBLIC_DEMO=1` не выдаёт cookie сам.
+
+## Инварианты
+
+- Одна проверка — один явно выбранный артефакт. Если артефакт не выбран, берётся
+  артефакт из сохранённого черновика; смешивать архивы между проблемами, картой
+  и отчётом нельзя.
+- `006_snapshot_origins`: один снимок проекта может иметь несколько загрузок и
+  проверок; manifest и файлы не переписываются.
+- `pass` не означает «ноль проблем»: это отсутствие блокирующих по политике при
+  данном покрытии. Пока каноническое покрытие частичное, честный вердикт —
+  `inconclusive`.
+- `executionStatus` отчёта — фактическое выполнение, а не вердикт безопасности.
+- Общее сравнение остаётся `inconclusive`; SQL-проверка узкая
+  (`source_pattern`). Синтетический источник никогда не даёт `comparable=true`.
+- AI-объяснения — отдельный слой и не меняют проблемы, покрытие и вердикт.
+  Векторные представления текста необязательны, retrieval выключен; сейчас недоступны (403),
+  проверенных примеров 0. Политика предметной области не подключена к
+  канонической подписи; допущения не являются работающим ограничением.
+- Workspace общий: аккаунтов, списков доступа и приватных кабинетов нет.
+  Роль `user`/`admin` ограничивает операторские действия, а не изолирует данные.
+
+## Ограничения
+
+Shared workspace: аккаунтов и приватных кабинетов нет; роли `user`/`admin`
+ограничивают операторские действия. Хост — локальный ПК; `Linger=no`, после
+reboot нужен login. Покрытие частичное; embeddings 403/disabled, retrieval
+выключен; vetted-примеров 0. Общее сравнение `inconclusive`, SQL-проверка узкая.
+Неблокирующие visual-остатки — короткие edge labels, часть comparison-текста на
+390; конструктор на 390 не перепроверялся.
+
+Полный security-аудит, «все функции проверены» и production readiness не
+заявляются. Полная сводка — в [release handoff](docs/RELEASE-HANDOFF.md).

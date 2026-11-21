@@ -1,49 +1,174 @@
 # 41l1-n3dra — решения проекта
 
-Короткий канон для команды. Детали контрактов и живые проверки — в [пакете данных и карты](docs/c-data-handoff.md).
+Короткий канон для команды и жюри. Операционные команды — в
+[README](README.md) и [release handoff](docs/RELEASE-HANDOFF.md); детали
+контрактов — в [docs/data-contracts](docs/data-contracts/README.md).
 
-## Выбрано пользователем
+Независимые проверки: [Sol logic](docs/reviews/sol-logic.md),
+[Sol visual](docs/reviews/sol-visual.md),
+[Sol structure](docs/reviews/sol-structure.md),
+[report coverage](docs/report-coverage.md).
 
-- PostgreSQL + pgvector; векторный поиск используется для проверенных примеров исправлений.
-- Команда: A — веб/backend/workflow; B — собственные анализаторы и факты кода; C — схема/DTO, карта, сравнение и retrieval; D — AI, валидация ответов и embedding adapter.
-- Направления: общая карта безопасности, доказательства и сравнение до/после, память проверенных исправлений.
-- Общий репозиторий — `SoloveyMaks/41l1-n3dra`; feature-ветки собираем в `dev`, затем готовый кандидат — в `main`.
-- Прод для жюри и подключение своего домена — отдельный следующий этап.
+## Статус
 
-## Требования и границы решения
+- Публичный стенд обновлён и проверен: https://nedra.soloveyka.bond, публичная
+  revision `63ca8c1`, asset `index-DA9FQkXU.js`, health 200.
+- Финальная проверка продукта принята; три review (logic, visual, structure) и
+  независимый migration review на PostgreSQL 16 — PASS. Шесть исходных структурных
+  препятствий закрыты в проверенных путях.
+- `007` применена обычным startup, ledger 6; историческая `006` не изменена
+  (checksum/applied_at), DB backup 600, volumes не тронуты. Сброса и подмены
+  истории не было.
+- Проверенный прототип доступен для показа с ограничениями ниже; полный
+  security-аудит и все функции не заявляются.
+- `main` merge ещё pending у root; `dev` выше `63ca8c1` содержит только docs.
+- `main` — после приёмки. Merge/push делает координатор, не worker.
 
-Собственный визуальный конструктор проверок Kotlin/Spring Boot: ручной запуск и расписание, условия/сравнения/regex, собственные SECRET/SCA/SAST, живые статусы и данные, AI-объяснение, два отчёта и один действующий канал уведомлений. Готовые security-сканеры и готовая workflow-платформа не подменяют собственную реализацию.
+## Продукт и команда
 
-Код загруженного проекта статически читаем, не выполняем. Учебный источник — [TBagirov/training](https://github.com/TBagirov/training/tree/fe1fcbe212669783480666b9b60147c8a8c6eef4). Scanner получает `training-project/` и advisory input; ground truth служит только отдельной оценке. 15 эталонных findings и 6 controls — состав учебного набора, не наши измеренные результаты.
+Проверка безопасности Kotlin/Spring Boot: пользователь выбирает ZIP, запускает
+готовый сценарий и получает проблемы, карту доступа, сравнение и отчёт.
+Конструктор, расписания и системные настройки — в отдельной админке.
 
-Карта безопасности и workflow — разные DTO и экраны. Карта показывает «кто → маршрут → правило доступа → обработчик → данные/операция → находка» по фактам B. Layout — состояние представления; AI-проза и пользовательская domain policy сохраняются отдельно от исходных фактов.
+Роли: A — backend/workflow/UI, B — анализаторы и code facts, C — схема/DTO/карта/
+сравнение, D — AI/validation/embedding adapter. Владельцы файлов не правят чужие
+контракты параллельно.
 
-`workspaceId`, `snapshotId`, `runId`, точная workflow revision и версии/hash parser/rules/advisory/config/domain policy сопровождают результат. Snapshot и опубликованный bundle неизменяемы. Каждая стрелка открывает scoped masked evidence; неизвестные связи остаются видимыми.
+## Зафиксированные технические решения
 
-Сравнение использует устойчивый anchor/fingerprint, проверяет совместимость версий и покрытие. Удаление файла выделяется отдельно. Потеря покрытия, неоднозначный anchor и смена правил не превращаются в «исправлено».
+### Данные и runtime
 
-Память исправлений хранит источник, redacted контекст/правку, rule version, основание проверки и ограничения. Непроверенный совет AI не получает статус vetted. Exact retrieval фильтрует workspace/language/framework/rule family/status и embedding spec; его отказ не ломает основной анализ.
+- Runtime работает на PostgreSQL 16+; SQLite в runtime нет. Канонические факты —
+  schema `data_contract`; API-состояние — отдельная schema `runtime`.
+- Миграции применяются ledger-ом `public.schema_migrations` (filename + checksum).
+  Обязательные: `001_core`, `002_integrity_publish`, `004_bundle_envelopes`,
+  `005_canonical_envelope`, `006_snapshot_origins`. `003_exact_vector` — optional,
+  только при явном `DB_ENABLE_VECTOR=1` и доступном pgvector.
+- `006_snapshot_origins`: один снимок проекта может иметь несколько загрузок и
+  проверок. Новые `(artifact_id, artifact_hash)` — append-only
+  origins; `runs` ссылается на content hash, а не на случайный артефакт. Manifest
+  и files снимка не переписываются. Это исправляет повторную загрузку того же ZIP,
+  которая раньше давала конфликт publish.
+- Одна проверка — один явно выбранный артефакт. Он авторитетен для scanners,
+  code facts, карты, публикации и отчёта. Сохранённый draft — только fallback,
+  если артефакт не выбран; разные `artifactId` без выбора отклоняются `400`.
+- Snapshot, run и published bundle неизменяемы: SQL guards запрещают
+  переписывать identity, покрытие/факты после publish и удалять историю.
+- UUID identity: `workspaceId` — UUID; новый `runId` создаётся как UUID;
+  `snapshotId` выводится из workspace + sealed manifest.
 
-## Первый объём C
+### Вердикт и отчёт
 
-1. Схема PostgreSQL, миграции и DTO для согласования A/B/D.
-2. Anonymous → pickup export → ранний permitAll → handler → SQL/данные → Finding; источник у каждой стрелки.
-3. Authenticated → ticket reader без доказанного owner-check; policy и пробелы показываем явно. Публичный каталог — локальный безопасный контрпример.
-4. Один SQL-паттерн до/после параметризации после двух настоящих scanner runs.
-5. Несколько проверенных примеров и совместимые embeddings после выбора adapter D; малый корпус проверяет механику, а не преимущество поиска.
+- `pass` — отсутствие блокирующих проблем по политике при данном покрытии, а не
+  ноль проблем и не полная проверка. Проблемы ниже порога могут остаться.
+- Policy Gate не выдаёт `pass` при частичном/неподтверждённом каноническом покрытии. Пока
+  `expectedScopesVerified=false`, честный не-`fail` вердикт — `inconclusive`.
+  `strictCoverageRequired=false` не отменяет эту проверку.
+- `executionStatus` отчёта — фактическое выполнение (`succeeded`/`failed`/
+  `running`), отдельно от вердикта безопасности. Позднее падение condition даёт
+  `failed`; падение notify не делает анализ failed.
+- Полнота проверки берётся из канонического покрытия и expected scopes. `100%`
+  возможны только при `complete` и подтверждённых scopes; `partial`,
+  `unavailable` и `unknown` дают «не установлена/недоступна/неизвестна», а не
+  процент. Parser ratio остаётся отдельным legacy-полем и не выдаётся за общую
+  полноту.
 
-Ручной pickup JSON — иллюстрация контракта с проверенными source refs. Это не scanner output, не работающий UI и не доказательство эксплуатации.
+### Факты, AI и политика
 
-## Ветки и выпуск
+- Проблемы/доказательства/покрытие/code facts — отдельный слой. AI-объяснения не
+  меняют факты, покрытие или вердикт.
+- Политика предметной области не подключена к канонической подписи и
+  `policyInputs`. Нельзя выдавать допущения за работающее ограничение доступа.
+- Карта доступа и данных (code facts/evidence) — не workflow-граф исполнения.
+  Это разные DTO, экраны и идентификаторы.
+- Каноническая публикация сохраняет `source_envelope` и `canonical_envelope`.
+  `get_published_envelope` отдаёт canonical; republish того же документа ничего
+  не меняет.
+- Три независимых hash не смешиваются: SQL `provenance.bundleHash`,
+  `canonicalHash`/`envelopeHash` и внутренний `SecurityMapDto.bundleHash`.
 
-`task/data-foundation` содержит подготовленный пакет C и документацию. `dev` — место сборки законченных feature-веток. `main` — принятый кандидат для жюри после живого сквозного прогона. Сейчас публикуем feature-ветку; перенос в dev/main и домен выполняются отдельными шагами.
+### Сравнение
 
-Порядок: feature branch → review и живая проверка → merge в `dev` → сквозная приёмка → merge в `main` → отдельная публикация. Ключи, исходные ZIP, личные переписки и память машины в репозиторий не входят. Владельцы общих файлов: C — contracts/миграции; A — app/router/manifests. Миграции не меняются параллельно несколькими участниками.
+- Comparison работает только по published immutable bundles одного workspace.
+  Совместимость — точные версии/hash parser/rules/advisory/config/domain policy/
+  HMAC key.
+- `comparable` вычисляется после всех причин отказа. Synthetic
+  `contract_scenario`/`manual_fixture` никогда не даёт `comparable=true`, даже
+  если expected scopes совпали. Это исправление `df33cee`.
+- Общее сравнение остаётся `inconclusive`, пока expected scopes не подтверждены.
+  SQL-проверка узкая: per-file `source_pattern` `KOTLIN-SQL-INJECTION` на demo
+  fixture (before finding, after 0 при checked scope). `pattern_disappeared` —
+  не общий вердикт и не vetted.
+- `changed`, потеря покрытия и неизвестный anchor не становятся `resolved`;
+  удалённые файлы — отдельный `deletedFiles`.
 
-## Что ещё согласовать
+### AI и retrieval
 
-Предложенный стек приложения: React/TypeScript/Vite/React Flow, FastAPI/Pydantic, Tree-sitter, SSE. PostgreSQL + pgvector уже выбраны; остальные компоненты требуют подтверждения команды.
+- Единственный chat-провайдер — ReformBoss; default model
+  `deepseek-v4.1-flash-1017`. Ответы валидируются; ошибка провайдера или отказ
+  валидатора даёт детерминированный fallback и не ломает отчёт.
+- Embeddings optional, retrieval выключен и сейчас `unavailable`: реальный `POST /v1/embeddings`
+  вернул 403 `token_model_not_allowed`. Это векторные представления текста для
+  точного поиска, без ANN-индекса. `embedding_specs` pending, fake vectors нет.
+- `vetted` remediation example требует реального scanner provenance, published
+  fixed bundle, checked coverage и published comparison `resolved` для exact
+  finding. Synthetic `contract_scenario` остаётся draft; AI-совет не становится
+  vetted. Проверенных примеров сейчас 0.
+- 3–5 подготовленных примеров проверяют механику хранения/сравнения; они не
+  доказывают преимущество retrieval.
 
-A подтверждает workspace auth/SQL roles, intake/TTL, masked-source API, workflow schema, publish idempotency и канал доставки. B подтверждает реальные payloads, graph vocabulary, semantic anchors и ожидаемое file/rule coverage. Пользователь и B утверждают источник domain policy для ролей/владения. D выбирает настоящий chat provider и один embedding provider/model/version/dimension/metric с версиями подготовки текста.
+## Доступ и деплой
 
-До этих ответов schema v0.1 — конкретное предложение для согласования. Готовность приложения, production-доступа и оценки поиска в этом пакете не заявляется.
+- В локальном `dev` роли `user`/`admin` реализованы: отдельные
+  `CG_ACCESS_CODE` и `CG_ADMIN_ACCESS_CODE`, подписанная роль в сессии,
+  `GET /api/admin/overview` только для admin.
+- `adminAvailable=false`, если admin-код не задан или совпадает с
+  пользовательским; admin-вход возвращает 503, user-вход работает.
+- Сводка админки обновляется при входе admin, ручном refresh и terminal
+  run/polling; stale ответы после logout/смены роли отбрасываются. `user`
+  запросов overview не делает.
+- Роль — операторское ограничение поверх одного общего workspace. Аккаунтов,
+  списков доступа, приватных кабинетов и multi-tenant-изоляции нет.
+  `user` не меняет сценарий, расписания, AI-тест и training.
+- Публичный стенд уже обновлён; local `dev` выше `63ca` содержит только docs.
+  Не выдавать docs-коммиты за новый app source.
+- `dev` собирается локально через `scripts/nedra-*.sh`: PostgreSQL + pgvector и
+  backend в rootless Podman; backend только на `127.0.0.1:18080`.
+- Секреты и коды живут только в `~/.config/nedra/runtime.env` (mode 600). Они не
+  коммитятся, не печатаются скриптами и не передаются в argv.
+- После reboot локальный хост должен быть включён; rootless-контейнеры
+  поднимаются systemd user units при linger или после логина.
+
+## Ветки и приёмка
+
+`feature branch → review + live check → dev → focused retest/FINAL → приёмка → main →
+отдельная публикация`. Merge/push в `main` выполняет координатор после приёмки.
+В репозиторий не попадают ключи, исходные ZIP, личные переписки и память машины.
+
+## Что ещё не доказано
+
+- Все три review приняты; FINAL закрыл оба остатка AFTER85 в проверенных путях.
+  Это не полный аудит и не release-wide approval.
+- Неблокирующие визуальные остатки: короткие edge labels и часть
+  comparison-текста на 390; конструктор на 390 повторно не проверялся.
+- `main` merge и финальная приёмка ещё pending у root; public smoke уже выполнен.
+- Семантика parser/anchor и полнота runtime graph (`runtime-configuration`,
+  `runtime-guards`, `binaries-and-archives`) не доказаны. Такие gaps остаются
+  видимыми; graph comparison может быть `inconclusive`.
+- Общий comparison остаётся `inconclusive`, пока expected scopes не подтверждены.
+  Узкую SQL-проверку нельзя переносить на весь проект.
+- Нет проверенного embedding provider/model/dimension и реального vetted
+  example. Это optional часть; основной анализ работает без неё.
+- Production readiness и полное покрытие не заявляются.
+
+## Подключение командных анализаторов
+
+`analyzers/` сохранён отдельным пакетом; runtime adapter включается явным
+`config.engine=team_b` на scanner nodes. Смешение engines в одном run запрещено.
+Training проверен с PostgreSQL: 15 findings (5/5/5), 43 nodes, 32 edges,
+67 evidence, каноническая публикация успешна. Default engine остаётся `backend`.
+
+Adapter использует полный frozen manifest и ZIP hash из intake, доверенный
+серверный advisory и серверный HMAC. Известный demo key запрещён. Без advisory
+SCA сохраняет error, zero findings дают `inconclusive`, а не `pass`. Team B
+`CG26-SAST-001` не переименовывается под SQL-проверку другого правила.

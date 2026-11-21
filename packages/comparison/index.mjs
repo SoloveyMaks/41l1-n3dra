@@ -373,8 +373,11 @@ export function compareBundles(baselineInput, currentInput, options = {}) {
     const versions = new Set([...(beforeRules.get(key) ?? []), ...(afterRules.get(key) ?? [])].map(x => stable([x.finding.ruleVersion, x.finding.ruleFamily])));
     if (versions.size > 1) reasons.push(`Не совпадают ruleVersion/ruleFamily для ${key}`);
   }
-  const comparable = reasons.length === 0;
   if (before.envelope?.provenance.origin === 'contract_scenario' || after.envelope?.provenance.origin === 'contract_scenario') reasons.push('contract scenario, not scanner output: синтетические DTO, не настоящий scan и не доказательство fix');
+  // comparable is the inverse of every prohibitory reason. Keep this after all
+  // reason pushes: provenance/synthetic checks must not be able to leave a
+  // comparable=true result that still has a blocking reason.
+  const comparable = reasons.length === 0;
   reasons.sort(order);
   const items = compareFindings(comparisonId, before.bundle, after.bundle, comparable, before.manifest, after.manifest);
   return {

@@ -6,7 +6,7 @@
 2. `psql -X -v ON_ERROR_STOP=1 -d <empty-db> -f db/migrations/002_integrity_publish.up.sql`
 3. Только при установленном pgvector: `psql -X -v ON_ERROR_STOP=1 -d <empty-db> -f db/optional/003_exact_vector.up.sql`.
 
-Каждый файл транзакционный, один раз; повторное применение миграций не является publish idempotence. Для будущего migrator A нужен обычный migration ledger. Down/destructive SQL не включён: история запусков и immutable facts не должны исчезать случайно.
+Каждый файл транзакционный, один раз; повторное применение миграций не является publish idempotence. Этот же прогон выполняет backend: ledger `public.schema_migrations` (filename + checksum), advisory lock, автоматически при старте или `python -m backend.app.storage.migrate`. Ручной psql без ledger тоже подхватывается: миграция считается применённой по маркеру схемы. Для будущего migrator A нужен обычный migration ledger. Down/destructive SQL не включён: история запусков и immutable facts не должны исчезать случайно.
 
 ## Таблицы и владельцы
 

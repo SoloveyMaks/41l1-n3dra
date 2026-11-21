@@ -1,0 +1,10 @@
+tunnel: __TUNNEL_ID__
+credentials-file: __CREDENTIALS_FILE__
+
+protocol: http2
+edge-ip-version: "4"
+
+ingress:
+  - hostname: __HOSTNAME__
+    service: http://127.0.0.1:18080
+  - service: http_status:404
