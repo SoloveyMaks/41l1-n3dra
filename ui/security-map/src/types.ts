@@ -35,6 +35,7 @@ export type SecurityMapProps = {
   data: SecurityMapDto | null;
   findings: readonly Finding[];
   loadState: LoadState;
+  logoUrl?: string;
   layout?: SecurityMapLayout;
   selection?: ScopedSelection | null;
   sourceState?: SourceState;
