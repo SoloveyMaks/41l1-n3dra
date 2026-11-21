@@ -89,6 +89,10 @@ export const apiClient = {
     return (await request('/artifacts/sample', { method: 'POST' })).json();
   },
 
+  async loadTrainingArtifact(): Promise<ArtifactManifest> {
+    return (await request('/artifacts/sample/training', { method: 'POST' })).json();
+  },
+
   async listArtifacts(): Promise<ArtifactManifest[]> {
     return (await request('/artifacts')).json();
   },
@@ -147,6 +151,13 @@ export const apiClient = {
     return (await request(
       '/schedules',
       jsonInit('POST', { workflowId, artifactId, cronOrInterval }),
+    )).json();
+  },
+
+  async setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<any> {
+    return (await request(
+      `/schedules/${scheduleId}`,
+      jsonInit('PATCH', { enabled }),
     )).json();
   },
 

@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const frontendRoot = fileURLToPath(new URL('.', import.meta.url))
+const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://127.0.0.1:8000'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -24,8 +25,16 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: proxyTarget,
         changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            // Backend checks Origin/Host for the public demo; make dev proxying
+            // look like a direct same-origin request to the backend.
+            proxyReq.setHeader('origin', proxyTarget)
+            proxyReq.setHeader('referer', `${proxyTarget}/`)
+          })
+        },
       },
     },
   },

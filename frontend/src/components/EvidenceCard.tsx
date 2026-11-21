@@ -17,7 +17,7 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, onClose }) 
   const isHigh = finding.severity === 'high';
 
   return (
-    <div className="w-[450px] bg-slate-900 border-l border-slate-800 flex flex-col h-full overflow-hidden shadow-2xl">
+    <div className="w-full lg:w-[450px] max-h-[55vh] lg:max-h-none bg-slate-900 border-t lg:border-t-0 lg:border-l border-slate-800 flex flex-col h-full overflow-hidden shadow-2xl shrink-0">
       {/* Header */}
       <div className="p-4 border-b border-slate-800 flex items-start justify-between">
         <div>

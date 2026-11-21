@@ -60,7 +60,7 @@ const PALETTE_ITEMS: Array<{
 
 export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
   return (
-    <div className="w-64 bg-slate-900/95 border-r border-slate-800 flex flex-col h-full overflow-hidden select-none">
+    <div className="w-full md:w-64 max-h-44 md:max-h-none bg-slate-900/95 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col md:h-full overflow-hidden select-none shrink-0">
       <div className="p-3.5 border-b border-slate-800">
         <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
           Палитра блоков
