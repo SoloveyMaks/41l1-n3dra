@@ -1,9 +1,10 @@
 # AI vulnerability scanner: implementation
 
-**Status:** implemented on branch `SoloveyMaks/ai-scanner-plan` (baseline
-`22016b8d3407cfbc3341150042ae320be51be548`). This document describes only the
-new `AI_SCAN` block; it does not change canonical SECRET/SCA/SAST findings,
-policy, verdict, reports, storage or comparison.
+**Status:** implemented and live-checked on branch `SoloveyMaks/ai-runtime-fix`
+(baseline `d23a68d`). The system default workflow now includes `AI_SCAN` as an
+isolated side branch; existing user workflows are not rewritten silently (see
+section 10). This document describes only the `AI_SCAN` block; it does not
+change canonical SECRET/SCA/SAST findings, policy, verdict or comparison.
 
 ## 1. What was added
 
@@ -17,6 +18,8 @@ policy, verdict, reports, storage or comparison.
 | `backend/app/ai/scan_prompt.py` | versioned prompt and closed rule-class set |
 | `backend/app/ai/scan_validator.py` | strict quote/line/ref grounding, server byte bounds, CVE/severity bans, dedupe |
 | `backend/app/ai/scan_service.py` | one bounded ReformBoss request, validation, provenance, degraded paths |
+| `backend/app/demo/default_workflow.py` | default draft includes `node_ai_scan` as a side branch (artifact + findings for dedupe, no outgoing edge); frozen pre-AI_SCAN baseline for safe upgrades |
+| `backend/app/demo/default_workflow_upgrade.py` | explicit revision-preserving upgrade/CLI for existing production defaults; user-modified drafts are reported, not overwritten |
 | `docs/ai-scanner-implementation.md` | this document |
 
 Not touched: frontend, `router.py`, `session.py`, `main.py`, `storage/*`,
@@ -50,8 +53,10 @@ output blow-up.
 
 ## 3. Input selection and privacy
 
-`AI_SCAN` runs only when a user adds the node to a workflow. The default workflow
-is unchanged.
+`AI_SCAN` runs in the system default workflow as a separate side branch. It has
+no outgoing edge: canonical findings, policy and the report path never consume
+`ai_scan_result`. Adding it to the default did not rewrite existing user
+workflows; see section 10 for the explicit upgrade.
 
 1. The executor resolves the same frozen artifact as deterministic scanners;
    `load_snapshot_sources` verifies every snapshot path and SHA-256 before
@@ -75,10 +80,13 @@ files, omitted files (bounded sample), failures and `providerErrors`. It is
 stored in `AiScanResult.coverage`; it is never merged into
 `FindingsBundle.coverage` or the Security Passport.
 
-**Data egress:** selecting the block is the authorization to send the redacted
-excerpts to ReformBoss. The excerpts are bounded (default ≤24 KiB selected) and
-redacted, but redaction is best-effort, not a proof that every credential is
-gone. The default workflow does not enable the block.
+**Data egress:** the block being present is the authorization to send the
+redacted excerpts to ReformBoss. The default workflow now contains it, so a
+default run makes one bounded external call. The excerpts are bounded
+(default ≤24 KiB selected) and redacted, but redaction is best-effort, not a
+proof that every credential is gone. A workspace that must not call an external
+provider can remove the block or run without `REFORMBOSS_API_KEY`; the block
+then reports `degraded` and the deterministic result is unchanged.
 
 ## 4. Model output and grounding
 
@@ -108,7 +116,9 @@ Validator rules (`backend/app/ai/scan_validator.py`):
 - `fileRef` must be in the current selection; unknown refs → `AI_REF_UNKNOWN`.
 - `startLine`/`endLine` must be integers inside the sent excerpt, ordered.
 - `quote` is stripped, must be exact source text, unique in the declared line
-  window, and ≤400 chars. No fuzzy matching.
+  window, and ≤400 chars. No fuzzy matching. CRLF in the frozen file and in the
+  model output is normalized to LF for the comparison; `byteRange` is still
+  recomputed against the raw bytes.
 - Columns and `byteRange` are recomputed from the frozen source by the server;
   model offsets are never used.
 - Any `CVE-...` in quote/rationale/remediation → `AI_CVE_FORBIDDEN`.
@@ -139,7 +149,8 @@ One request per node execution, `temperature=0`, timeout from
 | No `REFORMBOSS_API_KEY` | `status=degraded`, `AI_PROVIDER_NOT_CONFIGURED`, no observations |
 | Timeout/HTTP/unreachable | `status=degraded`, masked `providerErrors`, request id/latency if present |
 | `finish_reason=length` | `status=degraded`, `AI_PROVIDER_ERROR`, no partial findings claimed |
-| Invalid JSON/shape | `status=rejected`, validation errors |
+| Malformed provider JSON / empty content | `status=degraded`, masked `AI_PROVIDER_ERROR`; no observations claimed |
+| Valid JSON, invalid shape (`observations` not a list) | `status=rejected`, validation errors |
 | Some observations rejected | `status=partial`, accepted grounded observations only |
 | Valid response, no issues | `status=succeeded` (or `partial` if selection was truncated/omitted) |
 | Frozen source hash mismatch | `status=degraded`, `AI_SOURCE_INTEGRITY`; no provider call |
@@ -298,6 +309,43 @@ printed. No production service, push or main branch was touched.
   deterministic findings intact. The final prompt/limit produced `stop` in the
   runs above.
 
+### 7.6 Default workflow with AI_SCAN (2026-11-21)
+
+- DB `ai_scan_default_live1`, workspace
+  `22222222-3333-4444-8555-666666666666`, sample `sample_bank_app.zip`.
+- Run `c4084441-914f-44f5-891a-6aeb013beae0`: `execution_status=succeeded`,
+  verdict `fail`, deterministic findings `15` (8 critical, 6 high, 1 medium).
+- AI node `succeeded`; AI scan `partial`: one grounded `SQL_INJECTION`
+  hypothesis at `src/main/kotlin/com/bank/controller/UserController.kt:13`,
+  `origin=ai_hypothesis`, `status=potential`, `countsAsFindings=false`;
+  `suppressedDuplicates=1`; coverage `partial` because one of 8 files was
+  omitted by the 6-file budget; `bytesSent=3016`.
+- Provenance: `deepseek-v4.1-flash-1017`,
+  `usage={prompt:1685, completion:1766, total:3451}`, `finish_reason=stop`,
+  request id `8d25d5cf27ea476fb39295d032083c39`.
+- Canonical separation: zero `aiobs_*` rows in `runtime.findings`; the 15 rows
+  and policy counts are unchanged by the AI block.
+- Same DB, unreachable provider (`AI_BASE_URL=http://127.0.0.1:9`), run
+  `2b324b07-31a4-4146-b26e-29d5deb8d0f6`: execution `succeeded`, verdict
+  `fail`, 15 findings intact, AI scan `degraded` with a masked
+  `AI_PROVIDER_ERROR`, zero observations.
+- Final code after CRLF/configVersion fixes, DB `ai_scan_default_final1`
+  (workspace `33333333-4444-4555-8666-777777777777`): upgrade CLI moved
+  `wf_secure_pr_gate` from `rev_..._1` to `rev_..._2`, the stored revision
+  validated, and run `46869bd8-dc91-4ee0-a974-3b2f9e0173e5` returned
+  `execution_status=succeeded`, verdict `fail`, 15 findings, AI scan `partial`
+  with 0 new observations and 2 deterministic duplicates suppressed
+  (`configVersion=5f2ec7ad11aac999`, `finish_reason=stop`). The JSONC export
+  kept `deterministic.count=15` and `aiHypotheses.countsAsFindings=false` with
+  no overlapping IDs.
+- No-key service check (`HOME` without the agent env, no
+  `REFORMBOSS_API_KEY`): `status=degraded`,
+  `validationErrors=["AI_PROVIDER_NOT_CONFIGURED"]`, provenance provider
+  `none`.
+- CRLF grounding regression check: a two-line LF quote and the same CRLF quote
+  both ground to the raw byte range `[15, 43]`; before the fix the LF quote was
+  rejected with `AI_QUOTE_NOT_FOUND`.
+
 ## 8. Limitations
 
 - The model sees only a bounded selected subset. Zero observations does not
@@ -326,12 +374,43 @@ Verified against the auth-owner contract:
 - `CodeFactsStore`, artifact lookup, node-run persistence and SSE all use the
   current `DatabaseRepository`/workspace context; no second DB repository,
   auth copy or context copy was added.
-- No `os.environ` mutation, no module-level workspace and no global identity
-  cache. A future ContextVar implementation in `identity.py` can replace the
-  resolver without changing AI_SCAN logic; scheduler work remains owned by root
-  and must pass its explicit workspace as usual.
+- No `os.environ` mutation in the AI_SCAN request path, no module-level
+  workspace and no global identity cache. The upgrade CLI may set
+  `RUNTIME_WORKSPACE_ID` from its explicit `--workspace-id` before opening the
+  repository. A future ContextVar implementation in `identity.py` can replace
+  the resolver without changing AI_SCAN logic; scheduler work remains owned by
+  root and must pass its explicit workspace as usual.
 - AI node artifacts and outputs stay in the current workspace-scoped
   `runtime.node_runs`; no cross-workspace read/write path exists.
 
 **Final status: implemented and live-checked on this branch; not pushed, not
 merged into main, not deployed.**
+
+## 10. Default workflow and safe production upgrade
+
+`get_default_workflow_draft()` now returns 12 nodes: the deterministic chain is
+unchanged and `node_ai_scan` is appended as a side branch. It is connected to
+`node_project.artifact` and `node_merge.findings_bundle` (dedupe context) and
+has no outgoing edge. The executor therefore records a separate node run and
+SSE event; nothing consumes `ai_scan_result` in the deterministic path.
+
+The API seeds `wf_secure_pr_gate` only when a workspace has no workflows. It
+does not rewrite an existing workflow, so production needs an explicit step:
+
+```bash
+# dry run: says missing | would_upgrade | already_current | user_modified
+DATABASE_URL=... RUNTIME_WORKSPACE_ID=<workspace-uuid> \
+  python -m backend.app.demo.default_workflow_upgrade --workflow-id wf_secure_pr_gate
+
+# write a new revision only when the active draft still matches the old
+# factory default (a user-selected artifactId is preserved)
+DATABASE_URL=... RUNTIME_WORKSPACE_ID=<workspace-uuid> \
+  python -m backend.app.demo.default_workflow_upgrade --workflow-id wf_secure_pr_gate --apply
+```
+
+`backend.app.demo.default_workflow_upgrade.upgrade_system_default_workflow`
+detects the exact frozen pre-AI_SCAN draft, creates a new revision with
+`DatabaseRepository.save_workflow` (old revisions are kept), and returns
+`user_modified` without writing when the draft differs. The only override is
+the explicit `--force-user-edits`; it still creates a new revision instead of
+mutating history. The CLI never prints `DATABASE_URL` or provider keys.

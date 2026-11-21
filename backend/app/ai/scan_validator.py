@@ -114,7 +114,10 @@ def _locate_quote(
 ) -> Optional[Dict[str, Any]]:
     """Return a server-derived location only when the quote is exact and unique."""
     source = selected.source
-    lines = source.text.split("\n")
+    # Compare on normalized line endings: the excerpt sent to the model has no
+    # CRLF artifacts, while the frozen bytes keep them. Line numbers are the
+    # same in both views.
+    lines = [line[:-1] if line.endswith("\r") else line for line in source.text.split("\n")]
     if declared_start < selected.start_line or declared_end > selected.end_line:
         return None
     if declared_start < 1 or declared_end > len(lines) or declared_end < declared_start:
@@ -138,9 +141,11 @@ def _locate_quote(
     end_column = len(last_segment) + 1
     try:
         start_byte = offset_at(source.text, quote_start_line, start_column)
+        # End offset from the raw source, not from the normalized quote length:
+        # CRLF adds one byte per line that `len(quote)` would miss.
+        end_byte = offset_at(source.text, quote_end_line, end_column)
     except (ValueError, IndexError):
         return None
-    end_byte = start_byte + len(quote.encode("utf-8"))
     if start_byte < 0 or end_byte < start_byte or end_byte > len(source.raw):
         return None
     return {
@@ -220,7 +225,7 @@ def validate_ai_scan_response(
         if not isinstance(quote_raw, str):
             _add_error(errors, "AI_QUOTE_MISSING", f"index {index}")
             continue
-        quote = quote_raw.strip()
+        quote = quote_raw.strip().replace("\r\n", "\n").replace("\r", "\n")
         if not quote or len(quote) > _MAX_QUOTE_CHARS:
             _add_error(errors, "AI_QUOTE_INVALID", f"length {len(quote)}")
             continue
