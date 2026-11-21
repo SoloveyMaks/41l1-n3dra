@@ -2,9 +2,21 @@
 
 Дата проверки: 2026-11-21. Проверял отдельной веткой после fast-forward merge локальной `dev`; исходный проверенный HEAD: `75c2f09aaa9d2fd49c3de408084be8b8688638ac` (до последующего owner fix). Использовались отдельные PostgreSQL 16/pgvector контейнер и ASGI-приложение; production-порты не трогались. Все приведённые итоговые Telegram proofs повторены с синтетическим токеном и локальным либо отключённым транспортом.
 
+## Targeted recheck: event loop fix a5df48c
+
+Точный owner commit `a5df48c301a7eddbfdb71dbd883e261e4cada366` влит в review HEAD `0c073808bed45eec83b5e0d0d3b185a7f405e802`. Исходный same-loop deadlock исправлен в повторённом proof: настоящий `acquire_delivery_guard` удерживал binding row lock, coroutine ожидала 0.2 секунды, параллельно настоящий `_handle_start` делал rebind. Получено `timer_seconds 0.201 ticks 11 max_gap 0.021`; loop продолжал работать, rebind дождался освобождения lock, старый owner/epoch после переключения не прошёл новый guard. ASGI/baseline/auth нагрузки не повторялись. **Fix пока не принят целиком: отмена acquire оставляет lock.**
+
+### High — отмена доставки во время acquire теряет connection с binding lock
+
+`backend/app/telegram/runtime.py:688-690` ожидает `asyncio.to_thread(acquire_delivery_guard)` до входа в внутренний `try/finally`, освобождающий connection (`:704-707`). Отмена coroutine не останавливает функцию, уже запущенную в OS thread. Если отмена пришла во время ожидания чужого binding lock, `guard_conn` ещё не присвоен; thread позже успешно делает `pool.getconn()`/`SELECT ... FOR UPDATE` (`backend/app/storage/telegram.py:797-811`), а результат никто не получает и `release_delivery_guard` не вызывается. Connection остаётся checked-out с открытой транзакцией и удерживаемым binding lock.
+
+Воспроизведение без внешнего send: другой connection удерживал guard того же chat; запущен настоящий `_deliver_outbox` для реального run/outbox row, с синтетическим API credentials. `pg_stat_activity` подтвердил ожидание acquire. Coroutine отменена и завершилась `CancelledError`; исходный holder затем освобождён. Через 0.2 секунды новая транзакция с `lock_timeout=200ms` не смогла заблокировать binding: `CANCEL_DURING_ACQUIRE lockfree False`, найдена **1** `idle in transaction` guard connection. Для очистки только этой disposable PG сессии применён `pg_terminate_backend`; приложение/production не трогались. До API send выполнение не дошло.
+
+Нужен cancellation-safe acquire: сохранить результат фонового acquire и гарантированно освободить connection, даже если ожидающая coroutine уже отменена. Потерянный guard блокирует будущий rebind до закрытия connection; это отдельный дефект от уже исправленной остановки event loop. Bounded exhausted recovery из предыдущего review остаётся открытым.
+
 ## Targeted recheck: recovery fix 4e9e573
 
-Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен после merge локальной `dev` `091e7a44eb93e36b1a565a36fdd489ae2619b298` в review HEAD `dbc9a1a079aba6109c2003099223c9d68bfe7586`. Исходный дефект «нет recovery» исправлен в проверенных сценариях, но **полностью bounded recovery не принят**: найдено нарушение лимита ниже. Same-loop delivery/rebind blocker остаётся открытым; отдельного fix SHA пока не было.
+Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен после merge локальной `dev` `091e7a44eb93e36b1a565a36fdd489ae2619b298` в review HEAD `dbc9a1a079aba6109c2003099223c9d68bfe7586`. Исходный дефект «нет recovery» исправлен в проверенных сценариях, но **полностью bounded recovery не принят**: найдено нарушение лимита ниже. Same-loop deadlock исправлен отдельным a5df48c recheck выше, но cancellation acquire выявил новую утечку lock.
 
 ### Medium — exhausted jobs обрабатываются без лимита batch
 
@@ -23,7 +35,7 @@ Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен пос�
 
 ## Targeted recheck: rebind fix f82cd4b
 
-Проверен owner commit `f82cd4b6ff17a2a3947d62cf7562bff9cd267a5d`, включённый в локальный `dev`/review HEAD `b53a3c7465f2930df0bad0f219eebe6e9530b75d`. Старый baseline/auth concurrency повторно не запускался. **Rebind целиком пока не принят: найден новый блокирующий дефект event loop. Restart recovery проверен отдельным recheck выше; ограничение exhausted batch пока не исправлено.**
+Проверен owner commit `f82cd4b6ff17a2a3947d62cf7562bff9cd267a5d`, включённый в локальный `dev`/review HEAD `b53a3c7465f2930df0bad0f219eebe6e9530b75d`. Старый baseline/auth concurrency повторно не запускался. **На этом историческом SHA rebind целиком не принят: найден блокирующий дефект event loop. Restart recovery проверен отдельным recheck выше; ограничение exhausted batch пока не исправлено.**
 
 ### High — синхронный rebind блокирует event loop, пока sender держит delivery_guard
 
@@ -70,4 +82,4 @@ Owner commit `4e9e5731c62033b7558ee7563e60890c06a2c9d2` проверен пос�
 
 ## Ограничения проверки
 
-Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, но новый same-loop lock defect блокирует принятие этого fix; recovery появился, но exhausted batch остаётся неограниченным.
+Успешная реальная Telegram-доставка не доказана; GitHub/GitLab download и Kotlin/Gradle execution в этом review не запускались. Проверялись локальные ASGI маршруты, SQL claims и lifecycle на синтетических данных; ограничения importer проверены чтением owning source, без повторения предыдущего baseline-аудита. При первом черновом smoke env-токен был ошибочно удалён, что позволяло factory подхватить сохранённую конфигурацию; подтверждённой отправки нет, секреты в вывод не попали. Следующий запуск отклонил automatic approval review, скрипт исправлен, итоговые proofs выше получены отдельным безопасным повтором. UI accounts screen в этот review не входил. Исходный rebind leak закрыт проверенными owner/epoch guards, same-loop deadlock исправлен a5df48c; принятие блокирует новая cancellation acquire lock leak, а exhausted recovery batch остаётся неограниченным.
