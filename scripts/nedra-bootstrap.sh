@@ -36,7 +36,8 @@ managed_key() {
   case "$1" in
     REFORMBOSS_API_KEY|POSTGRES_USER|POSTGRES_DB|POSTGRES_PASSWORD|DATABASE_URL|\
     CG_SESSION_SECRET|CG_ANCHOR_HMAC_KEY|CG_ACCESS_CODE|CG_DATA_DIR|\
-    CG_PUBLIC_DEMO|CG_ALLOWED_ORIGINS|AI_PROVIDER|AI_MODEL|VECTOR_RETRIEVAL_ENABLED)
+    CG_PUBLIC_DEMO|CG_ALLOWED_ORIGINS|CG_TRUST_PROXY|AI_PROVIDER|AI_MODEL|\
+    VECTOR_RETRIEVAL_ENABLED)
       return 0
       ;;
     *) return 1 ;;
@@ -242,6 +243,7 @@ run_write() {
     printf 'CG_ACCESS_CODE=%s\n' "$access_code"
     printf 'CG_PUBLIC_DEMO=1\n'
     printf 'CG_ALLOWED_ORIGINS=https://%s\n' "$NEDRA_DOMAIN"
+    printf 'CG_TRUST_PROXY=1\n'
     printf 'AI_PROVIDER=reformboss\n'
     printf 'AI_MODEL=deepseek-v4.1-flash-1017\n'
     printf 'VECTOR_RETRIEVAL_ENABLED=0\n'
