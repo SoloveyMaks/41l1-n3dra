@@ -709,7 +709,10 @@ class WorkflowExecutor:
                 raise ValueError("Build Report: Для генерации отчета необходимы FindingsBundle и PolicyResult")
 
             report_status = str((self.db.get_run(run_id) or {}).get("execution_status") or "running")
-            passport = self.report_builder.build_security_passport(bundle.coverage, pol, bundle.findings)
+            canonical_coverage = (pol.details or {}).get("canonicalCoverage")
+            passport = self.report_builder.build_security_passport(
+                bundle.coverage, pol, bundle.findings, canonical_coverage=canonical_coverage,
+            )
             readable_md = self.report_builder.build_readable_markdown(
                 run_id, workflow_name, passport, pol, bundle.findings, exp,
                 execution_status=report_status,
@@ -884,7 +887,10 @@ class WorkflowExecutor:
         if policy is None or not self.db.get_report(run_id):
             return
         run_row = self.db.get_run(run_id) or {}
-        passport = self.report_builder.build_security_passport(bundle.coverage, policy, bundle.findings)
+        canonical_coverage = (policy.details or {}).get("canonicalCoverage")
+        passport = self.report_builder.build_security_passport(
+            bundle.coverage, policy, bundle.findings, canonical_coverage=canonical_coverage,
+        )
         readable = self.report_builder.build_readable_markdown(
             run_id, workflow_name, passport, policy, bundle.findings, explain,
             execution_status=execution_status,
