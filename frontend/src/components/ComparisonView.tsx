@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, GitCompare, ShieldAlert } from 'lucide-react';
-import { ComparisonDto, ComparisonStatus, RunSummary } from '../types';
+import { ComparisonDto, ComparisonStatus, RunSummary, SqlPatternResult } from '../types';
 import { apiClient } from '../api/client';
 
 const STATUS_LABEL: Record<ComparisonStatus, string> = {
@@ -10,6 +10,14 @@ const STATUS_LABEL: Record<ComparisonStatus, string> = {
   resolved: 'Исправлена',
   inconclusive: 'Не подтверждено',
   file_deleted: 'Файл удалён',
+};
+
+const SQL_STATUS_LABEL: Record<string, string> = {
+  persistent: 'Паттерн сохраняется',
+  changed: 'Паттерн изменился',
+  pattern_disappeared: 'Паттерн исчез при сопоставимой проверке',
+  inconclusive: 'Недостаточно доказательств',
+  file_deleted: 'Файл удалён — это не доказательство исправления',
 };
 
 const BASIS_LABEL: Record<string, string> = {
@@ -42,6 +50,9 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const requestSeq = useRef(0);
+  const [sqlResult, setSqlResult] = useState<SqlPatternResult | null>(null);
+  const [sqlError, setSqlError] = useState<string | null>(null);
+  const [sqlBusy, setSqlBusy] = useState(false);
 
   const changeBaseline = (value: string) => {
     requestSeq.current += 1;
@@ -49,6 +60,9 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
     setResult(null);
     setError(null);
     setBusy(false);
+    setSqlResult(null);
+    setSqlError(null);
+    setSqlBusy(false);
   };
   const changeCurrent = (value: string) => {
     requestSeq.current += 1;
@@ -56,6 +70,9 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
     setResult(null);
     setError(null);
     setBusy(false);
+    setSqlResult(null);
+    setSqlError(null);
+    setSqlBusy(false);
   };
 
   useEffect(() => {
@@ -73,9 +90,24 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
     const seq = ++requestSeq.current;
     setBusy(true);
     setError(null);
+    setSqlResult(null);
+    setSqlError(null);
     try {
       const next = await apiClient.compareRuns(baseline, current);
-      if (seq === requestSeq.current) setResult(next);
+      if (seq === requestSeq.current) {
+        setResult(next);
+        setSqlBusy(true);
+        try {
+          const sql = await apiClient.getSqlPattern(baseline, current);
+          if (seq === requestSeq.current) setSqlResult(sql);
+        } catch (sqlErr: any) {
+          if (seq === requestSeq.current) {
+            setSqlError(sqlErr?.message || 'Проверка SQL-паттерна недоступна');
+          }
+        } finally {
+          if (seq === requestSeq.current) setSqlBusy(false);
+        }
+      }
     } catch (e: any) {
       if (seq === requestSeq.current) {
         setResult(null);
@@ -179,6 +211,27 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs }) => {
                   )}
                 </tbody>
               </table>
+            </div>
+
+            <div className="rounded-xl border border-sky-900 bg-sky-950/20 p-3">
+              <div className="mb-1 text-xs font-semibold text-sky-200">
+                Проверка SQL-паттерна
+              </div>
+              {sqlBusy && <p className="text-xs text-slate-400">Проверяем отдельно от общего сравнения…</p>}
+              {sqlError && <p className="text-xs text-amber-300">Отдельная проверка недоступна: {sqlError}</p>}
+              {sqlResult && (
+                <div className="text-xs text-slate-300">
+                  <div className="font-medium text-sky-100">
+                    {SQL_STATUS_LABEL[sqlResult.status || 'inconclusive'] || 'Недостаточно доказательств'}
+                  </div>
+                  {sqlResult.reason && <p className="mt-1 text-slate-400">{sqlResult.reason}</p>}
+                  {sqlResult.path && <p className="mt-1 text-slate-500"><code>{sqlResult.path}</code></p>}
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Это узкая проверка source-паттерна, не общий вердикт и не vetted-исправление.
+                  </p>
+                </div>
+              )}
+              {!sqlBusy && !sqlError && !sqlResult && <p className="text-xs text-slate-500">Нет данных</p>}
             </div>
 
             {result.deletedFiles.length > 0 && (

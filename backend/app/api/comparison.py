@@ -52,7 +52,7 @@ def _snapshot_id_for_run(*, workspace: str, run_id: str, run_row: Dict[str, Any]
     return None
 
 
-def _published_envelope(workspace: str, run_id: str, run_row: Dict[str, Any],
+def load_published_envelope(workspace: str, run_id: str, run_row: Dict[str, Any],
                         store: CodeFactsStore) -> Dict[str, Any]:
     snapshot_id = _snapshot_id_for_run(workspace=workspace, run_id=run_id, run_row=run_row, store=store)
     if not snapshot_id:
@@ -84,8 +84,8 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     if baseline_run_id == current_run_id:
         raise ComparisonError(400, "SAME_RUN", "Baseline и current run должны различаться")
     store = store or CodeFactsStore()
-    before = _published_envelope(workspace, baseline_run_id, baseline_run, store)
-    after = _published_envelope(workspace, current_run_id, current_run, store)
+    before = load_published_envelope(workspace, baseline_run_id, baseline_run, store)
+    after = load_published_envelope(workspace, current_run_id, current_run, store)
     cli = comparison_cli_path()
     if not cli.is_file():
         raise ComparisonError(503, "COMPARISON_CLI_MISSING", "packages/comparison/compare-cli.mjs не найден")

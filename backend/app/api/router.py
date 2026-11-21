@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from backend.app.ai.service import AiService
 from backend.app.api.comparison import ComparisonError, compare_published_runs
+from backend.app.api.sql_pattern import sql_pattern_proof
 from backend.app.api.session import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
@@ -534,6 +535,27 @@ def compare_runs(baseline_run_id: str, current_run_id: str, request: Request):
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
+
+
+@api_router.get("/comparisons/{baseline_run_id}/{current_run_id}/sql-pattern")
+def compare_sql_pattern(baseline_run_id: str, current_run_id: str, request: Request):
+    baseline = db_repo.get_run(baseline_run_id)
+    current = db_repo.get_run(current_run_id)
+    if not baseline:
+        raise HTTPException(status_code=404, detail="Baseline run не найден")
+    if not current:
+        raise HTTPException(status_code=404, detail="Current run не найден")
+    try:
+        return sql_pattern_proof(
+            workspace=request_workspace(request),
+            baseline_run_id=baseline_run_id,
+            current_run_id=current_run_id,
+            baseline_run=baseline,
+            current_run=current,
+            store=codefacts_store,
+        )
+    except ComparisonError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
 
 
 @api_router.get("/runs/{run_id}/report")
