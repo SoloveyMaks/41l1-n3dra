@@ -525,6 +525,20 @@ export const App: React.FC = () => {
     });
   };
 
+  const handleUserSelectArtifact = (artifactId: string) => {
+    handleSelectArtifact(artifactId);
+    closeSSE();
+    selectedRunRef.current = null;
+    runLoadSeq.current += 1;
+    setCurrentRunId(null);
+    setCurrentRun(null);
+    setNodeRuns([]);
+    setFindings([]);
+    setReport(null);
+    setEvents([]);
+    setIsRunning(false);
+  };
+
   const nodeStatusMap: Record<string, NodeRunStatus> = {};
   nodeRuns.forEach((nodeRun) => {
     nodeStatusMap[nodeRun.node_id] = nodeRun.status;
@@ -583,12 +597,13 @@ export const App: React.FC = () => {
           currentRunId={currentRunId}
           findings={findings}
           report={report}
+          nodeRuns={nodeRuns}
           failureReason={failureReason}
           isRunning={isRunning}
           runsLoading={runsLoading}
           onUpload={() => setIsUploadOpen(true)}
           onLoadSample={handleLoadSample}
-          onSelectArtifact={handleSelectArtifact}
+          onSelectArtifact={handleUserSelectArtifact}
           onRun={() => void handleTriggerRun(true, false)}
           onSelectRun={handleSelectRun}
           onRefreshRuns={() => void refreshRuns()}
@@ -616,6 +631,7 @@ export const App: React.FC = () => {
             findings={findings}
             currentRun={currentRun}
             report={report}
+            nodeRuns={nodeRuns}
           />
         );
       case 'projects':
@@ -724,6 +740,7 @@ export const App: React.FC = () => {
             runId={currentRunId}
             runStatus={currentRun?.execution_status}
             failureReason={failureReason}
+            nodeRuns={nodeRuns}
           />
         );
       case 'comparison':
