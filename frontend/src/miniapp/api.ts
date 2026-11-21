@@ -5,6 +5,22 @@ import type { Finding, RunSummary, TelegramDeliveryMode, TelegramScenario, Teleg
 // месте, чтобы bearer-запросы не уезжали в /api/bootstrap и соседние пути.
 const MINI_API_BASE = `${API_BASE}/telegram/mini`
 
+type MiniRunPayload = Omit<RunSummary, 'critical_count' | 'high_count' | 'medium_count' | 'low_count' | 'info_count'> & {
+  critical_findings: number
+  high_findings: number
+}
+
+function normalizeRun(run: MiniRunPayload): RunSummary {
+  return {
+    ...run,
+    critical_count: run.critical_findings,
+    high_count: run.high_findings,
+    medium_count: 0,
+    low_count: 0,
+    info_count: 0,
+  }
+}
+
 export interface MiniSession {
   token: string
   expiresAt: number
@@ -123,7 +139,7 @@ function reportFilename(disposition: string | null, runId: string): string {
   } else {
     name = (quoted?.[1] || plain?.[1] || fallback).trim()
   }
-  return name.replace(/[\\/:*?"<>|]+/g, '_') || fallback
+  return name.replace(/[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+/g, '_') || fallback
 }
 
 export class MiniApi {
@@ -154,7 +170,7 @@ export class MiniApi {
     })
     if (!res.ok) throw await failure(res)
     const payload = (await res.json()) as Partial<MiniSession>
-    if (!payload || typeof payload.token !== 'string' || typeof payload.expiresAt !== 'number') {
+    if (!payload || typeof payload.token !== 'string' || !payload.token || typeof payload.expiresAt !== 'number' || !Number.isFinite(payload.expiresAt)) {
       throw new MiniApiError('Сервер вернул неполный ответ входа', 500)
     }
     this.token = payload.token
@@ -177,7 +193,8 @@ export class MiniApi {
 
   async bootstrap(signal?: AbortSignal): Promise<MiniBootstrap> {
     const res = await this.request('/bootstrap', { signal })
-    return res.json()
+    const payload = await res.json() as Omit<MiniBootstrap, 'runs'> & { runs: MiniRunPayload[] }
+    return { ...payload, runs: payload.runs.map(normalizeRun) }
   }
 
   async updateSettings(patch: MiniSettingsPatch, signal?: AbortSignal): Promise<TelegramSettings> {
@@ -210,7 +227,8 @@ export class MiniApi {
 
   async getRun(runId: string, signal?: AbortSignal): Promise<MiniRunDetail> {
     const res = await this.request(`/runs/${encodeURIComponent(runId)}`, { signal })
-    return res.json()
+    const payload = await res.json() as { run: MiniRunPayload; findings: Finding[] }
+    return { ...payload, run: normalizeRun(payload.run) }
   }
 
   async downloadReport(runId: string, signal?: AbortSignal): Promise<MiniReport> {
