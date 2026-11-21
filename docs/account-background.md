@@ -119,6 +119,11 @@ schedule lease prevents double claim
 demo schedule still processed {ws env, failed}
 cross-tenant API still 404
 BACKGROUND SMOKE OK
+
+watch recovery events:
+runs [{ws A, failed}, {ws B, failed}]
+events [{ws A, ews A, n=2}, {ws B, ews B, n=2}]
+WATCH RECOVERY EVENTS OK
 ```
 
 Что именно доказано:
@@ -129,8 +134,9 @@ BACKGROUND SMOKE OK
   чужой tenant-секрет — `401`, inbox-строки только у своих workspace;
 - immediate second claim inbox вернул пусто (lease), повторный tick scheduler
   не создал второй schedule-run;
-- watch recovery подняла по одному queued run в каждом workspace, события
-  `run_events` остались в workspace своего run;
+- watch recovery подняла по одному queued run в каждом workspace; отдельная
+  проверка с валидной ревизией дала по 2 `run_events` на run, и у обоих
+  `run.workspace_id == event.workspace_id`;
 - schedule recovery подняла по одному queued run в каждом workspace;
 - demo schedule обработан глобальным scheduler в env workspace;
 - A не читает run/artifact B (`404`).
