@@ -65,6 +65,7 @@
 12. **Расписание: создание без контроля и отсутствие паузы.** Добавлена проверка формата (`interval:N` или 5-field cron), кнопка «Обновить», статус «Активно/На паузе» и кнопка pause/resume через `PATCH /schedules/{id}`. Ошибка backend показывается в модалке, не теряется.
 13. **AI Trust падал без `result.errors`.** Добавлены `error` state, alert и защита `result.errors || []`.
 14. **Мобильная вёрстка.** Navbar/палитра/инспектор/live/findings/report/comparison получили responsive-классы; проверено на 390×844.
+15. **Очередь, выполнение и failed без отчёта.** Live различает «В очереди» (amber), «Выполняется» (blue) и terminal-статусы; report для queued/running показывает «появится после завершения», для failed — причину из `node_runs.error_message`, а не вечный пустой экран. Security verdict остаётся отдельным бейджем.
 
 ## Backend-блокеры и ограничения
 

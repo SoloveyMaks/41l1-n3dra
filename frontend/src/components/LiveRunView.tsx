@@ -35,10 +35,20 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
     );
   }
 
-  const isRunning = currentRun.execution_status === 'running' || currentRun.execution_status === 'queued';
+  const isQueued = currentRun.execution_status === 'queued';
+  const isRunning = currentRun.execution_status === 'running';
+  const isActive = isQueued || isRunning;
   const isFailed = currentRun.execution_status === 'failed';
-  const isFinished = !isRunning;
-  const statusLabel = isRunning ? 'Выполняется' : isFailed ? 'Ошибка' : currentRun.execution_status === 'succeeded' ? 'Завершён' : currentRun.execution_status;
+  const isFinished = !isActive;
+  const statusLabel = isQueued
+    ? 'В очереди'
+    : isRunning
+    ? 'Выполняется'
+    : isFailed
+    ? 'Ошибка'
+    : currentRun.execution_status === 'succeeded'
+    ? 'Завершён'
+    : currentRun.execution_status;
 
   return (
     <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-950">
@@ -47,14 +57,16 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
         <div className="flex items-center gap-3 min-w-0">
           <div
             className={`p-2 rounded-xl text-white shadow-lg ${
-              isRunning
+              isQueued
+                ? 'bg-amber-600 shadow-amber-500/20'
+                : isRunning
                 ? 'bg-blue-600 animate-pulse shadow-blue-500/20'
                 : isFailed
                 ? 'bg-rose-600 shadow-rose-500/20'
                 : 'bg-emerald-600 shadow-emerald-500/20'
             }`}
           >
-            {isRunning ? <Loader2 size={18} className="animate-spin" /> : isFailed ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+            {isActive ? <Loader2 size={18} className="animate-spin" /> : isFailed ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -67,6 +79,8 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                     ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
                     : currentRun.execution_status === 'failed'
                     ? 'bg-rose-950 text-rose-300 border border-rose-800'
+                    : isQueued
+                    ? 'bg-amber-950 text-amber-300 border border-amber-800'
                     : 'bg-blue-950 text-blue-300 border border-blue-800 animate-pulse'
                 }`}
               >
@@ -116,7 +130,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {nodeRuns.length === 0 && (
               <div className="p-4 text-xs text-slate-500 text-center">
-                {isRunning ? 'Ожидаем запуск блоков…' : 'Для этого запуска нет записей блоков'}
+                {isActive ? 'Ожидаем запуск блоков…' : 'Для этого запуска нет записей блоков'}
               </div>
             )}
             {nodeRuns.map((nr) => {
@@ -223,7 +237,7 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
           <div className="flex-1 overflow-y-auto p-3 space-y-2 font-mono text-[11px]">
             {events.length === 0 && (
               <div className="p-4 text-xs text-slate-500 text-center font-sans">
-                {isRunning ? 'Ожидаем события SSE; статус обновляется и опросом…' : 'События для этого запуска не сохранены в текущей сессии'}
+                {isActive ? 'Ожидаем события SSE; статус обновляется и опросом…' : 'События для этого запуска не сохранены в текущей сессии'}
               </div>
             )}
             {events.map((ev) => {

@@ -4,23 +4,41 @@ import {
   CheckCircle2, AlertTriangle, HelpCircle, Layers, ArrowDownToLine,
   FileCode2, KeyRound, PackageSearch
 } from 'lucide-react';
-import { ReportData, SecurityVerdict } from '../types';
+import { ReportData, SecurityVerdict, ExecutionStatus } from '../types';
 import { apiClient } from '../api/client';
 
 interface ReportViewProps {
   report: ReportData | null;
   runId: string | null;
+  runStatus?: ExecutionStatus;
+  failureReason?: string;
 }
 
-export const ReportView: React.FC<ReportViewProps> = ({ report, runId }) => {
+export const ReportView: React.FC<ReportViewProps> = ({ report, runId, runStatus, failureReason }) => {
   const [activeSubTab, setActiveSubTab] = useState<'passport' | 'ai' | 'markdown'>('passport');
 
   if (!report || !runId) {
+    const failed = runStatus === 'failed';
+    const active = runStatus === 'queued' || runStatus === 'running';
     return (
-      <div className="flex-1 h-full flex flex-col items-center justify-center text-slate-500">
+      <div className="flex-1 h-full flex flex-col items-center justify-center text-slate-500 px-4 text-center">
         <FileText size={36} className="text-slate-600 mb-2" />
-        <p className="text-sm">Отчет проверки еще не сформирован</p>
-        <p className="text-xs text-slate-600">Запустите сценарий для генерации отчета и карты безопасности</p>
+        <p className="text-sm">
+          {failed
+            ? 'Отчёт не сформирован: запуск завершился с ошибкой'
+            : active
+            ? 'Отчёт появится после завершения запуска'
+            : runId
+            ? 'Отчёт проверки ещё не сформирован'
+            : 'Запуск не выбран'}
+        </p>
+        <p className="text-xs text-slate-600 max-w-md mt-1">
+          {failed
+            ? failureReason || 'Причина в ошибке выполнения узла. Открой «Живое выполнение» и посмотри статус блока.'
+            : active
+            ? 'Пока run в очереди или выполняется, report на сервере ещё не создан. Дождись terminal-статуса.'
+            : 'Запустите сценарий для генерации отчёта и карты безопасности.'}
+        </p>
       </div>
     );
   }
