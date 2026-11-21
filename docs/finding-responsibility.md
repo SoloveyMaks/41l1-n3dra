@@ -106,9 +106,13 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
 - Используется только `artifact.repository.commit_sha` + `primaryLocation.path`
   finding. URL, branch и path от клиента не принимаются.
 - Допустимы только `github.com`/`gitlab.com` из artifact meta; redirects
-  отключены, response streamed с ceiling 256 KiB на decompressed bytes, timeout
-  4 s (connect 2 s), общий enrichment deadline 9 s, кэш 15 минут. Запросы
-  concurrent bounded (не более двух PR detail/review одновременно).
+  отключены. Response читается `aiter_raw` с hard ceiling 256 KiB на compressed
+  и 256 KiB на decompressed bytes; gzip/deflate декодируются инкрементально
+  через `zlib.decompressobj(max_length)`, `Content-Length` не доверяем.
+  `Accept-Encoding: identity`; unsupported/повреждённый content-encoding —
+  `failed`, без чтения всего body. Request hard deadline 4 s (connect 2 s),
+  общий enrichment deadline 9 s, кэш 15 минут. Запросы concurrent bounded
+  (не более двух PR detail/review одновременно).
 - GitHub: `GET https://api.github.com/repos/{owner}/{repo}/commits?sha={frozenSHA}&path={path}&per_page=1`.
 - GitLab: `GET https://gitlab.com/api/v4/projects/{project}/repository/commits?ref_name={frozenSHA}&path={path}&per_page=1`.
 - Возвращаются commit SHA, author и committer раздельно (display name/login,
@@ -147,7 +151,9 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   для commit/PR-части, анализ не ломается. PR lookup failure отдельный
   `pullRequestsStatus`, commit history при этом остаётся доступной, если
   provider её отдал.
-- DB/store/CODEOWNERS читаются в `asyncio.to_thread` с сохранённым ContextVar.
+- DB/store/CODEOWNERS читаются в executor через
+  `contextvars.copy_context().run` (не голый `run_in_executor`): tenant
+  workspace из account scope сохраняется, env fallback не подменяет его.
   Bounded admission: 4 active + 8 queued; сверх этого — `503
   RESPONSIBILITY_BUSY`, без создания task. Одинаковые workspace/run/finding
   дедуплицируются in-flight, отмена одного caller не отменяет shared build.
@@ -235,7 +241,13 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
 - Sol-сценарии: malicious CODEOWNERS intake + matcher уложился в микросекунды,
   `/src/` не матчит nested, ownerless `/src/` снял fallback, `**/A.kt` матчит
   root, inline comment не owner, 401-е правило дало `incomplete`.
+- Real two-account ASGI endpoint: account A и B с разными workspace
+  одновременно получили свои 200 с правильными runId; A→B и B→A одновременно
+  получили 404. Это проверяет ContextVar на живом PG, не на fake DB.
 - Admission test: 20 distinct keys при slow DB → peak real workers 4, 8 busy
   503, 12 timeout 503; после caller timeout новые ключи не подняли peak выше 4;
   в конце active=0, queue=0, inflight=0. Same-key test: отмена одного caller,
   второй получил результат, БД прочитана 1 раз; exception без task warning.
+- Stream ceiling test через Unix local HTTP transport: plain exact 262144 → ok;
+  plain 2 MiB → failed без полного body; gzip 16 MiB при 8 KiB wire chunks →
+  failed, tracemalloc peak ~0.5 MiB (не 22 MiB).
