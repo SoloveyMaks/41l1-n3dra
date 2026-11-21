@@ -39,7 +39,7 @@ from backend.app.api.session import (
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
 from backend.app.artifacts.repository import RepositoryImportError, import_repository
 from backend.app.artifacts.sample_source import build_zip_from_directory
-from backend.app.codefacts.identity import run_uuid
+from backend.app.codefacts.identity import configured_workspace_id, run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
 from backend.app.codefacts.source import REDACTION_VERSION, mask_text
@@ -247,7 +247,8 @@ def create_session(request: Request, response: Response,
             detail="Неверный код доступа",
             headers={"WWW-Authenticate": "AccessCode"},
         )
-    token = issue_session(request_workspace(request), role)
+    workspace = configured_workspace_id()
+    token = issue_session(workspace, role)
     set_session_cookie(response, token, request)
     return {
         "authenticated": True,
@@ -257,7 +258,7 @@ def create_session(request: Request, response: Response,
         "user": None,
         "role": role,
         "adminAvailable": admin_available(),
-        "workspaceId": request_workspace(request),
+        "workspaceId": workspace,
         "expiresInSec": SESSION_TTL_SECONDS,
     }
 

@@ -218,7 +218,7 @@ def verify_session(token: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
     if issued > int(time.time()) + 60 or int(time.time()) - issued > SESSION_TTL_SECONDS:
         return None
-    if not hmac.compare_digest(signature, _sign(payload)):
+    if not hmac.compare_digest(signature.encode("utf-8"), _sign(payload).encode("ascii")):
         return None
     if len(parts) == 8:
         stored = accounts.load_session(session_id)
