@@ -1,29 +1,683 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Play, CheckCircle2, AlertCircle, Loader2, MinusCircle,
-  Terminal, Eye, ChevronRight, RefreshCw
+  Play, CheckCircle2, AlertCircle, Loader2, MinusCircle, Clock,
+  Terminal, Eye, ChevronRight, RefreshCw, FolderArchive, KeyRound,
+  PackageSearch, FileCode2, GitMerge, ShieldAlert, GitFork, Sparkles,
+  FileText, Send,
 } from 'lucide-react';
-import { NodeRunRecord, RunSummary } from '../types';
+import { NodeKind, NodeRunRecord, RunSummary, WorkflowNode } from '../types';
+
+type LiveEvent = {
+  seq: number;
+  timestamp: string;
+  type: string;
+  nodeId?: string;
+  payload: unknown;
+};
+
+type IconComponent = React.ComponentType<{ size?: number; className?: string }>;
 
 interface LiveRunViewProps {
   currentRun: RunSummary | null;
   nodeRuns: NodeRunRecord[];
-  events: Array<{ seq: number; timestamp: string; type: string; nodeId?: string; payload: any }>;
+  events: LiveEvent[];
+  plannedNodes?: WorkflowNode[];
   onSelectNode: (nodeId: string) => void;
   onRefresh?: () => void;
+  onOpenMap?: () => void;
+  onOpenFindings?: () => void;
+  onOpenReport?: () => void;
+}
+
+type DisplayStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled';
+type PhaseId = 'snapshot' | 'scanners' | 'facts' | 'verdict' | 'ai' | 'report' | 'delivery' | 'other';
+type ActionKind = 'map' | 'findings' | 'report';
+
+type Chip = {
+  label: string;
+  value: string;
+  tone?: 'danger' | 'warn' | 'ok' | 'muted';
+};
+
+type StageCopy = {
+  short: string;
+  detail?: string;
+  chips?: Chip[];
+  warning?: string;
+  action?: { kind: ActionKind; label: string };
+  statusOverride?: DisplayStatus;
+};
+
+type Stage = StageCopy & {
+  nodeRun: NodeRunRecord;
+  title: string;
+  phase: PhaseId;
+  status: DisplayStatus;
+  durationMs: number;
+  icon: IconComponent;
+  color: string;
+  live?: boolean;
+};
+
+const PHASES: Array<{ id: PhaseId; title: string }> = [
+  { id: 'snapshot', title: '1. Снимок проекта' },
+  { id: 'scanners', title: '2. Сканеры' },
+  { id: 'facts', title: '3. Факты кода и карта доступа' },
+  { id: 'verdict', title: '4. Политика и ветвление' },
+  { id: 'ai', title: '5. AI-объяснение' },
+  { id: 'report', title: '6. Отчёт и паспорт' },
+  { id: 'delivery', title: '7. Уведомление' },
+  { id: 'other', title: 'Другие блоки' },
+];
+
+const KIND_META: Record<string, { title: string; phase: PhaseId; icon: IconComponent; color: string }> = {
+  manual_trigger: { title: 'Ручной запуск', phase: 'snapshot', icon: Play, color: 'text-purple-400' },
+  schedule_trigger: { title: 'Плановый запуск', phase: 'snapshot', icon: Clock, color: 'text-purple-400' },
+  project_input: { title: 'Снимок проекта', phase: 'snapshot', icon: FolderArchive, color: 'text-blue-400' },
+  secret_scan: { title: 'Сканер секретов', phase: 'scanners', icon: KeyRound, color: 'text-amber-400' },
+  sca_scan: { title: 'Сканер зависимостей', phase: 'scanners', icon: PackageSearch, color: 'text-orange-400' },
+  kotlin_sast: { title: 'Kotlin SAST', phase: 'scanners', icon: FileCode2, color: 'text-rose-400' },
+  merge_findings: { title: 'Факты кода и карта доступа', phase: 'facts', icon: GitMerge, color: 'text-teal-400' },
+  policy_gate: { title: 'Политика и вердикт', phase: 'verdict', icon: ShieldAlert, color: 'text-emerald-400' },
+  condition: { title: 'Ветвление по риску', phase: 'verdict', icon: GitFork, color: 'text-yellow-400' },
+  branch_merge: { title: 'Сведение ветвей', phase: 'verdict', icon: GitMerge, color: 'text-indigo-400' },
+  ai_explain: { title: 'AI-объяснение', phase: 'ai', icon: Sparkles, color: 'text-fuchsia-400' },
+  build_report: { title: 'Отчёт и паспорт проверки', phase: 'report', icon: FileText, color: 'text-cyan-400' },
+  notify: { title: 'Уведомление', phase: 'delivery', icon: Send, color: 'text-sky-400' },
+};
+
+const STATUS_META: Record<DisplayStatus, { label: string; icon: IconComponent; chip: string; dot: string }> = {
+  queued: {
+    label: 'В очереди',
+    icon: Clock,
+    chip: 'bg-amber-950 text-amber-300 border-amber-800',
+    dot: 'bg-amber-400',
+  },
+  running: {
+    label: 'Выполняется',
+    icon: Loader2,
+    chip: 'bg-blue-950 text-blue-300 border-blue-800',
+    dot: 'bg-blue-400',
+  },
+  succeeded: {
+    label: 'Готово',
+    icon: CheckCircle2,
+    chip: 'bg-emerald-950 text-emerald-300 border-emerald-800',
+    dot: 'bg-emerald-400',
+  },
+  failed: {
+    label: 'Ошибка',
+    icon: AlertCircle,
+    chip: 'bg-rose-950 text-rose-300 border-rose-800',
+    dot: 'bg-rose-400',
+  },
+  skipped: {
+    label: 'Пропущено',
+    icon: MinusCircle,
+    chip: 'bg-slate-800 text-slate-400 border-slate-700',
+    dot: 'bg-slate-500',
+  },
+  cancelled: {
+    label: 'Отменено',
+    icon: MinusCircle,
+    chip: 'bg-slate-800 text-slate-400 border-slate-700',
+    dot: 'bg-slate-500',
+  },
+};
+
+const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info'] as const;
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: 'крит',
+  high: 'выс',
+  medium: 'сред',
+  low: 'низ',
+  info: 'инфо',
+};
+
+const CHIP_TONE: Record<NonNullable<Chip['tone']>, string> = {
+  danger: 'border-rose-900/70 bg-rose-950/40 text-rose-300',
+  warn: 'border-amber-900/70 bg-amber-950/40 text-amber-300',
+  ok: 'border-emerald-900/70 bg-emerald-950/40 text-emerald-300',
+  muted: 'border-slate-800 bg-slate-900/70 text-slate-400',
+};
+
+const asObject = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
+const asNumber = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
+const shortId = (value: unknown): string => (typeof value === 'string' ? value.slice(0, 8) : '');
+
+type SeverityKey = (typeof SEVERITY_ORDER)[number];
+const isSeverity = (value: string): value is SeverityKey =>
+  (SEVERITY_ORDER as readonly string[]).includes(value);
+
+function plural(count: number, one: string, few: string, many: string): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0 мс';
+  if (ms >= 60_000) {
+    const minutes = Math.floor(ms / 60_000);
+    const seconds = Math.round((ms % 60_000) / 1000);
+    return `${minutes} мин ${seconds} с`;
+  }
+  if (ms >= 1000) return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} с`;
+  return `${Math.round(ms)} мс`;
+}
+
+function formatClock(value?: string | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function displayStatus(status: string): DisplayStatus {
+  if (status === 'running' || status === 'retrying') return 'running';
+  if (status === 'succeeded') return 'succeeded';
+  if (status === 'failed') return 'failed';
+  if (status === 'skipped') return 'skipped';
+  if (status === 'cancelled') return 'cancelled';
+  return 'queued';
+}
+
+function severityCounts(findings: unknown[]): Record<SeverityKey, number> {
+  const counts: Record<SeverityKey, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const finding of findings) {
+    const severity = asString(asObject(finding).severity);
+    if (isSeverity(severity)) counts[severity] += 1;
+  }
+  return counts;
+}
+
+function severityChips(findings: unknown[]): Chip[] {
+  const counts = severityCounts(findings);
+  return SEVERITY_ORDER
+    .filter((severity) => counts[severity] > 0)
+    .map((severity) => ({
+      label: SEVERITY_LABEL[severity],
+      value: String(counts[severity]),
+      tone: severity === 'critical' ? 'danger' : severity === 'high' ? 'warn' : 'muted',
+    }));
+}
+
+function describeStage(nodeRun: NodeRunRecord): StageCopy {
+  const output = asObject(nodeRun.output_data_masked);
+  const kind: string = nodeRun.kind;
+
+  if (kind === 'manual_trigger' || kind === 'schedule_trigger') {
+    const trigger = asObject(output.out);
+    const triggerType = asString(trigger.triggerType) || (kind === 'schedule_trigger' ? 'schedule' : 'manual');
+    const timestamp = asString(trigger.timestamp);
+    return {
+      short: `Триггер: ${triggerType}`,
+      detail: timestamp ? `Старт: ${formatClock(timestamp)}` : undefined,
+      chips: [{ label: 'Тип', value: triggerType, tone: 'muted' }],
+    };
+  }
+
+  if (kind === 'project_input') {
+    const artifact = asObject(output.artifact);
+    const filename = asString(artifact.filename);
+    const artifactId = asString(artifact.artifactId);
+    return {
+      short: filename ? `Снимок: ${filename}` : 'Снимок проекта привязан к запуску',
+      detail: artifactId
+        ? `Артефакт ${shortId(artifactId)} закреплён за этой проверкой.`
+        : undefined,
+      chips: artifactId
+        ? [{ label: 'Артефакт', value: shortId(artifactId), tone: 'muted' }]
+        : [],
+    };
+  }
+
+  if (kind === 'secret_scan' || kind === 'sca_scan' || kind === 'kotlin_sast') {
+    const scan = asObject(output.scan_result);
+    const findings = asArray(scan.findings);
+    const coverage = asObject(scan.coverage);
+    const diagnostics = asArray(scan.diagnostics);
+    const errors = diagnostics.filter((item) => asString(asObject(item).level) === 'error');
+    const filesScanned = asNumber(coverage.files_scanned);
+    return {
+      short: `${findings.length} ${plural(findings.length, 'находка', 'находки', 'находок')} · ${filesScanned} ${plural(filesScanned, 'файл', 'файла', 'файлов')} просканировано`,
+      detail: `Правил: ${asArray(coverage.rules_executed).length} · диагностика: ${diagnostics.length}`,
+      chips: severityChips(findings),
+      warning: errors.length
+        ? `${errors.length} ${plural(errors.length, 'ошибка', 'ошибки', 'ошибок')} анализатора: ${asString(asObject(errors[0]).message)}`
+        : undefined,
+      action: { kind: 'findings', label: 'Открыть проблемы' },
+    };
+  }
+
+  if (kind === 'merge_findings') {
+    const bundle = asObject(output.findings_bundle);
+    const findings = asArray(bundle.findings);
+    const coverage = asObject(bundle.coverage);
+    const diagnostics = asArray(bundle.diagnostics);
+    const rules = asArray(coverage.rules_executed);
+    const codeFactsDiagnostics = diagnostics.filter(
+      (item) => asString(asObject(item).source) === 'codefacts',
+    );
+    const mapUnavailable = codeFactsDiagnostics.find(
+      (item) => asString(asObject(asObject(item).details).code) === 'CF-MAP-UNAVAILABLE',
+    );
+    const codeFactRules = rules.filter(
+      (rule) => typeof rule === 'string' && rule.startsWith('CF-'),
+    ).length;
+    const parserErrors = asNumber(coverage.parser_errors);
+    const unresolved = asNumber(coverage.unresolved_dependencies);
+    const firstCodeFactMessage = asString(asObject(codeFactsDiagnostics[0]).message);
+    return {
+      short: `Находок: ${findings.length} · файлов: ${asNumber(coverage.files_scanned)} · CF-правил: ${codeFactRules}`,
+      detail: `Связи карты строятся по этому снимку; диагностика: ${diagnostics.length}.`,
+      chips: [
+        { label: 'Правил', value: String(rules.length), tone: 'muted' },
+        { label: 'Ошибок парсера', value: String(parserErrors), tone: parserErrors ? 'warn' : 'muted' },
+        { label: 'Зависимостей без версии', value: String(unresolved), tone: unresolved ? 'warn' : 'muted' },
+      ],
+      warning: mapUnavailable
+        ? `Карта доступа не построена: ${asString(asObject(mapUnavailable).message) || 'ошибка code facts'}`
+        : codeFactsDiagnostics.length
+          ? `Факты кода: ${codeFactsDiagnostics.length} ${plural(codeFactsDiagnostics.length, 'замечание', 'замечания', 'замечаний')}. ${firstCodeFactMessage}`
+          : undefined,
+      action: { kind: 'map', label: 'Открыть карту доступа' },
+    };
+  }
+
+  if (kind === 'policy_gate') {
+    const policy = asObject(output.policy_result);
+    const verdict = asString(policy.verdict) || 'не определён';
+    const reasons = asArray(policy.reasons).map(asString).filter(Boolean);
+    const criticalCount = asNumber(policy.critical_count);
+    const highCount = asNumber(policy.high_count);
+    return {
+      short: `Вердикт: ${verdict} · находок: ${asNumber(policy.findings_count)}`,
+      detail: reasons[0],
+      chips: [
+        { label: 'крит', value: String(criticalCount), tone: criticalCount ? 'danger' : 'muted' },
+        { label: 'выс', value: String(highCount), tone: highCount ? 'warn' : 'muted' },
+        { label: 'сред', value: String(asNumber(policy.medium_count)), tone: 'muted' },
+      ],
+      warning: verdict === 'inconclusive' ? 'Проверка неполная: вердикт не доказывает безопасность.' : undefined,
+      action: { kind: 'findings', label: 'Открыть проблемы' },
+    };
+  }
+
+  if (kind === 'condition') {
+    const isTrue = Boolean(output.true_branch);
+    const branch = asObject(output.true_branch ?? output.false_branch);
+    const field = asString(branch.field) || 'поле';
+    const actualValue = branch.actualValue;
+    return {
+      short: `Ветка: ${isTrue ? 'истина' : 'ложь'} · ${field}: ${String(actualValue ?? '—')}`,
+      detail: branch.targetValue !== undefined
+        ? `Ожидалось ${field} = ${String(branch.targetValue)}`
+        : undefined,
+      chips: [{ label: 'Решение', value: isTrue ? 'true' : 'false', tone: isTrue ? 'ok' : 'muted' }],
+    };
+  }
+
+  if (kind === 'branch_merge') {
+    return { short: 'Ветви сведены, данные переданы дальше' };
+  }
+
+  if (kind === 'ai_explain') {
+    const explain = asObject(output.explain_result);
+    const items = asArray(explain.items);
+    const status = asString(explain.status) || '—';
+    const model = asString(explain.model) || 'модель не указана';
+    const validationErrors = asArray(explain.validation_errors).map(asString).filter(Boolean);
+    return {
+      short: `AI: ${status} · объяснений: ${items.length} · ${model}`,
+      detail: asString(explain.summary) || undefined,
+      chips: [
+        { label: 'Модель', value: model, tone: 'muted' },
+        { label: 'Ошибок валидации', value: String(validationErrors.length), tone: validationErrors.length ? 'warn' : 'muted' },
+      ],
+      warning: validationErrors.length
+        ? `Валидация AI: ${validationErrors.join('; ')}`
+        : undefined,
+      action: { kind: 'report', label: 'Смотреть в отчёте' },
+    };
+  }
+
+  if (kind === 'build_report') {
+    const report = asObject(output.report);
+    const passport = asObject(output.passport);
+    const parserErrors = asNumber(passport.parser_errors);
+    return {
+      short: `Отчёт собран · вердикт ${asString(report.verdict) || '—'} · находок: ${asNumber(report.findingsCount)}`,
+      detail: `Файлов: ${asNumber(passport.files_scanned)} · строк: ${asNumber(passport.lines_of_code)} · готов ${formatClock(asString(report.generatedAt))}`,
+      chips: [
+        { label: 'Паспорт', value: asString(passport.verdict) || '—', tone: asString(passport.verdict) === 'fail' ? 'danger' : 'muted' },
+        { label: 'Ошибок парсера', value: String(parserErrors), tone: parserErrors ? 'warn' : 'muted' },
+      ],
+      action: { kind: 'report', label: 'Открыть отчёт' },
+    };
+  }
+
+  if (kind === 'notify') {
+    const delivery = asObject(output.delivery_result);
+    const deliveryStatus = asString(delivery.status);
+    const target = asString(delivery.target);
+    return {
+      short: `Доставка: ${deliveryStatus || '—'} · ${asString(delivery.channel) || 'webhook'}`,
+      detail: asString(delivery.message) || undefined,
+      chips: target ? [{ label: 'Адрес', value: target, tone: 'muted' }] : [],
+      warning: deliveryStatus === 'failed'
+        ? 'Уведомление не отправлено.'
+        : deliveryStatus === 'skipped'
+          ? 'Отправка пропущена по настройкам сценария.'
+          : undefined,
+      statusOverride:
+        deliveryStatus === 'failed'
+          ? 'failed'
+          : deliveryStatus === 'skipped'
+            ? 'skipped'
+            : deliveryStatus === 'succeeded'
+              ? 'succeeded'
+              : undefined,
+    };
+  }
+
+  return {
+    short: nodeRun.status === 'succeeded' ? 'Блок выполнен' : 'Блок не завершился',
+    detail: `Тип блока: ${kind}`,
+  };
+}
+
+function buildStage(nodeRun: NodeRunRecord): Stage {
+  const meta: { title: string; phase: PhaseId; icon: IconComponent; color: string } =
+    KIND_META[nodeRun.kind] || {
+      title: nodeRun.kind,
+      phase: 'other',
+      icon: Play,
+      color: 'text-slate-400',
+    };
+  const copy = describeStage(nodeRun);
+  return {
+    ...copy,
+    nodeRun,
+    title: meta.title,
+    phase: meta.phase,
+    status: copy.statusOverride || displayStatus(nodeRun.status),
+    durationMs: asNumber(nodeRun.duration_ms),
+    icon: meta.icon,
+    color: meta.color,
+  };
+}
+
+const NODE_ID_KIND_HINTS: Array<[string, NodeKind]> = [
+  ['node_start', 'manual_trigger'],
+  ['node_project', 'project_input'],
+  ['node_secret', 'secret_scan'],
+  ['node_sca', 'sca_scan'],
+  ['node_sast', 'kotlin_sast'],
+  ['node_merge', 'merge_findings'],
+  ['node_policy', 'policy_gate'],
+  ['node_cond', 'condition'],
+  ['node_ai', 'ai_explain'],
+  ['node_report', 'build_report'],
+  ['node_notify', 'notify'],
+];
+
+function inferNodeKind(nodeId: string, plannedNodes: WorkflowNode[]): NodeKind | null {
+  const planned = plannedNodes.find((node) => node.id === nodeId);
+  if (planned) return planned.kind;
+  const hint = NODE_ID_KIND_HINTS.find(([prefix]) => nodeId.startsWith(prefix));
+  if (hint) return hint[1];
+  const kindMatch = (Object.keys(KIND_META) as NodeKind[]).find((kind) => nodeId.includes(kind));
+  return kindMatch ?? null;
+}
+
+function liveStageText(kind: NodeKind | null): string {
+  switch (kind) {
+    case 'secret_scan':
+    case 'sca_scan':
+    case 'kotlin_sast':
+      return 'Сканер выполняет проверку…';
+    case 'merge_findings':
+      return 'Собираем находки, факты кода и карту доступа…';
+    case 'ai_explain':
+      return 'Модель объясняет находки…';
+    case 'build_report':
+      return 'Собираем отчёт и паспорт проверки…';
+    case 'notify':
+      return 'Отправляем уведомление…';
+    case 'policy_gate':
+    case 'condition':
+      return 'Оцениваем результат проверки…';
+    case 'project_input':
+      return 'Готовим снимок проекта…';
+    default:
+      return 'Блок выполняется…';
+  }
+}
+
+function buildLiveStage(
+  nodeId: string,
+  startedAt: string,
+  runId: string,
+  plannedNodes: WorkflowNode[],
+  nowMs: number,
+): Stage {
+  const kind = inferNodeKind(nodeId, plannedNodes);
+  const meta = kind ? KIND_META[kind] : undefined;
+  const startMs = Date.parse(startedAt);
+  const durationMs = Number.isNaN(startMs) ? 0 : Math.max(0, nowMs - startMs);
+  const nodeRun: NodeRunRecord = {
+    id: `live:${nodeId}`,
+    run_id: runId,
+    node_id: nodeId,
+    kind: kind ?? 'notify',
+    status: 'running',
+    started_at: startedAt,
+    duration_ms: durationMs,
+    input_data_masked: {},
+    output_data_masked: {},
+  };
+  return {
+    nodeRun,
+    title: meta?.title || `Блок ${nodeId}`,
+    phase: meta?.phase || 'other',
+    status: 'running',
+    durationMs,
+    icon: meta?.icon || Play,
+    color: meta?.color || 'text-slate-400',
+    short: liveStageText(kind),
+    detail: `Событие старта получено в ${formatClock(startedAt)}. Итог появится после завершения блока.`,
+    chips: [],
+    live: true,
+  };
+}
+
+const PHASE_RANK = new Map<PhaseId, number>(PHASES.map((phase, index) => [phase.id, index]));
+
+function eventLabel(type: string): string {
+  const labels: Record<string, string> = {
+    run_status: 'Статус запуска',
+    node_status: 'Статус блока',
+    edge_data: 'Данные связи',
+    finding_summary: 'Сводка находок',
+    coverage: 'Покрытие',
+    delivery_status: 'Доставка',
+    artifact_status: 'Артефакт',
+  };
+  return labels[type] || type;
+}
+
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 export const LiveRunView: React.FC<LiveRunViewProps> = ({
   currentRun,
   nodeRuns,
   events,
+  plannedNodes = [],
+  onSelectNode,
   onRefresh,
+  onOpenMap,
+  onOpenFindings,
+  onOpenReport,
 }) => {
-  const [selectedNodeRun, setSelectedNodeRun] = useState<NodeRunRecord | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [detailTab, setDetailTab] = useState<'data' | 'events'>('data');
+  const [onlySelectedEvents, setOnlySelectedEvents] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  const runIsActive =
+    currentRun?.execution_status === 'queued' || currentRun?.execution_status === 'running';
 
   useEffect(() => {
-    setSelectedNodeRun(null);
+    setSelectedNodeId(null);
+    setOnlySelectedEvents(false);
   }, [currentRun?.id]);
+
+  useEffect(() => {
+    if (!runIsActive) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runIsActive]);
+
+  const recordedStages = useMemo(
+    () =>
+      nodeRuns
+        .map(buildStage)
+        .sort((left, right) => {
+          const phaseDiff = (PHASE_RANK.get(left.phase) ?? PHASES.length) -
+            (PHASE_RANK.get(right.phase) ?? PHASES.length);
+          if (phaseDiff !== 0) return phaseDiff;
+          const leftStart = left.nodeRun.started_at || '';
+          const rightStart = right.nodeRun.started_at || '';
+          if (leftStart !== rightStart) return leftStart.localeCompare(rightStart);
+          return left.nodeRun.node_id.localeCompare(right.nodeRun.node_id);
+        }),
+    [nodeRuns],
+  );
+
+  const latestRunning = useMemo(() => {
+    const running = new Map<string, string>();
+    for (const event of events) {
+      if (event.type !== 'node_status' || !event.nodeId) continue;
+      const status = asString(asObject(event.payload).status);
+      if (status === 'running' || status === 'retrying') {
+        running.set(event.nodeId, event.timestamp || '');
+      } else if (status) {
+        running.delete(event.nodeId);
+      }
+    }
+    return running;
+  }, [events]);
+
+  const liveStages = useMemo(() => {
+    if (!runIsActive || !currentRun) return [];
+    const recordedIds = new Set(recordedStages.map((stage) => stage.nodeRun.node_id));
+    return [...latestRunning.entries()]
+      .filter(([nodeId]) => !recordedIds.has(nodeId))
+      .map(([nodeId, startedAt]) =>
+        buildLiveStage(nodeId, startedAt, currentRun.id, plannedNodes, now),
+      );
+  }, [runIsActive, currentRun, recordedStages, latestRunning, plannedNodes, now]);
+
+  const stages = useMemo(
+    () =>
+      [...recordedStages, ...liveStages].sort((left, right) => {
+        const phaseDiff = (PHASE_RANK.get(left.phase) ?? PHASES.length) -
+          (PHASE_RANK.get(right.phase) ?? PHASES.length);
+        if (phaseDiff !== 0) return phaseDiff;
+        const leftStart = left.nodeRun.started_at || '';
+        const rightStart = right.nodeRun.started_at || '';
+        if (leftStart !== rightStart) return leftStart.localeCompare(rightStart);
+        return left.nodeRun.node_id.localeCompare(right.nodeRun.node_id);
+      }),
+    [recordedStages, liveStages],
+  );
+
+  const groupedStages = useMemo(
+    () =>
+      PHASES
+        .map((phase) => ({ ...phase, stages: stages.filter((stage) => stage.phase === phase.id) }))
+        .filter((phase) => phase.stages.length > 0),
+    [stages],
+  );
+
+  const selectedStage = stages.find((stage) => stage.nodeRun.node_id === selectedNodeId) || null;
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<DisplayStatus, number> = {
+      queued: 0,
+      running: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      cancelled: 0,
+    };
+    for (const stage of stages) counts[stage.status] += 1;
+    return counts;
+  }, [stages]);
+
+  const runDurationMs = useMemo(() => {
+    if (!currentRun) return 0;
+    const startValue = currentRun.started_at || currentRun.created_at;
+    const start = Date.parse(startValue);
+    if (Number.isNaN(start)) return 0;
+    const end = currentRun.finished_at
+      ? Date.parse(currentRun.finished_at)
+      : runIsActive
+        ? now
+        : start;
+    return Math.max(0, end - start);
+  }, [currentRun, now, runIsActive]);
+
+  const failureReason = useMemo(() => {
+    if (currentRun?.execution_status !== 'failed') return undefined;
+    const nodeError = nodeRuns.find((nodeRun) => nodeRun.error_message)?.error_message;
+    if (nodeError) return nodeError;
+    const runError = [...events]
+      .reverse()
+      .find((event) => {
+        if (event.type !== 'run_status') return false;
+        const payload = asObject(event.payload);
+        return asArray(payload.errors).length > 0 || asString(payload.error).length > 0;
+      });
+    if (!runError) return undefined;
+    const payload = asObject(runError.payload);
+    const errors = asArray(payload.errors).map(asString).filter(Boolean);
+    return errors.length ? errors.join('; ') : asString(payload.error);
+  }, [currentRun?.execution_status, nodeRuns, events]);
+
+  const visibleEvents = useMemo(() => {
+    if (onlySelectedEvents && selectedStage) {
+      return events.filter((event) => event.nodeId === selectedStage.nodeRun.node_id);
+    }
+    return events;
+  }, [events, onlySelectedEvents, selectedStage]);
+
+  const selectStage = (stage: Stage) => {
+    setSelectedNodeId(stage.nodeRun.node_id);
+    setDetailTab('data');
+    onSelectNode(stage.nodeRun.node_id);
+  };
+
+  const openAction = (kind: ActionKind) => {
+    if (kind === 'map') onOpenMap?.();
+    if (kind === 'findings') onOpenFindings?.();
+    if (kind === 'report') onOpenReport?.();
+  };
 
   if (!currentRun) {
     return (
@@ -37,231 +691,419 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
 
   const isQueued = currentRun.execution_status === 'queued';
   const isRunning = currentRun.execution_status === 'running';
-  const isActive = isQueued || isRunning;
+  const isActiveRun = isQueued || isRunning;
   const isFailed = currentRun.execution_status === 'failed';
-  const isFinished = !isActive;
   const statusLabel = isQueued
     ? 'В очереди'
     : isRunning
-    ? 'Выполняется'
-    : isFailed
-    ? 'Ошибка'
-    : currentRun.execution_status === 'succeeded'
-    ? 'Завершён'
-    : currentRun.execution_status;
+      ? 'Выполняется'
+      : isFailed
+        ? 'Ошибка'
+        : currentRun.execution_status === 'succeeded'
+          ? 'Завершён'
+          : currentRun.execution_status;
+
+  const totalStages = stages.length;
+  const finishedStages =
+    statusCounts.succeeded + statusCounts.failed + statusCounts.skipped + statusCounts.cancelled;
+
+  const progressSegments: Array<{ status: DisplayStatus; width: number }> = totalStages
+    ? (['succeeded', 'failed', 'skipped', 'running', 'queued'] as DisplayStatus[])
+        .filter((status) => statusCounts[status] > 0)
+        .map((status) => ({ status, width: (statusCounts[status] / totalStages) * 100 }))
+    : [];
 
   return (
     <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-950">
-      {/* Run Summary Header */}
-      <div className="p-3 sm:p-4 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <div
-            className={`p-2 rounded-xl text-white shadow-lg ${
-              isQueued
-                ? 'bg-amber-600 shadow-amber-500/20'
-                : isRunning
-                ? 'bg-blue-600 animate-pulse shadow-blue-500/20'
-                : isFailed
-                ? 'bg-rose-600 shadow-rose-500/20'
-                : 'bg-emerald-600 shadow-emerald-500/20'
-            }`}
-          >
-            {isActive ? <Loader2 size={18} className="animate-spin" /> : isFailed ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs sm:text-sm font-bold text-slate-200 truncate max-w-[180px] sm:max-w-none">
-                Запуск: {currentRun.id}
-              </span>
-              <span
-                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                  currentRun.execution_status === 'succeeded'
-                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                    : currentRun.execution_status === 'failed'
-                    ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                    : isQueued
-                    ? 'bg-amber-950 text-amber-300 border border-amber-800'
-                    : 'bg-blue-950 text-blue-300 border border-blue-800 animate-pulse'
-                }`}
-              >
-                {statusLabel}
-              </span>
-              <span
-                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                  currentRun.security_verdict === 'fail'
-                    ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                    : currentRun.security_verdict === 'pass'
-                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                    : 'bg-yellow-950 text-yellow-300 border border-yellow-800'
-                }`}
-              >
-                Вердикт: {currentRun.security_verdict}
-              </span>
+      <div className="p-3 sm:p-4 bg-slate-900 border-b border-slate-800">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            <div
+              className={`p-2 rounded-xl text-white shadow-lg shrink-0 ${
+                isQueued
+                  ? 'bg-amber-600 shadow-amber-500/20'
+                  : isRunning
+                    ? 'bg-blue-600 shadow-blue-500/20'
+                    : isFailed
+                      ? 'bg-rose-600 shadow-rose-500/20'
+                      : 'bg-emerald-600 shadow-emerald-500/20'
+              }`}
+            >
+              {isActiveRun ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : isFailed ? (
+                <AlertCircle size={18} />
+              ) : (
+                <CheckCircle2 size={18} />
+              )}
             </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-400 mt-0.5">
-              <span>Триггер: <strong className="text-slate-300">{currentRun.trigger_type}</strong></span>
-              <span>•</span>
-              <span>Находок: <strong className="text-slate-300">{currentRun.total_findings}</strong> (Крит: {currentRun.critical_count}, Выс: {currentRun.high_count})</span>
-              <span>•</span>
-              <span>Событий SSE: <strong className="text-slate-300">{events.length}</strong></span>
-              {currentRun.artifact_id && <><span>•</span><span className="font-mono">Артефакт: {currentRun.artifact_id}</span></>}
-            </div>
-          </div>
-        </div>
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 shrink-0"
-            title="Обновить состояние запуска"
-          >
-            <RefreshCw size={13} />
-            <span>Обновить</span>
-          </button>
-        )}
-      </div>
-
-      {/* Main Execution View */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-y-auto lg:overflow-hidden">
-        {/* Left: Node Execution Pipeline */}
-        <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col min-h-[220px] lg:h-full overflow-hidden bg-slate-900/40">
-          <div className="p-3 border-b border-slate-800 text-xs font-bold text-slate-400 uppercase tracking-wider">
-            Исполнение блоков графа ({nodeRuns.length})
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {nodeRuns.length === 0 && (
-              <div className="p-4 text-xs text-slate-500 text-center">
-                {isActive ? 'Ожидаем запуск блоков…' : 'Для этого запуска нет записей блоков'}
-              </div>
-            )}
-            {nodeRuns.map((nr) => {
-              const isSelected = selectedNodeRun?.id === nr.id;
-              return (
-                <div
-                  key={nr.id}
-                  onClick={() => setSelectedNodeRun(nr)}
-                  className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-slate-800 border-indigo-500 shadow-md ring-1 ring-indigo-400/50'
-                      : 'bg-slate-900/80 hover:bg-slate-800/60 border-slate-800'
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className="font-mono text-xs sm:text-sm font-bold text-slate-200 truncate max-w-[190px] sm:max-w-none"
+                  title={currentRun.id}
+                >
+                  Запуск: {currentRun.id}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
+                    isQueued
+                      ? 'bg-amber-950 text-amber-300 border-amber-800'
+                      : isRunning
+                        ? 'bg-blue-950 text-blue-300 border-blue-800'
+                        : isFailed
+                          ? 'bg-rose-950 text-rose-300 border-rose-800'
+                          : 'bg-emerald-950 text-emerald-300 border-emerald-800'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      {nr.status === 'running' && <Loader2 size={14} className="text-blue-400 animate-spin" />}
-                      {nr.status === 'succeeded' && <CheckCircle2 size={14} className="text-emerald-400" />}
-                      {nr.status === 'failed' && <AlertCircle size={14} className="text-rose-400" />}
-                      {nr.status === 'skipped' && <MinusCircle size={14} className="text-slate-500" />}
-                      <span className="text-xs font-semibold text-slate-200">
-                        {nr.node_id}
-                      </span>
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-400">
-                      {nr.duration_ms > 0 ? `${Math.round(nr.duration_ms)}ms` : ''}
-                    </div>
-                  </div>
+                  {statusLabel}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
+                    currentRun.security_verdict === 'fail'
+                      ? 'bg-rose-950 text-rose-300 border-rose-800'
+                      : currentRun.security_verdict === 'pass'
+                        ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                        : 'bg-yellow-950 text-yellow-300 border-yellow-800'
+                  }`}
+                >
+                  Вердикт: {currentRun.security_verdict}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-400 mt-1">
+                <span>Триггер: <strong className="text-slate-300">{currentRun.trigger_type}</strong></span>
+                <span>•</span>
+                <span>Длительность: <strong className="text-slate-300">{formatDuration(runDurationMs)}</strong></span>
+                <span>•</span>
+                <span>Снимок: <strong className="text-slate-300 font-mono">{shortId(currentRun.artifact_id) || '—'}</strong></span>
+                <span>•</span>
+                <span>Находок: <strong className="text-slate-300">{currentRun.total_findings}</strong> (крит: {currentRun.critical_count}, выс: {currentRun.high_count})</span>
+                <span>•</span>
+                <span>Событий: <strong className="text-slate-300">{events.length}</strong></span>
+              </div>
+            </div>
+          </div>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 shrink-0"
+              title="Обновить состояние запуска"
+            >
+              <RefreshCw size={13} />
+              <span>Обновить</span>
+            </button>
+          )}
+        </div>
 
-                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
-                    <span className="capitalize">{nr.kind.replace('_', ' ')}</span>
-                    <span className="text-[10px] text-indigo-400 flex items-center gap-0.5">
-                      Инспектор данных <ChevronRight size={12} />
+        {failureReason && (
+          <div className="mt-2 rounded-lg border border-rose-900 bg-rose-950/60 px-2.5 py-1.5 text-[11px] text-rose-200">
+            {failureReason}
+          </div>
+        )}
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+          <span>
+            Этапы: <strong className="text-slate-200">{finishedStages}</strong> из {totalStages}
+          </span>
+          {statusCounts.running > 0 && <span className="text-blue-300">в работе: {statusCounts.running}</span>}
+          {statusCounts.failed > 0 && <span className="text-rose-300">ошибок: {statusCounts.failed}</span>}
+          {statusCounts.skipped > 0 && <span className="text-slate-500">пропущено: {statusCounts.skipped}</span>}
+          {totalStages > 0 && (
+            <div className="flex h-1.5 min-w-[120px] flex-1 overflow-hidden rounded-full bg-slate-800" aria-hidden>
+              {progressSegments.map((segment) => (
+                <span
+                  key={segment.status}
+                  className={`h-full ${STATUS_META[segment.status].dot}`}
+                  style={{ width: `${segment.width}%` }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto lg:overflow-hidden min-h-0">
+        <div className="grid grid-cols-1 lg:grid-cols-12 lg:h-full min-h-0">
+          <div className="lg:col-span-8 flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-800">
+            <div className="lg:flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-4">
+              {stages.length === 0 && (
+                <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/40 p-5 text-center">
+                  <p className="text-sm font-medium text-slate-300">
+                    {isActiveRun ? 'Исполнитель ещё не начал блоки' : 'Записей блоков для этого запуска нет'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isActiveRun
+                      ? 'Этапы появятся из реальных событий и записей блоков — без искусственного прогресса.'
+                      : 'Статус запуска и вердикт доступны выше; детали блоков сервер не сохранил.'}
+                  </p>
+                </div>
+              )}
+
+              {groupedStages.map((phase) => (
+                <section key={phase.id} className="space-y-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                    <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {phase.title}
+                    </h3>
+                    <span className="text-[10px] text-slate-600">
+                      {phase.stages.filter((stage) => stage.status === 'succeeded').length}/{phase.stages.length} готово
                     </span>
                   </div>
+                  <div className="space-y-2">
+                    {phase.stages.map((stage) => {
+                      const Icon = stage.icon;
+                      const status = STATUS_META[stage.status];
+                      const StatusIcon = status.icon;
+                      const isSelected = selectedNodeId === stage.nodeRun.node_id;
+                      return (
+                        <div
+                          key={stage.nodeRun.id}
+                          className={`rounded-xl border transition-all ${
+                            isSelected
+                              ? 'bg-slate-800 border-indigo-500 shadow-md ring-1 ring-indigo-400/50'
+                              : 'bg-slate-900/80 hover:bg-slate-800/60 border-slate-800'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => selectStage(stage)}
+                            aria-pressed={isSelected}
+                            className="w-full text-left p-3"
+                          >
+                            <div className="flex items-start gap-2.5">
+                              <div className={`mt-0.5 rounded-lg border border-slate-700/70 bg-slate-950/50 p-1.5 ${stage.color}`}>
+                                <Icon size={16} />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs font-semibold text-slate-100">{stage.title}</span>
+                                  <span className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${status.chip}`}>
+                                    <StatusIcon
+                                      size={11}
+                                      className={stage.status === 'running' ? 'animate-spin' : undefined}
+                                    />
+                                    {status.label}
+                                  </span>
+                                  <span className="text-[10px] font-mono text-slate-500">
+                                    {formatDuration(stage.durationMs)}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[11px] leading-snug text-slate-300">{stage.short}</p>
+                                {stage.detail && (
+                                  <p className="mt-0.5 text-[11px] leading-snug text-slate-500 line-clamp-2">
+                                    {stage.detail}
+                                  </p>
+                                )}
+                                {stage.chips && stage.chips.length > 0 && (
+                                  <div className="mt-1.5 flex flex-wrap gap-1">
+                                    {stage.chips.map((chip, index) => (
+                                      <span
+                                        key={`${chip.label}-${index}`}
+                                        className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                                          CHIP_TONE[chip.tone || 'muted']
+                                        }`}
+                                      >
+                                        {chip.label}: <strong className="font-semibold">{chip.value}</strong>
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                                {(stage.warning || stage.nodeRun.error_message) && (
+                                  <div className="mt-1.5 rounded border border-amber-900/70 bg-amber-950/30 px-2 py-1 text-[10px] leading-snug text-amber-200">
+                                    {stage.warning || stage.nodeRun.error_message}
+                                  </div>
+                                )}
+                              </div>
+                              <ChevronRight size={16} className="mt-1 shrink-0 text-slate-600" />
+                            </div>
+                          </button>
+                          {stage.action && (
+                            <div className="flex items-center justify-end border-t border-slate-800/80 px-3 py-1.5">
+                              <button
+                                type="button"
+                                onClick={() => openAction(stage.action!.kind)}
+                                className="flex items-center gap-1 text-[10px] font-medium text-indigo-300 hover:text-indigo-200"
+                              >
+                                {stage.action.label}
+                                <ChevronRight size={11} />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
 
-                  {nr.error_message && (
-                    <div className="mt-1.5 p-1.5 rounded bg-rose-950/80 border border-rose-800 text-[10px] text-rose-200">
-                      {nr.error_message}
+          <div className="lg:col-span-4 flex flex-col min-h-0 bg-slate-900/40">
+            <div className="p-3 border-b border-slate-800">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    Детали этапа
+                  </div>
+                  <div className="truncate text-xs font-semibold text-slate-200">
+                    {selectedStage ? selectedStage.title : 'Выберите этап слева'}
+                  </div>
+                </div>
+                {selectedStage && (
+                  <span className="shrink-0 font-mono text-[10px] text-slate-500">
+                    {selectedStage.nodeRun.node_id}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-800 bg-slate-950/60 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setDetailTab('data')}
+                  className={`flex items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium ${
+                    detailTab === 'data'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Eye size={12} /> Данные
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailTab('events')}
+                  className={`flex items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium ${
+                    detailTab === 'events'
+                      ? 'bg-emerald-700 text-white'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Terminal size={12} /> События ({events.length})
+                </button>
+              </div>
+            </div>
+
+            {detailTab === 'data' ? (
+              <div className="flex-1 min-h-0 overflow-y-auto p-3 text-xs font-mono space-y-3">
+                {selectedStage ? (
+                  <>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 font-sans">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] font-semibold text-slate-200">
+                          {selectedStage.short}
+                        </span>
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${STATUS_META[selectedStage.status].chip}`}>
+                          {STATUS_META[selectedStage.status].label}
+                        </span>
+                      </div>
+                      {selectedStage.detail && (
+                        <p className="mt-1 text-[11px] leading-snug text-slate-400">{selectedStage.detail}</p>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Center: Data Inspector (Masked JSON payloads) */}
-        <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col min-h-[220px] lg:h-full overflow-hidden bg-slate-950">
-          <div className="p-3 border-b border-slate-800 flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Eye size={14} className="text-indigo-400" />
-              <span>Инспектор данных блока</span>
-            </span>
-            {selectedNodeRun && (
-              <span className="font-mono text-[10px] text-slate-400">
-                {selectedNodeRun.node_id}
-              </span>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 text-xs font-mono space-y-3">
-            {selectedNodeRun ? (
-              <>
-                <div>
-                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                    Входные данные (Входы):
+                    <div>
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Входные данные
+                      </div>
+                      <pre className="rounded-lg border border-slate-800 bg-slate-900 p-2.5 text-[11px] leading-relaxed text-slate-300 overflow-x-auto">
+                        {prettyJson(selectedStage.nodeRun.input_data_masked)}
+                      </pre>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Выходные данные
+                      </div>
+                      <pre className="rounded-lg border border-slate-800 bg-slate-900 p-2.5 text-[11px] leading-relaxed text-indigo-200 overflow-x-auto">
+                        {prettyJson(selectedStage.nodeRun.output_data_masked)}
+                      </pre>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-slate-600">
+                    <Eye size={24} />
+                    <p className="font-sans text-xs">
+                      Нажмите на этап, чтобы увидеть входные и выходные данные блока.
+                    </p>
                   </div>
-                  <pre className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 text-[11px] overflow-x-auto leading-relaxed">
-                    {JSON.stringify(selectedNodeRun.input_data_masked, null, 2)}
-                  </pre>
-                </div>
-
-                <div>
-                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                    Выходные данные (Выходы / Передаваемые пакеты):
-                  </div>
-                  <pre className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-indigo-200 text-[11px] overflow-x-auto leading-relaxed">
-                    {JSON.stringify(selectedNodeRun.output_data_masked, null, 2)}
-                  </pre>
-                </div>
-              </>
+                )}
+              </div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-600 text-center p-4">
-                <Eye size={24} className="mb-2" />
-                <p>Выберите блок слева, чтобы просмотреть переданные данные и замаскированные секреты</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right: Live SSE Event Stream Timeline */}
-        <div className="lg:col-span-4 flex flex-col min-h-[220px] lg:h-full overflow-hidden bg-slate-900/60">
-          <div className="p-3 border-b border-slate-800 flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Terminal size={14} className="text-emerald-400" />
-              <span>Поток событий SSE ({events.length})</span>
-            </span>
-            <span className={`text-[10px] font-mono ${isFinished ? 'text-slate-500' : 'text-emerald-400'}`}>
-              {isFinished ? 'Поток завершён' : 'Live Stream'}
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 space-y-2 font-mono text-[11px]">
-            {events.length === 0 && (
-              <div className="p-4 text-xs text-slate-500 text-center font-sans">
-                {isActive ? 'Ожидаем события SSE; статус обновляется и опросом…' : 'События для этого запуска не сохранены в текущей сессии'}
-              </div>
-            )}
-            {events.map((ev) => {
-              const parsed = ev.timestamp ? new Date(ev.timestamp) : null;
-              const timeLabel = parsed && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleTimeString() : '—';
-              const payloadText = JSON.stringify(ev.payload ?? null);
-              const shortPayload = payloadText.length > 240 ? `${payloadText.slice(0, 240)}…` : payloadText;
-              return (
-                <div key={`${ev.seq}-${ev.type}`} className="p-2 rounded bg-slate-950/80 border border-slate-800/80 space-y-0.5">
-                  <div className="flex items-center justify-between text-slate-500 text-[10px] gap-2">
-                    <span className="truncate">#{ev.seq} • {ev.type}</span>
-                    <span className="shrink-0">{timeLabel}</span>
-                  </div>
-                  {ev.nodeId && (
-                    <div className="text-indigo-400 font-semibold text-[10px]">
-                      Нода: {ev.nodeId}
+              <div className="flex flex-col flex-1 min-h-0">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-1.5">
+                  <span className="text-[10px] text-slate-500">
+                    {visibleEvents.length} из {events.length}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setOnlySelectedEvents((value) => !value)}
+                    disabled={!selectedStage}
+                    className={`rounded border px-2 py-0.5 text-[10px] ${
+                      onlySelectedEvents
+                        ? 'border-indigo-700 bg-indigo-950 text-indigo-300'
+                        : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
+                    } disabled:opacity-40`}
+                    title={selectedStage ? 'Показать только события выбранного блока' : 'Сначала выберите этап'}
+                  >
+                    Только выбранный блок
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 font-mono text-[11px]">
+                  {visibleEvents.length === 0 && (
+                    <div className="p-4 text-center font-sans text-xs text-slate-500">
+                      {isActiveRun ? 'Ожидаем события SSE; статус также обновляется опросом.' : 'События для этого запуска не сохранены в текущей сессии.'}
                     </div>
                   )}
-                  <div className="text-slate-300 text-[10px] break-all" title={payloadText.length > 240 ? payloadText : undefined}>
-                    {shortPayload}
-                  </div>
+                  {visibleEvents.map((event) => {
+                    const parsed = event.timestamp ? new Date(event.timestamp) : null;
+                    const timeLabel = parsed && !Number.isNaN(parsed.getTime())
+                      ? parsed.toLocaleTimeString()
+                      : '—';
+                    const payload = asObject(event.payload);
+                    const eventStatus = asString(payload.status);
+                    const eventError = asString(payload.error);
+                    const eventVerdict = asString(payload.verdict);
+                    const payloadText = JSON.stringify(event.payload ?? null);
+                    const shortPayload = payloadText.length > 320 ? `${payloadText.slice(0, 320)}…` : payloadText;
+                    const matchesSelected =
+                      selectedStage && event.nodeId === selectedStage.nodeRun.node_id;
+                    return (
+                      <div
+                        key={`${event.seq}-${event.type}`}
+                        className={`rounded border p-2 space-y-0.5 ${
+                          matchesSelected
+                            ? 'border-indigo-800/70 bg-indigo-950/20'
+                            : 'border-slate-800/80 bg-slate-950/80'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                          <span className="truncate">#{event.seq} • {eventLabel(event.type)}</span>
+                          <span className="shrink-0">{timeLabel}</span>
+                        </div>
+                        {event.nodeId && (
+                          <div className="text-[10px] font-semibold text-indigo-400">
+                            Блок: {event.nodeId}
+                          </div>
+                        )}
+                        {event.type === 'node_status' && eventStatus && (
+                          <div className="text-[10px] text-slate-300">
+                            Статус: <strong>{eventStatus}</strong>
+                            {payload.duration_ms !== undefined && ` · ${formatDuration(asNumber(payload.duration_ms))}`}
+                            {eventError && ` · ${eventError}`}
+                          </div>
+                        )}
+                        {event.type === 'run_status' && eventStatus && (
+                          <div className="text-[10px] text-slate-300">
+                            Запуск: <strong>{eventStatus}</strong>
+                            {eventVerdict && ` · вердикт ${eventVerdict}`}
+                          </div>
+                        )}
+                        <div className="text-[10px] break-all text-slate-400" title={payloadText.length > 320 ? payloadText : undefined}>
+                          {shortPayload}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              </div>
+            )}
           </div>
         </div>
       </div>

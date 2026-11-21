@@ -1,17 +1,30 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Play, Clock, FolderArchive, KeyRound, PackageSearch, FileCode2,
-  GitMerge, ShieldAlert, GitFork, Sparkles, FileText, Send
+  GitMerge, ShieldAlert, GitFork, Sparkles, FileText, Send,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { NodeKind } from '../types';
+
+const PALETTE_COLLAPSED_KEY = 'nedra.nodePaletteCollapsed';
+
+const readPaletteCollapsed = (): boolean => {
+  try {
+    return window.localStorage.getItem(PALETTE_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
 
 interface NodePaletteProps {
   onAddNode: (kind: NodeKind) => void;
 }
 
+type IconComponent = React.ComponentType<{ size?: number; className?: string }>;
+
 const PALETTE_ITEMS: Array<{
   category: string;
-  items: Array<{ kind: NodeKind; title: string; desc: string; icon: any; color: string }>;
+  items: Array<{ kind: NodeKind; title: string; desc: string; icon: IconComponent; color: string }>;
 }> = [
   {
     category: '1. Триггеры',
@@ -59,48 +72,94 @@ const PALETTE_ITEMS: Array<{
 ];
 
 export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
+  const [collapsed, setCollapsed] = useState(readPaletteCollapsed);
+
+  const toggleCollapsed = () => {
+    setCollapsed((previous) => {
+      const next = !previous;
+      try {
+        window.localStorage.setItem(PALETTE_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {
+        // Storage unavailable: the choice still works for the current page session.
+      }
+      return next;
+    });
+  };
+
+  const totalItems = PALETTE_ITEMS.reduce((total, category) => total + category.items.length, 0);
+
   return (
-    <div className="w-full md:w-64 max-h-44 md:max-h-none bg-slate-900/95 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col md:h-full overflow-hidden select-none shrink-0">
-      <div className="p-3.5 border-b border-slate-800">
-        <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-          Палитра блоков
-        </h2>
-        <p className="text-[11px] text-slate-500 mt-0.5">
-          Нажмите для добавления на канвас
-        </p>
+    <div
+      className={`w-full ${
+        collapsed ? 'md:w-12' : 'md:w-64'
+      } max-h-44 md:max-h-none bg-slate-900/95 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col md:h-full overflow-hidden select-none shrink-0 transition-[width] duration-200`}
+    >
+      <div className={`p-3.5 md:p-2.5 border-b border-slate-800 flex items-start justify-between gap-2 ${collapsed ? 'md:flex-col md:items-center' : ''}`}>
+        <div className={collapsed ? 'md:hidden' : 'min-w-0'}>
+          <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+            Палитра блоков
+          </h2>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Нажмите для добавления на канвас
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-expanded={!collapsed}
+          aria-controls="node-palette-list"
+          title={collapsed ? 'Развернуть палитру блоков' : 'Свернуть палитру блоков'}
+          className="shrink-0 rounded-md border border-slate-700 bg-slate-800 p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
-        {PALETTE_ITEMS.map((cat, idx) => (
-          <div key={idx} className="space-y-1.5">
-            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-1">
-              {cat.category}
-            </div>
-            <div className="space-y-1">
-              {cat.items.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={item.kind}
-                    onClick={() => onAddNode(item.kind)}
-                    className={`w-full text-left p-2 rounded-lg border transition-all duration-150 flex items-start gap-2.5 hover:scale-[1.01] hover:brightness-125 cursor-pointer ${item.color}`}
-                  >
-                    <Icon size={16} className="mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-slate-200 truncate">
-                        {item.title}
+      {!collapsed && (
+        <div id="node-palette-list" className="flex-1 overflow-y-auto p-3 space-y-4">
+          {PALETTE_ITEMS.map((cat, idx) => (
+            <div key={idx} className="space-y-1.5">
+              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-1">
+                {cat.category}
+              </div>
+              <div className="space-y-1">
+                {cat.items.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.kind}
+                      onClick={() => onAddNode(item.kind)}
+                      className={`w-full text-left p-2 rounded-lg border transition-all duration-150 flex items-start gap-2.5 hover:scale-[1.01] hover:brightness-125 cursor-pointer ${item.color}`}
+                    >
+                      <Icon size={16} className="mt-0.5 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-slate-200 truncate">
+                          {item.title}
+                        </div>
+                        <div className="text-[10px] text-slate-400 truncate">
+                          {item.desc}
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-400 truncate">
-                        {item.desc}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {collapsed && (
+        <div className="hidden md:flex flex-1 flex-col items-center gap-2 px-1 py-3 text-slate-600">
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+            style={{ writingMode: 'vertical-rl' }}
+          >
+            Палитра блоков
+          </span>
+          <span className="text-[10px] font-mono">{totalItems}</span>
+        </div>
+      )}
     </div>
   );
 };
