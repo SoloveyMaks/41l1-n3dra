@@ -85,9 +85,18 @@ def _fingerprint(item: Mapping[str, Any]) -> str:
         anchor.get("role"),
         anchor.get("secretHmac"),
     ]
-    if any(part is None for part in parts[1:6]):
+    if any(part is None for part in parts[1:7]):
         raise ReferenceCheckError(
             "INCOMPATIBLE_BUNDLE", "finding.anchor lacks the fp/v1 identity fields"
+        )
+    if item.get("category") == "SECRET":
+        if not isinstance(anchor.get("secretHmac"), str) or not anchor["secretHmac"]:
+            raise ReferenceCheckError(
+                "INCOMPATIBLE_BUNDLE", "SECRET finding requires anchor.secretHmac"
+            )
+    elif anchor.get("secretHmac") is not None:
+        raise ReferenceCheckError(
+            "INCOMPATIBLE_BUNDLE", "non-SECRET finding must not carry anchor.secretHmac"
         )
     recipe = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(recipe.encode("utf-8")).hexdigest()
