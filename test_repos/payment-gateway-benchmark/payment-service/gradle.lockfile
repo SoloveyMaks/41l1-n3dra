@@ -1,0 +1,8 @@
+# This is a Gradle dependency lockfile for payment-gateway-service
+com.fasterxml.jackson.core:jackson-databind:2.9.8=runtimeClasspath
+commons-io:commons-io:2.6=runtimeClasspath
+net.minidev:json-smart:2.4.8=runtimeClasspath
+org.apache.commons:commons-lang3:3.18.0=runtimeClasspath
+org.apache.httpcomponents:httpclient:4.5.12=runtimeClasspath
+org.yaml:snakeyaml:1.30=runtimeClasspath
+empty=

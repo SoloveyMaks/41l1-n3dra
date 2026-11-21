@@ -1,0 +1,377 @@
+{
+  "dataset": "payment-gateway",
+  "formatVersion": 1,
+  "findings": [
+    {
+      "id": "P-SEC-01",
+      "category": "SECRET",
+      "class": "password",
+      "classAliases": [
+        "hardcoded-password",
+        "CWE-259",
+        "CWE-798"
+      ],
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/payment/integration/MerchantVaultClient.kt",
+      "line": 4,
+      "endLine": 4,
+      "alternateLocations": [],
+      "description": "integration/MerchantVaultClient.kt, vaultServicePassword содержит пароль служебной учетной записи хранилища мерчантов.",
+      "difficultyRationale": "Прямой строковый литерал в параметре с явной ролью пароля.",
+      "expectedDetection": "Прямой строковый литерал в параметре с явной ролью пароля.",
+      "remediation": "Читать из защищенного хранилища конфигураций или переменных окружения.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SEC-02",
+      "category": "SECRET",
+      "class": "api-key",
+      "classAliases": [
+        "hardcoded-api-key",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "EASY",
+      "severity": "MEDIUM",
+      "path": "src/main/kotlin/com/payment/integration/StripeCardClient.kt",
+      "line": 7,
+      "endLine": 7,
+      "alternateLocations": [],
+      "description": "integration/StripeCardClient.kt, paymentProviderApiKey напрямую передается в заголовок X-Api-Key.",
+      "difficultyRationale": "Найти apiKey со статическим строковым литералом.",
+      "expectedDetection": "Найти apiKey со статическим строковым литералом.",
+      "remediation": "Внедрять секрет через параметры окружения с обязательным маскированием.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SEC-03",
+      "category": "SECRET",
+      "class": "configuration-token",
+      "classAliases": [
+        "token",
+        "hardcoded-token",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/resources/application.yml",
+      "line": 14,
+      "endLine": 14,
+      "alternateLocations": [],
+      "description": "src/main/resources/application.yml, payout.callback.authorization хранит строку Bearer токена.",
+      "difficultyRationale": "Разобрать YAML, учесть вложенный путь и схему Bearer.",
+      "expectedDetection": "Разобрать YAML, учесть вложенный путь и схему Bearer.",
+      "remediation": "Использовать плейсхолдер ${PAYOUT_CALLBACK_TOKEN} без дефолтного значения.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SEC-04",
+      "category": "SECRET",
+      "class": "secret-fallback",
+      "classAliases": [
+        "hardcoded-secret",
+        "fallback-secret",
+        "CWE-798"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "MEDIUM",
+      "path": "src/main/kotlin/com/payment/integration/LedgerClient.kt",
+      "line": 8,
+      "endLine": 8,
+      "alternateLocations": [],
+      "description": "integration/LedgerClient.kt, строковый литерал токена используется как запасное значение при отсутствии переменной окружения.",
+      "difficultyRationale": "Опознать вызов getenv с оператором elvis (?:) и строковым литералом секрета.",
+      "expectedDetection": "Опознать вызов getenv с оператором elvis (?:) и строковым литералом секрета.",
+      "remediation": "Требовать обязательного наличия переменной окружения без небезопасного дефолта.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SEC-05",
+      "category": "SECRET",
+      "class": "recoverable-token",
+      "classAliases": [
+        "assembled-secret",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/payment/integration/SettlementAuthHeaders.kt",
+      "line": 7,
+      "endLine": 10,
+      "alternateLocations": [],
+      "description": "integration/SettlementAuthHeaders.kt, токен клиринга склеивается из префикса series и секрета grant.",
+      "difficultyRationale": "Конкатенация двух раздельных строковых фрагментов в Bearer токен.",
+      "expectedDetection": "Конкатенация двух раздельных строковых фрагментов в Bearer токен.",
+      "remediation": "Не хранить фрагменты секретов в исходном коде.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SCA-01",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 31,
+      "endLine": 31,
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-databind",
+      "version": "2.9.8",
+      "advisoryIds": [
+        "CVE-2020-11619",
+        "GHSA-27xj-rqx5-2255"
+      ],
+      "description": "com.fasterxml.jackson.core:jackson-databind:2.9.8 уязвим к небезопасной десериализации (CVE-2020-11619).",
+      "remediation": "Обновить jackson-databind до версии 2.9.10.4 или выше.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "P-SCA-02",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "EASY",
+      "severity": "MEDIUM",
+      "path": "build.gradle.kts",
+      "line": 32,
+      "endLine": 32,
+      "group": "org.yaml",
+      "artifact": "snakeyaml",
+      "version": "1.30",
+      "advisoryIds": [
+        "CVE-2022-25857",
+        "GHSA-3mc7-4q67-w48m"
+      ],
+      "description": "org.yaml:snakeyaml:1.30 уязвим к отказу в обслуживании при разборе рекурсивных структур (CVE-2022-25857).",
+      "remediation": "Обновить snakeyaml до версии 1.31 или новее.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "P-SCA-03",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 33,
+      "endLine": 33,
+      "group": "commons-io",
+      "artifact": "commons-io",
+      "version": "2.6",
+      "advisoryIds": [
+        "CVE-2021-29425",
+        "GHSA-gwrp-pvrq-jmwv"
+      ],
+      "description": "commons-io:commons-io:2.6 содержит уязвимость обхода каталога в FileNameUtils (CVE-2021-29425).",
+      "remediation": "Обновить commons-io до версии 2.7 или выше.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "P-SCA-04",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "MEDIUM",
+      "severity": "MEDIUM",
+      "path": "build.gradle.kts",
+      "line": 36,
+      "endLine": 36,
+      "group": "org.apache.httpcomponents",
+      "artifact": "httpclient",
+      "version": "4.5.12",
+      "advisoryIds": [
+        "CVE-2020-13956",
+        "GHSA-7r82-7xv7-xcpj"
+      ],
+      "description": "org.apache.httpcomponents:httpclient:4.5.12 уязвим к подмене авторитетной части URI (CVE-2020-13956).",
+      "remediation": "Обновить httpclient до версии 4.5.13 или 5.0.3.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "P-SCA-05",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 38,
+      "endLine": 38,
+      "group": "net.minidev",
+      "artifact": "json-smart",
+      "version": "2.4.8",
+      "advisoryIds": [
+        "CVE-2023-1370",
+        "GHSA-493p-pfq6-5258"
+      ],
+      "description": "net.minidev:json-smart:2.4.8 приводит к StackOverflowError при парсинге вложенных массивов (CVE-2023-1370).",
+      "remediation": "Обновить json-smart до версии 2.4.9 или выше.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "P-SAST-01",
+      "category": "SAST",
+      "class": "sql-injection",
+      "classAliases": [
+        "CWE-89"
+      ],
+      "difficulty": "EASY",
+      "severity": "CRITICAL",
+      "path": "src/main/kotlin/com/payment/transaction/TransactionSearchController.kt",
+      "line": 13,
+      "endLine": 14,
+      "description": "Параметр referenceTag конкатенируется напрямую в SQL-запрос jdbcTemplate без параметризации.",
+      "remediation": "Использовать параметризованные запросы с плейсхолдерами ?.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    },
+    {
+      "id": "P-SAST-02",
+      "category": "SAST",
+      "class": "tls-verification",
+      "classAliases": [
+        "CWE-295"
+      ],
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/payment/integration/LegacyCardProcessorClient.kt",
+      "line": 14,
+      "endLine": 20,
+      "description": "Клиент процессора карт отключает проверку валидности сертификатов X.509.",
+      "remediation": "Использовать стандартный системный SSLContext с доверенными корневыми центрами сертификации.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SAST-03",
+      "category": "SAST",
+      "class": "credentialed-cors",
+      "classAliases": [
+        "CWE-942"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/payment/config/PaymentCorsConfig.kt",
+      "line": 13,
+      "endLine": 14,
+      "description": "CORS разрешает origin * при одновременно включенном allowCredentials = true для приватной сводки.",
+      "remediation": "Ограничить список допустимых origins доверенными доменами организации.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "P-SAST-04",
+      "category": "SAST",
+      "class": "route-authorization",
+      "classAliases": [
+        "CWE-285",
+        "CWE-306"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/payment/config/PaymentSecurityConfig.kt",
+      "line": 18,
+      "endLine": 18,
+      "description": "Служебный эндпоинт клиринга /api/settlement/export помечен как permitAll() без авторизации.",
+      "remediation": "Назначить проверку роли hasRole('FINANCE') или требовать аутентификации.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    },
+    {
+      "id": "P-SAST-05",
+      "category": "SAST",
+      "class": "object-authorization",
+      "classAliases": [
+        "CWE-639",
+        "IDOR"
+      ],
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/payment/wallet/WalletStatementReader.kt",
+      "line": 10,
+      "endLine": 11,
+      "description": "Чтение выписки по ID не проверяет принадлежность записи текущему аутентифицированному мерчанту.",
+      "remediation": "Добавить фильтрацию по merchant_id аутентифицированного пользователя в SQL-запрос.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    }
+  ],
+  "controls": [
+    {
+      "id": "P-CTRL-01",
+      "category": "SECRET",
+      "class": "documentation-pattern",
+      "expectedFinding": false,
+      "path": "README.md",
+      "line": 6,
+      "endLine": 6,
+      "reason": "Плейсхолдер cg26_test_token_sample_pattern_placeholder приведен в документации как пример и не является реальным секретом."
+    },
+    {
+      "id": "P-CTRL-02",
+      "category": "SECRET",
+      "class": "safe-config-property",
+      "expectedFinding": false,
+      "path": "src/main/resources/application.yml",
+      "line": 18,
+      "endLine": 18,
+      "reason": "Конфигурация порта через ${GATEWAY_PORT:8080} не содержит конфиденциальных данных."
+    },
+    {
+      "id": "P-CTRL-03",
+      "category": "SCA",
+      "class": "safe-dependency",
+      "expectedFinding": false,
+      "path": "build.gradle.kts",
+      "line": 39,
+      "endLine": 39,
+      "group": "org.apache.commons",
+      "artifact": "commons-lang3",
+      "version": "3.18.0",
+      "advisoryIds": [
+        "GHSA-j288-q9x7-2f5v"
+      ],
+      "reason": "Версия 3.18.0 является исправленной и безопасной (fixedVersions: 3.18.0)."
+    },
+    {
+      "id": "P-CTRL-04",
+      "category": "SAST",
+      "class": "parameterized-query",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/payment/transaction/TransactionSearchController.kt",
+      "line": 17,
+      "endLine": 18,
+      "reason": "Запрос findByTransactionCode корректно использует позиционный параметр ?."
+    },
+    {
+      "id": "P-CTRL-05",
+      "category": "SAST",
+      "class": "legitimate-public-route",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/payment/config/PaymentSecurityConfig.kt",
+      "line": 17,
+      "endLine": 17,
+      "reason": "Маршрут /api/public/exchange-rates является публичным каталогом курсов валют."
+    },
+    {
+      "id": "P-CTRL-06",
+      "category": "SAST",
+      "class": "safe-tls-client",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/payment/integration/PaymentAuditHttpsClient.kt",
+      "line": 7,
+      "endLine": 10,
+      "reason": "Клиент аудита использует стандартный системный SSLContext с полной валидацией сертификатов."
+    }
+  ]
+}
