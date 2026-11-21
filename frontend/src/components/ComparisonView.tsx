@@ -5,11 +5,12 @@ import {
   ComparisonDto,
   ComparisonItem,
   ComparisonStatus,
-  Finding,
   RunSummary,
   SqlPatternResult,
 } from '../types';
 import { apiClient, ApiError } from '../api/client';
+import { getRunSecurityMap } from '../api/securityMap';
+import type { Finding as CanonicalFinding } from '../../../docs/data-contracts/contracts';
 
 const STATUS_LABEL: Record<ComparisonStatus, string> = {
   persistent: 'Осталось',
@@ -76,10 +77,10 @@ const SEVERITY_CLASS: Record<string, string> = {
   info: 'bg-slate-800 text-slate-300 border-slate-700',
 };
 
-const ANALYZER_LABEL: Record<string, string> = {
-  secret: 'Секреты',
-  sca: 'Зависимости',
-  sast: 'Код',
+const CATEGORY_LABEL: Record<string, string> = {
+  SECRET: 'Секреты',
+  SCA: 'Зависимости',
+  SAST: 'Код',
 };
 
 const MAIN_STATUS_ORDER: ComparisonStatus[] = [
@@ -94,8 +95,58 @@ const COVERAGE_REASON = /покрыти|checked|не завершён|непол
 
 const unique = <T,>(values: T[]): T[] => [...new Set(values)];
 
-const findingById = (findings: Map<string, Finding>, id: string | null): Finding | undefined =>
-  id ? findings.get(id) : undefined;
+type FindingContext = {
+  id: string;
+  ruleId: string;
+  severity: string;
+  category: string;
+  path: string;
+  line: number;
+};
+
+type RunContext =
+  | { status: 'loading' }
+  | { status: 'ready'; findings: Map<string, FindingContext> }
+  | { status: 'unavailable'; message: string };
+
+type ContextByRun = Record<string, RunContext>;
+
+type CanonicalLookup = {
+  baselineRunId: string;
+  currentRunId: string;
+  contexts: ContextByRun;
+};
+
+const toFindingContext = (finding: CanonicalFinding): FindingContext => ({
+  id: finding.id,
+  ruleId: finding.ruleId,
+  severity: finding.severity,
+  category: finding.category,
+  path: finding.primaryLocation.path,
+  line: finding.primaryLocation.line,
+});
+
+const findingFromContext = (
+  lookup: CanonicalLookup,
+  runId: string,
+  findingId: string | null,
+): FindingContext | undefined => {
+  if (!findingId) return undefined;
+  const context = lookup.contexts[runId];
+  return context?.status === 'ready' ? context.findings.get(findingId) : undefined;
+};
+
+const missingContextNote = (
+  lookup: CanonicalLookup,
+  runId: string,
+  findingId: string | null,
+): string | null => {
+  if (!findingId) return null;
+  const context = lookup.contexts[runId];
+  if (!context || context.status === 'loading') return 'Загружаем каноническую находку…';
+  if (context.status === 'unavailable') return 'Канонический контекст недоступен';
+  return 'Каноническая находка не найдена в published envelope';
+};
 
 const humanReason = (reason: string): string => {
   if (/Различаются статические версии\/hashes/i.test(reason)) return 'Разные версии проверок или их настроек.';
@@ -191,14 +242,20 @@ const coverageSide = (reason: string): string => {
 };
 
 const coverageCauses = (reason: string): string[] => {
+  // The engine's generic sentence lists examples of gaps, not actual gaps.
+  // Only the explicit detail segments may become a factual cause.
+  const explicit = reason
+    .split(/;\s*/)
+    .filter((part) => !/не доказывают отсутствие паттерна/i.test(part))
+    .join('; ');
   const causes: string[] = [];
-  if (/покрытие графа неполное/i.test(reason)) causes.push('граф связей проверен не полностью');
-  if (/нет checked/i.test(reason)) causes.push('файл и правило не отмечены как полностью проверенные');
-  if (/не завершён полностью/i.test(reason)) causes.push('сканер не завершил анализ категории');
-  if (/предупреждения о покрытии/i.test(reason)) causes.push('у находки есть предупреждения о покрытии');
-  if (/manifest/i.test(reason)) causes.push('нет полного снимка проекта с обеих сторон');
-  if (/пропуск|лимит/i.test(reason)) causes.push('в проверке были пропуски или лимиты');
-  if (/parser|ошибк[аи] разбора/i.test(reason)) causes.push('были ошибки разбора');
+  if (/покрытие графа неполное/i.test(explicit)) causes.push('граф связей проверен не полностью');
+  if (/нет checked/i.test(explicit)) causes.push('файл и правило не отмечены как полностью проверенные');
+  if (/не завершён полностью/i.test(explicit)) causes.push('анализ категории неполный');
+  if (/предупреждения о покрытии/i.test(explicit)) causes.push('у находки есть предупреждения о покрытии');
+  if (/manifest/i.test(explicit)) causes.push('нет полного снимка проекта с обеих сторон');
+  if (/пропуск|лимит|limit/i.test(explicit)) causes.push('в проверке были пропуски или лимиты');
+  if (/parser|ошибк[аи] разбора/i.test(explicit)) causes.push('были ошибки разбора');
   return causes.length ? unique(causes) : ['проверка покрытия неполная'];
 };
 
@@ -228,14 +285,33 @@ const TechnicalDetails: React.FC<{ text: string; label?: string }> = ({ text, la
   </details>
 );
 
-const FindingCell: React.FC<{ current?: Finding; baseline?: Finding }> = ({ current, baseline }) => {
+const FindingCell: React.FC<{
+  lookup: CanonicalLookup;
+  baselineFindingId: string | null;
+  currentFindingId: string | null;
+}> = ({ lookup, baselineFindingId, currentFindingId }) => {
+  const baseline = findingFromContext(lookup, lookup.baselineRunId, baselineFindingId);
+  const current = findingFromContext(lookup, lookup.currentRunId, currentFindingId);
   const primary = current ?? baseline;
-  if (!primary) return <span className="text-slate-500">Название и путь находки недоступны</span>;
+  const notes = unique(
+    [
+      missingContextNote(lookup, lookup.baselineRunId, baselineFindingId),
+      missingContextNote(lookup, lookup.currentRunId, currentFindingId),
+    ].filter((note): note is string => Boolean(note)),
+  );
+  if (!primary) {
+    return (
+      <div className="space-y-1 text-[11px] text-slate-500">
+        {notes.length > 0
+          ? notes.map((note) => <div key={note}>{note}</div>)
+          : <div>Без привязки к находке</div>}
+      </div>
+    );
+  }
   const showBaseline = Boolean(
     baseline &&
     current &&
-    (baseline.ruleId !== current.ruleId ||
-      baseline.primaryLocation.path !== current.primaryLocation.path),
+    (baseline.ruleId !== current.ruleId || baseline.path !== current.path),
   );
   return (
     <div className="space-y-1">
@@ -244,41 +320,46 @@ const FindingCell: React.FC<{ current?: Finding; baseline?: Finding }> = ({ curr
         <span className={`inline-block rounded border px-1.5 py-0.5 text-[10px] font-semibold ${SEVERITY_CLASS[primary.severity] || SEVERITY_CLASS.info}`}>
           {SEVERITY_LABEL[primary.severity] || primary.severity}
         </span>
-        <span className="text-[10px] text-slate-500">{ANALYZER_LABEL[primary.analyzer] || primary.analyzer}</span>
+        <span className="text-[10px] text-slate-500">{CATEGORY_LABEL[primary.category] || primary.category}</span>
       </div>
       <div className="font-mono text-[10px] break-all text-indigo-300">
-        {primary.primaryLocation.path}:{primary.primaryLocation.startLine}
+        {primary.path}:{primary.line}
       </div>
       {showBaseline && baseline && (
         <div className="font-mono text-[10px] break-all text-slate-500">
-          Было: {baseline.ruleId} · {baseline.primaryLocation.path}:{baseline.primaryLocation.startLine}
+          Было: {baseline.ruleId} · {baseline.path}:{baseline.line}
+        </div>
+      )}
+      {notes.length > 0 && (
+        <div className="space-y-0.5 text-[10px] text-amber-400/80">
+          {notes.map((note) => <div key={note}>{note}</div>)}
         </div>
       )}
     </div>
   );
 };
 
-const ItemRow: React.FC<{ item: ComparisonItem; findings: Map<string, Finding> }> = ({ item, findings }) => {
-  const baseline = findingById(findings, item.baselineFindingId);
-  const current = findingById(findings, item.currentFindingId);
-  return (
-    <tr className="align-top">
-      <td className="min-w-[220px] px-3 py-2">
-        <FindingCell current={current} baseline={baseline} />
-      </td>
-      <td className="px-3 py-2 text-slate-300">
-        <p>{itemMeaning(item)}</p>
-        <TechnicalDetails text={item.reason} />
-      </td>
-      <td className="whitespace-nowrap px-3 py-2 text-slate-400">{BASIS_LABEL[item.matchingBasis]}</td>
-    </tr>
-  );
-};
+const ItemRow: React.FC<{ item: ComparisonItem; lookup: CanonicalLookup }> = ({ item, lookup }) => (
+  <tr className="align-top">
+    <td className="min-w-[220px] px-3 py-2">
+      <FindingCell
+        lookup={lookup}
+        baselineFindingId={item.baselineFindingId}
+        currentFindingId={item.currentFindingId}
+      />
+    </td>
+    <td className="px-3 py-2 text-slate-300">
+      <p>{itemMeaning(item)}</p>
+      <TechnicalDetails text={item.reason} />
+    </td>
+    <td className="whitespace-nowrap px-3 py-2 text-slate-400">{BASIS_LABEL[item.matchingBasis]}</td>
+  </tr>
+);
 
-const StatusGroup: React.FC<{ status: ComparisonStatus; items: ComparisonItem[]; findings: Map<string, Finding> }> = ({
+const StatusGroup: React.FC<{ status: ComparisonStatus; items: ComparisonItem[]; lookup: CanonicalLookup }> = ({
   status,
   items,
-  findings,
+  lookup,
 }) => {
   if (!items.length) return null;
   return (
@@ -301,7 +382,7 @@ const StatusGroup: React.FC<{ status: ComparisonStatus; items: ComparisonItem[];
           </thead>
           <tbody className="divide-y divide-slate-800">
             {items.map((item) => (
-              <ItemRow key={item.id} item={item} findings={findings} />
+              <ItemRow key={item.id} item={item} lookup={lookup} />
             ))}
           </tbody>
         </table>
@@ -310,7 +391,7 @@ const StatusGroup: React.FC<{ status: ComparisonStatus; items: ComparisonItem[];
   );
 };
 
-const CoverageSection: React.FC<{ items: ComparisonItem[]; findings: Map<string, Finding> }> = ({ items, findings }) => {
+const CoverageSection: React.FC<{ items: ComparisonItem[]; lookup: CanonicalLookup }> = ({ items, lookup }) => {
   if (!items.length) return null;
   return (
     <div className="rounded-xl border border-amber-900 bg-amber-950/20">
@@ -334,13 +415,15 @@ const CoverageSection: React.FC<{ items: ComparisonItem[]; findings: Map<string,
           </thead>
           <tbody className="divide-y divide-amber-900/40">
             {items.map((item) => {
-              const baseline = findingById(findings, item.baselineFindingId);
-              const current = findingById(findings, item.currentFindingId);
               const causes = coverageCauses(item.reason);
               return (
                 <tr key={item.id} className="align-top">
                   <td className="min-w-[220px] px-3 py-2">
-                    <FindingCell current={current} baseline={baseline} />
+                    <FindingCell
+                      lookup={lookup}
+                      baselineFindingId={item.baselineFindingId}
+                      currentFindingId={item.currentFindingId}
+                    />
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-amber-100/80">{coverageSide(item.reason)}</td>
                   <td className="px-3 py-2 text-amber-100/80">
@@ -362,22 +445,69 @@ const CoverageSection: React.FC<{ items: ComparisonItem[]; findings: Map<string,
 const DeletedSection: React.FC<{
   deletedFiles: ComparisonDto['deletedFiles'];
   items: ComparisonItem[];
-  findings: Map<string, Finding>;
-}> = ({ deletedFiles, items, findings }) => {
-  const entries = useMemo(() => {
+  lookup: CanonicalLookup;
+}> = ({ deletedFiles, items, lookup }) => {
+  const baselineContext = lookup.contexts[lookup.baselineRunId];
+  const baselineFindings = baselineContext?.status === 'ready' ? baselineContext.findings : null;
+
+  const { entries, unmatched } = useMemo(() => {
     const byPath = new Map<string, ComparisonItem[]>();
     deletedFiles.forEach((file) => byPath.set(file.path, []));
+    const unmatchedItems: ComparisonItem[] = [];
     items.forEach((item) => {
-      const finding = findingById(findings, item.baselineFindingId);
-      const path = finding?.primaryLocation.path;
-      if (!path) return;
+      const finding = item.baselineFindingId && baselineFindings
+        ? baselineFindings.get(item.baselineFindingId)
+        : undefined;
+      const path = finding?.path;
+      if (!path) {
+        unmatchedItems.push(item);
+        return;
+      }
       if (!byPath.has(path)) byPath.set(path, []);
       byPath.get(path)!.push(item);
     });
-    return [...byPath.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-  }, [deletedFiles, findings, items]);
+    return {
+      entries: [...byPath.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+      unmatched: unmatchedItems,
+    };
+  }, [baselineFindings, deletedFiles, items]);
 
-  if (!entries.length) return null;
+  const findingsByPath = useMemo(() => {
+    const counts = new Map<string, number>();
+    baselineFindings?.forEach((finding) => {
+      counts.set(finding.path, (counts.get(finding.path) ?? 0) + 1);
+    });
+    return counts;
+  }, [baselineFindings]);
+
+  const emptyMessage = (path: string): string => {
+    if (!baselineContext || baselineContext.status === 'loading') {
+      return 'Загружаем канонические находки: пока нельзя сказать, были ли в файле находки.';
+    }
+    if (baselineContext.status === 'unavailable') {
+      return 'Канонические находки недоступны: нельзя утверждать, что находок в файле не было.';
+    }
+    if ((findingsByPath.get(path) ?? 0) > 0) {
+      return 'В старом снимке в этом файле были находки, но движок не связал их с удалением файла.';
+    }
+    if (unmatched.length > 0) {
+      return 'Связь с находками не подтверждена: есть удалённые пункты без сопоставленного пути.';
+    }
+    return 'Сравнение не привязало к этому файлу ни одной находки.';
+  };
+
+  const unmappedMessage = (item: ComparisonItem): string => {
+    if (!item.baselineFindingId) return 'Движок пометил файл удалённым без ссылки на находку.';
+    if (!baselineContext || baselineContext.status === 'loading') {
+      return 'Каноническая находка ещё загружается: связь с файлом пока не определена.';
+    }
+    if (baselineContext.status === 'unavailable') {
+      return 'Канонический контекст недоступен: это не значит, что находок не было.';
+    }
+    return 'Каноническая находка не найдена в published envelope: это не означает отсутствие находки.';
+  };
+
+  if (!entries.length && !unmatched.length) return null;
   return (
     <div className="rounded-xl border border-fuchsia-900 bg-fuchsia-950/20">
       <div className="flex flex-wrap items-center gap-2 border-b border-fuchsia-900/60 px-3 py-2">
@@ -387,29 +517,38 @@ const DeletedSection: React.FC<{
         <span className="text-[11px] text-fuchsia-100/70">
           Это не исправление: файл могли удалить, переименовать или исключить из проверки.
         </span>
-        <span className="ml-auto text-[11px] text-fuchsia-300/70">{entries.length}</span>
+        <span className="ml-auto text-[11px] text-fuchsia-300/70">{entries.length + unmatched.length}</span>
       </div>
       <ul className="max-h-64 space-y-1 overflow-y-auto p-3 text-xs">
-        {entries.map(([path, affected]) => {
-          const labels = unique(
-            affected.flatMap((item) => {
-              const finding = findingById(findings, item.baselineFindingId);
-              return finding ? [`${finding.ruleId} · ${finding.primaryLocation.path}:${finding.primaryLocation.startLine}`] : [];
-            }),
-          );
-          return (
-            <li key={path} className="rounded-lg border border-fuchsia-900/40 bg-slate-950/40 p-2">
-              <code className="break-all text-fuchsia-200">{path}</code>
-              {labels.length > 0 ? (
-                <div className="mt-1 space-y-0.5 text-[11px] text-fuchsia-100/70">
-                  {labels.map((label) => <div key={label}>Находка: {label}</div>)}
-                </div>
-              ) : (
-                <div className="mt-1 text-[11px] text-fuchsia-100/60">Находок в этом файле не зафиксировано.</div>
-              )}
-            </li>
-          );
-        })}
+        {entries.map(([path, affected]) => (
+          <li key={`file:${path}`} className="rounded-lg border border-fuchsia-900/40 bg-slate-950/40 p-2">
+            <code className="break-all text-fuchsia-200">{path}</code>
+            {affected.length > 0 ? (
+              <div className="mt-1 space-y-2">
+                {affected.map((item) => (
+                  <div key={item.id} className="rounded border border-fuchsia-900/30 bg-slate-950/30 p-2">
+                    <FindingCell
+                      lookup={lookup}
+                      baselineFindingId={item.baselineFindingId}
+                      currentFindingId={item.currentFindingId}
+                    />
+                    <div className="mt-1 text-[11px] text-fuchsia-100/70">Файл удалён — это не исправление.</div>
+                    <TechnicalDetails text={item.reason} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-1 text-[11px] text-fuchsia-100/60">{emptyMessage(path)}</div>
+            )}
+          </li>
+        ))}
+        {unmatched.map((item) => (
+          <li key={`item:${item.id}`} className="rounded-lg border border-fuchsia-900/40 bg-slate-950/40 p-2">
+            <div className="font-medium text-fuchsia-200">Файл удалён, путь находки недоступен</div>
+            <div className="mt-1 text-[11px] text-fuchsia-100/60">{unmappedMessage(item)}</div>
+            <TechnicalDetails text={item.reason} />
+          </li>
+        ))}
       </ul>
     </div>
   );
@@ -423,8 +562,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
   const [baseline, setBaseline] = useState('');
   const [current, setCurrent] = useState('');
   const [result, setResult] = useState<ComparisonDto | null>(null);
-  const [findingsById, setFindingsById] = useState<Map<string, Finding>>(() => new Map());
-  const [findingsNote, setFindingsNote] = useState<string | null>(null);
+  const [runContexts, setRunContexts] = useState<ContextByRun>({});
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [errorTechnical, setErrorTechnical] = useState<string | null>(null);
@@ -436,8 +574,7 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
 
   const clearComparison = () => {
     setResult(null);
-    setFindingsById(new Map());
-    setFindingsNote(null);
+    setRunContexts({});
     setError(null);
     setErrorCode(null);
     setErrorTechnical(null);
@@ -467,29 +604,41 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
     }
   }, [finished, baseline, current]);
 
+  // Comparison items reference canonical bundle finding UUIDs (finding_uuid),
+  // while /runs/{id}/findings returns runtime fnd_* records. Only the
+  // security-map findings come from the same published envelope as comparison.
   useEffect(() => {
     if (!result) {
-      setFindingsById(new Map());
-      setFindingsNote(null);
+      setRunContexts({});
       return;
     }
     let cancelled = false;
     const runIds = unique([result.baselineRunId, result.currentRunId]);
-    void Promise.allSettled(runIds.map((runId) => apiClient.getRunFindings(runId))).then((responses) => {
-      if (cancelled) return;
-      const next = new Map<string, Finding>();
-      let failed = false;
-      responses.forEach((response) => {
-        if (response.status === 'fulfilled') {
-          response.value.forEach((finding) => next.set(finding.id, finding));
-        } else {
-          failed = true;
-        }
-      });
-      setFindingsById(next);
-      setFindingsNote(
-        failed ? 'Часть названий находок не загрузилась. Статусы и причины сравнения от этого не меняются.' : null,
-      );
+    const initial: ContextByRun = {};
+    runIds.forEach((runId) => {
+      initial[runId] = { status: 'loading' };
+    });
+    setRunContexts(initial);
+    runIds.forEach((runId) => {
+      void getRunSecurityMap(runId)
+        .then((payload) => {
+          if (cancelled) return;
+          const findings = new Map(payload.findings.map((finding) => [finding.id, toFindingContext(finding)]));
+          setRunContexts((previous) => ({
+            ...previous,
+            [runId]: { status: 'ready', findings },
+          }));
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          setRunContexts((previous) => ({
+            ...previous,
+            [runId]: {
+              status: 'unavailable',
+              message: error instanceof Error ? error.message : 'Канонические находки недоступны',
+            },
+          }));
+        });
     });
     return () => {
       cancelled = true;
@@ -593,6 +742,18 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
     [result],
   );
 
+  const lookup: CanonicalLookup = {
+    baselineRunId: result?.baselineRunId ?? '',
+    currentRunId: result?.currentRunId ?? '',
+    contexts: runContexts,
+  };
+
+  const contextUnavailable = useMemo(() => {
+    if (!result) return false;
+    return unique([result.baselineRunId, result.currentRunId])
+      .some((runId) => runContexts[runId]?.status === 'unavailable');
+  }, [result, runContexts]);
+
   return (
     <section className="flex-1 overflow-auto p-6 bg-slate-950">
       <div className="mx-auto max-w-5xl space-y-4">
@@ -689,21 +850,22 @@ export const ComparisonView: React.FC<ComparisonViewProps> = ({ runs, artifacts,
               {result.reasons.length > 0 && <TechnicalDetails text={result.reasons.join('\n')} label="Технические основания" />}
             </div>
 
-            {findingsNote && (
+            {contextUnavailable && (
               <div className="rounded-xl border border-amber-900 bg-amber-950/20 p-3 text-xs text-amber-200">
-                {findingsNote}
+                Канонические находки недоступны для части запусков. Статусы сравнения не меняются;
+                названия и пути находок могут отсутствовать.
               </div>
             )}
 
             {MAIN_STATUS_ORDER.filter((status) => status !== 'inconclusive').map((status) => (
-              <StatusGroup key={status} status={status} items={mainGroups[status]} findings={findingsById} />
+              <StatusGroup key={status} status={status} items={mainGroups[status]} lookup={lookup} />
             ))}
-            <StatusGroup status="inconclusive" items={inconclusiveItems} findings={findingsById} />
-            <CoverageSection items={coverageItems} findings={findingsById} />
+            <StatusGroup status="inconclusive" items={inconclusiveItems} lookup={lookup} />
+            <CoverageSection items={coverageItems} lookup={lookup} />
             <DeletedSection
               deletedFiles={result.deletedFiles}
               items={mainGroups.file_deleted}
-              findings={findingsById}
+              lookup={lookup}
             />
 
             {result.items.length === 0 && result.deletedFiles.length === 0 && (
