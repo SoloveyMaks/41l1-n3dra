@@ -62,6 +62,8 @@ export default function MiniApp() {
 
   const invalidateSession = useCallback(() => {
     epochRef.current += 1
+    bootstrapSeqRef.current += 1
+    sessionRef.current?.api.setToken(null)
     sessionRef.current?.controller.abort()
     sessionRef.current = null
     if (refreshTimerRef.current) {
@@ -76,49 +78,45 @@ export default function MiniApp() {
     setView('invalid')
   }, [])
 
-  const withSession = useCallback(<T,>(fn: (api: MiniApi, signal: AbortSignal) => Promise<T>): Promise<T> => {
+  const withSession = useCallback(async <T,>(fn: (api: MiniApi, signal: AbortSignal) => Promise<T>): Promise<T> => {
     const session = sessionRef.current
-    if (!session) return Promise.reject(new MiniApiError('Сессия не активна', 401))
-    return fn(session.api, session.controller.signal)
+    if (!session) throw new MiniApiError('Сессия не активна', 401)
+    let result: T
+    try {
+      result = await fn(session.api, session.controller.signal)
+    } catch (error) {
+      if (session.controller.signal.aborted || sessionRef.current !== session) {
+        throw new DOMException('Сессия закрыта', 'AbortError')
+      }
+      throw error
+    }
+    if (session.controller.signal.aborted || sessionRef.current !== session) {
+      throw new DOMException('Сессия закрыта', 'AbortError')
+    }
+    return result
   }, [])
 
-  const startRefreshLoop = useCallback((webApp: TelegramWebApp, api: MiniApi, controller: AbortController, epoch: number, expiresAt: number) => {
+  const startRefreshLoop = useCallback((expiresAt: number) => {
     if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current)
-    const arm = (nextExpiresAt: number) => {
-      const delay = Math.max(5_000, nextExpiresAt * 1000 - Date.now() - 60_000)
-      refreshTimerRef.current = window.setTimeout(async () => {
-        if (controller.signal.aborted || epoch !== epochRef.current) return
-        try {
-          const renewed = await api.authorize(webApp.initData, controller.signal)
-          if (controller.signal.aborted || epoch !== epochRef.current) return
-          api.setToken(renewed.token)
-          arm(renewed.expiresAt)
-        } catch (error) {
-          if (controller.signal.aborted || epoch !== epochRef.current) return
-          if (error instanceof MiniApiError && error.status === 401) {
-            sessionRef.current?.controller.abort()
-            sessionRef.current = null
-            setBootstrap(null)
-            setView('invalid')
-          } else {
-            arm(Date.now() / 1000 + 90)
-          }
-        }
-      }, delay)
-    }
-    arm(expiresAt)
+    const delay = Math.max(5_000, expiresAt * 1000 - Date.now() - 60_000)
+    // Повторный auth может выдать токен другой привязки. Обновляем всю сессию
+    // вместе с bootstrap, отменяя запросы и убирая данные предыдущего аккаунта.
+    refreshTimerRef.current = window.setTimeout(() => setRetryTick((value) => value + 1), delay)
   }, [])
 
   // Авторизация: только подписанный initData уходит на бэкенд. Токен остаётся
   // в памяти MiniApi; ни localStorage, ни URL его не видят.
   useEffect(() => {
     const epoch = ++epochRef.current
+    bootstrapSeqRef.current += 1
     let alive = true
+    sessionRef.current?.api.setToken(null)
     sessionRef.current?.controller.abort()
     sessionRef.current = null
     if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current)
     setBootstrap(null)
     setSelectedRunId(null)
+    setTab('home')
     setSyncError(null)
     setRefreshing(false)
     setBindError(null)
@@ -147,6 +145,7 @@ export default function MiniApp() {
 
       const controller = new AbortController()
       const api = new MiniApi()
+      sessionRef.current = { api, controller }
       try {
         const session: MiniSession = await api.authorize(webApp.initData, controller.signal)
         if (!alive || epoch !== epochRef.current) return
@@ -157,16 +156,17 @@ export default function MiniApp() {
         setBootstrap(next)
         setSessionKey(epoch)
         setView('ready')
-        startRefreshLoop(webApp, api, controller, epoch, session.expiresAt)
+        startRefreshLoop(session.expiresAt)
       } catch (error) {
         if (!alive || epoch !== epochRef.current || controller.signal.aborted) return
+        api.setToken(null)
         controller.abort()
         sessionRef.current = null
         if (error instanceof MiniApiError && error.status === 409 && error.code === 'TELEGRAM_NOT_BOUND') {
           setView('unbound')
           return
         }
-        if (error instanceof MiniApiError && error.status === 401) {
+        if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) {
           setView('invalid')
           return
         }
@@ -177,6 +177,8 @@ export default function MiniApp() {
 
     return () => {
       alive = false
+      bootstrapSeqRef.current += 1
+      sessionRef.current?.api.setToken(null)
       sessionRef.current?.controller.abort()
       sessionRef.current = null
       if (refreshTimerRef.current) {
@@ -232,8 +234,9 @@ export default function MiniApp() {
       if (seq !== bootstrapSeqRef.current) return
       setBootstrap(next)
     } catch (error) {
+      if (seq !== bootstrapSeqRef.current) return
       if (error instanceof DOMException && error.name === 'AbortError') return
-      if (error instanceof MiniApiError && error.status === 401) {
+      if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) {
         invalidateSession()
         return
       }
@@ -256,6 +259,7 @@ export default function MiniApp() {
     setBinding(true)
     setBindError(null)
     const epoch = ++epochRef.current
+    sessionRef.current?.api.setToken(null)
     sessionRef.current?.controller.abort()
     sessionRef.current = null
     if (refreshTimerRef.current) {
@@ -264,9 +268,12 @@ export default function MiniApp() {
     }
     const controller = new AbortController()
     const api = new MiniApi()
+    sessionRef.current = { api, controller }
+    let bound = false
     try {
       const session = await api.bind(webApp.initData, code, controller.signal)
       if (controller.signal.aborted || epoch !== epochRef.current) return
+      bound = true
       api.setToken(session.token)
       sessionRef.current = { api, controller }
       const next = await api.bootstrap(controller.signal)
@@ -277,16 +284,22 @@ export default function MiniApp() {
       setTab('home')
       setBindError(null)
       setView('ready')
-      startRefreshLoop(webApp, api, controller, epoch, session.expiresAt)
+      startRefreshLoop(session.expiresAt)
     } catch (error) {
       if (controller.signal.aborted || epoch !== epochRef.current) return
-      if (error instanceof MiniApiError && error.status === 401) {
+      api.setToken(null)
+      controller.abort()
+      sessionRef.current = null
+      if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) {
         setView('invalid')
         return
       }
-      controller.abort()
-      sessionRef.current = null
-      setBindError(bindFailure(error))
+      if (bound) {
+        setGateMessage('Аккаунт привязан, но данные не загрузились. Повторите вход: ' + errorText(error))
+        setView('error')
+      } else {
+        setBindError(bindFailure(error))
+      }
     } finally {
       if (epoch === epochRef.current) {
         bindingRef.current = false
@@ -303,7 +316,7 @@ export default function MiniApp() {
       void refreshBootstrap()
       return result.runId
     } catch (error) {
-      if (error instanceof MiniApiError && error.status === 401) invalidateSession()
+      if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) invalidateSession()
       throw error
     }
   }, [invalidateSession, refreshBootstrap, withSession])
@@ -312,7 +325,7 @@ export default function MiniApp() {
     try {
       return await withSession((api, sessionSignal) => api.getRun(runId, combineSignals(sessionSignal, signal)))
     } catch (error) {
-      if (error instanceof MiniApiError && error.status === 401) invalidateSession()
+      if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) invalidateSession()
       throw error
     }
   }, [invalidateSession, withSession])
@@ -321,7 +334,7 @@ export default function MiniApp() {
     try {
       return await withSession((api, sessionSignal) => api.downloadReport(runId, combineSignals(sessionSignal, signal)))
     } catch (error) {
-      if (error instanceof MiniApiError && error.status === 401) invalidateSession()
+      if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) invalidateSession()
       throw error
     }
   }, [invalidateSession, withSession])
@@ -332,7 +345,7 @@ export default function MiniApp() {
       setBootstrap((current) => (current ? { ...current, settings: next } : current))
       return next
     } catch (error) {
-      if (error instanceof MiniApiError && error.status === 401) invalidateSession()
+      if (error instanceof MiniApiError && (error.status === 401 || error.code === 'TELEGRAM_REBOUND')) invalidateSession()
       throw error
     }
   }, [invalidateSession, withSession])
