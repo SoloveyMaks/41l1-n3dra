@@ -78,3 +78,33 @@ The independent real-code `/tmp/sol-final-focused.py` run established:
 Proof output: `ORIGINAL_ACCEPTED=True`, `MUTATION_REJECTED=SnapshotIntegrityError`, `ADDED_FILE_ACCEPTED=True`, `SCANNER_READS_ADDED_FILE=[('injected.properties','SECRET-PASSWORD-LITERAL')]`, `DISTINCT_SECRET_COUNT=2`. Local proof directory: `/tmp/sol-final-frozen-2qj_q8a3`.
 
 The focused signature mutation checks were repeated on this exact merged combination and passed for Team B rules, composition, parser and selected catalog; an identical catalog at a different path again preserved the signature. Proof directory: `/tmp/sol-signature-jsol2w8v`. The catalog/signature issues are resolved for this combination; the remaining acceptance condition is rejection/exclusion of added frozen-input files, followed by verification of its exact fix SHA.
+
+## a461dca follow-up: root-level extra fixed, excluded-directory extra remains
+
+Read-only verification used root's clean combined HEAD `3b95bdbfdeb15048c375809722e68539dfa2d7ae`, containing exact file-set fix `a461dcaa1a3a1449dc27230aacfda35843dc7d38` and shared signature resolver `e87c0fcebba2eec1c3e693d80b6f6bc00501d4dd`. Only this review document was edited.
+
+The requested `/tmp/sol-final-focused.py` repetition passed: original accepted, existing mutation rejected, root-level `injected.properties` rejected, and distinct SECRET count two. Proof directory `/tmp/sol-final-frozen-499uw5lr`. The file-set commit changes only `backend/app/integrations/full_analysis.py`, preserving security-map construction. Signature input sensitivity and path independence were repeated successfully on root's combined HEAD (`/tmp/sol-signature-yllrdqhp`).
+
+**Verdict remains blocked by the same added-file identity defect in an intake-excluded directory.** The new `_reject_added_scan_files` prunes every `INTAKE_SKIP_DIRS` directory (`full_analysis.py:119`), including `build`, before inspecting extra files. However, backend `SecretAnalyzer` and `SastAnalyzer` recurse with `os.walk(root_path)` without pruning those directories (`secret_analyzer.py:96`, `sast_analyzer.py:52`). Therefore the verifier and actual backend scanner have different input sets.
+
+The identical focused proof, changing only the added file path to `build/injected.properties`, returned `ADDED_FILE_ACCEPTED=True` and `SCANNER_READS_ADDED_FILE=[('build/injected.properties','SECRET-PASSWORD-LITERAL')]`. The frozen project initially contained only README; the password was randomly generated and never printed. Script `/tmp/sol-final-excluded-focused.py`, proof directory `/tmp/sol-final-frozen-7b_c2_g4`. This is a direct continuation of the requested extra-file case, not a new broad audit.
+
+To close it, the guard must reject added files actually read by either backend scanner even under intake-excluded directories, or both backend scanners must enforce the same exclusions before reading. Root received the exact proof immediately. Owner assertions that build-generated additions are intentionally ignored are insufficient while an actual supported scanner demonstrably consumes them under the old frozen identity.
+
+## Requested team RAG interaction check
+
+Read the exact team merge `910aaf55ea4b977849e638903e2a5cdabfe12b81` (dev head `14670caceebf27cd78518040abf126b2ff4812f4`) against its previous main parent `fc30e19`. Runtime analyzer `analyzers/scan.py`, `analyzers/cg26/contract.py`, Team B adapter and Dockerfile are not changed by that team merge. The analyzer change is confined to the separate `analyzers/contract_export.py` CLI: a new `--rag-store` option imports `rag.store.Store` only inside `if args.rag_store`, after the normal bundle has already been produced. The server full-analysis path imports `analyzers.scan.run` and `cg26.contract.build_bundle`, not this CLI.
+
+Consequently this addition does not change default server findings or the canonical analysis signature inputs; omitting the inactive CLI/RAG feature from the scanner signature is appropriate for the reviewed runtime path. `rag/` is not copied into the current runtime image, so explicitly invoking that separate CLI option inside the image would require packaging it; this is outside the default-analysis candidate. No RAG execution or broader team-feature audit was performed.
+
+The successful root-level added-file probe does not supersede the separately reproduced `build/injected.properties` failure above. The focused release verdict remains blocked until the guard and backend directory traversal agree on that same existing input-set condition.
+
+## Final retake: excluded-directory blocker resolved
+
+**Final verdict: approve the reviewed full-analysis fixes for integration.** The previously proven remaining blocker is closed by exact owner commit `2d67c2325027ddee9914778090576abb8f139368` (parent `a461dca`). Read-only retake used root's clean combined HEAD `d43eff393444c71705a8ae2ee1e7ea93bad1d023`, with the shared catalog/signature resolver `e87c0fc` and earlier reviewed fixes. Only this review document was changed.
+
+The backend SECRET, SCA and SAST file walkers now call the same `prune_scan_dirs` helper, which applies intake's directory exclusion set. The exact previously failing `/tmp/sol-final-excluded-focused.py` case now returns `ADDED_FILE_ACCEPTED=True` and `SCANNER_READS_ADDED_FILE=[]`: the build-directory addition is intentionally excluded from both the verifier's scanned set and the backend consumer, so it no longer contributes bytes or findings under the old identity. Proof directory: `/tmp/sol-final-frozen-rjo6oajr`.
+
+The root-level counterpart `/tmp/sol-final-focused.py` was repeated only to distinguish rejection from exclusion: original accepted; changed existing file rejected with `SnapshotIntegrityError`; root-level added file rejected with `SnapshotIntegrityError`; distinct SECRET count two. Proof directory: `/tmp/sol-final-frozen-q4vmywwy`.
+
+Security-map construction is untouched by the directory policy fix. The signature builder includes all backend analyzer Python modules, so the new `file_discovery.py` and changed scanner modules are included in its rules digest; the shared catalog resolver remains present in the reviewed root combination. No new broad audit, PostgreSQL rerun or production interaction was performed. This verdict combines the independently reproduced fixes and signature checks above with the explicitly attributed existing owner default-workflow/PG evidence; it does not claim exhaustive vulnerability detection or approve unrelated RAG functionality.

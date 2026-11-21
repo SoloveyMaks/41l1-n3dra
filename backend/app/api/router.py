@@ -16,6 +16,8 @@ from backend.app.ai.service import AiService
 from backend.app.api.comparison import ComparisonError, compare_published_runs
 from backend.app.api.sql_pattern import sql_pattern_proof
 from backend.app.api.session import (
+    MODE_ACCOUNT,
+    MODE_DEMO,
     ROLE_ADMIN,
     ROLE_USER,
     SESSION_COOKIE,
@@ -26,6 +28,8 @@ from backend.app.api.session import (
     public_demo,
     request_workspace,
     require_admin,
+    revoke_current_session,
+    registration_invite_required,
     session_from_request,
     set_session_cookie,
     verify_access_code,
@@ -150,19 +154,37 @@ def health():
 def get_session(request: Request, response: Response):
     session = session_from_request(request)
     if session:
+        account = session.get("mode") == MODE_ACCOUNT
         return {
             "authenticated": True,
             "authRequired": auth_required(),
+            "registrationInviteRequired": registration_invite_required(),
+            "mode": session.get("mode", MODE_DEMO),
+            "user": (
+                {
+                    "userId": session.get("userId"),
+                    "email": session.get("email"),
+                    "displayName": session.get("displayName"),
+                    "role": session["role"],
+                    "workspaceId": session["workspaceId"],
+                }
+                if account else None
+            ),
             "role": session["role"],
             "adminAvailable": admin_available(),
             "workspaceId": session["workspaceId"],
-            "expiresInSec": SESSION_TTL_SECONDS,
+            "expiresInSec": max(
+                0,
+                int(session["expiresAt"] - datetime.now(timezone.utc).timestamp()),
+            ),
         }
     if public_demo():
         # Публичный режим: без passphrase cookie не выдаётся.
         return {
             "authenticated": False,
             "authRequired": True,
+            "registrationInviteRequired": registration_invite_required(),
+            "mode": None,
             "adminAvailable": admin_available(),
             "workspaceId": request_workspace(request),
             "expiresInSec": 0,
@@ -172,6 +194,9 @@ def get_session(request: Request, response: Response):
     return {
         "authenticated": True,
         "authRequired": False,
+        "registrationInviteRequired": registration_invite_required(),
+        "mode": MODE_DEMO,
+        "user": None,
         "role": ROLE_USER,
         "adminAvailable": admin_available(),
         "workspaceId": request_workspace(request),
@@ -180,9 +205,10 @@ def get_session(request: Request, response: Response):
 
 
 @api_router.post("/session/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
+    revoked = revoke_current_session(request)
     response.delete_cookie(SESSION_COOKIE, path="/")
-    return {"authenticated": False, "authRequired": auth_required()}
+    return {"authenticated": False, "revoked": revoked, "authRequired": auth_required()}
 
 
 @api_router.post("/session")
@@ -222,6 +248,9 @@ def create_session(request: Request, response: Response,
     return {
         "authenticated": True,
         "authRequired": auth_required(),
+        "registrationInviteRequired": registration_invite_required(),
+        "mode": MODE_DEMO,
+        "user": None,
         "role": role,
         "adminAvailable": admin_available(),
         "workspaceId": request_workspace(request),
@@ -930,6 +959,10 @@ def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
 
 from backend.app.api.repository_watches import create_repository_watch_router
 from backend.app.api.repository_hooks import create_repository_hook_router
+from backend.app.api.auth import create_auth_router
+from backend.app.api.profile import create_profile_router
 
+api_router.include_router(create_auth_router())
+api_router.include_router(create_profile_router())
 api_router.include_router(create_repository_watch_router(db_repo, executor))
 api_router.include_router(create_repository_hook_router(db_repo))

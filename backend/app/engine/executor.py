@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from backend.app.ai.scan_service import AiScanService
 from backend.app.ai.service import AiService
 from backend.app.analyzers.redaction import sanitize_fact_evidence, sanitize_sources, secret_ranges
 from backend.app.contracts.schemas import (
-    Coverage, DeliveryResult, Diagnostic, ExecutionStatus, ExplainResult,
+    AiScanResult, Coverage, DeliveryResult, Diagnostic, ExecutionStatus, ExplainResult,
     Finding, FindingsBundle, NodeKind, NodeRunStatus, PolicyResult,
     ScanResult, SecurityVerdict, Severity, WorkflowDraft, WorkflowNode
 )
@@ -43,6 +44,7 @@ class WorkflowExecutor:
         self.sse = sse
         self.validator = WorkflowValidator()
         self.ai_service = AiService()
+        self.ai_scan_service = AiScanService()
         self.report_builder = ReportBuilder()
         self.notifier = WebhookNotifier()
         self.team_b = TeamBAdapter()
@@ -271,7 +273,8 @@ class WorkflowExecutor:
         else:
             final_verdict = policy_result.verdict if policy_result else SecurityVerdict.INCONCLUSIVE
         analysis_failed = any(
-            status == NodeRunStatus.FAILED and node_map[node_id].kind != NodeKind.NOTIFY
+            status == NodeRunStatus.FAILED
+            and node_map[node_id].kind not in {NodeKind.NOTIFY, NodeKind.AI_SCAN}
             for node_id, status in node_statuses.items()
         )
         final_exec_status = (
@@ -650,6 +653,59 @@ class WorkflowExecutor:
             # Forwards whichever branch was active
             active_branch_data = inputs.get("branch_a") or inputs.get("branch_b") or {}
             return {"out": active_branch_data}, None
+
+        elif kind == NodeKind.AI_SCAN:
+            # Separate, opt-in hypothesis scan. It must never raise: deterministic
+            # findings, policy and the report have to survive provider/source errors.
+            bundle = current_bundle
+            raw_bundle = inputs.get("findings_bundle")
+            if isinstance(raw_bundle, FindingsBundle):
+                bundle = raw_bundle
+            elif isinstance(raw_bundle, dict) and "findings" in raw_bundle:
+                bundle = FindingsBundle(**raw_bundle)
+            findings = list(bundle.findings) if bundle else []
+
+            raw_artifact = inputs.get("artifact")
+            artifact_id = ""
+            if isinstance(raw_artifact, dict):
+                artifact_id = str(raw_artifact.get("artifactId") or "")
+            artifact_id = artifact_id or str(default_artifact_id or "")
+            if not artifact_id:
+                result = AiScanResult(
+                    status="degraded",
+                    validationErrors=["AI_ARTIFACT_MISSING"],
+                )
+            else:
+                try:
+                    artifact_row = self.db.get_artifact(artifact_id)
+                    artifact_path = self._resolve_artifact_path(artifact_id)
+                    if not artifact_row:
+                        raise ValueError("artifact row missing")
+                    result = await asyncio.to_thread(
+                        self.ai_scan_service.scan,
+                        artifact_id=artifact_id,
+                        artifact_row=artifact_row,
+                        artifact_path=artifact_path,
+                        deterministic_findings=findings,
+                        config=config,
+                        run_id=run_id,
+                        # Per-execution workspace; do not cache at executor init.
+                        workspace=workspace_id(),
+                    )
+                except Exception:  # noqa: BLE001 - AI block is advisory, never fatal
+                    result = AiScanResult(
+                        status="degraded",
+                        validationErrors=["AI_SCAN_INTERNAL_ERROR"],
+                    )
+
+            await self.sse.emit_event(run_id, "ai_scan_result", {
+                "status": result.status,
+                "observations": len(result.observations),
+                "suppressedDuplicates": result.suppressedDuplicates,
+                "coverageStatus": result.coverage.status,
+                "countsAsFindings": False,
+            })
+            return {"ai_scan_result": result}, None
 
         elif kind == NodeKind.AI_EXPLAIN:
             bundle = current_bundle

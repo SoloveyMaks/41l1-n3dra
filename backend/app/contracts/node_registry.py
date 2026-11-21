@@ -158,6 +158,29 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
             "strictValidation": True
         }
     ),
+    NodeKind.AI_SCAN: NodeDefinition(
+        kind=NodeKind.AI_SCAN,
+        title="AI Vulnerability Scanner",
+        category="AI / Enrichment",
+        description=(
+            "Поиск дополнительных гипотез уязвимостей в ограниченном redacted "
+            "фрагменте проекта; не подтверждает находки и не меняет вердикт"
+        ),
+        inputs=[
+            PortDefinition(id="artifact", name="Artifact In", type=PortType.ARTIFACT),
+            PortDefinition(id="findings_bundle", name="Deterministic Findings (Optional)", type=PortType.FINDINGS_BUNDLE),
+        ],
+        outputs=[
+            PortDefinition(id="ai_scan_result", name="AI Hypotheses Out", type=PortType.AI_SCAN_RESULT)
+        ],
+        default_config={
+            "profile": "balanced",
+            "maxFiles": 6,
+            "maxBytes": 24576,
+            "perFileBytes": 4096,
+            "maxObservations": 12,
+        }
+    ),
     NodeKind.BUILD_REPORT: NodeDefinition(
         kind=NodeKind.BUILD_REPORT,
         title="Build Report",

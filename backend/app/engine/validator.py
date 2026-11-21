@@ -1,5 +1,5 @@
 from collections import defaultdict, deque
-from typing import List
+from typing import Dict, List
 
 from backend.app.contracts.node_registry import NODE_REGISTRY
 from backend.app.contracts.schemas import (
@@ -60,6 +60,10 @@ class WorkflowValidator:
                         "backend и team_b; все они выполняют полный анализ"
                     ),
                 ))
+
+        for node in draft.nodes:
+            if node.kind == NodeKind.AI_SCAN:
+                issues.extend(self._validate_ai_scan_config(node.id, node.config or {}))
 
         # 2. Check edges: source and target existence, port existence and types
         adj = defaultdict(list)
@@ -153,6 +157,17 @@ class WorkflowValidator:
                         message=f"Нода {node_def.title} требует подключения артефакта проекта на входном порту"
                     ))
 
+            # AI scan reads the same frozen artifact; findings are optional context.
+            if node.kind == NodeKind.AI_SCAN and "artifact" not in target_ports_connected[node.id]:
+                issues.append(WorkflowValidationIssue(
+                    level="error",
+                    nodeId=node.id,
+                    message=(
+                        "Нода AI Vulnerability Scanner требует подключения артефакта "
+                        "проекта; findings_bundle опционален"
+                    )
+                ))
+
             # MergeFindings should have at least one scan connected
             if node.kind == NodeKind.MERGE_FINDINGS:
                 connected_scans = target_ports_connected[node.id].intersection({"scan_1", "scan_2", "scan_3"})
@@ -199,6 +214,46 @@ class WorkflowValidator:
 
         valid = not any(i.level == "error" for i in issues)
         return WorkflowValidationResult(valid=valid, issues=issues)
+
+    def _validate_ai_scan_config(self, node_id: str, config: Dict[str, object]) -> List[WorkflowValidationIssue]:
+        """AI_SCAN config is budget-only; credentials and model routing are server-owned."""
+        issues: List[WorkflowValidationIssue] = []
+        forbidden = {
+            "model", "apikey", "api_key", "token", "secret", "password",
+            "baseurl", "base_url", "endpoint", "prompt", "providermodel",
+        }
+        for key in config:
+            if str(key).strip().lower() in forbidden:
+                issues.append(WorkflowValidationIssue(
+                    level="error",
+                    nodeId=node_id,
+                    message=(
+                        f"AI Vulnerability Scanner не принимает '{key}' в config: "
+                        "провайдер, модель и ключ задаются только сервером"
+                    ),
+                ))
+
+        profile = config.get("profile", "balanced")
+        if not isinstance(profile, str) or profile not in {"fast", "balanced", "deep"}:
+            issues.append(WorkflowValidationIssue(
+                level="error", nodeId=node_id,
+                message="AI Vulnerability Scanner: profile должен быть fast, balanced или deep",
+            ))
+
+        caps = {"maxFiles": 20, "maxBytes": 131072, "perFileBytes": 8192, "maxObservations": 30}
+        for key, upper in caps.items():
+            if key not in config:
+                continue
+            value = config.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > upper:
+                issues.append(WorkflowValidationIssue(
+                    level="error", nodeId=node_id,
+                    message=(
+                        f"AI Vulnerability Scanner: {key} должен быть целым числом "
+                        f"от 1 до {upper}"
+                    ),
+                ))
+        return issues
 
     def _are_ports_compatible(self, src: PortType, tgt: PortType) -> bool:
         if src == tgt:

@@ -28,13 +28,16 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
-from backend.app.codefacts.identity import workspace_id
+from backend.app.codefacts.identity import configured_workspace_id
+from backend.app.storage import accounts
 
 SESSION_COOKIE = "cg_session"
 SESSION_TTL_SECONDS = int(os.getenv("CG_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
 ROLE_USER = "user"
 ROLE_ADMIN = "admin"
 ROLES = {ROLE_USER, ROLE_ADMIN}
+MODE_ACCOUNT = "account"
+MODE_DEMO = "demo"
 _RATE_LOCK = threading.Lock()
 _RATE_EVENTS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 
@@ -79,6 +82,24 @@ def access_code() -> str:
 
 def admin_access_code() -> str:
     return os.getenv("CG_ADMIN_ACCESS_CODE", "").strip()
+
+
+def registration_code() -> str:
+    """Опциональный invite-код для регистрации. Пусто = регистрация открыта."""
+    return os.getenv("CG_REGISTRATION_CODE", "").strip()
+
+
+def registration_invite_required() -> bool:
+    return bool(registration_code())
+
+
+def verify_registration_code(value: Optional[str]) -> bool:
+    expected = registration_code()
+    if not expected:
+        return True
+    if not isinstance(value, str):
+        return False
+    return hmac.compare_digest(value.strip().encode("utf-8"), expected.encode("utf-8"))
 
 
 def admin_available() -> bool:
@@ -143,7 +164,8 @@ def _sign(payload: str) -> str:
 
 
 def issue_session(workspace: Optional[str] = None, role: str = ROLE_USER) -> str:
-    ws = workspace or workspace_id()
+    """Demo-токен v2: без user id, общий workspace. Явный demo-режим."""
+    ws = workspace or configured_workspace_id()
     if not isinstance(role, str) or role not in ROLES:
         raise ValueError("role должен быть user или admin")
     issued = int(time.time())
@@ -152,12 +174,27 @@ def issue_session(workspace: Optional[str] = None, role: str = ROLE_USER) -> str
     return f"{payload}.{_sign(payload)}"
 
 
+def issue_account_session(user: Dict[str, Any], role: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
+    """Создать серверную сессию аккаунта и подписать токен v3.
+
+    Возвращает (token, session_record). Серверная строка нужна для отзыва:
+    logout инвалидирует её, и старый cookie перестаёт работать.
+    """
+    session = accounts.create_session(user, SESSION_TTL_SECONDS, role)
+    nonce = secrets.token_urlsafe(12)
+    payload = (
+        f"v3.{session['sessionId']}.{session['userId']}.{session['workspaceId']}."
+        f"{session['role']}.{session['issued']}.{nonce}"
+    )
+    return f"{payload}.{_sign(payload)}", session
+
+
 def verify_session(token: Optional[str]) -> Optional[Dict[str, Any]]:
     if not token or not isinstance(token, str):
         return None
     parts = token.split(".")
     if len(parts) == 5:
-        # Legacy v1 user token: no role in the payload, therefore user only.
+        # Legacy v1 demo token: no role in the payload, therefore user only.
         version, workspace, issued_raw, nonce, signature = parts
         if version != "v1":
             return None
@@ -168,6 +205,11 @@ def verify_session(token: Optional[str]) -> Optional[Dict[str, Any]]:
         if version != "v2" or role not in ROLES:
             return None
         payload = f"v2.{workspace}.{role}.{issued_raw}.{nonce}"
+    elif len(parts) == 8:
+        version, session_id, user_id, workspace, role, issued_raw, nonce, signature = parts
+        if version != "v3" or role not in ROLES:
+            return None
+        payload = f"v3.{session_id}.{user_id}.{workspace}.{role}.{issued_raw}.{nonce}"
     else:
         return None
     try:
@@ -178,13 +220,39 @@ def verify_session(token: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
     if not hmac.compare_digest(signature, _sign(payload)):
         return None
-    if workspace != workspace_id():
+    if len(parts) == 8:
+        stored = accounts.load_session(session_id)
+        if not stored:
+            return None
+        if (
+            stored["sessionId"] != session_id
+            or stored["userId"] != user_id
+            or stored["workspaceId"] != workspace
+            or stored["role"] != role
+            or stored["issuedAt"] != issued
+        ):
+            return None
+        return {
+            "workspaceId": workspace,
+            "role": role,
+            "issuedAt": issued,
+            "expiresAt": stored["expiresAt"],
+            "mode": MODE_ACCOUNT,
+            "sessionId": session_id,
+            "userId": user_id,
+            "email": stored["email"],
+            "displayName": stored["displayName"],
+        }
+    if workspace != configured_workspace_id():
         return None
     return {
         "workspaceId": workspace,
         "role": role,
         "issuedAt": issued,
         "expiresAt": issued + SESSION_TTL_SECONDS,
+        "mode": MODE_DEMO,
+        "sessionId": None,
+        "userId": None,
     }
 
 
@@ -226,7 +294,15 @@ def session_from_request(request: Request) -> Optional[Dict[str, Any]]:
 
 def request_workspace(request: Request) -> str:
     session = session_from_request(request)
-    return session["workspaceId"] if session else workspace_id()
+    return session["workspaceId"] if session else configured_workspace_id()
+
+
+def revoke_current_session(request: Request) -> bool:
+    """Отозвать серверную сессию аккаунта; demo-токену отзывать нечего."""
+    session = session_from_request(request)
+    if not session or session.get("mode") != MODE_ACCOUNT:
+        return False
+    return accounts.revoke_session(session.get("sessionId"))
 
 
 def request_role(request: Request) -> str:
