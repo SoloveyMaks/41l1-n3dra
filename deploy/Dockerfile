@@ -42,6 +42,7 @@ COPY --from=python-wheels /wheels /wheels
 RUN python -m pip install --no-index --find-links=/wheels -r /tmp/requirements.txt \
     && rm -rf /wheels /tmp/requirements.txt
 COPY backend ./backend
+COPY analyzers ./analyzers
 COPY db ./db
 COPY docs ./docs
 COPY packages/comparison ./packages/comparison
