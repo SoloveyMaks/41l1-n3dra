@@ -15,6 +15,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -75,10 +76,30 @@ class TelegramBotSettings:
     token: str = field(repr=False)
     base_url: str = DEFAULT_API_BASE
     bot_key: str = DEFAULT_BOT_KEY
+    proxy_url: Optional[str] = field(default=None, repr=False)
 
     @property
     def safe_base_url(self) -> str:
         return self.base_url.rstrip("/")
+
+
+def _validate_proxy_url(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError as exc:
+        raise TelegramConfigError("TELEGRAM_PROXY_URL is invalid") from exc
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise TelegramConfigError("TELEGRAM_PROXY_URL must be http(s)://host:port")
+    if parts.username is not None or parts.password is not None:
+        raise TelegramConfigError("TELEGRAM_PROXY_URL must not contain credentials")
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise TelegramConfigError("TELEGRAM_PROXY_URL must be a bare proxy URL")
+    host = parts.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    default_port = 443 if parts.scheme == "https" else 80
+    return f"{parts.scheme}://{host}:{port or default_port}"
 
 
 def _read_secret_file(path: Path) -> str:
@@ -144,13 +165,23 @@ def load_bot_settings() -> TelegramBotSettings:
     bot_key = os.getenv("TELEGRAM_BOT_KEY", DEFAULT_BOT_KEY).strip() or DEFAULT_BOT_KEY
     if len(bot_key) > 128:
         raise TelegramConfigError("TELEGRAM_BOT_KEY is too long")
-    return TelegramBotSettings(token=token, base_url=base, bot_key=bot_key)
+    proxy_raw = os.getenv("TELEGRAM_PROXY_URL", "").strip()
+    proxy_url = _validate_proxy_url(proxy_raw) if proxy_raw else None
+    return TelegramBotSettings(
+        token=token, base_url=base, bot_key=bot_key, proxy_url=proxy_url,
+    )
 
 
-def redact_telegram_text(text: Any, token: Optional[str] = None) -> str:
+def redact_telegram_text(
+    text: Any,
+    token: Optional[str] = None,
+    proxy_url: Optional[str] = None,
+) -> str:
     value = str(text or "")
     if token:
         value = value.replace(token, "***")
+    if proxy_url:
+        value = value.replace(proxy_url, "***")
     value = _URL_TOKEN_RE.sub("bot***", value)
     value = _TELEGRAM_URL_RE.sub("https://api.telegram.org/***", value)
     return value[:500]
@@ -159,11 +190,17 @@ def redact_telegram_text(text: Any, token: Optional[str] = None) -> str:
 class TelegramBotAPI:
     def __init__(self, settings: TelegramBotSettings):
         self._settings = settings
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(35.0, connect=15.0),
-            follow_redirects=False,
-            headers={"Accept": "application/json"},
-        )
+        client_kwargs: Dict[str, Any] = {
+            "timeout": httpx.Timeout(35.0, connect=15.0),
+            "follow_redirects": False,
+            "headers": {"Accept": "application/json"},
+            # Only TELEGRAM_PROXY_URL is used for Bot API; global HTTP(S)_PROXY
+            # and LLM httpx settings must not leak into Telegram traffic.
+            "trust_env": False,
+        }
+        if settings.proxy_url:
+            client_kwargs["proxy"] = settings.proxy_url
+        self._client = httpx.AsyncClient(**client_kwargs)
         self.bot_username: Optional[str] = None
 
     def __repr__(self) -> str:
@@ -173,8 +210,14 @@ class TelegramBotAPI:
     def bot_key(self) -> str:
         return self._settings.bot_key
 
+    @property
+    def proxy_configured(self) -> bool:
+        return bool(self._settings.proxy_url)
+
     def redact(self, text: Any) -> str:
-        return redact_telegram_text(text, self._settings.token)
+        return redact_telegram_text(
+            text, self._settings.token, self._settings.proxy_url,
+        )
 
     @classmethod
     def from_runtime(cls) -> "TelegramBotAPI":
@@ -198,7 +241,7 @@ class TelegramBotAPI:
                 timeout=timeout,
             )
         except httpx.HTTPError as exc:
-            raise TelegramUnavailable(redact_telegram_text(exc, self._settings.token)) from None
+            raise TelegramUnavailable(redact_telegram_text(exc, self._settings.token, self._settings.proxy_url)) from None
 
         if response.status_code >= 400:
             description = "request failed"
@@ -210,7 +253,9 @@ class TelegramBotAPI:
                 pass
             raise TelegramAPIError(
                 response.status_code,
-                redact_telegram_text(description, self._settings.token),
+                redact_telegram_text(
+                    description, self._settings.token, self._settings.proxy_url,
+                ),
             )
         try:
             body = response.json()
@@ -219,7 +264,9 @@ class TelegramBotAPI:
         if not isinstance(body, dict) or body.get("ok") is not True:
             description = body.get("description") if isinstance(body, dict) else "bad response"
             raise TelegramUnavailable(
-                redact_telegram_text(description, self._settings.token)
+                redact_telegram_text(
+                    description, self._settings.token, self._settings.proxy_url,
+                )
             )
         return body.get("result")
 
@@ -294,7 +341,7 @@ class TelegramBotAPI:
                 timeout=60.0,
             )
         except httpx.HTTPError as exc:
-            raise TelegramUnavailable(redact_telegram_text(exc, self._settings.token)) from None
+            raise TelegramUnavailable(redact_telegram_text(exc, self._settings.token, self._settings.proxy_url)) from None
         if response.status_code >= 400:
             try:
                 body = response.json()
@@ -303,7 +350,10 @@ class TelegramBotAPI:
                 description = None
             raise TelegramAPIError(
                 response.status_code,
-                redact_telegram_text(description or "sendDocument failed", self._settings.token),
+                redact_telegram_text(
+                    description or "sendDocument failed",
+                    self._settings.token, self._settings.proxy_url,
+                ),
             )
         try:
             body = response.json()
