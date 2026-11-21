@@ -24,6 +24,10 @@ interface LiveRunViewProps {
   events: LiveEvent[];
   telemetry: RunTelemetry;
   plannedNodes?: WorkflowNode[];
+  // False when the run revision is unavailable: the plan is unknown, so no
+  // queued stages may be invented from a mutable draft.
+  planKnown?: boolean;
+  graphMismatch?: boolean;
   onSelectNode: (nodeId: string) => void;
   onRefresh?: () => void;
   onOpenMap?: () => void;
@@ -744,6 +748,8 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   events,
   telemetry,
   plannedNodes = [],
+  planKnown = true,
+  graphMismatch = false,
   onSelectNode,
   onRefresh,
   onOpenMap,
@@ -789,14 +795,14 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   // Upcoming plan blocks are honest "queued" cards only while the run is
   // active. A finished run shows recorded/skipped nodes instead of a fake plan.
   const queuedStages = useMemo(() => {
-    if (!runIsActive || !currentRun) return [];
+    if (!runIsActive || !currentRun || !planKnown) return [];
     const seen = new Set(
       [...recordedStages, ...telemetryStages].map((stage) => stage.nodeRun.node_id),
     );
     return plannedNodes
       .filter((node) => !seen.has(node.id))
       .map((node) => buildPlannedStage(node, currentRun.id));
-  }, [runIsActive, currentRun, recordedStages, telemetryStages, plannedNodes]);
+  }, [runIsActive, currentRun, recordedStages, telemetryStages, plannedNodes, planKnown]);
 
   const stages = useMemo(
     () => [...recordedStages, ...telemetryStages, ...queuedStages].sort(compareStages),
@@ -1051,6 +1057,16 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
           <span>
             Этапы: <strong className="text-slate-200">{finishedStages}</strong> из {totalStages}
           </span>
+          {runIsActive && !planKnown && (
+            <span className="text-amber-300" data-plan-state="unknown">
+              план запуска неизвестен — только подтверждённые этапы
+            </span>
+          )}
+          {graphMismatch && (
+            <span className="text-amber-300" data-graph-binding="mismatch">
+              граф ревизии запуска отличается от черновика
+            </span>
+          )}
           {statusCounts.running > 0 && <span className="text-blue-300">в работе: {statusCounts.running}</span>}
           {statusCounts.failed > 0 && <span className="text-rose-300">ошибок: {statusCounts.failed}</span>}
           {statusCounts.skipped > 0 && <span className="text-slate-500">пропущено: {statusCounts.skipped}</span>}

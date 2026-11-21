@@ -37,14 +37,17 @@ import {
   ProfileData,
   ReportData,
   RunHistoryItem,
+  RunRevisionResponse,
   RunSummary,
   SessionRole,
   SessionState,
   WorkflowDraft,
+  WorkflowEdge,
   WorkflowNode,
 } from './types';
 import { apiClient, ApiError, AuthRequiredError } from './api/client';
 import { buildRunTelemetry } from './execution/runTelemetry';
+import type { RunTelemetry } from './execution/runTelemetry';
 import { artifactLabel, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
@@ -81,6 +84,26 @@ const extractAiScan = (nodes: NodeRunRecord[]): AiScanResult | null => {
   if (!raw || typeof raw !== 'object') return null;
   return raw as AiScanResult;
 };
+
+// Execution status may decorate a draft only when both describe the same
+// immutable graph. Positions and node config stay editable and do not change
+// topology; ids, kinds and edge endpoints must match exactly.
+const edgeGraphKey = (edge: WorkflowEdge): string =>
+  [edge.id, edge.source, edge.sourcePort ?? '', edge.target, edge.targetPort ?? ''].join('\u0000');
+
+const sameRunGraph = (revisionDraft: WorkflowDraft | null, currentDraft: WorkflowDraft): boolean => {
+  if (!revisionDraft) return false;
+  if (revisionDraft.nodes.length !== currentDraft.nodes.length) return false;
+  if (revisionDraft.edges.length !== currentDraft.edges.length) return false;
+  const revisionNodes = new Map(revisionDraft.nodes.map((node) => [node.id, node.kind]));
+  for (const node of currentDraft.nodes) {
+    if (revisionNodes.get(node.id) !== node.kind) return false;
+  }
+  const revisionEdges = new Set(revisionDraft.edges.map(edgeGraphKey));
+  return currentDraft.edges.every((edge) => revisionEdges.has(edgeGraphKey(edge)));
+};
+
+const EMPTY_RUN_TELEMETRY: RunTelemetry = { nodes: {}, edges: {}, lastSeq: 0, live: false };
 
 export const App: React.FC = () => {
   const [adminSection, setAdminSection] = useState<AdminSection>('overview');
@@ -124,6 +147,8 @@ export const App: React.FC = () => {
   const [runsLoading, setRunsLoading] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<RunSummary | null>(null);
+  // Immutable graph the selected run was created from. null = unknown plan.
+  const [runRevision, setRunRevision] = useState<RunRevisionResponse | null>(null);
   const [nodeRuns, setNodeRuns] = useState<NodeRunRecord[]>([]);
   const [events, setEvents] = useState<Array<{ seq: number; timestamp: string; type: string; nodeId?: string; payload: any }>>([]);
   // Edge seq present when the current SSE subscription opened; anything above
@@ -137,6 +162,10 @@ export const App: React.FC = () => {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  // Monotonic subscription generation. Every async reconnect step captures it,
+  // so a delayed summary from an old subscription can never open a second
+  // stream after the user reselected the same or another run.
+  const sseGenerationRef = useRef(0);
   // Last applied event seq for the selected run; reconnect resumes after it.
   const lastSeqRef = useRef(0);
   const selectedRunRef = useRef<string | null>(null);
@@ -144,6 +173,7 @@ export const App: React.FC = () => {
   const artifactFetchRef = useRef<Map<string, Promise<ArtifactManifest | null>>>(new Map());
   const artifactCacheRef = useRef<Map<string, ArtifactManifest>>(new Map());
   const runLoadSeq = useRef(0);
+  const revisionLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
   const adminOverviewSeq = useRef(0);
@@ -166,6 +196,9 @@ export const App: React.FC = () => {
   }, []);
 
   const closeSSE = useCallback(() => {
+    // Invalidate every pending callback of the old subscription before closing
+    // it. Reconnects compare this generation, not just the selected run id.
+    sseGenerationRef.current += 1;
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -291,20 +324,37 @@ export const App: React.FC = () => {
     }
   }, [ensureArtifact, refreshRuns, showNotice]);
 
+  const loadRunRevision = useCallback(async (runId: string) => {
+    const seq = ++revisionLoadSeq.current;
+    try {
+      const revision = await apiClient.getRunRevision(runId);
+      if (seq !== revisionLoadSeq.current || selectedRunRef.current !== runId) return;
+      setRunRevision(revision.available && revision.draft ? revision : null);
+    } catch {
+      if (seq !== revisionLoadSeq.current || selectedRunRef.current !== runId) return;
+      // An older server or a transient failure: the plan stays unknown, never
+      // the mutable draft. A revision already proven for this run is immutable
+      // and survives a repeated refresh failure.
+      setRunRevision((prev) => (prev && prev.run_id === runId ? prev : null));
+    }
+  }, []);
+
   const connectSSE = useCallback((runId: string, baselineSeq: number | null) => {
     closeSSE();
+    const generation = sseGenerationRef.current;
+    const isCurrent = () => generation === sseGenerationRef.current && selectedRunRef.current === runId;
     setLiveBaselineSeq(baselineSeq);
     let attempt = 0;
 
     const open = () => {
-      if (selectedRunRef.current !== runId) return;
+      if (!isCurrent()) return;
       // Resume after the last applied seq: replayed history must not restart
       // motion, and replayed terminal events must not resurrect old statuses.
       const source = apiClient.createEventSource(runId, lastSeqRef.current);
       eventSourceRef.current = source;
 
       const handleEvent = (message: MessageEvent) => {
-        if (selectedRunRef.current !== runId) return;
+        if (!isCurrent()) return;
         try {
           const parsed = JSON.parse(message.data);
           // Historical replay uses `node_id`; live broker uses `nodeId`. Live broker
@@ -350,25 +400,29 @@ export const App: React.FC = () => {
       source.onerror = () => {
         source.close();
         if (eventSourceRef.current === source) eventSourceRef.current = null;
-        if (selectedRunRef.current !== runId || reconnectTimerRef.current !== null) return;
+        if (!isCurrent() || reconnectTimerRef.current !== null) return;
         attempt += 1;
         const delay = Math.min(10000, 600 * 2 ** Math.min(attempt, 4));
         reconnectTimerRef.current = window.setTimeout(async () => {
+          // The generation check is the first thing even before touching the
+          // timer ref: this callback may have waited on getRun while the user
+          // reselected the same run (A-B-A), which starts a newer generation.
+          if (!isCurrent()) return;
           reconnectTimerRef.current = null;
-          if (selectedRunRef.current !== runId) return;
           // The broker cannot replay what it never delivered while offline, and
           // events emitted during the gap are still history. Pull the run
           // summary first so every seq up to its last_event_seq restores state
           // without animating; then resume the stream after lastSeq.
           try {
             const summary = await apiClient.getRun(runId);
-            if (selectedRunRef.current !== runId) return;
+            if (!isCurrent()) return;
             setCurrentRun(summary);
             setLiveBaselineSeq(summary.last_event_seq ?? lastSeqRef.current);
           } catch {
             // Server still unreachable: keep the previous boundary; the next
             // onerror retries and will establish it.
           }
+          if (!isCurrent()) return;
           void loadRunDetails(runId);
           open();
         }, delay);
@@ -398,8 +452,10 @@ export const App: React.FC = () => {
     lastSeqRef.current = 0;
     setLiveBaselineSeq(null);
     runLoadSeq.current += 1;
+    revisionLoadSeq.current += 1;
     setCurrentRunId(null);
     setCurrentRun(null);
+    setRunRevision(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -446,6 +502,7 @@ export const App: React.FC = () => {
         setCurrentRunId(latest.id);
         setCurrentRun(latest);
         await loadRunDetails(latest.id);
+        void loadRunRevision(latest.id);
         connectSSE(latest.id, latest.last_event_seq ?? null);
       } else {
         resetRunSelection();
@@ -458,7 +515,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Сервер недоступен');
       }
     }
-  }, [connectSSE, loadRunDetails, showNotice, validateDraft]);
+  }, [connectSSE, loadRunDetails, loadRunRevision, showNotice, validateDraft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -588,12 +645,14 @@ export const App: React.FC = () => {
     lastSeqRef.current = 0;
     setLiveBaselineSeq(null);
     runLoadSeq.current += 1;
+    revisionLoadSeq.current += 1;
     workflowSelectSeq.current += 1;
     adminOverviewSeq.current += 1;
     setAdminOverview(null);
     setSession((prev) => ({ authenticated: false, authRequired: prev?.authRequired ?? true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
     setCurrentRunId(null);
     setCurrentRun(null);
+    setRunRevision(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -613,8 +672,10 @@ export const App: React.FC = () => {
     closeSSE();
     selectedRunRef.current = runId;
     lastSeqRef.current = 0;
+    revisionLoadSeq.current += 1;
     setCurrentRunId(runId);
     setCurrentRun(null);
+    setRunRevision(null);
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -625,6 +686,7 @@ export const App: React.FC = () => {
     // null until the API summary arrives, so replay cannot animate.
     connectSSE(runId, runs.find((run) => run.id === runId)?.last_event_seq ?? null);
     void loadRunDetails(runId);
+    void loadRunRevision(runId);
   };
 
   const handleSelectWorkflow = async (nextWorkflowId: string) => {
@@ -815,8 +877,10 @@ export const App: React.FC = () => {
       const result = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
       selectedRunRef.current = result.runId;
       lastSeqRef.current = 0;
+      revisionLoadSeq.current += 1;
       setCurrentRunId(result.runId);
       setCurrentRun(null);
+      setRunRevision(null);
       setNodeRuns([]);
       setFindings([]);
       setAiScan(null);
@@ -827,6 +891,7 @@ export const App: React.FC = () => {
         else setActiveTab('live');
       }
       connectSSE(result.runId, 0);
+      void loadRunRevision(result.runId);
       await loadRunDetails(result.runId);
       await refreshRuns();
     } catch (e: any) {
@@ -897,6 +962,20 @@ export const App: React.FC = () => {
     }),
     [events, nodeRuns, currentRun?.execution_status, liveBaselineSeq, isRunning],
   );
+
+  // Canvas decoration belongs to the run's immutable graph, never to a mutable
+  // draft that happened to reuse node ids. A mismatch is explicit and silent:
+  // no statuses, no clocks, no pulses on the wrong graph.
+  const runRevisionDraft = runRevision?.draft ?? null;
+  const runPlanKnown = runRevisionDraft !== null;
+  const runGraphBound = runPlanKnown && sameRunGraph(runRevisionDraft, draft);
+  const canvasTelemetry = runGraphBound ? runTelemetry : EMPTY_RUN_TELEMETRY;
+  const runGraphNotice =
+    !currentRun || currentRun.id !== currentRunId || runGraphBound
+      ? null
+      : runPlanKnown
+        ? `Ревизия запуска ${runRevision?.revision_id || '—'} отличается от текущего черновика: статусы и анимация не наложены.`
+        : 'Ревизия графа запуска неизвестна: статусы и анимация не наложены на текущий черновик.';
 
   // A run selected before its summary was known has no baseline yet. Once the
   // API reports last_event_seq, replayed events become history and stop
@@ -985,7 +1064,8 @@ export const App: React.FC = () => {
                 onDraftChange={handleDraftChange}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
-                telemetry={runTelemetry}
+                telemetry={canvasTelemetry}
+                executionNotice={runGraphNotice}
                 validationIssues={validationIssues}
                 onSaveDraft={() => void handleSaveDraft()}
                 onResetToTemplate={() => void handleResetToTemplate()}
@@ -1019,9 +1099,14 @@ export const App: React.FC = () => {
               nodeRuns={nodeRuns}
               events={events}
               telemetry={runTelemetry}
-              plannedNodes={draft.nodes}
+              plannedNodes={runRevisionDraft?.nodes ?? []}
+              planKnown={runPlanKnown}
+              graphMismatch={Boolean(currentRun?.id === currentRunId && runPlanKnown && !runGraphBound)}
               onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
-              onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+              onRefresh={currentRunId ? () => {
+                void loadRunDetails(currentRunId);
+                void loadRunRevision(currentRunId);
+              } : undefined}
               onOpenMap={() => setActiveTab('map')}
               onOpenFindings={() => setActiveTab('findings')}
               onOpenReport={() => setActiveTab('report')}
@@ -1173,7 +1258,8 @@ export const App: React.FC = () => {
                 onDraftChange={handleDraftChange}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
-                telemetry={runTelemetry}
+                telemetry={canvasTelemetry}
+                executionNotice={runGraphNotice}
                 validationIssues={validationIssues}
                 onSaveDraft={handleSaveDraft}
                 onResetToTemplate={handleResetToTemplate}

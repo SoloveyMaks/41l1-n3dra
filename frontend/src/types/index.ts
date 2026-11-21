@@ -571,6 +571,13 @@ export interface RunSummary {
   last_event_seq: number;
 }
 
+export interface RunRevisionResponse {
+  run_id: string;
+  revision_id: string;
+  available: boolean;
+  draft: WorkflowDraft | null;
+}
+
 export interface NodeRunRecord {
   id: string;
   run_id: string;

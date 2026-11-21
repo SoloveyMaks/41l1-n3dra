@@ -27,6 +27,7 @@ interface WorkflowCanvasProps {
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
   telemetry: RunTelemetry;
+  executionNotice?: string | null;
   validationIssues: Array<{ level: string; message: string }>;
   onSaveDraft: () => void;
   onResetToTemplate: () => void;
@@ -47,6 +48,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   selectedNodeId,
   onSelectNode,
   telemetry,
+  executionNotice,
   validationIssues,
   onSaveDraft,
   onResetToTemplate,
@@ -267,6 +269,16 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           {hasErrors ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
           <span>{hasErrors ? `Ошибок: ${validationIssues.filter((issue) => issue.level === 'error').length}` : 'Граф валиден'}</span>
         </div>
+
+        {executionNotice && (
+          <div
+            className="pointer-events-auto flex max-w-md items-start gap-1.5 rounded-xl border border-amber-800 bg-amber-950/90 px-2.5 py-1.5 text-[11px] text-amber-200 shadow-lg backdrop-blur-md"
+            data-execution-binding="mismatch"
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            <span>{executionNotice}</span>
+          </div>
+        )}
 
         <div className="pointer-events-auto ml-auto flex items-center gap-2">
         <button

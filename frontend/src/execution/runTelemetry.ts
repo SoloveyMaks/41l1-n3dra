@@ -61,6 +61,13 @@ const ACTIVE_RUN_STATUSES: Readonly<Record<string, true>> = {
   running: true,
 };
 
+const TERMINAL_RUN_STATUSES: Readonly<Record<string, true>> = {
+  succeeded: true,
+  failed: true,
+  cancelled: true,
+  interrupted: true,
+};
+
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
@@ -107,6 +114,10 @@ export function buildRunTelemetry(input: {
 
   let lastSeq = 0;
   let status = runStatus;
+  // The run summary is authoritative. A terminal summary must not be rolled
+  // back by a stale replay that still says running, and it must not leave old
+  // running nodes or edge pulses animating after the run is over.
+  const apiTerminalRun = runStatus !== undefined && Boolean(TERMINAL_RUN_STATUSES[runStatus]);
   const ordered = [...events].sort((a, b) => a.seq - b.seq);
 
   for (const event of ordered) {
@@ -114,6 +125,7 @@ export function buildRunTelemetry(input: {
     if (event.seq > lastSeq) lastSeq = event.seq;
 
     if (event.type === 'run_status') {
+      if (apiTerminalRun) continue;
       const next = asString(event.payload?.status);
       if (next) status = next as ExecutionStatus;
       continue;
@@ -124,6 +136,9 @@ export function buildRunTelemetry(input: {
       const nextStatus = event.payload?.status;
       if (!nodeId || typeof nextStatus !== 'string' || !NODE_STATUSES[nextStatus]) continue;
       if (apiTerminal.has(nodeId)) continue;
+      // Replay may be incomplete and arrive after the terminal summary; it
+      // cannot restart a clock that the run itself already stopped.
+      if (apiTerminalRun && !TERMINAL_NODE_STATUSES[nextStatus]) continue;
 
       const previous = nodes[nodeId];
       if (previous && event.seq < previous.lastSeq) continue;
@@ -161,8 +176,13 @@ export function buildRunTelemetry(input: {
   }
 
   // A run is live when its last known status is active; before the first run
-  // status arrives, App's trigger flag is the only signal.
-  const live = status !== undefined ? Boolean(ACTIVE_RUN_STATUSES[status]) : isRunning;
+  // status arrives, App's trigger flag is the only signal. A terminal summary
+  // always wins, even when the closing SSE was lost and replay is incomplete.
+  const live = apiTerminalRun
+    ? false
+    : status !== undefined
+      ? Boolean(ACTIVE_RUN_STATUSES[status])
+      : isRunning;
 
   for (const edge of Object.values(edges)) {
     const target = edge.target ? nodes[edge.target] : undefined;
