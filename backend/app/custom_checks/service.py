@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -43,6 +44,7 @@ from backend.app.custom_checks.models import (
     CustomFinding,
 )
 from backend.app.custom_checks.sandbox import (
+    SandboxCancelled,
     SandboxError,
     SandboxLimits,
     SandboxOutcome,
@@ -58,6 +60,11 @@ from backend.app.storage.database import DatabaseRepository
 
 _RULE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SAFE_PATH_RE = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*\\)(?!.*//).+$")
+_SEVERITIES = {item.value for item in Severity}
+
+
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
 
 
 class CustomCheckValidationError(ValueError):
@@ -142,19 +149,73 @@ def _fixture_project() -> tempfile.TemporaryDirectory:
 
 
 def _safe_result_path(root: Path, value: Any) -> Optional[Tuple[str, int]]:
-    if not isinstance(value, str) or not value or len(value) > 512 or not _SAFE_PATH_RE.fullmatch(value):
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    if _has_control_chars(value) or not _SAFE_PATH_RE.fullmatch(value):
         return None
     relative = PurePosixPath(value)
     if relative.is_absolute() or ".." in relative.parts:
         return None
-    candidate = (root / relative).resolve()
     try:
-        candidate.relative_to(root.resolve())
-    except ValueError:
-        return None
-    if not candidate.is_file() or candidate.is_symlink():
+        base = root.resolve()
+        candidate = (base / relative).resolve()
+        candidate.relative_to(base)
+        if not candidate.is_file() or candidate.is_symlink():
+            return None
+    except (OSError, ValueError, RuntimeError):
         return None
     return str(relative), 0
+
+
+def _contract_finding(
+    raw: Any,
+    index: int,
+    project: Path,
+    workspace: str,
+    check_id: str,
+    line_counts: Dict[str, int],
+) -> Tuple[Optional[CustomFinding], Optional[str], Optional[str]]:
+    """One finding -> (finding, None, None) or (None, error_code, message)."""
+    if not isinstance(raw, dict):
+        return None, "CUSTOM_FINDING_SHAPE", f"finding {index} не объект"
+    rule_id = raw.get("ruleId")
+    severity = raw.get("severity")
+    message = raw.get("message")
+    path = raw.get("path")
+    start = raw.get("startLine")
+    end = raw.get("endLine")
+    if not isinstance(rule_id, str) or not _RULE_RE.fullmatch(rule_id):
+        return None, "CUSTOM_FINDING_RULE", f"finding {index}: недопустимый ruleId"
+    # `severity in set` on a list/dict raises TypeError, so the type check is
+    # part of the contract, not a pre-condition.
+    if not isinstance(severity, str) or severity not in _SEVERITIES:
+        return None, "CUSTOM_FINDING_SEVERITY", f"finding {index}: недопустимый severity"
+    if not isinstance(message, str) or not message.strip() or len(message) > MAX_TEXT_CHARS:
+        return None, "CUSTOM_FINDING_MESSAGE", f"finding {index}: недопустимый message"
+    # bool is an int subclass and must not pass as a line number.
+    if type(start) is not int or type(end) is not int or start < 1 or end < start:
+        return None, "CUSTOM_FINDING_LINES", f"finding {index}: недопустимые строки"
+    path_check = _safe_result_path(project, path)
+    if path_check is None:
+        return None, "CUSTOM_FINDING_PATH", f"finding {index}: path вне проекта или не файл"
+    safe_path, _ = path_check
+    if safe_path not in line_counts:
+        try:
+            with (project / safe_path).open(encoding="utf-8", errors="replace") as handle:
+                line_counts[safe_path] = sum(1 for _ in handle)
+        except (OSError, ValueError):
+            return None, "CUSTOM_FINDING_PATH", f"finding {index}: файл недоступен"
+    if end > max(1, line_counts[safe_path]):
+        return None, "CUSTOM_FINDING_LINES", f"finding {index}: строка за EOF"
+    return CustomFinding(
+        id="custom_" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"cg-custom:{workspace}:{check_id}:{index}:{safe_path}:{start}:{rule_id}")),
+        ruleId=rule_id,
+        severity=Severity(severity),
+        message=mask_sensitive_text(message)[:MAX_TEXT_CHARS],
+        path=safe_path,
+        startLine=start,
+        endLine=end,
+    ), None, None
 
 
 def _validate_contract(stdout: str, project: Path, workspace: str, check_id: str) -> Tuple[List[CustomFinding], List[Dict[str, Any]], Optional[str]]:
@@ -180,51 +241,20 @@ def _validate_contract(stdout: str, project: Path, workspace: str, check_id: str
     findings: List[CustomFinding] = []
     line_counts: Dict[str, int] = {}
     for index, raw in enumerate(raw_findings):
-        if not isinstance(raw, dict):
-            errors.append({"code": "CUSTOM_FINDING_SHAPE", "message": f"finding {index} не объект"})
-            continue
-        rule_id = raw.get("ruleId")
-        severity = raw.get("severity")
-        message = raw.get("message")
-        path = raw.get("path")
-        start = raw.get("startLine")
-        end = raw.get("endLine")
-        if not isinstance(rule_id, str) or not _RULE_RE.fullmatch(rule_id):
-            errors.append({"code": "CUSTOM_FINDING_RULE", "message": f"finding {index}: недопустимый ruleId"})
-            continue
-        if severity not in {item.value for item in Severity}:
-            errors.append({"code": "CUSTOM_FINDING_SEVERITY", "message": f"finding {index}: недопустимый severity"})
-            continue
-        if not isinstance(message, str) or not message.strip() or len(message) > MAX_TEXT_CHARS:
-            errors.append({"code": "CUSTOM_FINDING_MESSAGE", "message": f"finding {index}: недопустимый message"})
-            continue
-        if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
-            errors.append({"code": "CUSTOM_FINDING_LINES", "message": f"finding {index}: недопустимые строки"})
-            continue
-        path_check = _safe_result_path(project, path)
-        if path_check is None:
-            errors.append({"code": "CUSTOM_FINDING_PATH", "message": f"finding {index}: path вне проекта или не файл"})
-            continue
-        safe_path, _ = path_check
-        if safe_path not in line_counts:
-            try:
-                with (project / safe_path).open(encoding="utf-8", errors="replace") as handle:
-                    line_counts[safe_path] = sum(1 for _ in handle)
-            except OSError:
-                errors.append({"code": "CUSTOM_FINDING_PATH", "message": f"finding {index}: файл недоступен"})
-                continue
-        if end > max(1, line_counts[safe_path]):
-            errors.append({"code": "CUSTOM_FINDING_LINES", "message": f"finding {index}: строка за EOF"})
-            continue
-        findings.append(CustomFinding(
-            id="custom_" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"cg-custom:{workspace}:{check_id}:{index}:{safe_path}:{start}:{rule_id}")),
-            ruleId=rule_id,
-            severity=Severity(severity),
-            message=mask_sensitive_text(message)[:MAX_TEXT_CHARS],
-            path=safe_path,
-            startLine=start,
-            endLine=end,
-        ))
+        try:
+            finding, code, detail = _contract_finding(
+                raw, index, project, workspace, check_id, line_counts,
+            )
+        except Exception as exc:  # noqa: BLE001 - malformed JSON must stay recordable
+            finding, code, detail = (
+                None,
+                "CUSTOM_FINDING_INVALID",
+                f"finding {index}: некорректный формат ({type(exc).__name__})",
+            )
+        if finding is None:
+            errors.append({"code": code or "CUSTOM_FINDING_INVALID", "message": detail or "некорректный finding"})
+        else:
+            findings.append(finding)
     return findings, errors, ("contract_error" if errors else None)
 
 
@@ -252,9 +282,17 @@ def _outcome_result(
             diagnostics.append({"code": "CUSTOM_CONTRACT", "message": "Нет проекта для проверки path"})
             status = "contract_error"
         else:
-            findings, contract_errors, contract_status = _validate_contract(
-                outcome.stdout, project, workspace, definition.id,
-            )
+            try:
+                findings, contract_errors, contract_status = _validate_contract(
+                    outcome.stdout, project, workspace, definition.id,
+                )
+            except Exception as exc:  # noqa: BLE001 - malformed output is a contract error
+                findings = []
+                contract_errors = [{
+                    "code": "CUSTOM_CONTRACT_INTERNAL",
+                    "message": f"Не удалось проверить контракт: {type(exc).__name__}",
+                }]
+                contract_status = "contract_error"
             diagnostics.extend(contract_errors)
             status = contract_status or "succeeded"
     return CustomCheckRunResult(
@@ -372,8 +410,11 @@ def run_definition(
     db: DatabaseRepository,
     store: Optional[CustomCheckStore] = None,
     workflow_run_id: Optional[str] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> CustomCheckRunResult:
     ensure_sandbox_available()
+    if cancel_event is not None and cancel_event.is_set():
+        raise SandboxCancelled("Проверка отменена до запуска")
     artifact = db.get_artifact(artifact_id)
     if not artifact:
         raise CustomCheckNotFound("Артефакт не найден в текущем workspace")
@@ -384,18 +425,27 @@ def run_definition(
             str(project),
             artifact,
             SandboxLimits(definition.timeoutSeconds, definition.memoryMb, definition.maxOutputBytes),
+            cancel_event=cancel_event,
         )
+    except SandboxCancelled:
+        raise
     except SandboxUnavailable:
         raise
     except SandboxError as exc:
         raise CustomCheckValidationError(f"Sandbox отклонил запуск: {exc}") from None
+    if cancel_event is not None and cancel_event.is_set():
+        raise SandboxCancelled("Проверка отменена")
     result = _outcome_result(definition, outcome, project, workspace, artifact_id=artifact_id)
     result.workflowRunId = workflow_run_id
     repository = store or CustomCheckStore()
-    repository.save_run(
+    persisted = repository.save_run(
         workspace,
         result=result,
         artifact_hash=artifact.get("hash_sha256"),
         workflow_run_id=workflow_run_id,
     )
+    if not persisted:
+        # The workflow run already left `running`: a late thread must not leave
+        # a success fact behind an owned, cancelled execution.
+        raise SandboxCancelled("Workflow run уже не выполняется; результат не записан")
     return result

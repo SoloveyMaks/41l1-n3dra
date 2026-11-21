@@ -1,7 +1,10 @@
 import asyncio
+import contextvars
+import functools
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +24,7 @@ from backend.app.codefacts.map_builder import build_run_map, ensure_artifact_met
 from backend.app.codefacts.publish import publish_run_artifact
 from backend.app.codefacts.source import load_snapshot_sources
 from backend.app.codefacts.store import CodeFactsStore
-from backend.app.custom_checks.sandbox import SandboxUnavailable
+from backend.app.custom_checks.sandbox import SandboxCancelled, SandboxUnavailable
 from backend.app.custom_checks.service import run_definition as run_custom_check_definition
 from backend.app.custom_checks.store import CustomCheckNotFound, CustomCheckStore
 from backend.app.engine.notify_policy import validate_webhook_url
@@ -66,6 +69,26 @@ class WorkflowExecutor:
                 await self._execute_run(
                     run_id, draft, artifact_id, trigger_type, workflow_id, revision_id
                 )
+            except asyncio.CancelledError:
+                # The owner cancelled the task (scheduler shutdown, lease loss,
+                # explicit stop). The run must not stay `running`, and the
+                # in-flight sandbox is killed by _run_node_logic before re-raise.
+                logger.info("Run %s cancelled by owner", run_id)
+                try:
+                    self.db.update_run_status(
+                        run_id, execution_status="cancelled",
+                        security_verdict="inconclusive",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to mark run %s cancelled", run_id)
+                try:
+                    await self.sse.emit_event(run_id, "run_status", {
+                        "status": "cancelled", "verdict": "inconclusive",
+                    })
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to emit cancellation event for %s", run_id)
+                raise
             except Exception:  # noqa: BLE001 - run must not stay queued/running
                 logger.exception("Run %s failed unexpectedly", run_id)
                 self.db.update_run_status(
@@ -249,6 +272,23 @@ class WorkflowExecutor:
                     "duration_ms": round(duration_ms, 2)
                 }, ready_node_id)
 
+            except asyncio.CancelledError:
+                duration_ms = (time.time() - node_start_time) * 1000
+                node_statuses[ready_node_id] = NodeRunStatus.CANCELLED
+                self._record_node_run(
+                    run_id, curr_node, NodeRunStatus.CANCELLED, duration_ms,
+                    "Выполнение отменено владельцем run", {}, {},
+                )
+                try:
+                    await self.sse.emit_event(run_id, "node_status", {
+                        "nodeId": ready_node_id,
+                        "status": "cancelled",
+                        "duration_ms": round(duration_ms, 2),
+                    }, ready_node_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to emit node cancellation for %s", ready_node_id)
+                raise
+
             except Exception as e:
                 duration_ms = (time.time() - node_start_time) * 1000
                 node_statuses[ready_node_id] = NodeRunStatus.FAILED
@@ -431,11 +471,42 @@ class WorkflowExecutor:
                 ) from None
             if not definition.lastValidatedAt:
                 raise ValueError("Custom Check: проверка не проходила validate")
+            cancel_event = threading.Event()
+            loop = asyncio.get_running_loop()
+            # run_in_executor does not copy contextvars (unlike to_thread), and
+            # the thread needs the workspace identity for artifact lookups.
+            worker_context = contextvars.copy_context()
+            worker = functools.partial(
+                run_custom_check_definition,
+                definition, source, workspace, art_id, self.db, checks, run_id,
+                cancel_event=cancel_event,
+            )
+            future = loop.run_in_executor(
+                None,
+                functools.partial(worker_context.run, worker),
+            )
             try:
-                result = await asyncio.to_thread(
-                    run_custom_check_definition,
-                    definition, source, workspace, art_id, self.db, checks, run_id,
-                )
+                result = await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # Signal the blocking reader, settle the run before the writer
+                # can persist, then reap the sandbox tree before re-raising.
+                cancel_event.set()
+                try:
+                    self.db.update_run_status(
+                        run_id, execution_status="cancelled",
+                        security_verdict="inconclusive",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to mark run %s cancelled", run_id)
+                try:
+                    await asyncio.wait_for(asyncio.shield(future), timeout=5)
+                except (asyncio.CancelledError, asyncio.TimeoutError, SandboxCancelled):
+                    logger.info("Custom check thread for %s settled cancelled", run_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Custom check cleanup failed for %s", run_id)
+                raise
+            except SandboxCancelled as exc:
+                raise ValueError(f"Custom Check: отменён — {exc}") from exc
             except SandboxUnavailable as exc:
                 raise ValueError(f"Custom Check: sandbox недоступен — {exc}") from exc
             if result.status != "succeeded":

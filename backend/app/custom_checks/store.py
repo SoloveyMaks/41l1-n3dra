@@ -156,25 +156,41 @@ class CustomCheckStore:
         result: CustomCheckRunResult,
         artifact_hash: Optional[str] = None,
         workflow_run_id: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
+        """Persist a run; workflow-bound writes need a still-running run.
+
+        Returns False when the owning workflow run already left `running`:
+        a cancelled execution must not leave a late success fact behind.
+        """
+        ws = uuid.UUID(str(workspace))
         with get_pool().connection() as conn:
-            conn.execute(
+            row = conn.execute(
                 """
                 INSERT INTO custom_checks.runs (
                     workspace_id, id, definition_id, artifact_id, artifact_hash,
                     workflow_run_id, status, exit_code, duration_ms,
                     stdout_redacted, stderr_redacted, result_json,
                     diagnostics_json, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                )
+                SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                 WHERE %s::text IS NULL
+                    OR EXISTS (
+                        SELECT 1 FROM runtime.runs
+                         WHERE workspace_id = %s AND id = %s
+                           AND execution_status = 'running'
+                    )
+                RETURNING id
                 """,
                 (
-                    uuid.UUID(str(workspace)), uuid.UUID(result.id), uuid.UUID(result.definitionId),
+                    ws, uuid.UUID(result.id), uuid.UUID(result.definitionId),
                     result.artifactId, artifact_hash, workflow_run_id, result.status,
                     result.exitCode, result.durationMs, result.stdout, result.stderr,
                     Jsonb({"findings": [item.model_dump() for item in result.findings]}),
                     Jsonb(result.diagnostics),
+                    workflow_run_id, ws, workflow_run_id,
                 ),
-            )
+            ).fetchone()
+        return row is not None
 
     def list_workflow_runs(
         self, workspace: str, workflow_run_id: str

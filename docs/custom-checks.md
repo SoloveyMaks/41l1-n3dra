@@ -64,9 +64,10 @@ InspectorPanel из сохранённых проверок workspace; лими�
 а не из графа.
 
 - Валидатор требует подключённый артефакт и непустой `definitionId`.
-- Executor запускает проверку в отдельном потоке (`asyncio.to_thread`), пишет
-  `custom_checks.runs` с `workflow_run_id` и **не** добавляет находки в
-  `FindingsBundle`, policy, report и `runtime.findings`.
+- Executor запускает проверку в отдельном потоке (`run_in_executor` с
+  `cancel_event` и копией contextvars), пишет `custom_checks.runs` с
+  `workflow_run_id` и **не** добавляет находки в `FindingsBundle`, policy,
+  report и `runtime.findings`.
 - Успешная нода отдаёт выход `custom_findings` со `status`, `summary`,
   `findings`, `diagnostics`. Статус кроме `succeeded` (timeout, output_limit,
   contract_error, failed) — это провал ноды с явной причиной, а не «пустой
@@ -156,29 +157,67 @@ stdout обязан быть одним JSON-объектом:
 Timeout — `timeout`. Превышение вывода — `output_limit`. Ни один из этих
 случаев не становится `succeeded`/пустым success.
 
-## Изоляция
+## Изоляция и лимиты
 
 Для каждого запуска:
 
-- `bwrap --unshare-all --die-with-parent`: новые namespaces, включая network;
-  сеть проверена попыткой TCP-подключения — `OSError`; `/etc/passwd` не виден;
+- `bwrap --unshare-all --die-with-parent`: новые namespaces, включая network и
+  PID; сеть проверена попыткой TCP-подключения — `OSError`; `/etc/passwd` не
+  виден;
 - `--clearenv` и фиксированные `PATH/LANG/LC_ALL/PYTHONIOENCODING`; host env
   и секреты не наследуются. В проверке env содержит только эти служебные
   значения плюс `LD_LIBRARY_PATH` для distro python;
 - read-only bind: `/usr`, `/usr/local`, `/lib`, `/lib64`, `/bin`, `/sbin`
-  (только существующие пути), `/input`, `/project`; `--dev /dev` — минимальный
-  devtmpfs. `/proc` намеренно не монтируется: внутри rootless podman он
-  недоступен, а проверке не нужен;
-- `/work` — tmpfs на 1 MiB, cwd; после запуска удаляется;
-- `prlimit`: address space, CPU seconds, file size, file descriptors;
-- wall-clock timeout убивает process group;
-- stdout/stderr читаются порциями с жёстким лимитом; превышение убивает
+  (только существующие пути), `/input`, `/project`. `/proc` намеренно не
+  монтируется: внутри rootless podman он недоступен, а проверке не нужен;
+- `/dev` — tmpfs на 64 KiB с `ro-bind` только `/dev/null` и `/dev/urandom`;
+  `/dev/shm` и `/tmp` отсутствуют. `/work` — tmpfs на 1 MiB, cwd; после
+  запуска удаляется. Общий объём writable scratch ≤ 1 MiB + 64 KiB;
+- внутренний `prlimit --nproc=1` делает дерево процессов ровно одной задачей:
+  `os.fork`, потоки и `subprocess` падают с `EAGAIN`. Поэтому
+  `--as/--cpu/--fsize` относятся ко всему дереву, а не к каждому ребёнку;
+- `--nofile=16` и `--fsize=1MiB` ограничивают page cache файлов; `memfd_create`
+  и SysV shared memory (`shmget/shmat/shmctl/shmdt`) запрещены classic-BPF
+  seccomp-фильтром (иначе shmem шёл бы мимо `RLIMIT_AS` и `RLIMIT_FSIZE`);
+- `prlimit --as=<memoryMb> --cpu=<timeout+1> --fsize=1MiB --nofile=16` стоит
+  двумя слоями: на bwrap и на самом интерпретаторе;
+- wall-clock timeout и отмена владельцем убивают process group (`killpg`);
+  PID namespace добивает оставшихся детей при teardown bwrap; поток чтения
+  дожидается `wait()`;
+- stdout и stderr делят один бюджет `maxOutputBytes`; превышение убивает
   process group и даёт `output_limit`;
 - symlink в snapshot отклоняется до запуска;
 - скрипт ограничен 64 KiB, NUL запрещён; путь скрипта фиксированный, не из
   пользовательского имени файла;
 - `shell=True` нигде не используется; argv — allowlist, без пользовательских
   аргументов.
+
+Итоговый потолок одного check: `memoryMb` на единственную задачу (AS), плюс
+ограниченный page cache (≤ ~15 файлов × 1 MiB) и ≤ 1.06 MiB tmpfs-скретча.
+cgroup-лимитов внутри контейнера нет: `/sys/fs/cgroup` смонтирован read-only.
+Поэтому агрегат держится структурно — одним процессом и запретом shmem, а не
+cgroup-ом. Если проверке нужны дочерние процессы или shared memory, она не
+поддерживается: это осознанное ограничение, а не скрытый fallback.
+
+Доступность раннера — probe, который реально проверяет каждую границу:
+`fork`/threads/subprocess → `EAGAIN`, `memfd_create` → `EPERM`, `shmget` → -1,
+`/dev/shm` и `/tmp` отсутствуют, `/work` writable, env чистый, 80 MiB при
+64 MiB AS → `MemoryError`. Если probe не проходит, `validate`/`create`/`run`
+отвечают `503 CUSTOM_SANDBOX_UNAVAILABLE`; код не запускается.
+
+### Отмена
+
+Executor запускает check в отдельном потоке и при отмене задачи (shutdown,
+потеря lease, явный stop) делает по порядку: выставляет `cancel_event` →
+помечает run `cancelled` → ждёт завершения потока (≤5 c) → пробрасывает
+`CancelledError`. Sandbox по событию убивает process group, reader делает
+`wait()`. Узел получает terminal-запись `cancelled`, run — `cancelled`.
+
+Поздняя запись успеха после отмены запрещена дважды: сервис проверяет
+`cancel_event` перед сохранением, а `custom_checks.runs` для workflow-run
+вставляется только если `runtime.runs.execution_status = 'running'`. Иначе
+строка не пишется и сервис бросает `SandboxCancelled`. Manual API-run
+(`workflow_run_id = NULL`) этим guard-ом не ограничен.
 
 Snapshot проверяется через CodeFacts `manifestHash` и `artifactHash`; если
 каталог изменился после приёма, run отклоняется (`409`, snapshot changed).
@@ -263,21 +302,35 @@ diagnostics и число custom-фактов. Автозапуска на пр�
 (`--read-only --tmpfs /tmp --cap-drop=ALL --security-opt no-new-privileges`,
 non-root, disposable PostgreSQL, миграции 001..013):
 
-- probe bwrap: `available=true` внутри такого контейнера;
+- probe bwrap: `available=true` внутри такого контейнера; probe сам проверяет
+  fork/threads/subprocess, `memfd_create`, `shmget`, отсутствие `/dev/shm`,
+  `/work`, env и memory-лимит;
 - env внутри sandbox: только `PATH/LANG/LC_ALL/LD_LIBRARY_PATH/PWD/
-  PYTHONIOENCODING/PYTHONDONTWRITEBYTECODE`; `/etc/passwd` → отсутствует;
-  TCP 1.1.1.1:53 → `OSError`; запись в `/project` → denied; cwd `/work`;
+  PYTHONIOENCODING/PYTHONDONTWRITEBYTECODE`; host env canary не виден;
+  `/etc/passwd` → отсутствует; TCP на listener в host-loopback → `OSError`;
+  запись в `/project` → denied; cwd `/work`;
+- `os.fork` в цикле на 3 ребёнка с `bytearray(40 MiB)` → первый же fork
+  `EAGAIN` (11), детей нет, 120 MiB не выделены; `bytearray(256 MiB)` при
+  `memoryMb=64` → `MemoryError`;
+- `memfd_create` → `EPERM`; `/dev/shm` и `/tmp` отсутствуют; 2 MiB в `/dev` →
+  `ENOSPC`; 2 MiB в `/work` → `EFBIG` (RLIMIT_FSIZE); stdout 800 B + stderr
+  800 B при лимите 1024 → `output_limit` с общим бюджетом;
 - symlink в snapshot → отказ до запуска;
 - `validate` шаблона `todo_scan` → `valid=true`, 1 finding на fixture;
-- `create` + `run` на `art_cc_live` → `succeeded`, 1 finding с
-  `path=src/main/kotlin/Sample.kt`, `countsAsFindings=false`;
-- timeout 1s → `timeout` (`valid=false`); `print('not json')` →
-  `contract_error`; 100000 байт при лимите 1024 → `output_limit`;
-- executor: `manual_trigger → project_input → custom_check` → node
-  `succeeded`, `custom_checks.runs.workflow_run_id` заполнен,
-  `GET /runs/{id}/findings` отдаёт 1 custom-факт, `runtime.findings` = 0;
+- `run` на артефакте → `succeeded`, 1 finding, `limits` содержит
+  `maxTasks=1`, `workScratchBytes=1048576`, `devScratchBytes=65536`;
+- `severity=[]`, NUL в `path`, `startLine=true` → `contract_error` и на
+  validate, и на реальном run; строка run сохраняется, HTTP отвечает 200, не
+  500;
+- отмена: во время sandbox-run (3 процесса) `task.cancel()` → process tree
+  исчезает, отмена укладывается в 0.05 c вместо 6 c скрипта, run становится
+  `cancelled`, custom-нода получает terminal `cancelled`, поздних
+  `custom_checks.runs` нет, прямой `save_run` с отменённым run возвращает
+  `False`;
+- `GET /custom-checks/runs/{id}/findings` для отменённого run → `[]`;
+  manual `POST /{id}/run` после этого по-прежнему `succeeded`;
 - аварийный probe (bwrap «отсутствует») → `GET /status available=false`,
-  `validate`/`run` → `503 CUSTOM_SANDBOX_UNAVAILABLE`, код не исполнялся;
+  `validate`/`run` → `503 CUSTOM_SANDBOX_UNAVAILABLE`;
 - router смонтирован в реальном `api_router`: `GET /api/custom-checks/status`
   → 200;
 - `npm run build` (tsc + vite) проходит.
@@ -285,9 +338,14 @@ non-root, disposable PostgreSQL, миграции 001..013):
 ## Ограничения
 
 - Только Python + bwrap allowlist; нет произвольных executable/языков.
-- Процессный лимит `RLIMIT_NPROC` не выставляется: в текущем окружении он
-  ломает создание user namespace у bwrap. CPU/time/memory/output/file-descriptor
-  лимиты выставлены; PID namespace и timeout ограничивают lifetime.
+- Check обязан быть однопроцессным: `fork`, потоки, `subprocess` и shared
+  memory запрещены. Многопоточные/многопроцессные проверки не поддерживаются.
+- Агрегат памяти держится `nproc=1` + `RLIMIT_AS`, а не cgroup-ом: cgroup fs в
+  контейнере read-only. Потолок честный для одной задачи, плюс ограниченный
+  page cache и tmpfs; без `nproc=1` per-process лимиты агрегатом не были бы.
+- Если probe не может подтвердить seccomp/лимиты/mounts (например, чужой
+  seccomp-профиль режет `unshare`), раннер честно `unavailable`; host-fallback
+  отсутствует.
 - Встроенный fixture — минимальный Kotlin-проект; он проверяет контракт, а не
   качество анализа.
 - `last_validated_at` фиксируется при create; изменение source через прямой SQL
@@ -297,4 +355,5 @@ non-root, disposable PostgreSQL, миграции 001..013):
   canonical findings.
 - Custom-нода не участвует в verdict, но её провал (timeout/contract_error/
   sandbox unavailable) помечает execution status run как `failed` — молча
-  пропускать сломанную проверку нельзя.
+  пропускать сломанную проверку нельзя. Отмена помечает и run, и ноду
+  `cancelled`.
