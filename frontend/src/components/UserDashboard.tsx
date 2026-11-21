@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   ArrowRight, CheckCircle2, FileArchive, History, LogOut, Play,
-  ShieldAlert, ShieldCheck, Upload, AlertTriangle, RefreshCw, Loader2,
+  ShieldCheck, Upload, RefreshCw, Loader2, GitBranch,
 } from 'lucide-react';
 import {
   ArtifactManifest, Finding, NodeRunRecord, ReportData, RunSummary, SecurityVerdict,
@@ -10,11 +10,14 @@ import { FindingsView } from './FindingsView';
 import { ReportView } from './ReportView';
 import { SecurityMapScreen } from './SecurityMapScreen';
 import { ComparisonView } from './ComparisonView';
+import { RepositorySourceView } from './RepositorySourceView';
+import { artifactChoiceLabel, artifactKey, artifactLabel, artifactRepository, findArtifact } from '../repository';
 import { coverageLabel, coverageReason, getCanonicalCoverage } from '../coverage';
 
 type UserSection = 'check' | 'problems' | 'map' | 'report' | 'comparison';
 
 interface UserDashboardProps {
+  workflowId?: string;
   artifacts: ArtifactManifest[];
   currentArtifactId: string;
   runs: RunSummary[];
@@ -72,9 +75,10 @@ const formatDate = (value?: string): string => {
 };
 
 const projectName = (artifactId: string | undefined, artifacts: ArtifactManifest[]): string =>
-  artifacts.find((artifact) => artifact.id === artifactId)?.filename || 'Проект не выбран';
+  artifactLabel(findArtifact(artifactId, artifacts));
 
 export const UserDashboard: React.FC<UserDashboardProps> = ({
+  workflowId,
   artifacts,
   currentArtifactId,
   runs,
@@ -100,15 +104,18 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
 
   const selectedArtifact = artifacts.find((artifact) => artifact.id === currentArtifactId);
   const visibleArtifacts = artifacts.filter(
-    (artifact, index) => artifacts.findIndex((item) => item.filename === artifact.filename) === index,
+    (artifact, index) => artifacts.findIndex((item) => artifactKey(item) === artifactKey(artifact)) === index,
   );
   if (selectedArtifact && !visibleArtifacts.some((artifact) => artifact.id === selectedArtifact.id)) {
     visibleArtifacts.unshift(selectedArtifact);
   }
-  const selectedProjectName = selectedArtifact?.filename || 'Проект не выбран';
+  const selectedProjectName = artifactLabel(selectedArtifact);
+  const selectedRepository = artifactRepository(selectedArtifact);
+  const runArtifact = findArtifact(currentRun?.artifact_id, artifacts);
+  const runRepository = artifactRepository(runArtifact);
   const coverage = getCanonicalCoverage(nodeRuns);
   const recentRuns = runs
-    .filter((run) => run.workflow_id === 'wf_secure_pr_gate' && run.trigger_type !== 'schedule')
+    .filter((run) => (!workflowId || run.workflow_id === workflowId) && run.trigger_type !== 'schedule')
     .slice(0, 8);
 
   const handleSample = async () => {
@@ -175,7 +182,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
             <div>
               <h1 className="text-xl font-bold text-white">Проверка проекта</h1>
               <p className="mt-1 text-sm text-slate-400">
-                Три шага: выберите проект, запустите проверку и посмотрите результат.
+                Три шага: выберите проект (ZIP или публичный репозиторий), запустите проверку и посмотрите результат.
               </p>
             </div>
 
@@ -187,10 +194,12 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
                   <div className="flex items-center gap-2 text-sm text-slate-200">
-                    <FileArchive size={16} className="text-indigo-400" />
+                    {selectedRepository ? <GitBranch size={16} className="text-indigo-400" /> : <FileArchive size={16} className="text-indigo-400" />}
                     <span className="truncate">{selectedProjectName}</span>
                   </div>
-                  {selectedArtifact && (
+                  {selectedRepository ? (
+                    <RepositorySourceView repository={selectedRepository} className="mt-2" />
+                  ) : selectedArtifact && (
                     <div className="mt-1 text-[11px] text-slate-500">
                       {selectedArtifact.kotlin_file_count} файлов Kotlin · {selectedArtifact.file_count} файлов всего
                     </div>
@@ -204,7 +213,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                     className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200"
                   >
                     {visibleArtifacts.map((artifact) => (
-                      <option key={artifact.id} value={artifact.id}>{artifact.filename}</option>
+                      <option key={artifact.id} value={artifact.id}>{artifactChoiceLabel(artifact)}</option>
                     ))}
                   </select>
                 )}
@@ -213,7 +222,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                     onClick={onUpload}
                     className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700"
                   >
-                    <Upload size={13} /> Загрузить ZIP
+                    <Upload size={13} /> ZIP или репозиторий
                   </button>
                   <button
                     onClick={() => void handleSample()}
@@ -258,6 +267,11 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                     <div className="text-base font-bold">{verdictLabel(currentRun.security_verdict, currentRun.total_findings)}</div>
                     <div className="mt-1 text-xs opacity-80">{executionLabel(currentRun)}</div>
                     <div className="mt-1 text-xs opacity-80">Проект проверки: {projectName(currentRun.artifact_id, artifacts)}</div>
+                    {runRepository && (
+                      <div className="mt-1 rounded-lg bg-black/20 px-2 py-1">
+                        <RepositorySourceView repository={runRepository} />
+                      </div>
+                    )}
                     <div className="mt-2 text-[11px] opacity-80">{coverageReason(coverage)}</div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg bg-black/20 p-2">
@@ -312,7 +326,9 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                 <p className="text-xs text-slate-500">Проверок пока нет.</p>
               ) : (
                 <div className="space-y-1.5">
-                  {recentRuns.map((run) => (
+                  {recentRuns.map((run) => {
+                    const runRepo = artifactRepository(findArtifact(run.artifact_id, artifacts));
+                    return (
                     <button
                       key={run.id}
                       onClick={() => { onSelectRun(run.id); setSection('check'); }}
@@ -326,6 +342,9 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                         <span className="block truncate text-slate-200">
                           {projectName(run.artifact_id, artifacts)}
                         </span>
+                        {runRepo ? (
+                          <RepositorySourceView repository={runRepo} className="mt-0.5" showProvider={false} />
+                        ) : null}
                         <span className="text-[11px] text-slate-500">{formatDate(run.created_at)}</span>
                       </span>
                       <span className="flex items-center gap-2 text-[11px]">
@@ -336,7 +355,8 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({
                         <ArrowRight size={13} className="text-slate-500" />
                       </span>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>

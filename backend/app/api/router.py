@@ -32,6 +32,7 @@ from backend.app.api.session import (
     verify_admin_code,
 )
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
+from backend.app.artifacts.repository import RepositoryImportError, import_repository
 from backend.app.artifacts.sample_source import build_zip_from_directory
 from backend.app.codefacts.identity import run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
@@ -120,6 +121,8 @@ def _public_artifact(row: Dict[str, Any]) -> Dict[str, Any]:
         public["snapshot_manifest_hash"] = meta.get("snapshotManifestHash")
         if meta.get("sourceRef"):
             public["source_ref"] = meta.get("sourceRef")
+        if isinstance(meta.get("repository"), dict):
+            public["repository"] = meta.get("repository")
     return _strip_private_paths(public)
 
 
@@ -127,6 +130,14 @@ def request_workspace_default() -> str:
     from backend.app.codefacts.identity import workspace_id
 
     return workspace_id()
+
+
+def _require_authenticated(request: Request) -> Dict[str, Any]:
+    """Обычный пользователь и админ; без сессии — 401."""
+    session = session_from_request(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    return session
 
 
 # --- Session (same-origin demo) ---
@@ -242,6 +253,32 @@ async def upload_artifact(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="Ошибка обработки архива") from exc
 
 
+@api_router.post("/artifacts/repository")
+async def import_artifact_repository(payload: Optional[Dict[str, Any]] = None):
+    data = payload or {}
+    url = data.get("url")
+    branch = data.get("branch")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=400, detail="Поле url обязательно")
+    if branch is not None and not isinstance(branch, str):
+        raise HTTPException(status_code=400, detail="Поле branch должно быть строкой")
+    try:
+        async with _INTAKE_SEM:
+            manifest = await import_repository(url, branch or None)
+        db_repo.save_artifact(_storage_manifest(manifest))
+        public = _public_artifact(manifest)
+        if manifest.get("repository"):
+            public["repository"] = manifest["repository"]
+        return public
+    except RepositoryImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except SafeIntakeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Repository import failed")
+        raise HTTPException(status_code=500, detail="Ошибка импорта репозитория") from exc
+
+
 def _load_sample_artifact_internal() -> Dict[str, Any]:
     zip_bytes = create_sample_project_zip()
     manifest = intake.process_zip_bytes("sample_bank_app.zip", zip_bytes)
@@ -324,7 +361,7 @@ def list_workflows():
 
 @api_router.post("/workflows")
 def create_workflow(draft: WorkflowDraft, request: Request):
-    require_admin(request)
+    _require_authenticated(request)
     wf_id = f"wf_{uuid.uuid4().hex[:8]}"
     rev_id = db_repo.save_workflow(wf_id, draft.name, draft.description, draft.model_dump())
     return {"id": wf_id, "latest_revision_id": rev_id}
@@ -340,7 +377,7 @@ def get_workflow(workflow_id: str):
 
 @api_router.put("/workflows/{workflow_id}/draft")
 def update_workflow_draft(workflow_id: str, draft: WorkflowDraft, request: Request):
-    require_admin(request)
+    _require_authenticated(request)
     if not db_repo.get_workflow(workflow_id):
         raise HTTPException(status_code=404, detail="Сценарий не найден")
     rev_id = db_repo.save_workflow(workflow_id, draft.name, draft.description, draft.model_dump())
@@ -889,3 +926,8 @@ def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
     if run_id:
         findings = [Finding(**item) for item in db_repo.get_findings(run_id)]
     return ai_service.generate_synthetic_test(findings)
+
+
+from backend.app.api.repository_watches import create_repository_watch_router
+
+api_router.include_router(create_repository_watch_router(db_repo, executor))

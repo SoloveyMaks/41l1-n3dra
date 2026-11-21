@@ -11,7 +11,8 @@ import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
 import { AccessGate } from './components/AccessGate';
 import { ComparisonView } from './components/ComparisonView';
-import { UserDashboard } from './components/UserDashboard';
+import { Navbar } from './components/Navbar';
+import { ScenarioCreateModal } from './components/ScenarioCreateModal';
 import { AdminShell, AdminSection } from './components/AdminShell';
 import {
   AdminAccessPanel,
@@ -23,6 +24,7 @@ import {
 
 import {
   AdminOverview,
+  AppTab,
   ArtifactManifest,
   Finding,
   NodeKind,
@@ -35,7 +37,8 @@ import {
   WorkflowDraft,
   WorkflowNode,
 } from './types';
-import { apiClient, AuthRequiredError } from './api/client';
+import { apiClient, ApiError, AuthRequiredError } from './api/client';
+import { artifactLabel, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
 
@@ -45,6 +48,24 @@ const EMPTY_DRAFT: WorkflowDraft = {
   description: '',
   nodes: [],
   edges: [],
+};
+
+const SELECTED_WORKFLOW_KEY = 'nedra.selectedWorkflowId';
+
+const readSelectedWorkflowId = (): string => {
+  try {
+    return window.localStorage.getItem(SELECTED_WORKFLOW_KEY) || '';
+  } catch {
+    return '';
+  }
+};
+
+const storeSelectedWorkflowId = (workflowId: string) => {
+  try {
+    window.localStorage.setItem(SELECTED_WORKFLOW_KEY, workflowId);
+  } catch {
+    // Storage unavailable: selection still works for the current page session.
+  }
 };
 
 export const App: React.FC = () => {
@@ -59,8 +80,12 @@ export const App: React.FC = () => {
 
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState(false);
-  
   const [isAiTestOpen, setIsAiTestOpen] = useState(false);
+  const [isScenarioOpen, setIsScenarioOpen] = useState(false);
+  const [scenarioName, setScenarioName] = useState('');
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [scenarioError, setScenarioError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<AppTab>('editor');
 
   // Workflow state
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -88,10 +113,14 @@ export const App: React.FC = () => {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const selectedRunRef = useRef<string | null>(null);
+  const artifactIdsRef = useRef<Set<string>>(new Set());
+  const artifactFetchRef = useRef<Map<string, Promise<ArtifactManifest | null>>>(new Map());
+  const artifactCacheRef = useRef<Map<string, ArtifactManifest>>(new Map());
   const runLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
   const adminOverviewSeq = useRef(0);
+  const createScenarioSeq = useRef(0);
   const authRef = useRef<{ epoch: number; role: SessionRole | undefined }>({ epoch: 0, role: undefined });
   const noticeTimer = useRef<number | null>(null);
 
@@ -100,6 +129,10 @@ export const App: React.FC = () => {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(null), 7000);
   }, []);
+
+  useEffect(() => {
+    artifactIdsRef.current = new Set(artifacts.map((artifact) => artifact.id));
+  }, [artifacts]);
 
   useEffect(() => () => {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
@@ -153,6 +186,26 @@ export const App: React.FC = () => {
     }
   }, [refreshAdminOverview, showNotice]);
 
+  const ensureArtifact = useCallback(async (artifactId: string): Promise<ArtifactManifest | null> => {
+    if (artifactIdsRef.current.has(artifactId)) return null;
+    const cached = artifactCacheRef.current.get(artifactId);
+    if (cached) return cached;
+    let pending = artifactFetchRef.current.get(artifactId);
+    if (!pending) {
+      pending = apiClient.getArtifact(artifactId)
+        .then((artifact) => {
+          artifactCacheRef.current.set(artifactId, artifact);
+          return artifact;
+        })
+        .catch(() => null)
+        .finally(() => {
+          artifactFetchRef.current.delete(artifactId);
+        });
+      artifactFetchRef.current.set(artifactId, pending);
+    }
+    return pending;
+  }, []);
+
   const loadRunDetails = useCallback(async (runId: string) => {
     const seq = ++runLoadSeq.current;
     try {
@@ -170,7 +223,23 @@ export const App: React.FC = () => {
           runReport = null;
         }
       }
+      // Сервер мог создать артефакт уже после загрузки страницы (наблюдение за
+      // коммитом). Догружаем только его, чтобы источник запуска не зависел от reload.
+      let runArtifact: ArtifactManifest | null = null;
+      if (runInfo.artifact_id) {
+        runArtifact = await ensureArtifact(runInfo.artifact_id);
+      }
       if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
+      if (runArtifact) {
+        const freshArtifact = runArtifact;
+        artifactIdsRef.current.add(freshArtifact.id);
+        artifactCacheRef.current.delete(freshArtifact.id);
+        setArtifacts((prev) => (
+          prev.some((artifact) => artifact.id === freshArtifact.id)
+            ? prev
+            : [freshArtifact, ...prev]
+        ));
+      }
 
       setCurrentRun(runInfo);
       setNodeRuns(nodes);
@@ -188,7 +257,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Не удалось загрузить запуск');
       }
     }
-  }, [refreshRuns, showNotice]);
+  }, [ensureArtifact, refreshRuns, showNotice]);
 
   const connectSSE = useCallback((runId: string) => {
     closeSSE();
@@ -244,6 +313,19 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const resetRunSelection = () => {
+    closeSSE();
+    selectedRunRef.current = null;
+    runLoadSeq.current += 1;
+    setCurrentRunId(null);
+    setCurrentRun(null);
+    setNodeRuns([]);
+    setFindings([]);
+    setReport(null);
+    setEvents([]);
+    setIsRunning(false);
+  };
+
   const loadInitialData = useCallback(async () => {
     try {
       const [artifactList, workflowList, runList] = await Promise.all([
@@ -256,26 +338,34 @@ export const App: React.FC = () => {
       setWorkflows(workflowList);
       setRuns(runList);
 
+      const storedWorkflowId = readSelectedWorkflowId();
       const selectedWorkflow =
-        workflowList.find((item) => item.id === 'wf_secure_pr_gate') || workflowList[0];
+        workflowList.find((item) => item.id === storedWorkflowId) ||
+        workflowList.find((item) => item.id === 'wf_secure_pr_gate') ||
+        workflowList[0];
       if (selectedWorkflow?.draft) {
         setWorkflowId(selectedWorkflow.id);
         setDraft(selectedWorkflow.draft);
+        storeSelectedWorkflowId(selectedWorkflow.id);
         await validateDraft(selectedWorkflow.id, selectedWorkflow.draft);
       } else {
-        showNotice('error', 'На сервере нет доступного workflow');
+        showNotice('error', 'На сервере нет доступного сценария');
       }
 
-      if (runList.length > 0) {
-        const latest =
-          runList.find((run) => run.workflow_id === 'wf_secure_pr_gate' && run.trigger_type !== 'schedule') ||
-          runList.find((run) => run.trigger_type !== 'schedule') ||
-          runList[0];
+      const selectedRuns = selectedWorkflow
+        ? runList.filter((run) => run.workflow_id === selectedWorkflow.id)
+        : [];
+      const latest =
+        selectedRuns.find((run) => run.trigger_type !== 'schedule') ||
+        selectedRuns[0];
+      if (latest) {
         selectedRunRef.current = latest.id;
         setCurrentRunId(latest.id);
         setCurrentRun(latest);
         await loadRunDetails(latest.id);
         connectSSE(latest.id);
+      } else {
+        resetRunSelection();
       }
     } catch (e: any) {
       if (e instanceof AuthRequiredError) {
@@ -338,6 +428,7 @@ export const App: React.FC = () => {
       setSession(state);
       await loadInitialData();
       setAdminSection('overview');
+      setActiveTab('editor');
     } catch (e: any) {
       setAuthError(e?.message || 'Не удалось войти');
     } finally {
@@ -400,7 +491,11 @@ export const App: React.FC = () => {
       }
       setWorkflowId(nextWorkflowId);
       setDraft(workflow.draft);
+      storeSelectedWorkflowId(nextWorkflowId);
       setSelectedNodeId(null);
+      const nextRun = runs.find((run) => run.workflow_id === nextWorkflowId);
+      if (nextRun) handleSelectRun(nextRun.id);
+      else resetRunSelection();
       await validateDraft(nextWorkflowId, workflow.draft);
       if (seq !== workflowSelectSeq.current) return;
       showNotice('ok', `Открыт сценарий: ${workflow.name || nextWorkflowId}`);
@@ -412,6 +507,61 @@ export const App: React.FC = () => {
   const handleDraftChange = (updated: WorkflowDraft) => {
     setDraft(updated);
     void validateDraft(workflowId, updated);
+  };
+
+  const openScenarioModal = () => {
+    const baseName = workflows.find((workflow) => workflow.id === workflowId)?.name || draft.name || 'Мой сценарий';
+    setScenarioName(`${baseName.slice(0, 108)} (копия)`);
+    setScenarioError(null);
+    setIsScenarioOpen(true);
+  };
+
+  const handleCreateScenario = async () => {
+    const name = scenarioName.trim();
+    if (!name) {
+      setScenarioError('Введите название сценария');
+      return;
+    }
+    const seq = ++createScenarioSeq.current;
+    setScenarioBusy(true);
+    setScenarioError(null);
+    const nextDraft: WorkflowDraft = {
+      schemaVersion: draft.schemaVersion || 1,
+      name,
+      description: draft.description || 'Пользовательский сценарий проверки',
+      nodes: draft.nodes.map((node) => ({
+        ...node,
+        config: { ...node.config },
+        position: { ...node.position },
+      })),
+      edges: draft.edges.map((edge) => ({ ...edge })),
+    };
+    try {
+      const created = await apiClient.createWorkflow(nextDraft);
+      if (seq !== createScenarioSeq.current) return;
+      const entry = { id: created.id, name, draft: nextDraft };
+      setWorkflows((prev) => [entry, ...prev.filter((workflow) => workflow.id !== created.id)]);
+      setWorkflowId(created.id);
+      setDraft(nextDraft);
+      storeSelectedWorkflowId(created.id);
+      setSelectedNodeId(null);
+      resetRunSelection();
+      setIsScenarioOpen(false);
+      if (session?.role === 'admin') setAdminSection('editor');
+      else setActiveTab('editor');
+      await validateDraft(created.id, nextDraft);
+      if (seq !== createScenarioSeq.current) return;
+      showNotice('ok', `Сценарий создан: ${name}`);
+    } catch (error: unknown) {
+      if (seq !== createScenarioSeq.current) return;
+      if (error instanceof ApiError && error.status === 403) {
+        setScenarioError('Создание сценариев пока недоступно на сервере для вашей роли.');
+      } else {
+        setScenarioError(error instanceof Error ? error.message : 'Не удалось создать сценарий');
+      }
+    } finally {
+      if (seq === createScenarioSeq.current) setScenarioBusy(false);
+    }
   };
 
   const handleSaveDraft = async () => {
@@ -486,7 +636,10 @@ export const App: React.FC = () => {
     if (isRunning) return;
     const hasErrors = validationIssues.some((issue) => issue.level === 'error');
     if (hasErrors) {
-      if (navigate) setAdminSection('editor');
+      if (navigate) {
+        if (session?.role === 'admin') setAdminSection('editor');
+        else setActiveTab('editor');
+      }
       showNotice('error', 'Сценарий проверки пока не готов к запуску');
       return;
     }
@@ -503,38 +656,16 @@ export const App: React.FC = () => {
       setFindings([]);
       setReport(null);
       setSelectedNodeId(null);
-      if (navigate) setAdminSection('live');
+      if (navigate) {
+        if (session?.role === 'admin') setAdminSection('live');
+        else setActiveTab('live');
+      }
       connectSSE(result.runId);
       await loadRunDetails(result.runId);
       await refreshRuns();
     } catch (e: any) {
       setIsRunning(false);
       showNotice('error', e?.message || 'Ошибка запуска проверки');
-    }
-  };
-
-  const resetRunSelection = () => {
-    closeSSE();
-    selectedRunRef.current = null;
-    runLoadSeq.current += 1;
-    setCurrentRunId(null);
-    setCurrentRun(null);
-    setNodeRuns([]);
-    setFindings([]);
-    setReport(null);
-    setEvents([]);
-    setIsRunning(false);
-  };
-
-  const handleLoadSample = async () => {
-    try {
-      const manifest = await apiClient.loadSampleArtifact();
-      setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
-      setCurrentArtifactId(manifest.id);
-      if (session?.role !== 'admin') resetRunSelection();
-      showNotice('ok', `Открыт пример: ${manifest.filename}`);
-    } catch (e: any) {
-      showNotice('error', e?.message || 'Не удалось открыть пример');
     }
   };
 
@@ -549,6 +680,7 @@ export const App: React.FC = () => {
   }, [session?.role, refreshAdminOverview]);
 
   const handleArtifactLoaded = (manifest: ArtifactManifest) => {
+    artifactIdsRef.current.add(manifest.id);
     setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
     setCurrentArtifactId(manifest.id);
     handleDraftChange({
@@ -559,8 +691,15 @@ export const App: React.FC = () => {
           : node,
       ),
     });
-    if (session?.role !== 'admin') resetRunSelection();
-    showNotice('ok', `Артефакт выбран: ${manifest.filename}`);
+    // Новый проект выбран: старый результат относился к другому артефакту.
+    resetRunSelection();
+    const repository = manifest.repository;
+    showNotice(
+      'ok',
+      repository
+        ? `Репозиторий импортирован: ${artifactLabel(manifest)} · ${repository.branch} · ${shortCommit(repository.commit_sha)}`
+        : `Проект выбран: ${artifactLabel(manifest)}`,
+    );
   };
 
   const handleSelectArtifact = (artifactId: string) => {
@@ -628,34 +767,120 @@ export const App: React.FC = () => {
   }
 
   if (!isAdmin) {
+    const userRuns = runs.filter((run) => run.workflow_id === workflowId);
     return (
-      <div className="h-screen w-screen overflow-hidden bg-slate-950">
-        <UserDashboard
-          artifacts={artifacts}
-          currentArtifactId={currentArtifactId}
-          runs={runs}
-          workflows={workflows}
-          currentRun={currentRun}
-          currentRunId={currentRunId}
-          findings={findings}
-          report={report}
-          nodeRuns={nodeRuns}
-          failureReason={failureReason}
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
+        <Navbar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onOpenUpload={() => setIsUploadOpen(true)}
+          onTriggerRun={() => void handleTriggerRun(false, true)}
+          onOpenAiTest={() => setIsAiTestOpen(true)}
           isRunning={isRunning}
+          latestVerdict={currentRun?.security_verdict}
+          findingsCount={findings.length}
+          runs={userRuns}
+          currentRunId={currentRunId}
           runsLoading={runsLoading}
-          onUpload={() => setIsUploadOpen(true)}
-          onLoadSample={handleLoadSample}
-          onSelectArtifact={handleUserSelectArtifact}
-          onRun={() => void handleTriggerRun(true, false)}
           onSelectRun={handleSelectRun}
           onRefreshRuns={() => void refreshRuns()}
           onLogout={() => void handleLogout()}
+          isAdmin={false}
         />
+
+        <main className="relative flex flex-1 overflow-hidden">
+          {activeTab === 'editor' && (
+            <div className="flex h-full flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
+              <NodePalette onAddNode={handleAddNode} />
+              <WorkflowCanvas
+                draft={draft}
+                onDraftChange={handleDraftChange}
+                selectedNodeId={selectedNodeId}
+                onSelectNode={setSelectedNodeId}
+                nodeStatuses={nodeStatusMap}
+                validationIssues={validationIssues}
+                onSaveDraft={() => void handleSaveDraft()}
+                onResetToTemplate={() => void handleResetToTemplate()}
+                isSaving={isSavingDraft}
+                workflows={workflows}
+                workflowId={workflowId}
+                onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
+                onCreateWorkflow={openScenarioModal}
+                artifacts={artifacts}
+                currentArtifactId={currentArtifactId}
+                onSelectArtifact={handleUserSelectArtifact}
+              />
+              {selectedNode && (
+                <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
+                  <InspectorPanel
+                    node={selectedNode}
+                    artifacts={artifacts}
+                    onUpdateConfig={handleUpdateNodeConfig}
+                    onDeleteNode={handleDeleteNode}
+                    onClose={() => setSelectedNodeId(null)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'live' && (
+            <LiveRunView
+              currentRun={currentRun}
+              nodeRuns={nodeRuns}
+              events={events}
+              onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
+              onRefresh={currentRunId ? () => void loadRunDetails(currentRunId) : undefined}
+            />
+          )}
+
+          {activeTab === 'findings' && (
+            <FindingsView
+              findings={findings}
+              aiItems={report?.run_id === currentRunId ? report.ai_items : []}
+              aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
+              onOpenReport={() => setActiveTab('report')}
+            />
+          )}
+
+          {activeTab === 'map' && (
+            <SecurityMapScreen key={currentRunId ?? 'no-run'} runId={currentRunId} />
+          )}
+
+          {activeTab === 'report' && (
+            <ReportView
+              report={report}
+              runId={currentRunId}
+              runStatus={currentRun?.execution_status}
+              failureReason={failureReason}
+              nodeRuns={nodeRuns}
+            />
+          )}
+
+          {activeTab === 'comparison' && (
+            <ComparisonView
+              runs={runs}
+              artifacts={artifacts}
+              workflows={workflows}
+              onRefreshRuns={() => void refreshRuns()}
+            />
+          )}
+        </main>
+
         <UploadModal
           isOpen={isUploadOpen}
           onClose={() => setIsUploadOpen(false)}
           onArtifactLoaded={handleArtifactLoaded}
           showTraining={false}
+        />
+        <ScenarioCreateModal
+          isOpen={isScenarioOpen}
+          name={scenarioName}
+          busy={scenarioBusy}
+          error={scenarioError}
+          onName={setScenarioName}
+          onClose={() => setIsScenarioOpen(false)}
+          onCreate={() => void handleCreateScenario()}
         />
         {noticeNode}
       </div>
@@ -697,7 +922,7 @@ export const App: React.FC = () => {
                 onClick={() => setIsUploadOpen(true)}
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
               >
-                Загрузить ZIP
+                ZIP или репозиторий
               </button>
               <button
                 onClick={() => void handleTriggerRun()}
@@ -731,6 +956,7 @@ export const App: React.FC = () => {
                 workflows={workflows}
                 workflowId={workflowId}
                 onSelectWorkflow={(id) => void handleSelectWorkflow(id)}
+                onCreateWorkflow={openScenarioModal}
                 artifacts={artifacts}
                 currentArtifactId={currentArtifactId}
                 onSelectArtifact={handleSelectArtifact}
@@ -750,12 +976,18 @@ export const App: React.FC = () => {
       case 'schedule':
         return (
           <div className="flex h-full items-start justify-center overflow-y-auto bg-slate-950 p-4">
-            <div className="w-full max-w-xl">
+            <div className="w-full max-w-2xl">
               <ScheduleModal
                 workflowId={workflowId}
                 artifactId={currentArtifactId}
                 isOpen={true}
                 onClose={() => setAdminSection('overview')}
+                adminAllowed={isAdmin}
+                onOpenRun={(runId) => {
+                  if (!runId) return;
+                  handleSelectRun(runId);
+                  setAdminSection('live');
+                }}
                 embedded
               />
             </div>
@@ -819,6 +1051,15 @@ export const App: React.FC = () => {
         onClose={() => setIsUploadOpen(false)}
         onArtifactLoaded={handleArtifactLoaded}
         showTraining
+      />
+      <ScenarioCreateModal
+        isOpen={isScenarioOpen}
+        name={scenarioName}
+        busy={scenarioBusy}
+        error={scenarioError}
+        onName={setScenarioName}
+        onClose={() => setIsScenarioOpen(false)}
+        onCreate={() => void handleCreateScenario()}
       />
       <AiTrustModal
         runId={currentRunId || undefined}

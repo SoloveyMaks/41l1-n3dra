@@ -34,7 +34,8 @@ logger = logging.getLogger("RuntimeSchema")
 
 RUNTIME_SCHEMA_PATH = Path(__file__).with_name("runtime_schema.sql")
 RUNTIME_GUARDS_PATH = Path(__file__).with_name("runtime_guards.sql")
-RUNTIME_SCHEMA_VERSION = 3
+RUNTIME_WATCH_SCHEMA_PATH = Path(__file__).with_name("runtime_repository_watches.sql")
+RUNTIME_SCHEMA_VERSION = 4
 LEGACY_RUNTIME_SCHEMA = "runtime_legacy_v1"
 RUNTIME_DDL_LOCK_KEY = int.from_bytes(
     hashlib.sha256(b"41l1-n3dra/runtime-ddl").digest()[:8], "big", signed=True
@@ -199,6 +200,7 @@ def _create_schema_meta(conn) -> None:
 def _install_fresh_runtime(conn) -> None:
     _exec_script(conn, RUNTIME_SCHEMA_PATH)
     _exec_script(conn, RUNTIME_GUARDS_PATH)
+    _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
     conn.execute(
         "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
         (RUNTIME_SCHEMA_VERSION,),
@@ -236,6 +238,7 @@ def _upgrade_legacy_runtime(conn, workspace_id: uuid.UUID) -> None:
         "EXISTS (SELECT 1 FROM runtime.run_events))"
     )
     _exec_script(conn, RUNTIME_GUARDS_PATH)
+    _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
     conn.execute(
         "INSERT INTO runtime.schema_meta (version) VALUES (%s)",
         (RUNTIME_SCHEMA_VERSION,),
@@ -275,8 +278,16 @@ def init_db(workspace_id: uuid.UUID) -> None:
             else:
                 _install_fresh_runtime(conn)
         elif version == 2:
-            # v2 = workspace isolation; v3 добавляет immutability-триггеры.
+            # v2 = workspace isolation; v3 добавляет immutability-триггеры,
+            # v4 — durable repository watches.
             _exec_script(conn, RUNTIME_GUARDS_PATH)
+            _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
+            conn.execute(
+                "UPDATE runtime.schema_meta SET version = %s",
+                (RUNTIME_SCHEMA_VERSION,),
+            )
+        elif version == 3:
+            _exec_script(conn, RUNTIME_WATCH_SCHEMA_PATH)
             conn.execute(
                 "UPDATE runtime.schema_meta SET version = %s",
                 (RUNTIME_SCHEMA_VERSION,),
@@ -498,6 +509,27 @@ class DatabaseRepository:
                 f"UPDATE runtime.runs SET {', '.join(sets)} WHERE workspace_id = %s AND id = %s",
                 params,
             )
+
+    def claim_run_start(self, run_id: str, started_at: str) -> bool:
+        """Atomically promote a queued run to running.
+
+        Only the caller that wins the transition gets True. A second dispatcher
+        that acquired the same run through a stale watch lease gets False and
+        must not execute the run again.
+        """
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.runs
+                   SET execution_status = 'running',
+                       started_at = NULLIF(%s, '')::timestamptz
+                 WHERE workspace_id = %s AND id = %s
+                   AND execution_status = 'queued'
+                 RETURNING id
+                """,
+                (started_at, self.workspace_id, run_id),
+            ).fetchone()
+            return row is not None
 
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         ws = self.workspace_id
@@ -768,6 +800,409 @@ class DatabaseRepository:
                 (1 if enabled else 0, bool(enabled), self.workspace_id, schedule_id),
             ).fetchone()
             return _row(row)
+
+    # Repository watches (runtime v4)
+    def create_repository_watch(self, watch_id: str, workflow_id: str, url: str,
+                                provider: str, branch: str, cron_or_interval: str,
+                                next_check_at: str, baseline_commit: str,
+                                checked_at: str) -> None:
+        now = _now()
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO runtime.repository_watches (
+                    workspace_id, id, workflow_id, url, provider, branch,
+                    cron_or_interval, enabled, next_check_at, last_checked_at,
+                    last_seen_commit, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, true, %s, %s, %s, %s, %s)
+                """,
+                (self.workspace_id, watch_id, workflow_id, url, provider, branch,
+                 cron_or_interval, next_check_at, checked_at, baseline_commit, now, now),
+            )
+
+    def get_repository_watch(self, watch_id: str) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM runtime.repository_watches WHERE workspace_id = %s AND id = %s",
+                (self.workspace_id, watch_id),
+            ).fetchone()
+            return _row(row)
+
+    def list_repository_watches(self) -> List[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM runtime.repository_watches WHERE workspace_id = %s "
+                "ORDER BY created_at DESC",
+                (self.workspace_id,),
+            ).fetchall()
+            return [_row(r) for r in rows]
+
+    def set_repository_watch_enabled(self, watch_id: str, enabled: bool,
+                                     next_check_at: Optional[str]) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET enabled = %s,
+                       next_check_at = CASE WHEN %s THEN %s::timestamptz ELSE next_check_at END,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                 RETURNING *
+                """,
+                (bool(enabled), bool(enabled), next_check_at, self.workspace_id, watch_id),
+            ).fetchone()
+            return _row(row)
+
+    def claim_repository_watch(self, watch_id: str, token: str,
+                               timeout_seconds: int) -> Optional[Dict[str, Any]]:
+        """Atomic per-watch claim; expired claims are recoverable by time."""
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET claim_token = %s,
+                       claimed_until = now() + make_interval(secs => %s),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                   AND (claimed_until IS NULL OR claimed_until < now())
+                 RETURNING *
+                """,
+                (token, timeout_seconds, self.workspace_id, watch_id),
+            ).fetchone()
+            return _row(row)
+
+    def claim_due_repository_watches(self, limit: int, token: str,
+                                     timeout_seconds: int) -> List[Dict[str, Any]]:
+        """Claim due watches atomically; parallel processes use SKIP LOCKED."""
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                WITH due AS (
+                    SELECT workspace_id, id
+                      FROM runtime.repository_watches
+                     WHERE workspace_id = %s
+                       AND enabled
+                       AND (next_check_at IS NULL OR next_check_at <= now())
+                       AND (claimed_until IS NULL OR claimed_until < now())
+                     ORDER BY COALESCE(next_check_at, created_at)
+                     LIMIT %s
+                     FOR UPDATE SKIP LOCKED
+                )
+                UPDATE runtime.repository_watches w
+                   SET claim_token = %s,
+                       claimed_until = now() + make_interval(secs => %s),
+                       updated_at = now()
+                  FROM due
+                 WHERE w.workspace_id = due.workspace_id AND w.id = due.id
+                 RETURNING w.*
+                """,
+                (self.workspace_id, limit, token, timeout_seconds),
+            ).fetchall()
+            return [_row(r) for r in rows]
+
+    def finish_repository_watch_unchanged(self, watch_id: str, token: str,
+                                          checked_at: str, next_check_at: str,
+                                          last_seen_commit: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET last_checked_at = %s,
+                       next_check_at = %s,
+                       last_seen_commit = COALESCE(%s, last_seen_commit),
+                       last_error = NULL,
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s AND claim_token = %s
+                 RETURNING *
+                """,
+                (checked_at, next_check_at, last_seen_commit,
+                 self.workspace_id, watch_id, token),
+            ).fetchone()
+            return _row(row)
+
+    def fail_repository_watch(self, watch_id: str, token: str, error: str,
+                              checked_at: str, next_check_at: str) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET last_checked_at = %s,
+                       next_check_at = %s,
+                       last_error = %s,
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s AND claim_token = %s
+                 RETURNING *
+                """,
+                (checked_at, next_check_at, error[:500],
+                 self.workspace_id, watch_id, token),
+            ).fetchone()
+            return _row(row)
+
+    def repository_watch_claim_commit(self, watch_id: str, commit_sha: str,
+                                      token: str, timeout_seconds: int) -> Optional[Dict[str, Any]]:
+        """Claim one watch+sha. failed/stale processing rows can be retried."""
+        now = _now()
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO runtime.repository_watch_commits AS c (
+                    workspace_id, watch_id, commit_sha, state, claim_token,
+                    claimed_until, created_at, updated_at
+                ) VALUES (%s, %s, %s, 'processing', %s,
+                          now() + make_interval(secs => %s), %s, %s)
+                ON CONFLICT (workspace_id, watch_id, commit_sha) DO UPDATE
+                   SET state = 'processing',
+                       claim_token = EXCLUDED.claim_token,
+                       claimed_until = EXCLUDED.claimed_until,
+                       error = NULL,
+                       updated_at = now()
+                 WHERE c.state = 'failed'
+                    OR (c.state = 'processing'
+                        AND (c.claimed_until IS NULL OR c.claimed_until < now()))
+                RETURNING c.*
+                """,
+                (self.workspace_id, watch_id, commit_sha, token,
+                 timeout_seconds, now, now),
+            ).fetchone()
+            return _row(row)
+
+    def get_repository_watch_commit(self, watch_id: str,
+                                    commit_sha: str) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM runtime.repository_watch_commits "
+                "WHERE workspace_id = %s AND watch_id = %s AND commit_sha = %s",
+                (self.workspace_id, watch_id, commit_sha),
+            ).fetchone()
+            return _row(row)
+
+    def commit_repository_watch_run(self, watch_id: str, commit_sha: str, token: str,
+                                    run_id: str, workflow_id: str, revision_id: str,
+                                    artifact_id: str, checked_at: str,
+                                    next_check_at: str) -> bool:
+        """Finalize ledger + insert queued run + advance cursor in one transaction.
+
+        Only the worker holding claim_token can create the run, so a timed-out
+        duplicate checker cannot enqueue the same commit twice.
+        """
+        with get_pool().connection() as conn:
+            claimed = conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET state = 'queued',
+                       run_id = %s,
+                       artifact_id = %s,
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       error = NULL,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND watch_id = %s AND commit_sha = %s
+                   AND state = 'processing' AND claim_token = %s
+                 RETURNING watch_id
+                """,
+                (run_id, artifact_id, self.workspace_id, watch_id, commit_sha, token),
+            ).fetchone()
+            if claimed is None:
+                return False
+            conn.execute(
+                """
+                INSERT INTO runtime.runs (
+                    workspace_id, id, workflow_id, revision_id, artifact_id, trigger_type,
+                    execution_status, security_verdict, created_at
+                ) VALUES (%s, %s, %s, %s, %s, 'repository_update', 'queued', 'pending', %s)
+                """,
+                (self.workspace_id, run_id, workflow_id, revision_id, artifact_id, _now()),
+            )
+            conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET last_seen_commit = %s,
+                       last_run_id = %s,
+                       last_checked_at = %s,
+                       next_check_at = %s,
+                       last_error = NULL,
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                   AND (claim_token = %s OR claim_token IS NULL)
+                """,
+                (commit_sha, run_id, checked_at, next_check_at,
+                 self.workspace_id, watch_id, token),
+            )
+            return True
+
+    def fail_repository_watch_commit(self, watch_id: str, commit_sha: str, token: str,
+                                     error: str, checked_at: str,
+                                     next_check_at: str) -> None:
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET state = 'failed',
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       error = %s,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND watch_id = %s AND commit_sha = %s
+                   AND state = 'processing' AND claim_token = %s
+                """,
+                (error[:500], self.workspace_id, watch_id, commit_sha, token),
+            )
+            conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET last_checked_at = %s,
+                       next_check_at = %s,
+                       last_error = %s,
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       updated_at = now()
+                 WHERE workspace_id = %s AND id = %s
+                   AND (claim_token = %s OR claim_token IS NULL)
+                """,
+                (checked_at, next_check_at, error[:500],
+                 self.workspace_id, watch_id, token),
+            )
+
+    def claim_repository_watch_dispatch(self, run_id: str, token: str,
+                                        timeout_seconds: int) -> Optional[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET state = 'running',
+                       claim_token = %s,
+                       claimed_until = now() + make_interval(secs => %s),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND run_id = %s
+                   AND (state = 'queued'
+                        OR (state = 'running'
+                            AND (claimed_until IS NULL OR claimed_until < now())))
+                 RETURNING watch_id, commit_sha, run_id
+                """,
+                (token, timeout_seconds, self.workspace_id, run_id),
+            ).fetchone()
+            return _row(row)
+
+    def finish_repository_watch_dispatch(self, run_id: str, token: str,
+                                         error: Optional[str] = None) -> None:
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET state = 'done',
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       error = COALESCE(%s, error),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND run_id = %s
+                   AND state = 'running' AND claim_token = %s
+                """,
+                (error[:500] if error else None, self.workspace_id, run_id, token),
+            )
+
+    def release_repository_watch_dispatch(self, run_id: str, token: str,
+                                          error: Optional[str] = None) -> None:
+        """Return an unstarted run to the recoverable queued state."""
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET state = 'queued',
+                       claim_token = NULL,
+                       claimed_until = NULL,
+                       error = COALESCE(%s, error),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND run_id = %s
+                   AND state = 'running' AND claim_token = %s
+                """,
+                (error[:500] if error else None, self.workspace_id, run_id, token),
+            )
+
+    def interrupt_repository_watch_dispatch(self, run_id: str, token: str,
+                                            error: Optional[str] = None) -> None:
+        """Run already started but has no terminal status: never claim done."""
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE runtime.repository_watch_commits
+                   SET claim_token = NULL,
+                       claimed_until = NULL,
+                       error = COALESCE(%s, error),
+                       updated_at = now()
+                 WHERE workspace_id = %s AND run_id = %s
+                   AND state = 'running' AND claim_token = %s
+                """,
+                (error[:500] if error else None, self.workspace_id, run_id, token),
+            )
+
+    def recover_repository_watch_dispatches(self, limit: int) -> List[Dict[str, Any]]:
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.run_id, c.watch_id, c.commit_sha, c.state
+                  FROM runtime.repository_watch_commits c
+                  JOIN runtime.runs r
+                    ON r.workspace_id = c.workspace_id AND r.id = c.run_id
+                 WHERE c.workspace_id = %s
+                   AND (c.state = 'queued'
+                        OR (c.state = 'running'
+                            AND (c.claimed_until IS NULL OR c.claimed_until < now())))
+                   AND r.execution_status = 'queued'
+                 ORDER BY c.created_at
+                 LIMIT %s
+                """,
+                (self.workspace_id, limit),
+            ).fetchall()
+            return [_row(r) for r in rows]
+
+    def release_stale_repository_claims(self) -> List[Dict[str, Any]]:
+        """Bounded timeout recovery for crashed checks/dispatches."""
+        with get_pool().connection() as conn:
+            stale = conn.execute(
+                """
+                WITH stale AS (
+                    UPDATE runtime.repository_watch_commits
+                       SET state = 'failed',
+                           claim_token = NULL,
+                           claimed_until = NULL,
+                           error = COALESCE(error, 'Проверка прервана'),
+                           updated_at = now()
+                     WHERE workspace_id = %s AND state = 'processing'
+                       AND (claimed_until IS NULL OR claimed_until < now())
+                     RETURNING workspace_id, watch_id
+                ), marked AS (
+                    UPDATE runtime.repository_watches w
+                       SET last_error = COALESCE(w.last_error, 'Проверка прервана'),
+                           claim_token = NULL,
+                           claimed_until = NULL,
+                           updated_at = now()
+                      FROM stale
+                     WHERE w.workspace_id = stale.workspace_id
+                       AND w.id = stale.watch_id
+                )
+                SELECT workspace_id, watch_id FROM stale
+                """,
+                (self.workspace_id,),
+            ).fetchall()
+            conn.execute(
+                """
+                UPDATE runtime.repository_watches
+                   SET claim_token = NULL,
+                       claimed_until = NULL,
+                       last_error = COALESCE(last_error, 'Проверка прервана'),
+                       updated_at = now()
+                 WHERE workspace_id = %s
+                   AND claimed_until IS NOT NULL AND claimed_until < now()
+                """,
+                (self.workspace_id,),
+            )
+            return [_row(r) for r in stale]
 
     # Deliveries (Webhook notifications)
     def save_delivery(self, delivery_id: str, run_id: str, channel: str, status: str,
