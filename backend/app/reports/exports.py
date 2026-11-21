@@ -16,7 +16,7 @@ from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
-from backend.app.reports.language import completeness_label, evidence_markdown, naturalize
+from backend.app.reports.language import completeness_label, naturalize
 from backend.app.storage.database import DatabaseRepository
 
 EXPORT_SCHEMA_VERSION = "nedra-report-export/1"
@@ -241,6 +241,27 @@ def _sanitize_provenance(value: Any, key: str = "", depth: int = 0) -> Any:
             return _sanitize_reference(value)
         return _sanitize_text(value)
     return value
+
+
+def sanitize_text(value: str) -> str:
+    """Public text boundary: Mask URL, path and query credentials in prose.
+
+    Legacy HTTP handlers (``api/router.py``) serve stored report rows, so they
+    must run the same sanitizer the export builders use instead of a weaker
+    per-field mask. Safe metadata (token counts, endpoint shape) stays intact.
+    """
+    return _sanitize_text(str(value))
+
+
+def sanitize_provenance(value: Any) -> Any:
+    """Public recursive boundary for arbitrary stored provenance/document data.
+
+    Keeps keys, counts and canonical values; replaces credential-named fields
+    with ``[REDACTED]`` and sanitizes URL/path/query values. ``export`` uses the
+    private implementation directly; this wrapper exists for the legacy report
+    routes without exposing a second convention.
+    """
+    return _sanitize_provenance(value)
 
 
 def _contradictory_coverage_warning(passport: Dict[str, Any]) -> Optional[str]:
@@ -697,31 +718,14 @@ def build_markdown(bundle: ExportBundle) -> str:
         str(bundle.run.get("id") or ""), bundle.workflow_name, passport, policy,
         [Finding.model_validate(item) for item in bundle.findings], explanation,
         execution_status=str(bundle.run.get("execution_status") or "queued"),
+        ai_scan=bundle.ai_scan,
     )
     text = _rewrite_unknown_coverage(text, bundle.passport)
     if bundle.report is None:
         text += "\n\nСохранённый отчёт не сформирован; показаны только сохранённые результаты запуска.\n"
-    text += "\n\n## Гипотезы ИИ-сканера\n\n"
-    text += "Гипотезы не подтверждены, не входят в счётчики находок и не меняют итог проверки.\n"
-    scan_status = str(bundle.ai_scan.get("status") or "disabled")
-    text += f"\nСтатус ИИ-сканера: {_AI_SCAN_STATUS_LABELS.get(scan_status, scan_status)}.\n"
-    for item in bundle.ai_scan.get("observations") or []:
-        text += (
-            f"\n### {item.get('ruleClass')} — {_severity_label(item.get('severity'))}\n"
-            f"\n- **ID гипотезы:** `{item.get('id')}`"
-            f"\n- **Где:** `{_location_text(item.get('primaryLocation'))}`"
-            f"\n- **Почему:** {item.get('rationale') or 'без пояснения'}"
-            f"\n- **Что проверить:** {item.get('remediation') or 'без рекомендации'}\n"
-        )
-        if item.get("redactedEvidence"):
-            text += evidence_markdown(item["redactedEvidence"])
-    if not bundle.ai_scan.get("observations"):
-        text += "\nИИ-сканер не сформировал гипотез для этого запуска.\n"
-    if bundle.ai_scan.get("limitations"):
-        text += "\n**Ограничения:**\n"
-    for limitation in bundle.ai_scan.get("limitations") or []:
-        text += f"\n- {_sanitize_text(naturalize(str(limitation)))}"
-    return text + "\n"
+    # The builder already masks known fields; this is the last boundary, so the
+    # whole document gets the same URL/path/query sanitizer as JSONC and DOCX.
+    return _sanitize_text(text) + "\n"
 
 
 def _docx_modules():

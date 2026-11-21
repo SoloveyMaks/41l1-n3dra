@@ -1,17 +1,19 @@
 # Root integration: reference checks
 
-Своя фича живёт отдельно. Root не переписывается: ниже точные куски, которые
-владелец корня вставляет сам. `main.py`, глобальный `api_router` и `App.tsx` в
-этой ветке не менялись.
+Фича смонтирована в глобальный `api_router` через
+`backend/app/api/reference_checks_mount.py`; `main.py` не менялся. Ниже — точный
+контракт, который владелец корня уже применяет и который можно заменить
+инъекцией своих loaders.
 
 ## Backend mount
 
-`backend/app/api/reference_checks_mount.py` содержит готовый helper:
+`backend/app/api/router.py` содержит ровно этот вызов после остальных
+`include_router`:
 
 ```python
 from backend.app.api.reference_checks_mount import mount_reference_checks
 
-# внутри существующего api_router (prefix="/api"), после auth/workspace middleware
+# Defaults: серверный реестр, canonical loaders, require_workspace_actor.
 mount_reference_checks(api_router)
 ```
 
@@ -23,7 +25,8 @@ from backend.app.api.reference_checks import create_reference_checks_router
 api_router.include_router(create_reference_checks_router())
 ```
 
-Получится `POST /api/reference-checks/compare`.
+Получится `POST /api/reference-checks/compare` и
+`GET /api/reference-checks/references`.
 
 Тело запроса — только серверные id:
 
@@ -48,6 +51,34 @@ mount_reference_checks(
     resolve_workspace=lambda request: my_session(request)["workspaceId"],
 )
 ```
+
+## GET /api/reference-checks/references
+
+Список эталонов для UI. Тот же workspace-guard, что у compare. Ответ — массив
+дескрипторов:
+
+```json
+[
+  {
+    "id": "reference-suite",
+    "label": "orders-reference-suite",
+    "projectId": "reference-checks/orders-service",
+    "branch": "SoloveyMaks/reference-branch-checks",
+    "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1"
+  }
+]
+```
+
+`id` — это `referenceManifestId` для compare; `label` — `suiteId` из манифеста;
+`projectId`/`branch`/`sha` — только из валидированного серверного манифеста
+(`parse_manifest`), SHA не выдумывается. Bundle, provenance, fixture paths и
+любые файловые пути наружу не отдаются.
+
+Перечисление безопасное: только строгие `<id>.json` с id по `_ID_RE`,
+`*.reference.json` (sidecar) пропускается, каталоги и мусорные имена — тоже.
+Битый/нечитаемый манифест — честная `503 REFERENCE_UNREADABLE`, а не молча
+укороченный список; невалидный манифест — `422`. Ветка без манифестов даёт
+пустой массив.
 
 ## Loader hooks
 

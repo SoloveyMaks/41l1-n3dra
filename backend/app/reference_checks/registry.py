@@ -56,6 +56,41 @@ class ReferenceSuiteRegistry:
                 f"reference suite {manifest_id!r} cannot be read: {exc}",
             ) from exc
 
+    def list_manifests(self) -> list[tuple[str, Any]]:
+        """Every registered manifest as ``(manifest_id, raw)``, sorted by id.
+
+        Only strict ``<id>.json`` names are candidates: ``*.reference.json``
+        snapshots, directories, hidden files and ids that fail ``_ID_RE`` are
+        skipped. A registry directory that cannot be read, or a manifest that
+        cannot be decoded, is an honest ``REFERENCE_UNREADABLE`` instead of a
+        silently shorter list.
+        """
+        try:
+            entries = sorted(self.directory.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise ReferenceCheckError(
+                "REFERENCE_UNREADABLE",
+                f"reference registry {str(self.directory)!r} cannot be read: {exc}",
+            ) from exc
+        manifests: list[tuple[str, Any]] = []
+        for path in entries:
+            name = path.name
+            if not name.endswith(".json") or name.endswith(_SNAPSHOT_SUFFIX):
+                continue
+            manifest_id = name[: -len(".json")]
+            if not _ID_RE.fullmatch(manifest_id):
+                continue
+            try:
+                if not path.is_file():
+                    continue
+            except OSError as exc:
+                raise ReferenceCheckError(
+                    "REFERENCE_UNREADABLE",
+                    f"reference suite {manifest_id!r} cannot be inspected: {exc}",
+                ) from exc
+            manifests.append((manifest_id, self.load_manifest(manifest_id)))
+        return manifests
+
     def load_reference_snapshot(self, manifest_id: str) -> Optional[Any]:
         """Optional frozen reference snapshot stored next to the manifest.
 
