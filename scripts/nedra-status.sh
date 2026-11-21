@@ -14,16 +14,8 @@ if container_running "$NEDRA_APP_CONTAINER"; then
   code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/health" 2>/dev/null || true)
   if [ "$code" = "200" ]; then
     say "backend /api/health: HTTP 200"
-  elif [ "$code" = "404" ]; then
-    legacy=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/runs" 2>/dev/null || true)
-    if [ "$legacy" = "200" ]; then
-      warn "backend /api/health: 404; временный fallback /api/runs: HTTP 200"
-    else
-      warn "backend /api/health: 404; fallback /api/runs: HTTP ${legacy:-нет ответа}"
-      fail=1
-    fi
   else
-    warn "backend /api/health: HTTP ${code:-нет ответа}"
+    warn "backend /api/health: HTTP ${code:-нет ответа}; fallback отключён"
     fail=1
   fi
   for env_name in CG_DATA_DIR CG_PUBLIC_DEMO VECTOR_RETRIEVAL_ENABLED AI_MODEL; do
@@ -48,12 +40,6 @@ if container_running "$NEDRA_DB_CONTAINER"; then
   fi
   vector=$(podman exec "$NEDRA_DB_CONTAINER" psql -U "$NEDRA_DB_USER" -d "$NEDRA_DB_NAME" -tAc "select extversion from pg_extension where extname='vector'" 2>/dev/null | tr -d '[:space:]' || true)
   if [ -n "$vector" ]; then say "pgvector: $vector"; else warn "pgvector extension не найдена"; fail=1; fi
-  optional=$(podman exec "$NEDRA_DB_CONTAINER" psql -U "$NEDRA_DB_USER" -d "$NEDRA_DB_NAME" -tAc "select to_regclass('data_contract.example_embeddings')" 2>/dev/null | tr -d '[:space:]' || true)
-  if [ -n "$optional" ]; then
-    say "optional 003: example_embeddings есть"
-  else
-    say "optional 003: ещё не в ledger (backend storage pending)"
-  fi
 else
   warn "БД $NEDRA_DB_CONTAINER не запущена"
   fail=1

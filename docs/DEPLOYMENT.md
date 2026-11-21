@@ -48,18 +48,25 @@ manifest и SQLite fallback лежат на volume `nedra-app-data`, а не в 
 
 Источник — `~/.omp/agent/.env`. Читается **только** `REFORMBOSS_API_KEY`;
 WikiVibe GPT key не читается и не копируется. Парсер
-`scripts/nedra_env.py` поддерживает `export KEY=value`, одинарные/двойные
-кавычки и комментарии, не запускает shell и не печатает значения. Путь источника
-можно переопределить через `NEDRA_SECRET_SOURCE`; парсер всё равно читает только
-запрошенный ключ.
+`scripts/nedra_env.py` — единственный парсер dotenv: поддерживает
+`export KEY=value`, одинарные/двойные кавычки и full-line комментарии, не
+запускает shell и не печатает значения. Путь источника можно переопределить
+через `NEDRA_SECRET_SOURCE`. `load_runtime_env` не делает `source`: Python
+отдаёт NUL-delimited `KEY/value`, Bash валидирует имя и делает `export` без eval.
+
+Канонический `runtime.env` — только строки `KEY=value` без `export`, кавычек и
+inline-комментариев: ровно то, что читает `podman --env-file`. Существующие
+quoted/export значения парсятся и переписываются в этот вид с сохранением
+семантики (пробелы и `#` внутри значения остаются частью значения).
 
 `scripts/nedra-bootstrap.sh --write` создаёт/дополняет
 `~/.config/nedra/runtime.env`:
 
 - каталог `700`, файл `600`;
-- существующие custom `CG_*`/`VECTOR_*` строки сохраняются;
+- существующие custom `CG_*`/`VECTOR_*` значения сохраняются семантически;
 - `REFORMBOSS_API_KEY`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`,
-  `DATABASE_URL` — обязательные;
+  `DATABASE_URL` — обязательные; без `--refresh-key` существующий
+  `REFORMBOSS_API_KEY` сохраняется, источник читается только если ключа нет;
 - `CG_SESSION_SECRET`, `CG_ANCHOR_HMAC_KEY`, `CG_ACCESS_CODE` генерируются
   только если отсутствуют и дальше сохраняются;
 - `CG_DATA_DIR=/app/data`, `CG_PUBLIC_DEMO=1`,
@@ -77,7 +84,7 @@ sed -n 's/^\([A-Z_]*\)=.*/\1/p' ~/.config/nedra/runtime.env
 
 Ротация access code: удалить строку `CG_ACCESS_CODE` из файла и запустить
 `--write` (остальные секреты сохранятся), затем пересоздать backend.
-Ротация ключа: `--write`, затем `nedra-down.sh && nedra-up.sh`;
+Ротация ключа: `--write --refresh-key`, затем `nedra-down.sh && nedra-up.sh`;
 `podman restart` не перечитывает `--env-file`.
 
 ## Команды
@@ -112,11 +119,10 @@ owner label и не используют `podman rm -f`; чужие контей
 
 ## Health и статус
 
-- `/api/health` — предпочтительный публичный health без session-cookie; backend
-  добавляет его в active задаче. До merge образа healthcheck использует
-  временный fallback на `/api/runs` **только при 404**, чтобы не маскировать
-  auth-ошибки после включения публичного режима.
-- `scripts/nedra-status.sh` показывает контейнеры, `/api/health`, fallback,
+- `/api/health` — строгий публичный health без session-cookie. Fallback на
+  `/api/runs` удалён: отсутствие endpoint или auth-ошибка дают `unhealthy`, а не
+  ложный успех.
+- `scripts/nedra-status.sh` показывает контейнеры, `/api/health`,
   Docker healthcheck, `pg_isready`, версию pgvector, `CG_DATA_DIR`,
   `CG_PUBLIC_DEMO`, `VECTOR_RETRIEVAL_ENABLED`, `AI_MODEL` и отсутствие
   host-портов у БД.
@@ -135,11 +141,10 @@ volume. Порт 5432 не публикуется: backend ходит по `nedr
 `public.schema_migrations` (для этого `db/` теперь есть в образе). Проверено:
 001, 002 и 004 применились, `vector 0.8.7` доступен.
 
-Optional `db/optional/003_exact_vector.up.sql` **не** входит в ledger: это
-backend/storage scope. Запрос автору storage отправлен; deploy не выполняет
-ручной повторный SQL и не создаёт `example_embeddings` сам. После добавления 003
-в ledger она применится при обычном старте; `CREATE EXTENSION vector` уже
-идемпотентен.
+Optional `db/optional/003_exact_vector.up.sql` — зона PG worker, не backend и не
+deploy. Deploy не выполняет ручной SQL и не создаёт `example_embeddings` сам;
+`CREATE EXTENSION vector` уже идемпотентен, а 003 применится из ledger после
+изменения storage-владельцем.
 
 ## Systemd user units (rootless)
 
@@ -190,8 +195,10 @@ Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное �
   чужой `Origin` — 403; unsafe-метод без сессии — 401.
 - `POST /api/artifacts/sample` создал артефакт, файлы появились в `/app/data`
   (volume `nedra-app-data`) и пережили пересоздание контейнера.
-- `/api/health` в этой сборке ещё 404 — backend active готовит endpoint;
-  healthcheck отработал через fallback `/api/runs` и контейнер стал `healthy`.
+- `/api/health` в этой сборке ещё 404: backend с endpoint находится в отдельной
+  ветке. Новый `deploy/healthcheck.py` strict, поэтому после слияния и
+  пересборки контейнер будет healthy только с публичным `/api/health`; текущий
+  локальный образ до пересборки ожидаемо не проходит strict-проверку.
 - Проверены safe-replace: запущенный контейнер при смене env не трогается без
   `--recreate-app`; остановленный пересоздаётся; контейнер без owner label
   отвергается `up`/`down`.
@@ -205,6 +212,8 @@ Ingress: `nedra.soloveyka.bond -> http://127.0.0.1:18080`, остальное �
   systemd user manager (при linger) или после логина.
 - Сборка требует сеть для первого `podman build` (digest pull) и `npm ci`.
 - `CG_PUBLIC_DEMO=1` требует access code; без него backend не стартует. Код
-  хранится только в `runtime.env` и никогда не печатается.
-- Optional 003 и `/api/health` ждут merge backend; deploy-код к этому готов.
+  хранится только в `runtime.env` и никогда не печатается. До пересборки с
+  публичным `/api/health` systemd app unit после reboot будет падать на health.
+- Optional 003 — PG worker; `/api/health` ждёт merge backend. Deploy-код strict
+  и готов к пересборке.
 - Volumes удаляются только вручную и осознанно; скрипты этого не делают.

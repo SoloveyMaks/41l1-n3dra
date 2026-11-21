@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Shared helpers for the local nedra Podman deployment.
 set -euo pipefail
+umask 077
 
 NEDRA_REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=../deploy/defaults.env
@@ -32,14 +33,7 @@ require_owned_container() {
 }
 
 app_health_ok() {
-  local code
-  code=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/health" 2>/dev/null || true)
-  if [ "$code" = "200" ]; then return 0; fi
-  if [ "$code" = "404" ]; then
-    curl -fsS --max-time 2 -o /dev/null "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/runs" 2>/dev/null
-    return
-  fi
-  return 1
+  curl -fsS --max-time 2 -o /dev/null "http://${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT}/api/health" 2>/dev/null
 }
 
 runtime_env_mode() {
@@ -53,11 +47,28 @@ require_runtime_env() {
 
 load_runtime_env() {
   require_runtime_env
-  set -a
-  # shellcheck disable=SC1090
-  . "$NEDRA_RUNTIME_ENV"
-  set +a
-  [ -n "${DATABASE_URL:-}" ] || die "в runtime.env нет DATABASE_URL"
+  require_cmd python3
+  local key value name pairs_tmp
+  # No source/eval: the Python parser emits validated KEY NUL VALUE NUL pairs.
+  pairs_tmp=$(mktemp "${TMPDIR:-/tmp}/nedra-pairs.XXXXXX")
+  chmod 600 "$pairs_tmp"
+  if ! python3 "$NEDRA_REPO_ROOT/scripts/nedra_env.py" --source "$NEDRA_RUNTIME_ENV" --pairs >"$pairs_tmp"; then
+    rm -- "$pairs_tmp" 2>/dev/null || true
+    die "runtime.env не разобран"
+  fi
+  while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+    if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      rm -- "$pairs_tmp" 2>/dev/null || true
+      die "runtime.env: недопустимое имя переменной"
+    fi
+    export "$key=$value"
+  done <"$pairs_tmp"
+  rm -- "$pairs_tmp"
+
+  for name in DATABASE_URL POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD \
+              REFORMBOSS_API_KEY CG_SESSION_SECRET CG_ACCESS_CODE; do
+    [ -n "${!name:-}" ] || die "runtime.env: отсутствует $name"
+  done
 }
 
 wait_for_db_health() {

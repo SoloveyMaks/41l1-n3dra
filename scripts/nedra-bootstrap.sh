@@ -101,8 +101,17 @@ run_check() {
   say "runtime env: $NEDRA_RUNTIME_ENV (mode $(runtime_env_mode))"
   say "secret source: $NEDRA_SECRET_SOURCE"
 
-  require_source_key
-  say "REFORMBOSS_API_KEY найден (значение не выводится)"
+  local existing_ref
+  existing_ref=$(existing_value REFORMBOSS_API_KEY)
+  if [ "$REFRESH_KEY" = "1" ]; then
+    require_source_key
+    say "REFORMBOSS_API_KEY будет обновлён из источника (--refresh-key)"
+  elif [ -n "$existing_ref" ]; then
+    say "REFORMBOSS_API_KEY уже есть; без --refresh-key сохраняется"
+  else
+    require_source_key
+    say "REFORMBOSS_API_KEY будет прочитан из источника (ключа ещё нет)"
+  fi
 
   if [ -f "$NEDRA_RUNTIME_ENV" ]; then
     local mode
@@ -172,9 +181,15 @@ run_check() {
 run_write() {
   require_cmd podman
   require_cmd python3
-  require_source_key
-  local ref_key password session_secret anchor_key access_code database_url tmp
-  ref_key=$(python3 "$ENV_PY" --source "$NEDRA_SECRET_SOURCE" --key REFORMBOSS_API_KEY)
+  local ref_key existing_ref password session_secret anchor_key access_code database_url tmp pairs_tmp
+  existing_ref=$(existing_value REFORMBOSS_API_KEY)
+  if [ "$REFRESH_KEY" = "1" ] || [ -z "$existing_ref" ]; then
+    require_source_key
+    ref_key=$(python3 "$ENV_PY" --source "$NEDRA_SECRET_SOURCE" --key REFORMBOSS_API_KEY)
+  else
+    ref_key=$existing_ref
+    say "REFORMBOSS_API_KEY сохранён; --refresh-key не указан"
+  fi
   password=$(existing_value POSTGRES_PASSWORD)
   if [ -z "$password" ]; then
     password=$(generate_hex_32)
@@ -195,21 +210,27 @@ run_write() {
   trap 'rm -- "$tmp" 2>/dev/null || true' EXIT
 
   if [ -f "$NEDRA_RUNTIME_ENV" ]; then
-    local line normalized key
-    while IFS= read -r line || [ -n "$line" ]; do
-      normalized=${line#"${line%%[![:space:]]*}"}
-      normalized=${normalized#export }
-      key=${normalized%%=*}
-      key=$(printf '%s' "$key" | tr -d '[:space:]')
+    local key value
+    pairs_tmp=$(mktemp "$NEDRA_RUNTIME_DIR/.pairs.XXXXXX")
+    chmod 600 "$pairs_tmp"
+    if ! python3 "$ENV_PY" --source "$NEDRA_RUNTIME_ENV" --pairs >"$pairs_tmp"; then
+      rm -- "$pairs_tmp" 2>/dev/null || true
+      die "не удалось разобрать $NEDRA_RUNTIME_ENV"
+    fi
+    while IFS= read -r -d '' key && IFS= read -r -d '' value; do
       if managed_key "$key"; then
         continue
       fi
-      printf '%s\n' "$line" >>"$tmp"
-    done <"$NEDRA_RUNTIME_ENV"
+      case "$value" in
+        \"*|\'*) die "значение $key начинается с кавычки; канонический env-file не поддерживает quoting" ;;
+      esac
+      # Canonical env-file format: no export, no quotes; podman reads raw bytes.
+      printf '%s=%s\n' "$key" "$value" >>"$tmp"
+    done <"$pairs_tmp"
+    rm -- "$pairs_tmp"
   fi
 
   {
-    printf '# managed by scripts/nedra-bootstrap.sh; custom CG_*/VECTOR_* above are preserved\n'
     printf 'REFORMBOSS_API_KEY=%s\n' "$ref_key"
     printf 'POSTGRES_USER=%s\n' "$NEDRA_DB_USER"
     printf 'POSTGRES_DB=%s\n' "$NEDRA_DB_NAME"
