@@ -1,7 +1,8 @@
 # Backend debug audit
 
 Дата: 2026-11-21. Ветка `task/postgres-runtime`, merge local `dev` `770f0a6`.
-Кодовый fix: `a886868530` **«Проект: исправить CRUD, SSE и cron-расписания»**.
+Кодовые fix-коммиты: `a886868530` (CRUD/SSE/cron) и `084c90a196`
+(actual next-fire validation, interval bound, PATCH pause/resume).
 Проверка — read-only относительно исходников, на изолированной temporary
 PostgreSQL и temporary workspace/data; ключи и DSN не выводились, реальные demo
 данные не использовались. Все probes — `/tmp`, в repo тестовых файлов нет.
@@ -14,6 +15,8 @@ PostgreSQL и temporary workspace/data; ключи и DSN не выводили�
 | 2 | `GET /api/runs/<missing>/events` → 200 и вечный пустой SSE | 404 `{"detail":"Запуск не найден"}` | `backend/app/api/router.py` (`stream_run_events`) |
 | 3 | `POST /api/schedules` принимал `not-a-cron` → 200; неизвестный workflow мог пройти/дать DB error | 400 `cron должен состоять из 5 полей`; 404 `Сценарий не найден`; проверка артефакта | `backend/app/api/router.py` (`create_schedule`) |
 | 4 | Cron считался приблизительным `*/N`-парсером; прочие cron → 60s | `croniter` вычисляет next fire; `interval:N` — точные секунды | `backend/app/engine/scheduler.py` |
+| 5 | Impossible cron `0 0 31 2 *` и огромный `interval` принимались; затем падали на `get_next`/`timedelta` | API проверяет фактический next fire; cron без даты → 400, interval вне `1..31536000` → 400, ничего не сохраняется | `backend/app/engine/scheduler.py`, `backend/app/api/router.py` |
+| 6 | Не было способа остановить случайный interval-schedule | `PATCH /api/schedules/{id} {"enabled":bool}`: scoped pause/resume, unknown/foreign → 404; resume ставит `next_fire_at=NULL`; runs/history не удаляются | `backend/app/api/router.py`, `backend/app/storage/database.py` |
 
 Точный repro:
 
@@ -34,6 +37,20 @@ POST /api/schedules ... "*/5 * * * *"
 after:  200; scheduler next_fire_at = 2026-11-21T01:35:00+00:00 (minute%5=0)
 POST /api/schedules ... "interval:1"
 after:  200; run с trigger_type=schedule создан, execution_status=succeeded
+
+POST /api/schedules ... "0 0 31 2 *"
+after:  400 {"detail":"cron не имеет следующего срабатывания или некорректен"}
+
+POST /api/schedules ... "interval:999999999999"
+after:  400 {"detail":"interval должен быть от 1 до 31536000 секунд"}
+# обе bad-записи в runtime.schedules отсутствуют
+
+PATCH /api/schedules/<id> {"enabled": false}
+after:  200, enabled=0; за 7 секунд новые schedule-runs не появились
+PATCH /api/schedules/<id> {"enabled": true}
+after:  200, enabled=1, next_fire_at=null; после тика scheduler новый run появился
+PATCH /api/schedules/sch_absent {"enabled":false}
+after:  404 Расписание не найдено
 ```
 
 ## Матрица checked / fixed / unverified
@@ -57,9 +74,15 @@ after:  200; run с trigger_type=schedule создан, execution_status=succeed
 | SSE | live events + disconnect/reconnect | PASS: live seq ordered, reconnect работает |
 | SSE | missing run | **FIXED** (был hang → 404) |
 | Schedules | invalid cron / bad interval | **FIXED**: 400 |
+| Schedules | impossible cron `0 0 31 2 *` | **FIXED**: 400, строка не создана |
+| Schedules | huge interval `999999999999` | **FIXED**: 400 bound, строка не создана |
 | Schedules | unknown workflow | **FIXED**: 404 |
 | Schedules | valid cron next fire | PASS: `croniter`, next minute%5=0 |
 | Schedules | interval:1 firing | PASS: run `trigger_type=schedule`, succeeded |
+| Schedules | PATCH pause | PASS: enabled=0; 7с без новых runs |
+| Schedules | PATCH resume | PASS: next_fire_at=null, следующий run после тика |
+| Schedules | PATCH unknown/foreign | PASS: 404, чужие workspace не затронуты |
+| Schedules | history on pause/resume | PASS: существующие runs/report остаются |
 | Conditions | true (`equals fail`) | PASS: true branch, merge/report/notify |
 | Conditions | false (`equals pass`) | PASS: false branch; AI node `skipped` |
 | Conditions | regex `f.*` | PASS: true branch |
@@ -70,7 +93,7 @@ after:  200; run с trigger_type=schedule создан, execution_status=succeed
 | Notify | local safe receiver (`127.0.0.1`, allowLocal) | PASS: delivery succeeded, receiver получил POST |
 | AI | provider недоступен (local base URL) | PASS: report `ai_status=fallback`, внешних вызовов нет |
 | Artifacts | bad ZIP / `../` / absolute / backslash traversal | PASS: 400 controlled, no rows/dirs outside data |
-| Artifacts | all-text ZIP | PASS: accepted, 2 files/0 Kotlin; run succeeded/pass/0 findings |
+| Artifacts | all-text ZIP | PASS: accepted, 2 files/0 Kotlin; **strictCoverageRequired=true → succeeded/inconclusive/0**, strict=false → succeeded/pass/0. Ранее pass/0 был только strict=false; coverage bug не найден |
 | Artifacts | >50 MB upload | PASS: 400 «Архив больше 50 МБ», new artifact row нет |
 | Auth | public GET health/session без cookie | PASS |
 | Auth | неверный login | PASS: 401 без cookie |
