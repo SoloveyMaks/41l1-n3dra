@@ -72,19 +72,21 @@ blocked: telegram proxy socket unavailable: /run/nedra/missing.sock
 
 ## Исправления после ревью
 
-- **Гонка `_require_client`/`close`.** `close()` теперь берёт тот же
+- **Гонка `_require_client`/`close` и отмена bind.** `close()` берёт тот же
   `_client_lock`, выставляет `_closed` и забирает client/bridge под локом.
-  Живой прогон 400 гонок в production-образе: 200× `acquired+closed`,
-  200× `closed+TelegramUnavailable`, после каждого раунда `_client`/`_bridge`
-  `None`, все 200 поднятых listener'ов закрыты (connect refused), повторный
-  `_require_client` после close даёт `TelegramUnavailable`. Отмена задачи во
-  время `bridge.start()` тоже закрывает listener (`CancelledError`,
-  `listener_closed True`).
+  `UnixSocketProxyBridge.start()` запускает `asyncio.start_server` в shielded
+  task: при отмене ждёт bind, закрывает listener и только потом пробрасывает
+  `CancelledError`. Живой прогон 400 отмен в production-образе: 302 cancelled /
+  98 completed, **0** оставшихся loopback-listener'ов (все порты connect
+  refused). Комбинированный прогон 400 cancel+close: outcomes
+  `AsyncClient+None` 200, `CancelledError+None` 100,
+  `CancelledError+CancelledError` 100, снова 0 listener'ов и
+  `_client/_bridge=None`.
 - **Bind mount inode.** Монтируется каталог
   `/run/user/1000/nedra/telegram-proxy` → `/run/nedra/telegram-proxy:ro`.
-  Живой прогон: `FIRST_OK` через релей (2.7s), релей остановлен и запущен
-  заново (inode `236146` → `236170`), тот же API/bridge в контейнере uid 10001 +
-  `keep-groups` дал `SECOND_OK` (0.6s) без перезапуска приложения.
+  Живой прогон: `FIRST_OK` через релей (11.9s), релей остановлен и запущен
+  заново (inode `249352` → `249489`), тот же API/bridge в контейнере uid 10001 +
+  `keep-groups` дал `SECOND_OK` (3.4s) без перезапуска приложения.
 - **Строгий upstream.** У релея больше нет `--upstream`: host и порт
   зашиты (`127.0.0.1:14600`); `--upstream 127.0.0.1:14601` отклоняется
   argparse с exit 2. Другие host-порты сконфигурировать нельзя.

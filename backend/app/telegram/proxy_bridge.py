@@ -36,19 +36,44 @@ class UnixSocketProxyBridge:
         return self._port
 
     async def start(self) -> int:
-        """Bind the loopback listener and return its port."""
+        """Bind the loopback listener and return its port.
+
+        ``asyncio.start_server`` can complete the bind and then be cancelled
+        before the result reaches this frame. The bind runs in a shielded task:
+        cancellation waits for it and closes the listener, so no loopback port
+        outlives a cancelled startup.
+        """
         if self._server is not None and self._port is not None:
             return self._port
-        try:
-            self._server = await asyncio.start_server(
+        start_task = asyncio.create_task(
+            asyncio.start_server(
                 self._handle, self.host, self._requested_port, backlog=32,
-            )
-        except OSError:
+            ),
+            name="telegram-proxy-bridge-bind",
+        )
+        try:
+            server = await asyncio.shield(start_task)
+        except asyncio.CancelledError:
+            while not start_task.done():
+                try:
+                    await asyncio.shield(start_task)
+                except asyncio.CancelledError:
+                    continue
+            if not start_task.cancelled():
+                exc = start_task.exception()
+                if exc is None:
+                    bound = start_task.result()
+                    bound.close()
+                    with contextlib.suppress(Exception):
+                        await bound.wait_closed()
             raise
-        sockets = self._server.sockets or ()
+        sockets = server.sockets or ()
         if not sockets:
-            await self.close()
+            server.close()
+            with contextlib.suppress(Exception):
+                await server.wait_closed()
             raise OSError("telegram proxy bridge has no listener")
+        self._server = server
         self._port = int(sockets[0].getsockname()[1])
         return self._port
 
