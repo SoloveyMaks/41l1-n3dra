@@ -211,3 +211,33 @@ PYTHONPATH=. /tmp/nedra-reports-venv/bin/python /tmp/nedra-audit-data/followup2_
 ```
 
 Фактически: `016 static contract and 8 generation arithmetic cases passed; SQL not executed`; `all 11 historical migrations remain byte-for-byte unchanged`; `notification base SQL matches 52c3460; forward SQL is an explicit missing integration dependency in this checkout`; AST-проверка init_db прошла; `ALL PROBES PASSED`. Custom-check runtime (`backend/app/custom_checks/`, `backend/app/api/custom_checks.py`, `013_custom_checks.up.sql`) на базе `35d27d3` отсутствует и **не аудирован** — этот пробел остаётся за соответствующим владельцем/координатором, я его не имитирую. `main` не мержил и чужие файлы не менял.
+
+### Combined acceptance list: fresh и existing БД
+
+Точные head'ы для слияния: `main=98c276e6585a89c417b007d6fd0411505df3be14`, data=`f1324898c5d187a6c0a990b14b7c0fe4e01e4223` (до этой правки), notifications=`87e906710bb1f1c2d136f98774ea792ac449d8cc`, telegram=`a6ed0de42c781dbc84c949c787bca2ceac9b785b`. Ветка telegram не содержит `db/migrations/013_telegram_binding_generation.up.sql` и не содержит `016` (проверено `git cat-file`), поэтому единственный источник sequence-миграции — data `016`; строки telegram-отчёта про «013»/`5c3ca78` после слияния читаются как `016`, но правка чужого документа остаётся владельцу telegram. В notifications checkout `store.initialize()` импортирует `initialize_notification_schema` и падает ImportError до слияния — это ожидаемая integration dependency, не дефект helper'а.
+
+Статическая проверка объединённого набора (`PYTHONPATH=. /tmp/nedra-reports-venv/bin/python /tmp/nedra-audit-data/combined_integration_probe.py`, вывод `COMBINED STATIC PROBE PASSED; no SQL executed, no DB touched`): обязательный порядок `001, 002, 004–013, 016` (13 файлов, номера уникальны), каждый файл открывает/закрывает собственную транзакцию, `013_custom_checks` зависит только от `data_contract` и не ссылается на `runtime`, `016` зависит только от `telegram`-схемы из `010`, `MARKERS`/`POSTCONDITIONS` не содержат устаревших ключей, `016` не имеет marker-skipping. `migrate.POSTCONDITIONS` ключуется полным именем файла, поэтому `013_custom_checks` не может быть перепутан с `016_telegram_binding_generation`; runtime helper не проверяет `custom_checks` и не требует его для notification schema.
+
+Ни один пункт acceptance ниже не исполнялся: PostgreSQL/контейнеры запрещены. Это чек-лист для координатора на disposable БД.
+
+**Fresh empty DB (одна startup-последовательность `ensure_contract_schema` → `ensure_optional_schema` → `init_db`):**
+
+1. Ledger `public.schema_migrations` содержит ровно 13 строк `001, 002, 004–013, 016`; checksum `016` равен sha256 файла; `custom_checks.schema_version_v1()='013'`; `telegram.binding_epoch_sequence_v1()='016'`.
+2. Схема `custom_checks` создана; `runtime.findings` не изменился.
+3. `runtime.schema_meta.version=6`; `runtime.notification_settings`/`completion_notifications` созданы; `retry_cancelled boolean NOT NULL`; enabled `lock_run_completion_dispatch` (BEFORE ROW INSERT/UPDATE) и `capture_run_completion` (AFTER ROW INSERT/UPDATE) ссылаются на свои функции; `telegram.binding_epoch_seq` — bigint, increment 1, min 1, max bigint, CACHE 1, NO CYCLE, restart=1 на пустых таблицах.
+4. Повторный startup: применённых файлов `[]`, новых ledger-строк нет, postcondition `016` проходит, notification-guard повторно не отменяет свежие pending.
+5. `notifications.store.initialize()` после слияния не даёт ImportError; его повторный вызов идемпотентен.
+6. Legacy-ветка guard'а на пустой БД обновляет 0 строк.
+
+**Existing DB с runtime v5 (ledger 001–012):**
+
+1. Применяются только отсутствующие `013_custom_checks` и `016`; runtime upgrade v5→v6 и notification base+guard коммитятся одной транзакцией; ledger получает ровно эти две строки.
+2. Sequence seed строго выше `max(binding_epoch)` по существующим `telegram.bindings/jobs/outbox`; существующие epochs не переписываются, `setval` не используется, исчерпание bigint останавливает переход.
+3. Первая установка `dispatch_guard.sql` добавляет `retry_cancelled` и отменяет только неавторизованные `pending/sending`; новые pending после initialize не отменяются; повторный initialize пропускает guard-блок.
+4. Существующая sequence с `CYCLE`/другим типом/иным описанием останавливает `016`; таблица без bigint `binding_epoch` останавливает `016`; отсутствие `telegram.bindings` останавливает `016`; в обоих случаях ledger-строка `016` не появляется.
+5. БД, где `013_custom_checks` уже применён из main, получает только `016`; дубликата нет.
+6. БД, где sequence вручную ушла выше persisted max, не откатывается назад: `greatest(persisted_max+1, last_value+is_called)`.
+
+**Обязательные negative checks:** отсутствующий `backend/app/notifications/dispatch_guard.sql` → `FileNotFoundError` до открытия транзакции/lock (fail-closed); guards не установились → `DatabaseUnavailable`; версия runtime, не входящая в 2–6, → `DatabaseUnavailable` без молчаливой работы; `store.initialize()` без data-helper'а → ImportError.
+
+**Вне этого чек-листа:** n2 callbacks/n1 reject, miniapi bearer v2 и revoke старого bearer, реальный Telegram transport — принадлежат telegram/miniapi владельцам, здесь не проверялись и не утверждаются.
