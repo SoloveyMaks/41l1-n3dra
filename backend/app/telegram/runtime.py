@@ -641,6 +641,63 @@ class TelegramRuntime:
             await self._deliver_outbox(item)
         return len(items)
 
+    async def _acquire_delivery_guard(self, item: OutboxItem):
+        """Own the worker-thread result even if this task is cancelled.
+
+        ``asyncio.to_thread`` cannot be stopped. If cancellation arrives while
+        the worker is waiting for the binding row lock, the completed result
+        still owns a connection + row lock, so this coroutine waits for the
+        worker and releases that result explicitly.
+        """
+        task = asyncio.create_task(
+            asyncio.to_thread(self.repo.acquire_delivery_guard, item),
+            name=f"telegram-guard-acquire-{item.id}",
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception as exc:  # noqa: BLE001 - cleanup below
+                    logger.warning(
+                        "delivery guard acquire failed after cancel: %s",
+                        type(exc).__name__,
+                    )
+                    break
+            if task.cancelled():
+                raise
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("delivery guard acquire failed after cancel: %s", type(exc).__name__)
+            else:
+                conn, _ = task.result()
+                await self._release_delivery_guard_safe(conn)
+            raise
+
+    async def _release_delivery_guard_safe(self, conn: Any) -> None:
+        """Release must also survive repeated cancellation of the caller."""
+        if conn is None:
+            return
+        task = asyncio.create_task(
+            asyncio.to_thread(self.repo.release_delivery_guard, conn),
+            name="telegram-guard-release",
+        )
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - release failure is logged
+                logger.warning("delivery guard release failed: %s", type(exc).__name__)
+                return
+        try:
+            task.result()
+        except Exception as exc:  # noqa: BLE001 - connection is already lost/logged
+            logger.warning("delivery guard release failed: %s", type(exc).__name__)
+
     async def _deliver_outbox(self, item: OutboxItem) -> None:
         async def complete(status: str, **kwargs: Any) -> bool:
             return await self._repo(
@@ -653,6 +710,7 @@ class TelegramRuntime:
             )
 
         guard_conn = None
+        guard_ready = False
         try:
             if not item.user_id or not item.workspace_id:
                 await complete("cancelled", error="owner missing")
@@ -685,32 +743,29 @@ class TelegramRuntime:
                     raise ValueError("unknown outbox kind")
             # Acquire the binding row lock in a worker thread: waiting for a
             # concurrent re-bind must not freeze the event loop/heartbeat.
-            guard_conn, current = await asyncio.to_thread(
-                self.repo.acquire_delivery_guard, item
-            )
-            try:
-                if not current:
-                    await complete("cancelled", error="owner changed")
-                    return
-                if item.kind == "alert":
-                    await self.api.send_message(item.chat_id, text or "")
-                else:
-                    await self.api.send_document(
-                        item.chat_id, report.filename, report.content,
-                        caption=caption or "",
-                    )
-                if not await complete("sent"):
-                    logger.warning("telegram outbox %s finished after cancellation", item.id)
-            finally:
-                await asyncio.to_thread(
-                    self.repo.release_delivery_guard, guard_conn
+            guard_conn, current = await self._acquire_delivery_guard(item)
+            guard_ready = True
+            if not current:
+                await complete("cancelled", error="owner changed")
+                return
+            if item.kind == "alert":
+                await self.api.send_message(item.chat_id, text or "")
+            else:
+                await self.api.send_document(
+                    item.chat_id, report.filename, report.content,
+                    caption=caption or "",
                 )
-                guard_conn = None
+            if not await complete("sent"):
+                logger.warning("telegram outbox %s finished after cancellation", item.id)
         except asyncio.CancelledError:
-            try:
-                await complete("pending", error="runtime stopped", retry_delay_seconds=5)
-            except Exception:
-                pass
+            # If cancellation happened before guard acquisition, the acquire
+            # helper already released any completed result. A claimed row stays
+            # 'sending' and is retried by the stale lease.
+            if guard_ready:
+                try:
+                    await complete("pending", error="runtime stopped", retry_delay_seconds=5)
+                except Exception:
+                    pass
             raise
         except Exception as exc:  # noqa: BLE001 - Telegram failure stays in outbox
             safe = self._safe_error(exc)
@@ -725,6 +780,9 @@ class TelegramRuntime:
                 )
                 await complete("pending", error=safe, retry_delay_seconds=delay)
                 logger.warning("telegram outbox %s retry in %ss: %s", item.id, delay, safe)
+        finally:
+            if guard_conn is not None:
+                await self._release_delivery_guard_safe(guard_conn)
 
     async def _alert_text(self, run_id: str) -> str:
         run = await self._db("get_run", run_id)
