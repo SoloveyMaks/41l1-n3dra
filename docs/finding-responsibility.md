@@ -95,9 +95,10 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   без regex: `*`/`**` backtracking и ReDoS исключены. Unsupported syntax
   (`[]{}()\|!`) даёт `unavailable`, а не угаданного owner.
 - Семантика: последнее совпавшее правило; `*` не зависит от глубины,
-  `/src/` и `src/` root-relative и не матчат `nested/src/A.kt`, `**/A.kt`
-  матчит и root `A.kt`; ownerless-правило отменяет fallback; inline `#comment`
-  не owner.
+  `/src/` и `src/` root-relative и не матчат `nested/src/A.kt`; `**/A.kt`
+  матчит root `A.kt` и `x/A.kt`, но не `BA.kt`; `**/src/A.kt` матчит
+  `src/A.kt`/`x/src/A.kt`, но не `notsrc/A.kt`; ownerless-правило отменяет
+  fallback; inline `#comment` не owner.
 - Больше 400 правил → `incomplete`, более поздние правила не применяются и
   owner не выдаётся. Отсутствие файла — `absent`, а не «нет владельцев».
 
@@ -146,12 +147,18 @@ api_router.include_router(create_responsibility_router(db_repo, codefacts_store)
   уязвимости и не определение виновного.
 - GitLab PR/MR list поддержан; исторические reviews/approvals без токена
   помечаются `reviewsStatus=unsupported`, а не выдаются за подтверждённые.
-- `429`/GitHub rate-limit → `rate_limited` и provider cooldown 60 s; `404`/
-  `401/403` → `unavailable`; timeout/5xx/redirect → `failed`; всё это 200 DTO
-  для commit/PR-части, анализ не ломается. PR lookup failure отдельный
+- `429`/GitHub rate-limit → `rate_limited` и provider cooldown 60 s; cooldown
+  ставится централизованно в `_fetch_json_page` по provider host, включая
+  nested detail/reviews 429, а не только aggregate `pullRequestsStatus`.
+  Nested 429 оставляет PR `available` с частичными reviews, но следующий
+  другой path/repo в cooldown уже не делает сетевых запросов.
+  `404`/`401/403` → `unavailable`; timeout/5xx/redirect → `failed`; всё это
+  200 DTO, анализ не ломается. PR lookup failure отдельный
   `pullRequestsStatus`, commit history при этом остаётся доступной, если
   provider её отдал.
-- DB/store/CODEOWNERS читаются в `asyncio.to_thread` с сохранённым ContextVar.
+- DB/store/CODEOWNERS читаются в executor через
+  `contextvars.copy_context().run` (не голый `run_in_executor`): tenant
+  workspace из account scope сохраняется, env fallback не подменяет его.
   Bounded admission: 4 active + 8 queued; сверх этого — `503
   RESPONSIBILITY_BUSY`, без создания task. Одинаковые workspace/run/finding
   дедуплицируются in-flight, отмена одного caller не отменяет shared build.
@@ -239,10 +246,19 @@ Merged backend, test PostgreSQL, account A/B. Router смонтирован в �
 - Sol-сценарии: malicious CODEOWNERS intake + matcher уложился в микросекунды,
   `/src/` не матчит nested, ownerless `/src/` снял fallback, `**/A.kt` матчит
   root, inline comment не owner, 401-е правило дало `incomplete`.
+- Real two-account ASGI endpoint: account A и B с разными workspace
+  одновременно получили свои 200 с правильными runId; A→B и B→A одновременно
+  получили 404. Это проверяет ContextVar на живом PG, не на fake DB.
 - Admission test: 20 distinct keys при slow DB → peak real workers 4, 8 busy
   503, 12 timeout 503; после caller timeout новые ключи не подняли peak выше 4;
   в конце active=0, queue=0, inflight=0. Same-key test: отмена одного caller,
   второй получил результат, БД прочитана 1 раз; exception без task warning.
+- Real intake boundary cases: `A.kt` matched root/x, not BA.kt; `**/src/A.kt`
+  matched src/x-src, not notsrc; ownerless and >400 incomplete сохранены.
+- Cooldown test: file history 200 + PR list 200 + reviews 429 → PR `available`
+  с `reviewsStatus=rate_limited`, cooldown выставлен; следующий другой
+  path/repo получил `rate_limited` без вызова HTTP-клиента, TTL 60 s. Local
+  429 transport также выставил cooldown.
 - Stream ceiling test через Unix local HTTP transport: plain exact 262144 → ok;
   plain 2 MiB → failed без полного body; gzip 16 MiB при 8 KiB wire chunks →
   failed, tracemalloc peak ~0.5 MiB (не 22 MiB).

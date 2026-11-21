@@ -87,13 +87,21 @@ def _matches(pattern: str, path: str) -> bool:
                     index < width and current[index + 1]
                 )
             elif token == "**/":
-                if previous[index]:
+                # Zero characters for **/ are legal only at a directory
+                # boundary. Otherwise `**/A.kt` would match the suffix of
+                # `BA.kt` or `notsrc/A.kt` via previous[index].
+                at_boundary = index == 0 or path[index - 1] == "/"
+                if at_boundary and previous[index]:
                     current[index] = True
-                elif index < width:
+                if index < width:
                     if path[index] == "/":
-                        current[index] = previous[index + 1] or current[index + 1]
+                        current[index] = (
+                            current[index]
+                            or previous[index + 1]
+                            or current[index + 1]
+                        )
                     else:
-                        current[index] = current[index + 1]
+                        current[index] = current[index] or current[index + 1]
             elif token == "*":
                 current[index] = previous[index] or (
                     index < width and path[index] != "/" and current[index + 1]
