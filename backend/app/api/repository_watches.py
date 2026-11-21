@@ -24,7 +24,7 @@ from backend.app.api.repository_hooks import (
     derive_webhook_secret,
     webhook_key_available,
 )
-from backend.app.api.session import request_workspace, require_admin
+from backend.app.api.session import request_workspace, require_workspace_actor
 from backend.app.engine.scheduler import (
     DEFAULT_WATCH_INTERVAL_SECONDS,
     RepositoryWatchService,
@@ -56,14 +56,14 @@ def create_repository_watch_router(db: Any, executor: Any = None) -> APIRouter:
 
     @router.get("")
     async def list_repository_watches(request: Request) -> List[Dict[str, Any]]:
-        require_admin(request)
+        require_workspace_actor(request)
         rows = await asyncio.to_thread(db.list_repository_watches)
         return [_public_watch(row) for row in rows]
 
     @router.post("")
     async def create_repository_watch(payload: Dict[str, Any],
                                       request: Request) -> Dict[str, Any]:
-        require_admin(request)
+        require_workspace_actor(request)
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Тело запроса должно быть объектом")
         trigger_mode = payload.get("triggerMode", "poll")
@@ -84,7 +84,7 @@ def create_repository_watch_router(db: Any, executor: Any = None) -> APIRouter:
     @router.patch("/{watch_id}")
     async def update_repository_watch(watch_id: str, payload: Dict[str, Any],
                                       request: Request) -> Dict[str, Any]:
-        require_admin(request)
+        require_workspace_actor(request)
         enabled = payload.get("enabled") if isinstance(payload, dict) else None
         if not isinstance(enabled, bool):
             raise HTTPException(status_code=400, detail="enabled должен быть boolean")
@@ -96,7 +96,7 @@ def create_repository_watch_router(db: Any, executor: Any = None) -> APIRouter:
 
     @router.post("/{watch_id}/check")
     async def check_repository_watch(watch_id: str, request: Request) -> Dict[str, Any]:
-        require_admin(request)
+        require_workspace_actor(request)
         try:
             return await service.check_now(watch_id)
         except WatchNotFoundError as exc:
@@ -109,7 +109,7 @@ def create_repository_watch_router(db: Any, executor: Any = None) -> APIRouter:
     @router.post("/{watch_id}/webhook/setup")
     async def setup_repository_webhook(watch_id: str, payload: Dict[str, Any],
                                        request: Request) -> JSONResponse:
-        require_admin(request)
+        require_workspace_actor(request)
         rotate = payload.get("rotate", False) if isinstance(payload, dict) else False
         if not isinstance(rotate, bool):
             raise HTTPException(status_code=400, detail="rotate должен быть boolean")

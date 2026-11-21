@@ -18,6 +18,32 @@ workspace через узкие server-only методы, а каждое исп
 Миграция не нужна: 010/011 не трогались, используются существующие колонки
 `next_fire_at`, `claim_token/claimed_until`, ledger watches и inbox.
 
+## Guard и контракт для UI
+
+`backend.app.api.session.require_workspace_actor`:
+
+- account-сессия с ролью `user` или `admin` — разрешено;
+- legacy demo-сессия с ролью `admin` — разрешено;
+- demo-сессия с ролью `user` — `403 ACCOUNT_OR_DEMO_ADMIN_REQUIRED`;
+- без сессии — `401`.
+
+Открыто только владельцу своего workspace:
+
+| Метод | Путь |
+|---|---|
+| `GET/POST` | `/api/schedules` |
+| `PATCH` | `/api/schedules/{id}` |
+| `GET/POST` | `/api/repository-watches` |
+| `PATCH` | `/api/repository-watches/{id}` |
+| `POST` | `/api/repository-watches/{id}/check` |
+| `POST` | `/api/repository-watches/{id}/webhook/setup` |
+
+Каждый запрос scoped по workspace сессии; чужой id даёт `404`, а не данные.
+`webhook/setup` отдаёт секрет один раз только владельцу watch; чужой id — `404`.
+Админские `/api/admin/*`, `/api/webhook-test/logs`, training и прочие
+operator-only поверхности остаются на `require_admin`. Same-origin middleware и
+существующие rate-limit buckets не менялись.
+
 ## Server-only выборка
 
 Обычные методы `DatabaseRepository` остаются scoped по `self.workspace_id`
@@ -144,14 +170,38 @@ WATCH RECOVERY EVENTS OK
 `failed` у run — ожидаемый результат пустого графа проверки, а не сбой
 маршрутизации: события и статус записались в правильный workspace.
 
+## Guard evidence
+
+Живой изолированный PG17+ASGI, два обычных аккаунта без SQL-повышения:
+
+```text
+ordinary accounts d8acf9fc-... 52459541-...
+schedules: user create/list/change own, foreign 404
+watches: user create/list/check own, foreign 404
+webhook secret owner-only, foreign signature 401, inbox in own workspace
+demo user 403 on schedules/watches
+legacy demo admin schedules/watches 200
+admin surfaces 403, same-origin 403
+GUARD SMOKE OK
+```
+
+Проверено: `POST/GET/PATCH /api/schedules` и `POST/GET/PATCH
+/api/repository-watches`, `check`, `webhook/setup` работают под обычным
+`role=user`; чужой schedule/watch id — `404`; подпись чужим секретом — `401`;
+demo-user — `403`; legacy demo-admin — `200`; `/api/admin/overview` и
+`/api/webhook-test/logs` для обычного аккаунта — `403`; POST с чужим Origin —
+`403`.
+
 ## Ограничения
 
-1. Schedules/watch API остаются `require_admin`; обычный user их не создаёт.
-   Это не demo-only: account с ролью admin управляет своим workspace.
+1. Schedules/watch API открыты verified account (`user`/`admin`) своего
+   workspace и legacy demo-admin; demo-user и аноним — `401/403`. Админские
+   overview/config/secret endpoints не открывались.
 2. Нет отдельной occurrence-таблицы; при падении процесса до commit возможен
    повторный запуск после lease (at-least-once, не exactly-once).
 3. Recovery queued run полагается на атомарный claim executor-а; если процесс
    умер после claim, run может остаться `running` — это существующее
    ограничение executor, не фонового слоя.
-4. Реальный git-import в webhook-тесте не выполнялся (сеть не трогали);
-   проверены resolve/HMAC/enqueue/lease/settlement в правильном tenant.
+4. Реальный git-import (скачивание архива) не выполнялся; создание/check
+   watch делали только read-only resolve публичного GitHub-репозитория.
+   HMAC/enqueue/lease/settlement проверены без import-а.
