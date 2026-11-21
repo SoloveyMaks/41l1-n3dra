@@ -25,10 +25,32 @@ from backend.app.storage.telegram import (
     TelegramRepository,
 )
 from backend.app.telegram.bot_api import (
+    TelegramAPIError,
     TelegramBotAPI,
     TelegramConfigError,
     TelegramUnavailable,
     redact_telegram_text,
+)
+from backend.app.telegram.menus import (
+    BOT_COMMANDS,
+    CALLBACK_MAX_BYTES,
+    MODE_LABELS,
+    MODE_ORDER,
+    SCENARIO_PAGE_SIZE,
+    MenuCallback,
+    MenuConfig,
+    MenuContext,
+    binding_markup,
+    checks_markup,
+    decode_callback,
+    help_markup,
+    load_menu_config,
+    main_menu_markup,
+    menu_button,
+    parse_scenario_arg,
+    scenario_fingerprint,
+    scenario_page_count,
+    settings_markup,
 )
 from backend.app.telegram.report import build_jsonc_report, write_jsonc_report
 from backend.app.telegram.workspace import telegram_workspace_scope
@@ -44,18 +66,19 @@ JOB_RECOVERY_BATCH = 20
 
 HELP_TEXT = """NEDRA Telegram
 
-/start <код> — привязать аккаунт по одноразовому коду из веб-кабинета
-/status — привязка и последние запуски
-/settings — режим доставки и сценарий
-/settings alerts|jsonc|both — что присылать
-/settings scenario <id> — выбрать workflow
+/start — меню и привязка аккаунта
+/status — привязка, режим и последние проверки
+/settings — режим доставки и сценарий кнопками
+/settings alerts|jsonc|both — доставка: Кратко, JSON или Оба
+/settings scenario <id> — выбрать сценарий
 /help — эта справка
 
-Отправьте HTTPS-ссылку GitHub/GitLab, чтобы импортировать репозиторий и запустить выбранный сценарий."""
+Пришлите HTTPS-ссылку GitHub/GitLab — бот импортирует репозиторий и запустит выбранный сценарий."""
 
 BINDING_SUCCESS_TEXT = (
     "Аккаунт привязан.\n"
-    "Дальше: /settings scenario <id>, затем пришлите HTTPS-ссылку GitHub/GitLab."
+    "Меню ниже: проверки, настройки и Mini App NEDRA.\n"
+    "Дальше пришлите HTTPS-ссылку GitHub/GitLab."
 )
 BINDING_CODE_HINT = (
     "Код не найден, истёк или уже использован. Код действует 10 минут; "
@@ -69,6 +92,8 @@ UNSUPPORTED_FILE_TEXT = (
     "Файлы, архивы (ZIP) и изображения пока не поддерживаются. "
     "Пришлите HTTPS-ссылку на репозиторий GitHub или GitLab — бот импортирует его сам."
 )
+STALE_CALLBACK_TEXT = "Кнопка устарела — откройте меню заново."
+CALLBACK_FAILED_TEXT = "Не удалось выполнить действие. Откройте меню и попробуйте ещё раз."
 BARE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
@@ -84,6 +109,8 @@ class TelegramRuntime:
         poll_timeout: int = 25,
         outbox_interval: float = 2.0,
         config_error: Optional[str] = None,
+        menu_config: Optional[MenuConfig] = None,
+        menu_secret: Optional[str] = None,
     ):
         self.db = db
         self.executor = executor
@@ -92,11 +119,21 @@ class TelegramRuntime:
         self.api = api
         self.poll_timeout = max(1, min(int(poll_timeout), 50))
         self.outbox_interval = max(0.5, min(float(outbox_interval), 30.0))
+        self.menu_config = menu_config if menu_config is not None else load_menu_config()
+        if menu_secret is not None:
+            self._menu_secret = menu_secret
+        elif api is not None:
+            self._menu_secret = api.callback_secret
+        else:
+            self._menu_secret = ""
+        self._menu_published = False
+        self._menu_publish_error: Optional[str] = None
 
         self._stop = asyncio.Event()
         self._started = False
         self._poll_task: Optional[asyncio.Task] = None
         self._outbox_task: Optional[asyncio.Task] = None
+        self._menu_task: Optional[asyncio.Task] = None
         self._job_tasks: Set[asyncio.Task] = set()
         self._active_job_ids: Set[str] = set()
         self._recovery_task: Optional[asyncio.Task] = None
@@ -137,6 +174,13 @@ class TelegramRuntime:
             self._last_error = self._safe_error(exc)
             logger.warning("telegram getMe unavailable: %s", self._last_error)
 
+        if self._external_status == "ready":
+            # Publishing commands/menu is global bot state, not a broadcast.
+            # It runs in the background so a slow Bot API never delays polling.
+            self._menu_task = asyncio.create_task(
+                self._publish_menu_once(), name="telegram-menu",
+            )
+
         self._poll_task = asyncio.create_task(self._poll_loop(), name="telegram-poll")
         self._outbox_task = asyncio.create_task(self._outbox_loop(), name="telegram-outbox")
         return self.status()
@@ -145,7 +189,10 @@ class TelegramRuntime:
         self._stop.set()
         self._started = False
         tasks = [
-            task for task in (self._poll_task, self._outbox_task, self._recovery_task)
+            task for task in (
+                self._poll_task, self._outbox_task, self._recovery_task,
+                self._menu_task,
+            )
             if task is not None
         ]
         for task in tasks:
@@ -175,7 +222,44 @@ class TelegramRuntime:
             "proxyConfigured": bool(self.api is not None and self.api.proxy_configured),
             "proxyMode": self.api.proxy_mode if self.api is not None else None,
             "lastError": self._last_error or self._config_error,
+            "miniAppConfigured": bool(self.menu_config.mini_app_url),
+            "menuError": self.menu_config.error or self._menu_publish_error,
         }
+
+    async def _publish_menu_once(self) -> None:
+        """Best-effort global bot menu; failures never stop polling."""
+        if self.api is None:
+            return
+        if self._menu_published:
+            return
+        self._menu_published = True
+        if not self._menu_secret:
+            self._menu_publish_error = "callback signing secret is unavailable"
+            logger.warning("telegram menu skipped: %s", self._menu_publish_error)
+            return
+        try:
+            await self.api.set_my_commands(BOT_COMMANDS)
+        except TelegramUnavailable as exc:
+            self._menu_publish_error = self._safe_error(exc)
+            logger.warning("telegram setMyCommands failed: %s", self._menu_publish_error)
+        except Exception as exc:  # noqa: BLE001 - menu is cosmetic, polling is not
+            self._menu_publish_error = self._safe_error(exc)
+            logger.warning("telegram setMyCommands error: %s", self._menu_publish_error)
+
+        button = menu_button(self.menu_config)
+        if button is None:
+            if self.menu_config.error:
+                self._menu_publish_error = self.menu_config.error
+                logger.warning("telegram menu button skipped: %s", self.menu_config.error)
+            return
+        try:
+            await self.api.set_chat_menu_button(button)
+        except TelegramUnavailable as exc:
+            self._menu_publish_error = self._safe_error(exc)
+            logger.warning("telegram setChatMenuButton failed: %s", self._menu_publish_error)
+        except Exception as exc:  # noqa: BLE001
+            self._menu_publish_error = self._safe_error(exc)
+            logger.warning("telegram setChatMenuButton error: %s", self._menu_publish_error)
 
     async def _repo(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Run a sync storage call off the event loop.
@@ -280,8 +364,16 @@ class TelegramRuntime:
     # --- updates -------------------------------------------------------
     async def handle_update(self, update: Dict[str, Any]) -> None:
         message = update.get("message")
-        if not isinstance(message, dict):
+        if isinstance(message, dict):
+            await self._handle_message_update(update, message)
             return
+        callback = update.get("callback_query")
+        if isinstance(callback, dict):
+            await self._handle_callback_update(update, callback)
+
+    async def _handle_message_update(
+        self, update: Dict[str, Any], message: Dict[str, Any],
+    ) -> None:
         chat = message.get("chat")
         sender = message.get("from")
         if not isinstance(chat, dict) or not isinstance(sender, dict):
@@ -289,8 +381,16 @@ class TelegramRuntime:
         if chat.get("type") != "private" or sender.get("is_bot") is True:
             return
         chat_id = chat.get("id")
+        sender_id = sender.get("id")
         update_id = update.get("update_id")
-        if not isinstance(chat_id, int) or not isinstance(update_id, int):
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            return
+        if not isinstance(sender_id, int) or isinstance(sender_id, bool):
+            return
+        if not isinstance(update_id, int) or isinstance(update_id, bool):
+            return
+        # Telegram's private chat is one human; anything else is not our menu.
+        if sender_id != chat_id:
             return
         text = message.get("text")
         if not isinstance(text, str):
@@ -306,7 +406,8 @@ class TelegramRuntime:
         )
         try:
             await self._dispatch_text(
-                chat_id, username, text, update_id, has_attachment=attachment,
+                chat_id, sender_id, username, text, update_id,
+                has_attachment=attachment,
             )
             await self._repo("finish_update", update_id, "done")
         except asyncio.CancelledError:
@@ -319,9 +420,107 @@ class TelegramRuntime:
                 logger.warning("could not record failed telegram update")
             logger.warning("telegram update %s failed: %s", update_id, safe)
 
+    async def _handle_callback_update(
+        self, update: Dict[str, Any], callback: Dict[str, Any],
+    ) -> None:
+        """Handle an inline button press from the sender's own private chat.
+
+        Group chats, bots and foreign senders are dropped before the update is
+        claimed, so a copied message can never rewrite another chat's settings.
+        """
+        query_id = callback.get("id")
+        sender = callback.get("from")
+        message = callback.get("message")
+        if not isinstance(query_id, str) or not query_id or len(query_id) > 128:
+            return
+        if not isinstance(sender, dict) or sender.get("is_bot") is True:
+            return
+        if not isinstance(message, dict):
+            return
+        chat = message.get("chat")
+        if not isinstance(chat, dict):
+            return
+        if chat.get("type") != "private":
+            return
+        chat_id = chat.get("id")
+        sender_id = sender.get("id")
+        message_id = message.get("message_id")
+        update_id = update.get("update_id")
+        for value in (chat_id, sender_id, message_id, update_id):
+            if not isinstance(value, int) or isinstance(value, bool):
+                return
+        if sender_id != chat_id:
+            return
+        if not await self._repo("claim_update", update_id, chat_id):
+            return
+
+        ack_sent = False
+
+        async def ack(text: Optional[str] = None, *, alert: bool = False) -> None:
+            nonlocal ack_sent
+            if ack_sent:
+                return
+            ack_sent = True
+            if self.api is None:
+                return
+            try:
+                await self.api.answer_callback_query(
+                    query_id, text=text, show_alert=alert,
+                )
+            except Exception as exc:  # noqa: BLE001 - spinner must not block work
+                logger.info("telegram callback ack failed: %s", self._safe_error(exc))
+
+        try:
+            data = callback.get("data")
+            encoded = b""
+            if isinstance(data, str):
+                try:
+                    encoded = data.encode("utf-8")
+                except UnicodeEncodeError:
+                    encoded = b""
+            if not self._menu_secret:
+                await ack(STALE_CALLBACK_TEXT, alert=True)
+                await self._refresh_callback_view(chat_id, message_id, sender_id)
+                await self._repo("finish_update", update_id, "done")
+                return
+            if not encoded or len(encoded) > CALLBACK_MAX_BYTES:
+                await ack(STALE_CALLBACK_TEXT, alert=True)
+                await self._refresh_callback_view(chat_id, message_id, sender_id)
+                await self._repo("finish_update", update_id, "done")
+                return
+            parsed = decode_callback(
+                data, self._menu_secret, user_id=sender_id, chat_id=chat_id,
+            )
+            if parsed is None:
+                await ack(STALE_CALLBACK_TEXT, alert=True)
+                await self._refresh_callback_view(chat_id, message_id, sender_id)
+                await self._repo("finish_update", update_id, "done")
+                return
+            # Answer before DB work so Telegram never leaves a spinning button.
+            await ack()
+            try:
+                await self._dispatch_callback(
+                    chat_id, sender_id, message_id, parsed,
+                )
+                await self._repo("finish_update", update_id, "done")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one stale button is not fatal
+                safe = self._safe_error(exc)
+                logger.warning("telegram callback %s failed: %s", parsed.action, safe)
+                try:
+                    await self._repo("finish_update", update_id, "failed", safe)
+                except Exception:
+                    logger.warning("could not record failed telegram callback")
+                await self._best_effort_message(chat_id, CALLBACK_FAILED_TEXT)
+        finally:
+            # An exception before ack() must not leave the client spinner alive.
+            await ack()
+
     async def _dispatch_text(
         self,
         chat_id: int,
+        sender_id: int,
         username: Optional[str],
         text: str,
         update_id: int,
@@ -330,92 +529,455 @@ class TelegramRuntime:
     ) -> None:
         value = text.strip()
         if not value:
-            await self._reply(
-                chat_id, UNSUPPORTED_FILE_TEXT if has_attachment else HELP_TEXT,
-            )
+            if has_attachment:
+                await self._reply(chat_id, UNSUPPORTED_FILE_TEXT)
+            else:
+                await self._send_help(chat_id, sender_id)
             return
         parts = value.split(maxsplit=1)
         command = parts[0].split("@", 1)[0].lower()
         argument = parts[1].strip() if len(parts) > 1 else ""
 
         if command == "/start":
-            await self._handle_start(chat_id, username, argument)
+            await self._handle_start(chat_id, sender_id, username, argument)
             return
         if command == "/help":
-            await self._reply(chat_id, HELP_TEXT)
+            await self._send_help(chat_id, sender_id)
             return
         if command == "/settings":
-            await self._handle_settings(chat_id, argument)
+            await self._handle_settings(chat_id, sender_id, argument)
             return
         if command == "/status":
-            await self._handle_status(chat_id)
+            await self._handle_status(chat_id, sender_id)
             return
         if self._looks_like_repo_url(value):
             await self._start_repo_job(chat_id, value, update_id)
             return
         if BARE_CODE_RE.fullmatch(value):
-            await self._handle_bare_code(chat_id, username, value)
+            await self._handle_bare_code(chat_id, sender_id, username, value)
             return
-        await self._reply(chat_id, HELP_TEXT)
+        await self._send_help(chat_id, sender_id)
+
+    # --- menu rendering ------------------------------------------------
+    def _menu_ctx(
+        self, chat_id: int, sender_id: int, epoch: int,
+    ) -> Optional[MenuContext]:
+        if not self._menu_secret:
+            return None
+        return MenuContext(
+            secret=self._menu_secret,
+            user_id=int(sender_id),
+            chat_id=int(chat_id),
+            epoch=int(epoch),
+            config=self.menu_config,
+        )
+
+    def _binding_text(self) -> str:
+        cabinet = self.menu_config.cabinet_url
+        return (
+            "Аккаунт не привязан.\n\n"
+            f"1. Откройте кабинет NEDRA: {cabinet}\n"
+            "2. Войдите в свой аккаунт.\n"
+            "3. Настройки → Telegram → «Создать код».\n"
+            "4. Отправьте сюда /start <код> в течение 10 минут.\n\n"
+            "Бот не привязывает аккаунт сам: одноразовый код подтверждаете вы."
+        )
+
+    @staticmethod
+    def _scenario_label(scenarios: List[Dict[str, str]], scenario_id: str) -> str:
+        if not scenario_id:
+            return "не выбран"
+        for item in scenarios:
+            if item.get("id") == scenario_id:
+                return item.get("name") or scenario_id
+        return f"{scenario_id} (недоступен)"
+
+    async def _main_view(
+        self, binding: Any, sender_id: int, notice: Optional[str] = None,
+    ) -> tuple:
+        settings = await self._repo("get_settings", binding.chat_id)
+        scenarios = await self._scenarios(binding.workspace_id)
+        lines = []
+        if notice:
+            lines.extend([notice, ""])
+        lines.extend([
+            "NEDRA на связи.",
+            f"Режим: {MODE_LABELS.get(settings.delivery_mode, settings.delivery_mode)}"
+            f" · Сценарий: {self._scenario_label(scenarios, settings.scenario)}",
+            "",
+            "Пришлите HTTPS-ссылку GitHub/GitLab — импортирую репозиторий "
+            "и запущу выбранный сценарий.",
+        ])
+        ctx = self._menu_ctx(binding.chat_id, sender_id, binding.binding_epoch)
+        return "\n".join(lines), main_menu_markup(ctx) if ctx else None
+
+    async def _settings_view(
+        self,
+        binding: Any,
+        sender_id: int,
+        *,
+        page: int = 0,
+        notice: Optional[str] = None,
+    ) -> tuple:
+        settings = await self._repo("get_settings", binding.chat_id)
+        scenarios = await self._scenarios(binding.workspace_id)
+        pages = scenario_page_count(len(scenarios), SCENARIO_PAGE_SIZE)
+        safe_page = max(0, min(int(page), pages - 1))
+        label = self._scenario_label(scenarios, settings.scenario)
+        lines = ["Настройки NEDRA"]
+        if notice:
+            lines.extend(["", notice])
+        lines.extend([
+            "",
+            f"Доставка: {MODE_LABELS.get(settings.delivery_mode, settings.delivery_mode)}",
+            f"Сценарий: {label}",
+            "",
+            "Режим — кнопками «Кратко», «JSON», «Оба». Сценарий — из списка ниже.",
+        ])
+        if scenarios:
+            lines.append(f"Сценарии: {len(scenarios)} · стр. {safe_page + 1}/{pages}")
+        else:
+            lines.append("В вашем workspace пока нет сценариев.")
+        ctx = self._menu_ctx(binding.chat_id, sender_id, binding.binding_epoch)
+        markup = settings_markup(
+            ctx,
+            delivery_mode=settings.delivery_mode,
+            scenarios=scenarios,
+            page=safe_page,
+        ) if ctx else None
+        return "\n".join(lines), markup
+
+    async def _status_view(self, binding: Any, sender_id: int) -> tuple:
+        settings = await self._repo("get_settings", binding.chat_id)
+        scenarios = await self._scenarios(binding.workspace_id)
+        runs = await self._recent_runs(binding.workspace_id)
+        jobs = await self._repo("list_jobs",
+            binding.chat_id, binding.user_id, binding.workspace_id,
+            binding.binding_epoch, limit=3,
+        )
+        lines = [
+            "Проверки NEDRA",
+            "Привязка: активна",
+            f"Доставка: {MODE_LABELS.get(settings.delivery_mode, settings.delivery_mode)}",
+            f"Сценарий: {self._scenario_label(scenarios, settings.scenario)}",
+            f"Telegram: {self._external_status}",
+        ]
+        if jobs:
+            lines.append("Последние задачи:")
+            for job in jobs:
+                suffix = f" run={job.run_id}" if job.run_id else ""
+                lines.append(f"  {job.status}{suffix}")
+        if runs:
+            lines.append("Последние запуски:")
+            for run in runs:
+                lines.append(
+                    f"  {run.get('id')} — {run.get('execution_status')} / "
+                    f"{run.get('security_verdict')} / findings={run.get('total_findings', 0)}"
+                )
+        else:
+            lines.append("Запусков пока нет. Пришлите ссылку на репозиторий.")
+        ctx = self._menu_ctx(binding.chat_id, sender_id, binding.binding_epoch)
+        return "\n".join(lines), checks_markup(ctx) if ctx else None
+
+    async def _edit_or_send(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        markup: Optional[Dict[str, Any]],
+    ) -> None:
+        if self.api is None:
+            raise TelegramUnavailable("telegram is not configured")
+        try:
+            await self.api.edit_message_text(
+                chat_id, message_id, text, reply_markup=markup,
+            )
+        except TelegramAPIError as exc:
+            if "message is not modified" in (exc.description or "").lower():
+                return
+            await self._reply(chat_id, text, reply_markup=markup)
+
+    async def _render_main(
+        self,
+        chat_id: int,
+        sender_id: int,
+        message_id: Optional[int],
+        binding: Any,
+        *,
+        notice: Optional[str] = None,
+    ) -> None:
+        text, markup = await self._main_view(binding, sender_id, notice)
+        if message_id is None:
+            await self._reply(chat_id, text, reply_markup=markup)
+        else:
+            await self._edit_or_send(chat_id, message_id, text, markup)
+
+    async def _render_binding(
+        self,
+        chat_id: int,
+        sender_id: int,
+        message_id: Optional[int],
+        *,
+        notice: Optional[str] = None,
+    ) -> None:
+        ctx = self._menu_ctx(chat_id, sender_id, 0)
+        text = self._binding_text()
+        if notice:
+            text = f"{notice}\n\n{text}"
+        markup = binding_markup(ctx) if ctx else None
+        if message_id is None:
+            await self._reply(chat_id, text, reply_markup=markup)
+        else:
+            await self._edit_or_send(chat_id, message_id, text, markup)
+
+    async def _render_help(
+        self, chat_id: int, sender_id: int, message_id: Optional[int],
+        binding: Optional[Any],
+    ) -> None:
+        if binding is None:
+            text = self._binding_text() + "\n\n" + HELP_TEXT
+            ctx = self._menu_ctx(chat_id, sender_id, 0)
+        else:
+            text = HELP_TEXT
+            ctx = self._menu_ctx(chat_id, sender_id, binding.binding_epoch)
+        markup = help_markup(ctx) if ctx else None
+        if message_id is None:
+            await self._reply(chat_id, text, reply_markup=markup)
+        else:
+            await self._edit_or_send(chat_id, message_id, text, markup)
+
+    async def _render_settings(
+        self,
+        chat_id: int,
+        sender_id: int,
+        message_id: int,
+        binding: Any,
+        *,
+        page: int = 0,
+        notice: Optional[str] = None,
+    ) -> None:
+        text, markup = await self._settings_view(
+            binding, sender_id, page=page, notice=notice,
+        )
+        await self._edit_or_send(chat_id, message_id, text, markup)
+
+    async def _render_checks(
+        self, chat_id: int, sender_id: int, message_id: int, binding: Any,
+    ) -> None:
+        text, markup = await self._status_view(binding, sender_id)
+        await self._edit_or_send(chat_id, message_id, text, markup)
+
+    async def _refresh_callback_view(
+        self, chat_id: int, message_id: int, sender_id: int,
+    ) -> None:
+        binding = await self._repo("get_binding", chat_id)
+        if binding is None:
+            await self._render_binding(
+                chat_id, sender_id, message_id, notice=STALE_CALLBACK_TEXT,
+            )
+            return
+        await self._render_main(
+            chat_id, sender_id, message_id, binding, notice=STALE_CALLBACK_TEXT,
+        )
+
+    async def _dispatch_callback(
+        self,
+        chat_id: int,
+        sender_id: int,
+        message_id: int,
+        callback: MenuCallback,
+    ) -> None:
+        binding = await self._repo("get_binding", chat_id)
+        if callback.action == "help":
+            await self._render_help(chat_id, sender_id, message_id, binding)
+            return
+        if binding is None:
+            await self._render_binding(chat_id, sender_id, message_id)
+            return
+        if int(binding.binding_epoch) != int(callback.epoch):
+            await self._render_main(
+                chat_id, sender_id, message_id, binding,
+                notice="Меню обновилось после перепривязки.",
+            )
+            return
+
+        if callback.action in {"menu", "back"}:
+            await self._render_main(chat_id, sender_id, message_id, binding)
+            return
+        if callback.action in {"checks", "refresh"}:
+            await self._render_checks(chat_id, sender_id, message_id, binding)
+            return
+        if callback.action == "settings":
+            await self._render_settings(chat_id, sender_id, message_id, binding)
+            return
+        if callback.action == "page":
+            if not callback.arg.isdigit():
+                await self._render_settings(
+                    chat_id, sender_id, message_id, binding,
+                    notice="Страница устарела — вот актуальные настройки.",
+                )
+                return
+            await self._render_settings(
+                chat_id, sender_id, message_id, binding, page=int(callback.arg),
+            )
+            return
+        if callback.action == "mode":
+            await self._apply_mode_callback(
+                chat_id, sender_id, message_id, binding, callback.arg,
+            )
+            return
+        if callback.action == "scen":
+            await self._apply_scenario_callback(
+                chat_id, sender_id, message_id, binding, callback.arg,
+            )
+            return
+        await self._refresh_callback_view(chat_id, message_id, sender_id)
+
+    async def _apply_mode_callback(
+        self,
+        chat_id: int,
+        sender_id: int,
+        message_id: int,
+        binding: Any,
+        arg: str,
+    ) -> None:
+        if not arg.isdigit() or int(arg) >= len(MODE_ORDER):
+            await self._render_settings(
+                chat_id, sender_id, message_id, binding,
+                notice="Кнопка устарела — вот актуальные настройки.",
+            )
+            return
+        mode = MODE_ORDER[int(arg)]
+        try:
+            await self._repo("set_settings",
+                chat_id, user_id=binding.user_id,
+                workspace_id=binding.workspace_id,
+                binding_epoch=binding.binding_epoch,
+                delivery_mode=mode,
+            )
+        except SettingsOwnershipLost:
+            logger.info("telegram settings write ignored after rebind")
+            await self._refresh_callback_view(chat_id, message_id, sender_id)
+            return
+        await self._render_settings(
+            chat_id, sender_id, message_id, binding,
+            notice=f"Доставка: {MODE_LABELS[mode]}.",
+        )
+
+    async def _apply_scenario_callback(
+        self,
+        chat_id: int,
+        sender_id: int,
+        message_id: int,
+        binding: Any,
+        arg: str,
+    ) -> None:
+        parsed = parse_scenario_arg(arg)
+        scenarios = await self._scenarios(binding.workspace_id) if parsed else []
+        if parsed is None:
+            await self._render_settings(
+                chat_id, sender_id, message_id, binding,
+                notice="Кнопка устарела — вот актуальные настройки.",
+            )
+            return
+        index, fingerprint = parsed
+        if index >= len(scenarios):
+            await self._render_settings(
+                chat_id, sender_id, message_id, binding,
+                notice="Список сценариев изменился — выберите заново.",
+            )
+            return
+        scenario_id = str(scenarios[index].get("id") or "")
+        if not scenario_id or scenario_fingerprint(scenario_id) != fingerprint:
+            await self._render_settings(
+                chat_id, sender_id, message_id, binding,
+                notice="Список сценариев изменился — выберите заново.",
+            )
+            return
+        # Ownership is rechecked against this binding's workspace, never the
+        # workspace or scenario text supplied by the client.
+        workflow = await self._workflow(binding.workspace_id, scenario_id)
+        if workflow is None:
+            await self._render_settings(
+                chat_id, sender_id, message_id, binding,
+                notice="Такой сценарий не найден в вашем workspace.",
+            )
+            return
+        try:
+            await self._repo("set_settings",
+                chat_id, user_id=binding.user_id,
+                workspace_id=binding.workspace_id,
+                binding_epoch=binding.binding_epoch,
+                scenario=scenario_id,
+            )
+        except SettingsOwnershipLost:
+            logger.info("telegram scenario write ignored after rebind")
+            await self._refresh_callback_view(chat_id, message_id, sender_id)
+            return
+        await self._render_settings(
+            chat_id, sender_id, message_id, binding,
+            notice=f"Сценарий выбран: {self._scenario_label(scenarios, scenario_id)}.",
+        )
+
+    async def _send_help(self, chat_id: int, sender_id: int) -> None:
+        binding = await self._repo("get_binding", chat_id)
+        await self._render_help(chat_id, sender_id, None, binding)
 
     async def _handle_bare_code(
         self,
         chat_id: int,
+        sender_id: int,
         username: Optional[str],
         code: str,
     ) -> None:
         """A binding code sent as plain text is consumed instead of ignored."""
         binding = await self._repo("get_binding", chat_id)
         if binding is not None:
-            await self._reply(chat_id, "Аккаунт уже привязан.\n\n" + HELP_TEXT)
+            await self._render_main(
+                chat_id, sender_id, None, binding,
+                notice="Аккаунт уже привязан.",
+            )
             return
         bound = await self._repo("consume_binding_code", code, chat_id, username)
         if bound is None:
             await self._reply(chat_id, BARE_CODE_MISS_TEXT)
             return
-        await self._reply(chat_id, BINDING_SUCCESS_TEXT)
+        await self._render_main(
+            chat_id, sender_id, None, bound, notice=BINDING_SUCCESS_TEXT,
+        )
 
     async def _handle_start(
         self,
         chat_id: int,
+        sender_id: int,
         username: Optional[str],
         argument: str,
     ) -> None:
-        binding = await self._repo("get_binding", chat_id)
         if argument:
             bound = await self._repo("consume_binding_code", argument, chat_id, username)
             if bound is None:
                 await self._reply(chat_id, BINDING_CODE_HINT)
                 return
-            await self._reply(chat_id, BINDING_SUCCESS_TEXT)
-            return
-        if binding is None:
-            await self._reply(
-                chat_id,
-                "Аккаунт не привязан. Войдите в веб-кабинет, создайте одноразовый код "
-                "и отправьте /start <код>.",
+            await self._render_main(
+                chat_id, sender_id, None, bound, notice=BINDING_SUCCESS_TEXT,
             )
             return
-        await self._reply(chat_id, "Аккаунт уже привязан.\n\n" + HELP_TEXT)
-
-    async def _handle_settings(self, chat_id: int, argument: str) -> None:
         binding = await self._repo("get_binding", chat_id)
         if binding is None:
-            await self._reply(chat_id, "Сначала привяжите аккаунт: /start <код>.")
+            await self._render_binding(chat_id, sender_id, None)
             return
-        settings = await self._repo("get_settings", chat_id)
+        await self._render_main(chat_id, sender_id, None, binding)
+
+    async def _handle_settings(
+        self, chat_id: int, sender_id: int, argument: str,
+    ) -> None:
+        binding = await self._repo("get_binding", chat_id)
+        if binding is None:
+            await self._render_binding(chat_id, sender_id, None)
+            return
         if not argument:
-            scenarios = await self._scenarios(binding.workspace_id)
-            lines = [
-                f"Режим: {settings.delivery_mode}",
-                f"Сценарий: {settings.scenario or 'не выбран'}",
-            ]
-            if scenarios:
-                lines.append("Доступные сценарии:")
-                lines.extend(f"  {item['id']} — {item['name']}" for item in scenarios[:8])
-            lines.append("Изменить: /settings alerts|jsonc|both")
-            lines.append("Сценарий: /settings scenario <id>")
-            await self._reply(chat_id, "\n".join(lines))
+            text, markup = await self._settings_view(binding, sender_id)
+            await self._reply(chat_id, text, reply_markup=markup)
             return
 
         mode = argument.strip().lower()
@@ -429,8 +991,15 @@ class TelegramRuntime:
                 )
             except SettingsOwnershipLost:
                 logger.info("telegram settings write ignored after rebind")
+                await self._render_binding(
+                    chat_id, sender_id, None,
+                    notice="Привязка обновилась — настройки не изменены.",
+                )
                 return
-            await self._reply(chat_id, f"Режим доставки: {mode}")
+            text, markup = await self._settings_view(
+                binding, sender_id, notice=f"Доставка: {MODE_LABELS[mode]}.",
+            )
+            await self._reply(chat_id, text, reply_markup=markup)
             return
         if mode.startswith("scenario"):
             scenario = argument[len("scenario"):].strip()
@@ -450,42 +1019,31 @@ class TelegramRuntime:
                 )
             except SettingsOwnershipLost:
                 logger.info("telegram scenario write ignored after rebind")
+                await self._render_binding(
+                    chat_id, sender_id, None,
+                    notice="Привязка обновилась — настройки не изменены.",
+                )
                 return
-            await self._reply(chat_id, f"Сценарий выбран: {scenario}")
+            scenarios = await self._scenarios(binding.workspace_id)
+            text, markup = await self._settings_view(
+                binding, sender_id,
+                notice=f"Сценарий выбран: {self._scenario_label(scenarios, scenario)}.",
+            )
+            await self._reply(chat_id, text, reply_markup=markup)
             return
-        await self._reply(chat_id, "Использование: /settings alerts|jsonc|both или /settings scenario <id>")
+        text, markup = await self._settings_view(
+            binding, sender_id,
+            notice="Неизвестная команда. Выберите режим или сценарий кнопками.",
+        )
+        await self._reply(chat_id, text, reply_markup=markup)
 
-    async def _handle_status(self, chat_id: int) -> None:
+    async def _handle_status(self, chat_id: int, sender_id: int) -> None:
         binding = await self._repo("get_binding", chat_id)
         if binding is None:
-            await self._reply(chat_id, "Аккаунт не привязан. /start <код>.")
+            await self._render_binding(chat_id, sender_id, None)
             return
-        settings = await self._repo("get_settings", chat_id)
-        runs = await self._recent_runs(binding.workspace_id)
-        jobs = await self._repo("list_jobs",
-            binding.chat_id, binding.user_id, binding.workspace_id,
-            binding.binding_epoch, limit=3,
-        )
-        lines = [
-            "Статус аккаунта",
-            "Привязка: активна",
-            f"Режим: {settings.delivery_mode}",
-            f"Сценарий: {settings.scenario or 'не выбран'}",
-            f"Telegram: {self._external_status}",
-        ]
-        if jobs:
-            lines.append("Последние задачи:")
-            for job in jobs:
-                suffix = f" run={job.run_id}" if job.run_id else ""
-                lines.append(f"  {job.status}{suffix}")
-        if runs:
-            lines.append("Последние запуски:")
-            for run in runs:
-                lines.append(
-                    f"  {run.get('id')} — {run.get('execution_status')} / "
-                    f"{run.get('security_verdict')} / findings={run.get('total_findings', 0)}"
-                )
-        await self._reply(chat_id, "\n".join(lines))
+        text, markup = await self._status_view(binding, sender_id)
+        await self._reply(chat_id, text, reply_markup=markup)
 
     # --- repo job ------------------------------------------------------
     async def _start_repo_job(
@@ -496,15 +1054,15 @@ class TelegramRuntime:
     ) -> None:
         binding = await self._repo("get_binding", chat_id)
         if binding is None:
-            await self._reply(chat_id, "Сначала привяжите аккаунт: /start <код>.")
+            await self._render_binding(chat_id, chat_id, None)
             return
         settings = await self._repo("get_settings", chat_id)
         if not settings.scenario:
-            scenarios = await self._scenarios(binding.workspace_id)
-            lines = ["Сначала выберите сценарий: /settings scenario <id>"]
-            if scenarios:
-                lines.extend(f"  {item['id']} — {item['name']}" for item in scenarios[:8])
-            await self._reply(chat_id, "\n".join(lines))
+            text, markup = await self._settings_view(
+                binding, chat_id,
+                notice="Сначала выберите сценарий — без него проверку не запустить.",
+            )
+            await self._reply(chat_id, text, reply_markup=markup)
             return
         workflow = await self._workflow(binding.workspace_id, settings.scenario)
         if workflow is None:
@@ -864,10 +1422,16 @@ class TelegramRuntime:
         return 0
 
     # --- helpers -------------------------------------------------------
-    async def _reply(self, chat_id: int, text: str) -> None:
+    async def _reply(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> None:
         if self.api is None:
             raise TelegramUnavailable("telegram is not configured")
-        await self.api.send_message(chat_id, text)
+        await self.api.send_message(chat_id, text, reply_markup=reply_markup)
 
     async def _best_effort_message(self, chat_id: int, text: str) -> None:
         if self.api is None:
@@ -942,9 +1506,13 @@ def create_telegram_runtime(
         except TelegramConfigError as exc:
             api = None
             config_error = redact_telegram_text(exc)
+    menu_config = load_menu_config()
+    if menu_config.error:
+        logger.warning("telegram menu configuration: %s", menu_config.error)
     return TelegramRuntime(
         db, executor, importer,
         repository=repository or TelegramRepository(),
         api=api,
         config_error=config_error,
+        menu_config=menu_config,
     )

@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from backend.app.telegram.menus import callback_secret_from_token
 from backend.app.telegram.proxy_bridge import UnixSocketProxyBridge
 
 TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
@@ -295,6 +296,11 @@ class TelegramBotAPI:
         return bool(self._settings.proxy_url or self._settings.proxy_socket)
 
     @property
+    def callback_secret(self) -> str:
+        """Key for signing inline-keyboard callbacks; never logged."""
+        return callback_secret_from_token(self._settings.token)
+
+    @property
     def proxy_mode(self) -> Optional[str]:
         if self._settings.proxy_socket:
             return "socket"
@@ -391,7 +397,7 @@ class TelegramBotAPI:
                 "offset": max(0, int(offset)),
                 "timeout": safe_timeout,
                 "limit": max(1, min(int(limit), 100)),
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             },
             timeout=float(safe_timeout + 15),
         )
@@ -405,17 +411,89 @@ class TelegramBotAPI:
         text: str,
         *,
         disable_web_page_preview: bool = True,
+        reply_markup: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         body = (text or "")[:MAX_MESSAGE_CHARS]
-        result = await self._call(
-            "sendMessage",
-            {
-                "chat_id": int(chat_id),
-                "text": body,
-                "disable_web_page_preview": bool(disable_web_page_preview),
-            },
-        )
+        payload: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": body,
+            "disable_web_page_preview": bool(disable_web_page_preview),
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        result = await self._call("sendMessage", payload)
         return result if isinstance(result, dict) else {}
+
+    async def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        disable_web_page_preview: bool = True,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        body = (text or "")[:MAX_MESSAGE_CHARS]
+        payload: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "text": body,
+            "disable_web_page_preview": bool(disable_web_page_preview),
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        result = await self._call("editMessageText", payload)
+        return result if isinstance(result, dict) else {}
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> bool:
+        query_id = str(callback_query_id or "").strip()
+        if not query_id or len(query_id) > 128:
+            raise TelegramUnavailable("callback query id is invalid")
+        payload: Dict[str, Any] = {
+            "callback_query_id": query_id,
+            "show_alert": bool(show_alert),
+        }
+        if text:
+            payload["text"] = str(text)[:200]
+        result = await self._call("answerCallbackQuery", payload)
+        return result is True
+
+    async def set_my_commands(self, commands: List[Dict[str, str]]) -> bool:
+        safe: List[Dict[str, str]] = []
+        for item in commands[:20]:
+            if not isinstance(item, dict):
+                continue
+            command = str(item.get("command") or "").strip()
+            description = str(item.get("description") or "").strip()
+            if not re.fullmatch(r"[a-z0-9_]{1,32}", command):
+                continue
+            if not (1 <= len(description) <= 256):
+                continue
+            safe.append({"command": command, "description": description})
+        if not safe:
+            return False
+        result = await self._call("setMyCommands", {"commands": safe})
+        return result is True
+
+    async def set_chat_menu_button(self, menu_button: Dict[str, Any]) -> bool:
+        if not isinstance(menu_button, dict):
+            return False
+        kind = menu_button.get("type")
+        if kind not in {"commands", "web_app", "default"}:
+            return False
+        if kind == "web_app":
+            web_app = menu_button.get("web_app")
+            url = web_app.get("url") if isinstance(web_app, dict) else None
+            if not isinstance(url, str) or not url.startswith("https://"):
+                return False
+        result = await self._call("setChatMenuButton", {"menu_button": menu_button})
+        return result is True
 
     async def send_document(
         self,
