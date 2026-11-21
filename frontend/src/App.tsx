@@ -313,6 +313,19 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const resetRunSelection = () => {
+    closeSSE();
+    selectedRunRef.current = null;
+    runLoadSeq.current += 1;
+    setCurrentRunId(null);
+    setCurrentRun(null);
+    setNodeRuns([]);
+    setFindings([]);
+    setReport(null);
+    setEvents([]);
+    setIsRunning(false);
+  };
+
   const loadInitialData = useCallback(async () => {
     try {
       const [artifactList, workflowList, runList] = await Promise.all([
@@ -339,16 +352,20 @@ export const App: React.FC = () => {
         showNotice('error', 'На сервере нет доступного сценария');
       }
 
-      if (runList.length > 0) {
-        const latest =
-          runList.find((run) => run.workflow_id === selectedWorkflow?.id && run.trigger_type !== 'schedule') ||
-          runList.find((run) => run.trigger_type !== 'schedule') ||
-          runList[0];
+      const selectedRuns = selectedWorkflow
+        ? runList.filter((run) => run.workflow_id === selectedWorkflow.id)
+        : [];
+      const latest =
+        selectedRuns.find((run) => run.trigger_type !== 'schedule') ||
+        selectedRuns[0];
+      if (latest) {
         selectedRunRef.current = latest.id;
         setCurrentRunId(latest.id);
         setCurrentRun(latest);
         await loadRunDetails(latest.id);
         connectSSE(latest.id);
+      } else {
+        resetRunSelection();
       }
     } catch (e: any) {
       if (e instanceof AuthRequiredError) {
@@ -445,19 +462,6 @@ export const App: React.FC = () => {
     setRuns([]);
     setIsRunning(false);
     setSelectedNodeId(null);
-  };
-
-  const resetRunSelection = () => {
-    closeSSE();
-    selectedRunRef.current = null;
-    runLoadSeq.current += 1;
-    setCurrentRunId(null);
-    setCurrentRun(null);
-    setNodeRuns([]);
-    setFindings([]);
-    setReport(null);
-    setEvents([]);
-    setIsRunning(false);
   };
 
   const handleSelectRun = (runId: string) => {
@@ -807,7 +811,7 @@ export const App: React.FC = () => {
                 onSelectArtifact={handleUserSelectArtifact}
               />
               {selectedNode && (
-                <div className="fixed inset-x-0 bottom-0 z-30 shadow-2xl md:static md:z-auto md:shrink-0">
+                <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
                   <InspectorPanel
                     node={selectedNode}
                     artifacts={artifacts}
