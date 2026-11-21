@@ -1133,7 +1133,8 @@ class TelegramRuntime:
 
         task.add_done_callback(_done)
 
-    async def _heartbeat_job(self, job: Any) -> None:
+    async def _heartbeat_job(self, job: Any,
+                             parent: Optional[asyncio.Task] = None) -> None:
         interval = max(5.0, JOB_LEASE_SECONDS / 3)
         while True:
             await asyncio.sleep(interval)
@@ -1141,10 +1142,18 @@ class TelegramRuntime:
                 alive = await asyncio.to_thread(
                     self.repo.heartbeat_job, job, JOB_LEASE_SECONDS
                 )
-            except Exception as exc:  # noqa: BLE001
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a DB hiccup is not auth loss
                 logger.warning("telegram job heartbeat failed: %s", self._safe_error(exc))
-                return
+                continue
             if not alive:
+                # Binding epoch/owner or lease changed: the worker no longer has
+                # the right to finish this job, so stop it instead of importing
+                # or running with stale authorization.
+                logger.info("telegram job %s lost lease/owner; cancelling", job.job_id)
+                if parent is not None and not parent.done():
+                    parent.cancel()
                 return
 
     async def _run_job(self, job_id: str) -> None:
@@ -1153,8 +1162,9 @@ class TelegramRuntime:
         )
         if job is None:
             return
+        parent = asyncio.current_task()
         heartbeat = asyncio.create_task(
-            self._heartbeat_job(job), name=f"telegram-heartbeat-{job_id}"
+            self._heartbeat_job(job, parent), name=f"telegram-heartbeat-{job_id}"
         )
         try:
             if not await self._repo("job_lease_valid", job):
