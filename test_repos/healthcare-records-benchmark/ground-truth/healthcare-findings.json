@@ -1,0 +1,377 @@
+{
+  "dataset": "healthcare-records",
+  "formatVersion": 1,
+  "findings": [
+    {
+      "id": "H-SEC-01",
+      "category": "SECRET",
+      "class": "password",
+      "classAliases": [
+        "hardcoded-password",
+        "CWE-259",
+        "CWE-798"
+      ],
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/health/integration/Hl7IntegrationSettings.kt",
+      "line": 4,
+      "endLine": 4,
+      "alternateLocations": [],
+      "description": "integration/Hl7IntegrationSettings.kt, hl7DatabasePassword содержит пароль учетной записи базы данных HL7.",
+      "difficultyRationale": "Прямой строковый литерал в параметре с явной ролью пароля.",
+      "expectedDetection": "Прямой строковый литерал в параметре с явной ролью пароля.",
+      "remediation": "Читать пароль из переменных окружения или Secret Manager.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SEC-02",
+      "category": "SECRET",
+      "class": "api-key",
+      "classAliases": [
+        "hardcoded-api-key",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "EASY",
+      "severity": "MEDIUM",
+      "path": "src/main/kotlin/com/health/integration/TelehealthSessionClient.kt",
+      "line": 7,
+      "endLine": 7,
+      "alternateLocations": [],
+      "description": "integration/TelehealthSessionClient.kt, telehealthApiKey напрямую передается в заголовок X-Api-Key.",
+      "difficultyRationale": "Найти литерал ключа API в одном исходном файле.",
+      "expectedDetection": "Найти литерал ключа API в одном исходном файле.",
+      "remediation": "Использовать защищенное внедрение настроек телемедицины.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SEC-03",
+      "category": "SECRET",
+      "class": "configuration-token",
+      "classAliases": [
+        "token",
+        "hardcoded-token",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/resources/application.yml",
+      "line": 14,
+      "endLine": 14,
+      "alternateLocations": [],
+      "description": "src/main/resources/application.yml, clinical.sync.authorization хранит Bearer токен синхронизации EHR.",
+      "difficultyRationale": "Разобрать вложенную структуру конфигурационного файла YAML.",
+      "expectedDetection": "Разобрать вложенную структуру конфигурационного файла YAML.",
+      "remediation": "Использовать плейсхолдер ${CLINICAL_SYNC_TOKEN} без встроенного литерала.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SEC-04",
+      "category": "SECRET",
+      "class": "secret-fallback",
+      "classAliases": [
+        "hardcoded-secret",
+        "fallback-secret",
+        "CWE-798"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "MEDIUM",
+      "path": "src/main/kotlin/com/health/integration/LabTelemetryClient.kt",
+      "line": 8,
+      "endLine": 8,
+      "alternateLocations": [],
+      "description": "integration/LabTelemetryClient.kt, встроенная строка используется как fallback токена телеметрии.",
+      "difficultyRationale": "Обнаружить жестко зашитое резервное значение при чтении окружения.",
+      "expectedDetection": "Обнаружить жестко зашитое резервное значение при чтении окружения.",
+      "remediation": "Исключить дефолтный секрет из вызова getenv.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SEC-05",
+      "category": "SECRET",
+      "class": "recoverable-token",
+      "classAliases": [
+        "assembled-secret",
+        "hardcoded-secret",
+        "CWE-798"
+      ],
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/health/integration/PharmacyAuthHeaders.kt",
+      "line": 7,
+      "endLine": 10,
+      "alternateLocations": [],
+      "description": "integration/PharmacyAuthHeaders.kt, токен фармацевтической системы собирается из двух фрагментов.",
+      "difficultyRationale": "Конкатенация строковых частей в единый заголовок авторизации.",
+      "expectedDetection": "Конкатенация строковых частей в единый заголовок авторизации.",
+      "remediation": "Не хранить фрагменты секретов в исходных текстах программ.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SCA-01",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "EASY",
+      "severity": "MEDIUM",
+      "path": "build.gradle.kts",
+      "line": 31,
+      "endLine": 31,
+      "group": "com.google.code.gson",
+      "artifact": "gson",
+      "version": "2.8.5",
+      "advisoryIds": [
+        "CVE-2022-25647",
+        "GHSA-4jrv-ppp4-jm57"
+      ],
+      "description": "com.google.code.gson:gson:2.8.5 уязвим к отказу в обслуживании при десериализации циклических ссылок (CVE-2022-25647).",
+      "remediation": "Обновить gson до версии 2.8.9 или выше.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "H-SCA-02",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "build.gradle.kts",
+      "line": 32,
+      "endLine": 32,
+      "group": "org.apache.pdfbox",
+      "artifact": "pdfbox",
+      "version": "2.0.22",
+      "advisoryIds": [
+        "CVE-2021-27807",
+        "GHSA-2h3j-m7gr-25xj"
+      ],
+      "description": "org.apache.pdfbox:pdfbox:2.0.22 приводит к исчерпанию памяти при разборе поврежденных PDF-документов (CVE-2021-27807).",
+      "remediation": "Обновить pdfbox до версии 2.0.23 или новее.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "H-SCA-03",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "MEDIUM",
+      "severity": "CRITICAL",
+      "path": "build.gradle.kts",
+      "line": 33,
+      "endLine": 33,
+      "group": "commons-fileupload",
+      "artifact": "commons-fileupload",
+      "version": "1.3.2",
+      "advisoryIds": [
+        "CVE-2016-1000031",
+        "GHSA-7x9j-7223-rg5m"
+      ],
+      "description": "commons-fileupload:commons-fileupload:1.3.2 содержит критическую уязвимость удаленного выполнения кода (CVE-2016-1000031).",
+      "remediation": "Обновить commons-fileupload до версии 1.3.3 или выше.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "H-SCA-04",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "MEDIUM",
+      "severity": "CRITICAL",
+      "path": "build.gradle.kts",
+      "line": 36,
+      "endLine": 36,
+      "group": "org.apache.commons",
+      "artifact": "commons-configuration2",
+      "version": "2.7",
+      "advisoryIds": [
+        "CVE-2022-33980",
+        "GHSA-xj57-8qj4-c4m6"
+      ],
+      "description": "org.apache.commons:commons-configuration2:2.7 уязвим к выполнению произвольного кода через интерполяцию переменных (CVE-2022-33980).",
+      "remediation": "Обновить commons-configuration2 до версии 2.8.0.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "H-SCA-05",
+      "category": "SCA",
+      "class": "known-vulnerable-dependency",
+      "difficulty": "HARD",
+      "severity": "MEDIUM",
+      "path": "build.gradle.kts",
+      "line": 38,
+      "endLine": 38,
+      "group": "org.jsoup",
+      "artifact": "jsoup",
+      "version": "1.14.1",
+      "advisoryIds": [
+        "CVE-2021-37714",
+        "GHSA-m72m-mhq2-9p6c"
+      ],
+      "description": "org.jsoup:jsoup:1.14.1 подвержен ошибке отказа в обслуживании при обработке некорректного HTML (CVE-2021-37714).",
+      "remediation": "Обновить jsoup до версии 1.14.2 или новее.",
+      "confirmation": "confirmed",
+      "verification": "resolved-advisory-crosscheck"
+    },
+    {
+      "id": "H-SAST-01",
+      "category": "SAST",
+      "class": "sql-injection",
+      "classAliases": [
+        "CWE-89"
+      ],
+      "difficulty": "EASY",
+      "severity": "CRITICAL",
+      "path": "src/main/kotlin/com/health/records/LabReportLookupController.kt",
+      "line": 13,
+      "endLine": 14,
+      "description": "Параметр specimenId подставляется в SQL-запрос без экранирования или параметризации.",
+      "remediation": "Использовать плейсхолдеры ? в запросах jdbcTemplate.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    },
+    {
+      "id": "H-SAST-02",
+      "category": "SAST",
+      "class": "tls-verification",
+      "classAliases": [
+        "CWE-295"
+      ],
+      "difficulty": "EASY",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/health/integration/DiagnosticDeviceClient.kt",
+      "line": 14,
+      "endLine": 20,
+      "description": "Клиент синхронизации оборудования отключает проверку доверия сертификатов TLS.",
+      "remediation": "Использовать стандартный системный TrustManager с валидацией цепочки сертификатов.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SAST-03",
+      "category": "SAST",
+      "class": "credentialed-cors",
+      "classAliases": [
+        "CWE-942"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/health/config/ClinicalCorsConfig.kt",
+      "line": 13,
+      "endLine": 14,
+      "description": "Разрешен wildcard origin при передаче аутентификационных куки к конфиденциальным картам пациентов.",
+      "remediation": "Указать конкретный доверенный домен в allowedOrigins.",
+      "confirmation": "confirmed",
+      "verification": "source-review"
+    },
+    {
+      "id": "H-SAST-04",
+      "category": "SAST",
+      "class": "route-authorization",
+      "classAliases": [
+        "CWE-285",
+        "CWE-306"
+      ],
+      "difficulty": "MEDIUM",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/health/config/ClinicalSecurityConfig.kt",
+      "line": 18,
+      "endLine": 18,
+      "description": "Служебная выгрузка карт пациентов /api/medical-records/export-emergency доступна без авторизации.",
+      "remediation": "Требовать обязательную роль PHYSICIAN или аутентификацию.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    },
+    {
+      "id": "H-SAST-05",
+      "category": "SAST",
+      "class": "object-authorization",
+      "classAliases": [
+        "CWE-639",
+        "IDOR"
+      ],
+      "difficulty": "HARD",
+      "severity": "HIGH",
+      "path": "src/main/kotlin/com/health/records/PatientRecordReader.kt",
+      "line": 10,
+      "endLine": 11,
+      "description": "Чтение истории болезни по ID не проверяет принадлежность карты текущему пользователю.",
+      "remediation": "Проверять patient_id в SQL-запросе против Principal пользователя.",
+      "confirmation": "confirmed",
+      "verification": "passed-behavior-test"
+    }
+  ],
+  "controls": [
+    {
+      "id": "H-CTRL-01",
+      "category": "SECRET",
+      "class": "documentation-pattern",
+      "expectedFinding": false,
+      "path": "README.md",
+      "line": 6,
+      "endLine": 6,
+      "reason": "Плейсхолдер токена приведен в документации для иллюстрации формата."
+    },
+    {
+      "id": "H-CTRL-02",
+      "category": "SECRET",
+      "class": "safe-config-property",
+      "expectedFinding": false,
+      "path": "src/main/resources/application.yml",
+      "line": 18,
+      "endLine": 18,
+      "reason": "Параметр CLINICAL_PORT не является конфиденциальным значением."
+    },
+    {
+      "id": "H-CTRL-03",
+      "category": "SCA",
+      "class": "safe-dependency",
+      "expectedFinding": false,
+      "path": "build.gradle.kts",
+      "line": 39,
+      "endLine": 39,
+      "group": "commons-net",
+      "artifact": "commons-net",
+      "version": "3.9.0",
+      "advisoryIds": [
+        "GHSA-cgp8-4m63-fhh5"
+      ],
+      "reason": "Версия 3.9.0 является исправленной и безопасной."
+    },
+    {
+      "id": "H-CTRL-04",
+      "category": "SAST",
+      "class": "parameterized-query",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/health/records/LabReportLookupController.kt",
+      "line": 17,
+      "endLine": 18,
+      "reason": "Запрос findByReportCode использует параметризацию через позиционный плейсхолдер ?."
+    },
+    {
+      "id": "H-CTRL-05",
+      "category": "SAST",
+      "class": "legitimate-public-route",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/health/config/ClinicalSecurityConfig.kt",
+      "line": 17,
+      "endLine": 17,
+      "reason": "Маршрут /api/public/clinic-directory является общедоступным телефонным справочником клиники."
+    },
+    {
+      "id": "H-CTRL-06",
+      "category": "SAST",
+      "class": "safe-tls-client",
+      "expectedFinding": false,
+      "path": "src/main/kotlin/com/health/integration/InsuranceValidationClient.kt",
+      "line": 7,
+      "endLine": 10,
+      "reason": "Клиент проверки страховок использует стандартный защищенный SSLContext."
+    }
+  ]
+}
