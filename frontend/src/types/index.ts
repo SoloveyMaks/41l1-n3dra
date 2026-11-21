@@ -8,7 +8,8 @@ export type PortType =
   | 'ai_scan_result'
   | 'report'
   | 'condition_branch'
-  | 'delivery_result';
+  | 'delivery_result'
+  | 'custom_findings';
 
 export type NodeKind =
   | 'manual_trigger'
@@ -24,7 +25,8 @@ export type NodeKind =
   | 'ai_explain'
   | 'ai_scan'
   | 'build_report'
-  | 'notify';
+  | 'notify'
+  | 'custom_check';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type SecurityVerdict = 'pending' | 'pass' | 'fail' | 'inconclusive';

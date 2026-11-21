@@ -31,6 +31,7 @@ const KIND_CONFIG: Record<NodeKind, { icon: any; color: string; bg: string; bord
   ai_scan: { icon: Sparkles, color: 'text-fuchsia-300', bg: 'bg-fuchsia-950/30', border: 'border-fuchsia-700' },
   build_report: { icon: FileText, color: 'text-cyan-400', bg: 'bg-cyan-950/40', border: 'border-cyan-600' },
   notify: { icon: Send, color: 'text-sky-400', bg: 'bg-sky-950/40', border: 'border-sky-600' },
+  custom_check: { icon: FileCode2, color: 'text-violet-300', bg: 'bg-violet-950/40', border: 'border-violet-600' },
 };
 
 export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
@@ -132,6 +133,7 @@ function renderInputHandles(kind: NodeKind) {
     case 'secret_scan':
     case 'sca_scan':
     case 'kotlin_sast':
+    case 'custom_check':
       return <Handle type="target" position={Position.Left} id="artifact" className="!bg-blue-500 !w-3 !h-3" />;
     case 'merge_findings':
       return (
@@ -207,6 +209,8 @@ function renderOutputHandles(kind: NodeKind) {
       return <Handle type="source" position={Position.Right} id="report" className="!bg-cyan-400 !w-3 !h-3" />;
     case 'notify':
       return <Handle type="source" position={Position.Right} id="delivery_result" className="!bg-sky-400 !w-3 !h-3" />;
+    case 'custom_check':
+      return <Handle type="source" position={Position.Right} id="custom_findings" className="!bg-violet-400 !w-3 !h-3" />;
     default:
       return <Handle type="source" position={Position.Right} id="out" className="!bg-gray-500 !w-3 !h-3" />;
   }
@@ -252,6 +256,12 @@ function renderConfigSummary(kind: NodeKind, config: Record<string, any>) {
       return <div>Security Passport + JSON</div>;
     case 'notify':
       return <div className="truncate text-sky-300">Канал: HTTP Webhook</div>;
+    case 'custom_check':
+      return (
+        <div className="truncate text-violet-300">
+          {config.definitionId ? `Проверка: ${config.definitionId.slice(0, 8)}…` : 'Выберите проверку'}
+        </div>
+      );
     default:
       return <div>Готов к работе</div>;
   }

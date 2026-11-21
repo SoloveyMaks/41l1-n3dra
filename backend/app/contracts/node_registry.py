@@ -199,6 +199,22 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
             "generateOfficialJson": True
         }
     ),
+    NodeKind.CUSTOM_CHECK: NodeDefinition(
+        kind=NodeKind.CUSTOM_CHECK,
+        title="Custom Check (Python sandbox)",
+        category="Analyzers",
+        description=(
+            "Пользовательская Python-проверка workspace в bwrap: без сети, host env "
+            "и записи в проект; результат — отдельный поток custom-фактов, не findings/verdict"
+        ),
+        inputs=[
+            PortDefinition(id="artifact", name="Artifact In", type=PortType.ARTIFACT)
+        ],
+        outputs=[
+            PortDefinition(id="custom_findings", name="Custom Findings Out", type=PortType.CUSTOM_FINDINGS)
+        ],
+        default_config={"definitionId": ""}
+    ),
     NodeKind.NOTIFY: NodeDefinition(
         kind=NodeKind.NOTIFY,
         title="Notify (Webhook)",

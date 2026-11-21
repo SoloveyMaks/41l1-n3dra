@@ -1,6 +1,12 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Trash2, Settings, ShieldAlert, GitFork, Clock, Send, Sparkles } from 'lucide-react';
 import { ArtifactManifest, WorkflowNode } from '../types';
+import {
+  getCustomCheckStatus,
+  listCustomChecks,
+  type CustomCheckDefinition,
+  type CustomCheckStatus,
+} from '../api/customChecks';
 
 interface InspectorPanelProps {
   node: WorkflowNode | null;
@@ -17,9 +23,32 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onDeleteNode,
   onClose,
 }) => {
+  const [customChecks, setCustomChecks] = useState<CustomCheckDefinition[]>([]);
+  const [customSandbox, setCustomSandbox] = useState<CustomCheckStatus | null>(null);
+  const [customError, setCustomError] = useState('');
+
+  const nodeKind = node?.kind;
+  const nodeId = node?.id;
+  useEffect(() => {
+    if (!nodeId || nodeKind !== 'custom_check') return;
+    const controller = new AbortController();
+    setCustomError('');
+    listCustomChecks(controller.signal)
+      .then(setCustomChecks)
+      .catch((error: unknown) => {
+        setCustomChecks([]);
+        setCustomError(error instanceof Error ? error.message : 'Не удалось загрузить проверки');
+      });
+    getCustomCheckStatus(controller.signal)
+      .then(setCustomSandbox)
+      .catch(() => setCustomSandbox(null));
+    return () => controller.abort();
+  }, [nodeId, nodeKind]);
+
   if (!node) return null;
 
   const config = node.config || {};
+  const selectedCheck = customChecks.find((item) => item.id === config.definitionId);
 
   const handleFieldChange = (key: string, value: any) => {
     onUpdateConfig(node.id, { ...config, [key]: value });
@@ -299,6 +328,50 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 />
                 <span>Строгая валидация CVE и findingId</span>
               </label>
+            </div>
+          )}
+
+          {node.kind === 'custom_check' && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-violet-900/60 bg-violet-950/30 p-2.5 text-[10px] leading-relaxed text-violet-200">
+                Python-only в bwrap: без сети, host env и записи в проект. Результат — отдельный поток
+                custom-фактов; canonical findings, вердикт и отчёт не меняются.
+              </div>
+              {customSandbox && !customSandbox.available && (
+                <div role="alert" className="rounded-lg border border-rose-800 bg-rose-950/40 p-2.5 text-[10px] leading-relaxed text-rose-200">
+                  Sandbox недоступен: {customSandbox.reason}. Запуск невозможен, host-fallback отсутствует.
+                </div>
+              )}
+              <div>
+                <label className="block text-[10px] text-slate-400 mb-1">Проверка workspace:</label>
+                <select
+                  value={String(config.definitionId || '')}
+                  onChange={(e) => handleFieldChange('definitionId', e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-violet-500"
+                >
+                  <option value="">Выберите сохранённую проверку</option>
+                  {customChecks.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} v{item.version}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {customError && (
+                <p role="alert" className="text-[10px] text-rose-300">{customError}</p>
+              )}
+              {!customError && customChecks.length === 0 && (
+                <p className="text-[10px] text-slate-500">
+                  Сохранённых проверок нет. Создайте их в «Custom Check» — в палитру попадает только
+                  проверка, прошедшая validate в sandbox.
+                </p>
+              )}
+              {selectedCheck && (
+                <p className="text-[10px] text-slate-500 font-mono">
+                  лимиты: {selectedCheck.timeoutSeconds}с / {selectedCheck.memoryMb}МБ /{' '}
+                  {selectedCheck.maxOutputBytes}Б · runner {selectedCheck.runner}
+                </p>
+              )}
             </div>
           )}
 

@@ -168,6 +168,22 @@ class WorkflowValidator:
                     )
                 ))
 
+            # Custom check runs only against the frozen artifact snapshot.
+            if node.kind == NodeKind.CUSTOM_CHECK:
+                if "artifact" not in target_ports_connected[node.id]:
+                    issues.append(WorkflowValidationIssue(
+                        level="error",
+                        nodeId=node.id,
+                        message="Custom Check требует подключения артефакта проекта на входном порту",
+                    ))
+                definition_id = (node.config or {}).get("definitionId")
+                if not isinstance(definition_id, str) or not definition_id.strip():
+                    issues.append(WorkflowValidationIssue(
+                        level="error",
+                        nodeId=node.id,
+                        message="Custom Check: выберите сохранённую проверку (definitionId)",
+                    ))
+
             # MergeFindings should have at least one scan connected
             if node.kind == NodeKind.MERGE_FINDINGS:
                 connected_scans = target_ports_connected[node.id].intersection({"scan_1", "scan_2", "scan_3"})

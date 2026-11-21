@@ -21,6 +21,9 @@ from backend.app.codefacts.map_builder import build_run_map, ensure_artifact_met
 from backend.app.codefacts.publish import publish_run_artifact
 from backend.app.codefacts.source import load_snapshot_sources
 from backend.app.codefacts.store import CodeFactsStore
+from backend.app.custom_checks.sandbox import SandboxUnavailable
+from backend.app.custom_checks.service import run_definition as run_custom_check_definition
+from backend.app.custom_checks.store import CustomCheckNotFound, CustomCheckStore
 from backend.app.engine.notify_policy import validate_webhook_url
 from backend.app.engine.sse import SSEBroker
 from backend.app.engine.validator import WorkflowValidator
@@ -405,6 +408,51 @@ class WorkflowExecutor:
                 adapter=self.team_b,
             )
             return {"scan_result": scan_res}, None
+
+        elif kind == NodeKind.CUSTOM_CHECK:
+            # User-defined Python check inside bwrap. The result is a separate
+            # custom fact stream: it never enters findings_bundle/policy/report.
+            art = inputs.get("artifact")
+            art_id = art.get("artifactId") if isinstance(art, dict) else None
+            art_id = art_id or default_artifact_id
+            if not art_id:
+                raise ValueError("Custom Check: нет входного артефакта проекта")
+            definition_id = str(config.get("definitionId") or "").strip()
+            if not definition_id:
+                raise ValueError("Custom Check: в config не выбран definitionId")
+            workspace = workspace_id()
+            checks = CustomCheckStore()
+            try:
+                definition = checks.get_definition(workspace, definition_id)
+                source = checks.get_source(workspace, definition_id)
+            except CustomCheckNotFound:
+                raise ValueError(
+                    "Custom Check: проверка не найдена в этом workspace; выберите сохранённую проверку"
+                ) from None
+            if not definition.lastValidatedAt:
+                raise ValueError("Custom Check: проверка не проходила validate")
+            try:
+                result = await asyncio.to_thread(
+                    run_custom_check_definition,
+                    definition, source, workspace, art_id, self.db, checks, run_id,
+                )
+            except SandboxUnavailable as exc:
+                raise ValueError(f"Custom Check: sandbox недоступен — {exc}") from exc
+            if result.status != "succeeded":
+                detail = "; ".join(
+                    str(item.get("message") or item.get("code"))
+                    for item in result.diagnostics[:3]
+                ) or result.status
+                raise ValueError(f"Custom Check «{definition.name}»: {result.status} — {detail}")
+            payload = result.model_dump()
+            await self.sse.emit_event(run_id, "custom_findings", {
+                "nodeId": node.id,
+                "definitionId": definition.id,
+                "status": result.status,
+                "count": len(result.findings),
+                "findings": payload["findings"],
+            })
+            return {"custom_findings": payload}, None
 
         elif kind == NodeKind.MERGE_FINDINGS:
             # Collect all scan results from inputs
