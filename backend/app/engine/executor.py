@@ -1,14 +1,16 @@
 import asyncio
+import json
 import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from backend.app.ai.scan_service import AiScanService
 from backend.app.ai.service import AiService
+from backend.app.ai.provider import mask_sensitive_text
 from backend.app.analyzers.redaction import sanitize_fact_evidence, sanitize_sources, secret_ranges
 from backend.app.contracts.schemas import (
     AiScanResult, Coverage, DeliveryResult, Diagnostic, ExecutionStatus, ExplainResult,
@@ -28,10 +30,13 @@ from backend.app.integrations.full_analysis import merge_extra_findings, scan_ca
 from backend.app.integrations.team_b import TeamBAdapter
 from backend.app.notifications.webhook import WebhookNotifier
 from backend.app.reports.builder import ReportBuilder
+from backend.app.security.presentation import mask_value_tree
 from backend.app.storage.database import DatabaseRepository
 
 
 logger = logging.getLogger("WorkflowExecutor")
+MAX_QUEUED_RUNS = 32
+RUN_QUEUE_TIMEOUT_SECONDS = 60
 
 
 class ConditionEvaluationError(Exception):
@@ -39,6 +44,26 @@ class ConditionEvaluationError(Exception):
 
 
 class WorkflowExecutor:
+    @staticmethod
+    async def _await_operation(operation, *, propagate_cancel: bool = True):
+        task = asyncio.ensure_future(operation)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The underlying operation owns its worker threads until completion.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:  # noqa: BLE001
+                    break
+            if not task.cancelled():
+                task.exception()
+            if not propagate_cancel:
+                return task.result()
+            raise
+
     def __init__(self, db: DatabaseRepository, sse: SSEBroker):
         self.db = db
         self.sse = sse
@@ -49,35 +74,112 @@ class WorkflowExecutor:
         self.notifier = WebhookNotifier()
         self.team_b = TeamBAdapter()
         try:
-            concurrency = max(1, int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2")))
+            concurrency = max(1, min(16, int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2"))))
         except ValueError:
             concurrency = 2
         self._run_sem = asyncio.Semaphore(concurrency)
+        self._max_inflight_runs = concurrency + MAX_QUEUED_RUNS
+        self._dispatched_runs: Set[str] = set()
+
+    async def _finish_queued_run(self, run_id: str, status: str, message: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        if not self.db.claim_run_start(run_id, now):
+            return
+        self.db.update_run_status(
+            run_id, execution_status=status, security_verdict="inconclusive", finished_at=now,
+        )
+        await self.sse.emit_event(run_id, "run_status", {
+            "status": status, "verdict": "inconclusive", "error": message,
+        })
+
+    def _finish_saved_report(self, run_id: str, status: str) -> str:
+        try:
+            report = self.db.get_report(run_id)
+            if not report:
+                return "inconclusive"
+            official = json.loads(report["official_json"])
+            official.setdefault("metadata", {})["executionStatus"] = status
+            label = "прерван" if status == "interrupted" else "завершился с ошибкой"
+            readable = re.sub(
+                r"(?m)^\*\*Статус:\*\*[^\n]*", f"**Статус:** {label}  ",
+                report["readable_markdown"],
+            )
+            self.db.save_report(
+                run_id=run_id, verdict=report["verdict"], passport=report["passport"],
+                ai_summary=report["ai_summary"], ai_items=report["ai_items"],
+                ai_status=report["ai_status"], readable_markdown=readable,
+                official_json=json.dumps(official, ensure_ascii=False, indent=2),
+            )
+            return report["verdict"]
+        except Exception:  # noqa: BLE001 - run settlement must survive report failure
+            logger.exception("Failed to settle saved report for %s", run_id)
+            return "inconclusive"
 
     async def execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                           trigger_type: str = "manual", workflow_id: Optional[str] = None,
                           revision_id: Optional[str] = None) -> None:
         """Single bounded entrypoint for manual and scheduled runs."""
-        async with self._run_sem:
+        if run_id in self._dispatched_runs:
+            return
+        if len(self._dispatched_runs) >= self._max_inflight_runs:
+            await self._finish_queued_run(run_id, "failed", "Очередь запусков переполнена")
+            return
+        self._dispatched_runs.add(run_id)
+        acquired = False
+        try:
+            try:
+                await asyncio.wait_for(self._run_sem.acquire(), timeout=RUN_QUEUE_TIMEOUT_SECONDS)
+                acquired = True
+            except asyncio.TimeoutError:
+                await self._finish_queued_run(run_id, "failed", "Истёк лимит ожидания запуска")
+                return
+            except asyncio.CancelledError:
+                await self._finish_queued_run(run_id, "interrupted", "Ожидание запуска прервано")
+                raise
             try:
                 await self._execute_run(
                     run_id, draft, artifact_id, trigger_type, workflow_id, revision_id
                 )
+            except asyncio.CancelledError:
+                current = self.db.get_run(run_id) or {}
+                if current.get("execution_status") in {
+                    "succeeded", "failed", "interrupted", "cancelled",
+                }:
+                    # A terminal outcome is already durable; never rewrite it
+                    # as interrupted because the caller was cancelled late.
+                    raise
+                verdict = self._finish_saved_report(run_id, "interrupted")
+                self.db.update_run_status(
+                    run_id, execution_status="interrupted", security_verdict=verdict,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                try:
+                    await self._await_operation(self.sse.emit_event(
+                        run_id, "run_status", {"status": "interrupted", "verdict": verdict},
+                    ), propagate_cancel=False)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to emit interruption event for %s", run_id)
+                raise
             except Exception:  # noqa: BLE001 - run must not stay queued/running
                 logger.exception("Run %s failed unexpectedly", run_id)
+                verdict = self._finish_saved_report(run_id, "failed")
                 self.db.update_run_status(
-                    run_id, execution_status="failed", security_verdict="inconclusive",
+                    run_id, execution_status="failed", security_verdict=verdict,
                     finished_at=datetime.now(timezone.utc).isoformat()
                 )
                 try:
                     await self.sse.emit_event(run_id, "run_status", {
-                        "status": "failed", "verdict": "inconclusive",
+                        "status": "failed", "verdict": verdict,
                         "error": "Внутренняя ошибка выполнения",
                     })
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to emit failure event for %s", run_id)
             finally:
                 self.team_b.release(run_id)
+        finally:
+            self._dispatched_runs.discard(run_id)
+            if acquired:
+                self._run_sem.release()
 
     async def _execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                            trigger_type: str = "manual", workflow_id: Optional[str] = None,
@@ -91,8 +193,7 @@ class WorkflowExecutor:
         run_row = self.db.get_run(run_id) or {}
         workflow_id = workflow_id or str(run_row.get("workflow_id") or "workflow-unknown")
         revision_id = revision_id or str(run_row.get("revision_id") or "revision-unknown")
-        workflow = self.db.get_workflow(workflow_id) or {}
-        workflow_name = str(workflow.get("name") or "Security Scan")
+        workflow_name = draft.name
         await self.sse.emit_event(run_id, "run_status", {"status": "running", "trigger": trigger_type})
 
         # Pre-validate draft
@@ -195,11 +296,29 @@ class WorkflowExecutor:
                     node_inputs[in_e.targetPort] = src_val
 
             try:
-                outputs, branch_decision = await self._run_node_logic(
-                    run_id, curr_node, node_inputs, artifact_id, trigger_type,
-                    findings_bundle, policy_result, explain_result,
-                    workflow_id, revision_id, workflow_name,
-                )
+                try:
+                    outputs, branch_decision = await self._await_operation(self._run_node_logic(
+                        run_id, curr_node, node_inputs, artifact_id, trigger_type,
+                        findings_bundle, policy_result, explain_result,
+                        workflow_id, revision_id, workflow_name,
+                    ))
+                except asyncio.CancelledError:
+                    duration_ms = (time.time() - node_start_time) * 1000
+                    self._record_node_run(
+                        run_id, curr_node, NodeRunStatus.CANCELLED,
+                        duration_ms, None, {}, {},
+                    )
+                    try:
+                        await self._await_operation(self.sse.emit_event(
+                            run_id, "node_status", {
+                                "nodeId": ready_node_id,
+                                "status": "cancelled",
+                                "duration_ms": round(duration_ms, 2),
+                            }, ready_node_id,
+                        ), propagate_cancel=False)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Failed to emit cancelled node for %s", run_id)
+                    raise
 
                 duration_ms = (time.time() - node_start_time) * 1000
                 node_statuses[ready_node_id] = NodeRunStatus.SUCCEEDED
@@ -249,7 +368,7 @@ class WorkflowExecutor:
             except Exception as e:
                 duration_ms = (time.time() - node_start_time) * 1000
                 node_statuses[ready_node_id] = NodeRunStatus.FAILED
-                err_msg = str(e)
+                err_msg = mask_sensitive_text(str(e))
 
                 # Record failed node in DB
                 self._record_node_run(run_id, curr_node, NodeRunStatus.FAILED, duration_ms, err_msg, {}, {})
@@ -325,10 +444,10 @@ class WorkflowExecutor:
         # Publish before exposing final status: once the UI sees "succeeded/failed",
         # the published canonical record (or an honest publication=false) already exists.
         try:
-            await asyncio.to_thread(
+            await self._await_operation(asyncio.to_thread(
                 self._publish_canonical, run_id, workflow_id, revision_id,
                 final_exec_status.value, final_verdict.value,
-            )
+            ), propagate_cancel=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Canonical publish failed for %s: %s", run_id, exc)
 
@@ -340,11 +459,14 @@ class WorkflowExecutor:
             findings_summary=counts
         )
 
-        await self.sse.emit_event(run_id, "run_status", {
-            "status": final_exec_status.value,
-            "verdict": final_verdict.value,
-            "findings_summary": counts
-        })
+        try:
+            await self._await_operation(self.sse.emit_event(run_id, "run_status", {
+                "status": final_exec_status.value,
+                "verdict": final_verdict.value,
+                "findings_summary": counts
+            }), propagate_cancel=False)
+        except Exception:  # noqa: BLE001 - terminal state is already persisted/published
+            logger.exception("Failed to emit final run event for %s", run_id)
 
     async def _run_node_logic(self, run_id: str, node: WorkflowNode, inputs: Dict[str, Any],
                              default_artifact_id: Optional[str], trigger_type: str,
@@ -861,7 +983,7 @@ class WorkflowExecutor:
 
             # Save delivery to DB and emit SSE
             self.db.save_delivery(
-                delivery_id=f"del_{run_id}",
+                delivery_id=f"del_{run_id}_{node.id}",
                 run_id=run_id,
                 channel=del_res.channel,
                 status=del_res.status,
@@ -869,7 +991,9 @@ class WorkflowExecutor:
                 status_code=del_res.status_code,
                 message=del_res.message,
             )
-            await self.sse.emit_event(run_id, "delivery_status", del_res.model_dump())
+            await self.sse.emit_event(
+                run_id, "delivery_status", del_res.model_dump(), node_id=node.id,
+            )
 
             return {"delivery_result": del_res}, None
 
@@ -976,6 +1100,19 @@ class WorkflowExecutor:
         artifact_id = str(run.get("artifact_id") or "")
         artifact = self.db.get_artifact(artifact_id) if artifact_id else None
         workflow = self.db.get_workflow(workflow_id) or {}
+        revision = self.db.get_workflow_revision(revision_id)
+        if not revision or not revision.get("draft"):
+            payload["publication"] = {"published": False, "reason": "workflow revision missing"}
+            store.save_run(workspace, run_uuid(run_id), payload)
+            return
+        revision_draft = revision["draft"]
+        workflow = {
+            **workflow,
+            "id": workflow_id,
+            "name": revision_draft.get("name") or "Security Scan",
+            "description": revision_draft.get("description") or "",
+            "draft": revision_draft,
+        }
         if not artifact:
             payload["publication"] = {"published": False, "reason": "artifact row missing"}
             store.save_run(workspace, run_uuid(run_id), payload)
@@ -1062,15 +1199,15 @@ class WorkflowExecutor:
     def _record_node_run(self, run_id: str, node: WorkflowNode, status: NodeRunStatus,
                          duration_ms: float, error_msg: Optional[str],
                          in_data: Dict[str, Any], out_data: Dict[str, Any]) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        finished = datetime.now(timezone.utc)
         self.db.save_node_run({
             "id": f"nr_{run_id}_{node.id}",
             "run_id": run_id,
             "node_id": node.id,
             "kind": node.kind.value,
             "status": status.value,
-            "started_at": now,
-            "finished_at": now,
+            "started_at": (finished - timedelta(milliseconds=duration_ms)).isoformat(),
+            "finished_at": finished.isoformat(),
             "duration_ms": round(duration_ms, 2),
             "error_message": error_msg,
             "input_data_masked": in_data,
@@ -1101,16 +1238,9 @@ class WorkflowExecutor:
             obj = obj.model_dump()
 
         if isinstance(obj, dict):
-            masked = {}
-            for k, v in obj.items():
-                if "secret" in k.lower() or "token" in k.lower() or "password" in k.lower():
-                    if isinstance(v, str) and len(v) > 4:
-                        masked[k] = v[:2] + "****" + v[-2:]
-                    else:
-                        masked[k] = "****"
-                else:
-                    masked[k] = self._mask_data_for_ui(v)
-            return masked
+            return mask_value_tree(
+                {k: self._mask_data_for_ui(v) for k, v in obj.items()}, mask_sensitive_text,
+            )
         elif isinstance(obj, list):
             return [self._mask_data_for_ui(item) for item in obj]
         elif isinstance(obj, (int, float, bool, str)) or obj is None:
