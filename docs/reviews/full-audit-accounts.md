@@ -2,7 +2,7 @@
 
 Дата: 2026-11-22. Worktree: `audit-all-accounts-1122`, ветка `SoloveyMaks/audit-all-accounts-1122`.
 
-Исходная exact база: `35d27d30ae44fd955824001e18eff895197c933c` (HEAD проверен до любых правок, рабочее дерево было чистым). Проверенный SHA кода после исправлений: `d9135667e859ee5bf55f4ce27ab6d07537f00f34`; следующий коммит добавляет только этот отчёт.
+Исходная exact база: `35d27d30ae44fd955824001e18eff895197c933c` (HEAD проверен до любых правок, рабочее дерево было чистым). Первый проверенный SHA кода: `d9135667e859ee5bf55f4ce27ab6d07537f00f34`; после дополнительного поручения координатора проверенный SHA кода: `d0d07ef` (полный SHA указан ниже). Следующий коммит изменяет только этот отчёт.
 
 ## Результат и границы
 
@@ -120,4 +120,64 @@ git diff --check
 2. Удалённые GitHub/GitLab не вызывались: скачивание pinned archive, provider API и установка hooks не доказаны. Проверены только настоящие локальные части импорта/подписей/канонизации.
 3. Demo v1/v2 остаются stateless: logout удаляет cookie, но копию demo-токена нельзя отозвать до TTL. Это существующее явное ограничение demo-модели; безопасное полноценное серверное аннулирование требует отдельного решения о хранении demo sessions, его не добавлял в рамках точечных правок.
 
-Готовы четыре локальных коммита исправлений и этот отчёт. Для полной приёмки нужен отдельный разрешённый PG-прогон; текущее завершение worker не должно представляться как прохождение непроверенной интеграции.
+В первом проходе готовы четыре локальных коммита исправлений и отчёт; дополнительный проход описан ниже. Для полной приёмки нужен отдельный разрешённый PG-прогон; текущее завершение worker не должно представляться как прохождение непроверенной интеграции.
+
+## Дополнительный проход по поручению координатора
+
+Сообщение `msg_f0109d923f5e` подтвердило отсутствие разрешённой disposable PostgreSQL у координатора и поручило продолжить доступные проверки. База продолжения — `9550ebe240c2e2fe2227430754e353d08431bf2d`, проверенный SHA кода после новых правок — **`d0d07efdcea6696d07a7ba1467bdde5d5f9f123d`**. PG-блокер сохраняется без обходов.
+
+### 10. Fallback старого артефакта обходит ограничения intake
+
+Вызов настоящего `build_snapshot_from_directory` при `CG_MAX_FILE_COUNT=3`, `CG_MAX_UNCOMPRESSED_BYTES=6` до правки успешно создал manifest с **4 файлами и 12 байтами**. Fallback вызывается из `ensure_artifact_meta`, поэтому отсутствие sidecar позволяло пути чтения уже распакованного артефакта обходить лимиты ZIP intake. Кроме того, `read_bytes()` выделял память под весь файл до проверки индивидуального размера; аналогичный порядок был в sample packer.
+
+Исправление: fallback ограничивает count/total до накопления manifest и читает максимум разрешённый остаток + 1 байт, проверяет относительные имена тем же валидатором. Sample packer также ограничивает чтение и проверяет count до чтения следующего файла.
+
+После: `fallback-after.py` на реальных каталогах отклонил превышение count/total/file/path; допустимый каталог дал **2 файла / 5 байт**, sample дал настоящий ZIP **199 байт**. Sparse source с логическим размером **1 ГиБ** оба пути отвергли без полного чтения. Это файловая проверка, а не PG-backed восстановление sidecar через endpoint.
+
+Коммит: `745fa476d1538331e8a8136e4a03d86bf8ffac64` — полное значение доступно в git history этой ветки, сообщение «Недра: соблюдать лимиты при чтении каталогов артефактов».
+
+### 11. Некорректный Unicode в кодах доступа вызывает исключение
+
+До: каждая из `verify_registration_code`, `verify_access_code`, `verify_admin_code` бросала `UnicodeEncodeError` на lone surrogate. Исправление: общий byte-comparison helper отклоняет недопустимый UTF-8 как неверный код.
+
+После: прямые настоящие функции отвергли surrogate и неверный код, приняли правильный; `codes-asgi.py` передал ASCII JSON с escape через локальный ASGI и получил **403** на invite регистрации, **401** на user/admin login, **200** на правильный demo-код. Account endpoint подключён настоящей фабрикой; session route извлечён из точного AST без DB singleton и middleware.
+
+Коммит: `d0d07efdcea6696d07a7ba1467bdde5d5f9f123d`.
+
+### 12. Активная сессия сохраняет старую роль и workspace после изменения аккаунта
+
+Причина доказана текущим SELECT: `load_session` соединял аккаунт только по user_id и возвращал `s.role`/`s.workspace_id`, не сравнивая с актуальными `u.role`/`u.workspace_id`. Старая admin-сессия поэтому сохраняла административные права после demotion, а перенос workspace не отзывал доступ к старому workspace.
+
+Исправление: SELECT требует равенства `s.role = u.role` и `s.workspace_id = u.workspace_id`; несовпавшая сессия считается отсутствующей. Таблицы и миграции не менялись.
+
+Проверка после: **точные исходный и изменённый SELECT**, извлечённые из исходников, исполнены на настоящем SQLite SQL engine с attached `account` и синтетическими строками: current → **1/1** строка до/после, demoted → **1/0**, moved → **1/0**. SQL-параметр `%s` заменён на SQLite `?`, логика запроса не подменялась. Это доказывает семантику новых predicates, **не PostgreSQL, не драйверные timestamps и не полный session lifecycle**; PG-прогон demotion/move обязательный.
+
+Коммит: `d0d07efdcea6696d07a7ba1467bdde5d5f9f123d`.
+
+### Команды продолжения и фактические результаты
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD /tmp/nedra-venv/bin/python /tmp/nedra-audit-accounts/task-032c129a/fallback-before.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD /tmp/nedra-venv/bin/python /tmp/nedra-audit-accounts/task-032c129a/fallback-after.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD /tmp/nedra-venv/bin/python /tmp/nedra-audit-accounts/task-032c129a/session-query.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD /tmp/nedra-venv/bin/python /tmp/nedra-audit-accounts/task-032c129a/codes-asgi.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD /tmp/nedra-venv/bin/python /tmp/nedra-audit-accounts/task-032c129a/verify.py
+git diff --check
+```
+
+Повторный `verify.py` после новых правок: **49 checks passed**, exit 0. `codes-asgi.py`: **403/401/401/200**, exit 0. Fallback и SQL пробы: результаты выше, exit 0. Все временные данные в прежней уникальной папке `/tmp/nedra-audit-accounts/task-032c129a/`.
+
+### Точная очередь последующей PostgreSQL/ASGI проверки
+
+Это **невыполненные** сценарии; приёмка по ним остаётся открытой:
+
+1. Настоящие register двух пользователей A/B: разные workspace, hash в БД, v3 cookie; повторный email, valid/invalid login, invite. Полный `main:app` с реальным middleware и разрешённой disposable PG.
+2. Logout A: cookie стирается, `revoked_at` записан, replay сохранённой cookie даёт 401; B остаётся действующим. Отдельно оба logout route.
+3. Disabled/delete/expired/revoked A: `/session`, `/auth/me`, `/profile`, списки и мутации перестают работать под старой v3; B не затронут. Граница состояния, изменённого во время запроса, требует отдельного concurrency прогона.
+4. Demotion admin A → user и перенос workspace A → C: прежняя cookie не даёт admin/старый workspace, новый login берёт актуальные роль/workspace. Проверить новый `load_session` именно psycopg/PG, включая role override, если его использует будущий вызывающий.
+5. Tenant A/B: чужие artifact/workflow/run/revision/nodes/findings/map/evidence/report/export/events дают 404; чужой artifact не выбирается для собственного запуска. Реальный selected artifact и immutable revision соответствуют исполняемому draft, фоновая задача сохраняет workspace.
+6. Параллельные A/B запросы и background jobs не смешивают ContextVar; после ответа scope сброшен; account → demo реально переключает дальнейший запрос на configured demo workspace.
+7. Profile history: pagination/count/options/summary согласованы с SQL snapshot; project/workflow/status/date filters применяются до пагинации; чужих строк нет, пустой результат честный. Invalid timezone/range отклоняются до БД.
+8. Account user/admin может управлять только своим schedule/watch; demo user получает 403; чужие watch setup/check/patch дают 404, секреты не выдаются. Admin overview корректен для personal/demo и настоящих DB counts.
+9. Подписанный push сохраняет inbox в workspace найденного watch до 202; replay одной delivery и одного commit при разных delivery не создаёт второй run; disabled/rotated nonce отклоняет старые события, lease/recovery/dispatch SQL сохраняют идемпотентность после рестарта и конкуренции.
+10. Upload через полный endpoint сохраняет runtime artifact и файловый sidecar в одном workspace; CRC/path/codec получают 400, oversized body — согласованный отказ, при отказе persistence нет бесхозной успешной записи. Для repository provider download/remote hook отдельно нужны разрешённые провайдеры; локальные parser/HMAC пробы не заменяют этот этап.
