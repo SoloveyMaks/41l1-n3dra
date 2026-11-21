@@ -2,9 +2,13 @@
 
 Sample/дефолтный workflow не отправляет ничего без явного
 `config.enabled=true` и разрешённого URL. Дополнительно режем SSRF:
-loopback/private/link-local/metadata адреса запрещены, если сервер явно не
-разрешил локальный тестовый приёмник (`allowLocal=true`); внешний адрес
-требует `allowExternal=true`, https и стандартный порт.
+loopback/private/link-local/metadata/CGNAT и любые non-global адреса запрещены,
+если сервер явно не разрешил локальный тестовый приёмник (`allowLocal=true`);
+внешний адрес требует `allowExternal=true`, https и стандартный порт.
+
+DNS-проверка возвращает конкретные адреса. Runtime подключается именно к ним
+(pinned address) и не следует redirects, поэтому повторное разрешение имени
+между проверкой и запросом не может увести соединение в другую сеть.
 """
 
 from __future__ import annotations
@@ -29,10 +33,26 @@ class NotificationDecision:
     addresses: tuple[str, ...] = ()
 
 
-def _is_public_ip(value: str) -> bool:
+def _normalize_ip(value: str):
+    """Parse an IP, folding IPv4-mapped IPv6 to its IPv4 form."""
+    ip = ipaddress.ip_address(value.split('%', 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def _is_global_ip(value: str) -> bool:
+    """True only for globally routable addresses.
+
+    ``ipaddress.is_global`` excludes RFC1918, loopback, link-local,
+    reserved, unspecified, multicast and CGNAT (100.64.0.0/10). The extra
+    explicit checks keep the policy readable if the stdlib table changes.
+    """
     try:
-        ip = ipaddress.ip_address(value)
+        ip = _normalize_ip(value)
     except ValueError:
+        return False
+    if not ip.is_global:
         return False
     return not (
         ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
@@ -40,12 +60,25 @@ def _is_public_ip(value: str) -> bool:
     )
 
 
+def _is_loopback(value: str) -> bool:
+    try:
+        return _normalize_ip(value).is_loopback
+    except ValueError:
+        return False
+
+
 def _resolve(host: str, port: int) -> Tuple[list[str], Optional[str]]:
     try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except OSError as exc:
+        infos = socket.getaddrinfo(
+            host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP,
+        )
+        addresses = sorted({
+            _normalize_ip(str(info[4][0])).compressed for info in infos
+        })
+    except (OSError, UnicodeError, ValueError):
+        # Includes IDNA failures (overlong label). Callers turn this into a
+        # controlled 422 without surfacing resolver text.
         return [], "Не удалось разрешить адрес приёмника"
-    addresses = sorted({info[4][0] for info in infos})
     return addresses, None
 
 
@@ -64,40 +97,51 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
         return NotificationDecision(False, "Разрешены только http/https")
     if parts.username or parts.password:
         return NotificationDecision(False, "Userinfo в URL вебхука запрещён")
+    if parts.query or parts.fragment:
+        return NotificationDecision(False, "Query и fragment в URL вебхука запрещены")
     if not host:
         return NotificationDecision(False, "В URL нет host")
     if host in BLOCKED_HOSTNAMES:
         return NotificationDecision(False, "Cloud metadata/localhost alias запрещён")
     if not 1 <= port <= 65535:
         return NotificationDecision(False, "Некорректный порт")
+
     literal_ip: Optional[str] = None
     try:
-        literal_ip = str(ipaddress.ip_address(host))
+        literal_ip = _normalize_ip(host).compressed
     except ValueError:
         literal_ip = None
     local_host = host in {"127.0.0.1", "::1", "localhost"} or (
-        literal_ip is not None and ipaddress.ip_address(literal_ip).is_loopback
+        literal_ip is not None and _is_loopback(literal_ip)
     )
 
     if not allow_local and not allow_external:
         return NotificationDecision(False, "Отправка не разрешена: нужен явный выбор приёмника")
-    addresses, error = _resolve(host, port)
-    if error:
-        return NotificationDecision(False, error)
-    if not addresses:
-        return NotificationDecision(False, "Host не разрешился в IP")
+
     if literal_ip is not None:
         addresses = [literal_ip]
-
-    if any(ipaddress.ip_address(address).is_link_local for address in addresses if _valid_ip(address)):
+    else:
+        addresses, error = _resolve(host, port)
+        if error:
+            return NotificationDecision(False, error)
+    if not addresses:
+        return NotificationDecision(False, "Host не разрешился в IP")
+    if any(
+        _normalize_ip(address).is_link_local
+        for address in addresses
+        if _valid_ip(address)
+    ):
         return NotificationDecision(False, "Link-local/metadata адрес запрещён")
 
-    if local_host or all(not _is_public_ip(address) for address in addresses):
+    if local_host or all(not _is_global_ip(address) for address in addresses):
         if not allow_local:
             return NotificationDecision(False, "Локальный/частный адрес запрещён без allowLocal=true")
-        if not all(ipaddress.ip_address(address).is_loopback for address in addresses if _valid_ip(address)):
+        if not all(_is_loopback(address) for address in addresses):
             return NotificationDecision(False, "В allowLocal разрешён только loopback, не частная сеть")
-        return NotificationDecision(True, "Локальный тестовый приёмник разрешён явным allowLocal=true", local=True, addresses=tuple(addresses))
+        return NotificationDecision(
+            True, "Локальный тестовый приёмник разрешён явным allowLocal=true",
+            local=True, addresses=tuple(addresses),
+        )
 
     if not allow_external:
         return NotificationDecision(False, "Внешняя отправка запрещена без allowExternal=true")
@@ -105,14 +149,17 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
         return NotificationDecision(False, "Внешняя отправка только по https")
     if port not in (443,):
         return NotificationDecision(False, "Внешняя отправка только на порт 443")
-    if not all(_is_public_ip(address) for address in addresses if _valid_ip(address)):
-        return NotificationDecision(False, "Внешний host разрешился в private/reserved адрес")
-    return NotificationDecision(True, "Внешний https-приёмник разрешён явным allowExternal=true", addresses=tuple(addresses))
+    if not all(_is_global_ip(address) for address in addresses):
+        return NotificationDecision(False, "Внешний host разрешился в non-global адрес")
+    return NotificationDecision(
+        True, "Внешний https-приёмник разрешён явным allowExternal=true",
+        addresses=tuple(addresses),
+    )
 
 
 def _valid_ip(value: str) -> bool:
     try:
-        ipaddress.ip_address(value)
+        _normalize_ip(value)
         return True
     except ValueError:
         return False

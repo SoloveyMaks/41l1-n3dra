@@ -848,6 +848,7 @@ class WorkflowExecutor:
                         verdict,
                         summary_data,
                         secret_token,
+                        decision.addresses,
                     )
 
             # URL query/fragment могут содержать токены; в UI/SSE их не отдаём.

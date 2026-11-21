@@ -6,11 +6,16 @@
 CREATE TABLE IF NOT EXISTS runtime.notification_settings (
     workspace_id uuid PRIMARY KEY REFERENCES data_contract.workspaces(workspace_id),
     enabled boolean NOT NULL DEFAULT false,
+    -- Full destination stays server-side. API returns only a masked form/ref.
     webhook_url text NOT NULL DEFAULT '',
+    webhook_ref text NOT NULL DEFAULT '',
     allow_local boolean NOT NULL DEFAULT false,
     allow_external boolean NOT NULL DEFAULT false,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE runtime.notification_settings
+    ADD COLUMN IF NOT EXISTS webhook_ref text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS runtime.completion_notifications (
     workspace_id uuid NOT NULL,
@@ -31,11 +36,17 @@ CREATE TABLE IF NOT EXISTS runtime.completion_notifications (
     delivered_at timestamptz,
     read_at timestamptz,
     next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    -- Set only when settings were re-checked under the workspace dispatch lock
+    -- immediately before the HTTP request is allowed to start.
+    authorized_at timestamptz,
     lease_token text,
     lease_until timestamptz,
     PRIMARY KEY(workspace_id, run_id),
     FOREIGN KEY(workspace_id, run_id) REFERENCES runtime.runs(workspace_id, id)
 );
+
+ALTER TABLE runtime.completion_notifications
+    ADD COLUMN IF NOT EXISTS authorized_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS completion_notifications_pending
     ON runtime.completion_notifications(next_attempt_at)

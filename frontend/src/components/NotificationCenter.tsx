@@ -69,6 +69,9 @@ const shortRun = (runId: string) => (runId.length > 22 ? `${runId.slice(0, 22)}�
 const errorText = (error: unknown): string => {
   if (error instanceof NotificationApiError) {
     if (error.code === 'AUTH_REQUIRED') return 'Нужен вход в аккаунт.';
+    if (error.status === 503 || error.status >= 500) {
+      return `Сервис уведомлений временно недоступен (HTTP ${error.status}).`;
+    }
     return error.message;
   }
   return error instanceof Error ? error.message : 'Не удалось загрузить уведомления';
@@ -81,13 +84,15 @@ interface NotificationCenterProps {
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRun }) => {
   const [open, setOpen] = useState(false);
   const [inbox, setInbox] = useState<NotificationInbox>({ items: [], unread: 0 });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [busyRun, setBusyRun] = useState<string | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<NotificationSettings>({
-    enabled: false, webhook_url: '', allow_local: false, allow_external: false,
+    enabled: false, webhook_url: '', webhook_configured: false,
+    webhook_masked: '', webhook_ref: '', allow_local: false, allow_external: false,
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
@@ -104,18 +109,21 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
     abortRef.current = controller;
     if (surfaceError) {
       setLoading(true);
-      setError(null);
+      setFeedError(null);
     }
     try {
-      setInbox(await getNotifications(controller.signal));
-      if (surfaceError) setError(null);
+      const next = await getNotifications(controller.signal);
+      setInbox(next);
+      setFeedError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return;
-      if (surfaceError) setError(errorText(cause));
+      // Polling failures are visible too: never present an empty journal as
+      // "nothing happened" while the server is unavailable.
+      setFeedError(errorText(cause));
     } finally {
       inFlightRef.current = false;
       if (abortRef.current === controller) abortRef.current = null;
-      if (surfaceError) setLoading(false);
+      setLoading(false);
     }
   }, []);
 
@@ -190,6 +198,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
 
   const readAll = async () => {
     setBusyRun('*');
+    setActionError(null);
     try {
       await markAllNotificationsRead();
       const now = new Date().toISOString();
@@ -198,7 +207,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
         items: prev.items.map((item) => ({ ...item, read_at: item.read_at ?? now })),
       }));
     } catch (cause) {
-      setError(errorText(cause));
+      setActionError(errorText(cause));
     } finally {
       setBusyRun(null);
     }
@@ -208,14 +217,23 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
     setSettingsBusy(true);
     setSettingsError(null);
     setSettingsNotice(null);
+    const submittedUrl = settings.webhook_url.trim();
+    const keepsStoredDestination = !submittedUrl && settings.webhook_configured;
     try {
-      const saved = await saveNotificationSettings(settings);
+      const saved = await saveNotificationSettings({
+        enabled: settings.enabled,
+        webhook_url: submittedUrl,
+        allow_local: settings.allow_local,
+        allow_external: settings.allow_external,
+      });
       setSettings(saved);
-      setSettingsNotice(
-        saved.enabled
-          ? 'Настройки сохранены. Новые завершённые запуски будут отправляться на приёмник.'
-          : 'Внешняя доставка выключена. Уведомления остаются в журнале со статусом «Пропущено».',
-      );
+      if (!saved.enabled) {
+        setSettingsNotice('Внешняя доставка выключена. Уведомления остаются в журнале со статусом «Пропущено».');
+      } else if (keepsStoredDestination) {
+        setSettingsNotice('Настройки сохранены. Сохранённый адрес приёмника не изменён и скрыт.');
+      } else {
+        setSettingsNotice('Настройки сохранены. Новые завершённые запуски будут отправляться на приёмник.');
+      }
       await refresh(true);
     } catch (cause) {
       setSettingsError(errorText(cause));
@@ -224,7 +242,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
     }
   };
 
-  const canSave = !settingsBusy && (!settings.enabled || settings.webhook_url.trim().length > 0);
+  const canSave = !settingsBusy && (
+    !settings.enabled
+    || settings.webhook_url.trim().length > 0
+    || settings.webhook_configured
+  );
 
   return (
     <>
@@ -253,7 +275,9 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
             <div className="min-w-0">
               <div className="text-sm font-semibold text-slate-100">Уведомления</div>
               <div className="text-[10px] text-slate-500">
-                Сохраняются на сервере и видны после перезагрузки страницы
+                {feedError
+                  ? 'Данные могут быть устаревшими: сервис не ответил'
+                  : 'Сохраняются на сервере и видны после перезагрузки страницы'}
               </div>
             </div>
             <div className="ml-auto flex items-center gap-1">
@@ -320,11 +344,20 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
                       type="url"
                       value={settings.webhook_url}
                       onChange={(event) => setSettings((prev) => ({ ...prev, webhook_url: event.target.value }))}
-                      placeholder="http://127.0.0.1:9099/notify или https://example.com/hook"
+                      placeholder={settings.webhook_masked || 'http://127.0.0.1:9099/notify или https://example.com/hook'}
+                      autoComplete="off"
+                      spellCheck={false}
                       className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100 outline-none focus:border-indigo-600"
                     />
-                    <span className="mt-1 block text-[10px] text-slate-500">
-                      Query и fragment запрещены: токены в ссылке не поддерживаются.
+                    <span className="mt-1 block break-words text-[10px] text-slate-500">
+                      {settings.webhook_configured ? (
+                        <>
+                          Сохранённый адрес скрыт: <span className="text-slate-400">{settings.webhook_masked}</span>.
+                          Оставьте поле пустым, чтобы не менять его. Полный URL сервер не возвращает.
+                        </>
+                      ) : (
+                        <>Query и fragment запрещены: токены в ссылке не поддерживаются.</>
+                      )}
                     </span>
                   </label>
 
@@ -385,7 +418,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
             <>
               <div className="flex items-center justify-between border-b border-slate-800 px-3 py-1.5">
                 <span className="text-[10px] text-slate-500">
-                  {inbox.items.length === 0 ? 'Журнал пуст' : `Последние ${inbox.items.length}`}
+                  {feedError && inbox.items.length === 0
+                    ? 'Журнал недоступен'
+                    : inbox.items.length === 0
+                      ? 'Журнал пуст'
+                      : `Последние ${inbox.items.length}`}
                 </span>
                 <button
                   type="button"
@@ -397,9 +434,34 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
                 </button>
               </div>
 
-              {error && (
+              {feedError && (
+                <div
+                  role="status"
+                  className="mx-3 mt-2 flex items-start gap-2 rounded-lg border border-amber-800 bg-amber-950/40 px-2.5 py-2 text-[11px] text-amber-200"
+                >
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0 flex-1 break-words">
+                    <div>{feedError}</div>
+                    <div className="mt-0.5 text-[10px] text-amber-300/80">
+                      {inbox.items.length > 0
+                        ? 'Показаны последние успешно загруженные данные.'
+                        : 'Журнал сейчас недоступен: пустой список не означает, что запусков не было.'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void refresh(true)}
+                    disabled={loading}
+                    className="shrink-0 rounded border border-amber-700 px-1.5 py-0.5 text-[10px] text-amber-100 hover:bg-amber-900/60 disabled:opacity-50"
+                  >
+                    Повторить
+                  </button>
+                </div>
+              )}
+
+              {actionError && (
                 <div className="mx-3 mt-2 rounded-lg border border-rose-800 bg-rose-950/40 px-2.5 py-2 text-[11px] text-rose-300">
-                  {error}
+                  {actionError}
                 </div>
               )}
 
@@ -409,7 +471,16 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ onOpenRu
                     <Loader2 size={14} className="animate-spin" /> Загружаем журнал…
                   </div>
                 )}
-                {!loading && inbox.items.length === 0 && (
+                {!loading && inbox.items.length === 0 && feedError && (
+                  <div className="px-3 py-8 text-center">
+                    <AlertTriangle size={22} className="mx-auto mb-2 text-amber-500" />
+                    <div className="text-xs text-amber-200">Журнал недоступен.</div>
+                    <div className="mt-1 text-[10px] text-slate-500">
+                      Сервер не вернул данные; показать пустой журнал как «запусков нет» нельзя.
+                    </div>
+                  </div>
+                )}
+                {!loading && inbox.items.length === 0 && !feedError && (
                   <div className="px-3 py-8 text-center">
                     <Clock size={22} className="mx-auto mb-2 text-slate-600" />
                     <div className="text-xs text-slate-400">Завершённых запусков пока нет.</div>

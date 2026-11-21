@@ -31,7 +31,11 @@ export interface NotificationInbox {
 
 export interface NotificationSettings {
   enabled: boolean;
+  // Always empty on responses: the full destination stays server-side.
   webhook_url: string;
+  webhook_configured: boolean;
+  webhook_masked: string;
+  webhook_ref: string;
   allow_local: boolean;
   allow_external: boolean;
 }
@@ -180,11 +184,19 @@ export async function markAllNotificationsRead(): Promise<void> {
 
 function parseSettings(payload: unknown): NotificationSettings {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-    return { enabled: false, webhook_url: '', allow_local: false, allow_external: false };
+    return {
+      enabled: false, webhook_url: '', webhook_configured: false,
+      webhook_masked: '', webhook_ref: '', allow_local: false, allow_external: false,
+    };
   }
   return {
     enabled: 'enabled' in payload && payload.enabled === true,
-    webhook_url: 'webhook_url' in payload ? str(payload.webhook_url) ?? '' : '',
+    // Ignore any server-supplied raw URL: this client never displays or
+    // re-submits the secret destination.
+    webhook_url: '',
+    webhook_configured: 'webhook_configured' in payload && payload.webhook_configured === true,
+    webhook_masked: 'webhook_masked' in payload ? str(payload.webhook_masked) ?? '' : '',
+    webhook_ref: 'webhook_ref' in payload ? str(payload.webhook_ref) ?? '' : '',
     allow_local: 'allow_local' in payload && payload.allow_local === true,
     allow_external: 'allow_external' in payload && payload.allow_external === true,
   };
@@ -194,8 +206,13 @@ export async function getNotificationSettings(): Promise<NotificationSettings> {
   return parseSettings(await (await request('/notifications/settings')).json());
 }
 
+export type NotificationSettingsInput = Pick<
+  NotificationSettings,
+  'enabled' | 'webhook_url' | 'allow_local' | 'allow_external'
+>;
+
 export async function saveNotificationSettings(
-  value: NotificationSettings,
+  value: NotificationSettingsInput,
 ): Promise<NotificationSettings> {
   return parseSettings(
     await (await request('/notifications/settings', jsonInit('PUT', value))).json(),
