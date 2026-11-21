@@ -43,7 +43,8 @@ class ReportBuilder:
 
     def build_readable_markdown(self, run_id: str, workflow_name: str,
                                 passport: SecurityPassport, policy: PolicyResult,
-                                findings: List[Finding], ai_result: Optional[ExplainResult]) -> str:
+                                findings: List[Finding], ai_result: Optional[ExplainResult],
+                                execution_status: str = "running") -> str:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         verdict_badge = "❌ FAIL" if passport.verdict == SecurityVerdict.FAIL else ("✅ PASS" if passport.verdict == SecurityVerdict.PASS else "⚠️ INCONCLUSIVE")
 
@@ -51,6 +52,7 @@ class ReportBuilder:
         md.append(f"# Отчет проверки безопасности кода: {workflow_name}")
         md.append(f"**Идентификатор запуска:** `{run_id}`  ")
         md.append(f"**Дата и время:** {now}  ")
+        md.append(f"**Статус выполнения:** `{execution_status}`  ")
         md.append(f"**Итоговый вердикт:** {verdict_badge}  \n")
 
         md.append("## 1. Карта безопасности (Security Passport)")
@@ -147,7 +149,8 @@ class ReportBuilder:
 
     def build_official_json(self, run_id: str, workflow_id: str, revision_id: str,
                             passport: SecurityPassport, policy: PolicyResult,
-                            findings: List[Finding], ai_result: Optional[ExplainResult]) -> str:
+                            findings: List[Finding], ai_result: Optional[ExplainResult],
+                            execution_status: str = "running") -> str:
         ai_item_map = {item.findingId: item.model_dump() for item in (ai_result.items if ai_result else [])}
 
         findings_json = []
@@ -165,7 +168,7 @@ class ReportBuilder:
                 "revisionId": revision_id,
                 "generatedAt": datetime.now(timezone.utc).isoformat(),
                 "verdict": passport.verdict.value,
-                "executionStatus": "succeeded"
+                "executionStatus": execution_status
             },
             "securityPassport": passport.model_dump(),
             "policyResult": policy.model_dump(),

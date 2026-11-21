@@ -257,18 +257,10 @@ class WorkflowExecutor:
                     "duration_ms": round(duration_ms, 2)
                 }, ready_node_id)
 
-                # If this was condition, condition error must fail the run visibly
-                if curr_node.kind == NodeKind.CONDITION:
-                    self.db.update_run_status(
-                        run_id, execution_status="failed", security_verdict="inconclusive",
-                        finished_at=datetime.now(timezone.utc).isoformat()
-                    )
-                    await self.sse.emit_event(run_id, "run_status", {
-                        "status": "failed", "verdict": "inconclusive", "error": f"Ошибка условия: {err_msg}"
-                    })
-                    return
-
-                # For analyzer failure: mark downstream edges as failed/inactive, but let others continue
+                # A condition error fails execution, but finalization still runs:
+                # report executionStatus/publication must not be left pending.
+                # Notify failures are separate: they use DeliveryResult and are
+                # not counted as analysis failure.
                 for out_e in outgoing_edges[ready_node_id]:
                     edge_active_states[out_e.id] = False
 
@@ -316,10 +308,14 @@ class WorkflowExecutor:
                             "canonicalCoverage": canonical["details"],
                         },
                     })
-                if findings_bundle is not None:
-                    self._rewrite_report_verdict(
-                        run_id, workflow_name, findings_bundle, policy_result, explain_result
-                    )
+        if findings_bundle is not None and policy_result is not None:
+            # One final rewrite keeps executionStatus, official metadata and
+            # readable text aligned with the actual terminal status. Security
+            # verdict/passport stay the policy verdict, not the execution status.
+            self._rewrite_report_verdict(
+                run_id, workflow_name, findings_bundle, policy_result,
+                explain_result, final_exec_status.value,
+            )
 
         finished_iso = datetime.now(timezone.utc).isoformat()
         # Publish before exposing final status: once the UI sees "succeeded/failed",
@@ -712,12 +708,15 @@ class WorkflowExecutor:
             if not bundle or not pol:
                 raise ValueError("Build Report: Для генерации отчета необходимы FindingsBundle и PolicyResult")
 
+            report_status = str((self.db.get_run(run_id) or {}).get("execution_status") or "running")
             passport = self.report_builder.build_security_passport(bundle.coverage, pol, bundle.findings)
             readable_md = self.report_builder.build_readable_markdown(
-                run_id, workflow_name, passport, pol, bundle.findings, exp
+                run_id, workflow_name, passport, pol, bundle.findings, exp,
+                execution_status=report_status,
             )
             official_json = self.report_builder.build_official_json(
-                run_id, workflow_id, revision_id, passport, pol, bundle.findings, exp
+                run_id, workflow_id, revision_id, passport, pol, bundle.findings, exp,
+                execution_status=report_status,
             )
 
             # Save report to DB
@@ -879,7 +878,8 @@ class WorkflowExecutor:
 
     def _rewrite_report_verdict(self, run_id: str, workflow_name: str, bundle: FindingsBundle,
                                 policy: Optional[PolicyResult],
-                                explain: Optional[ExplainResult]) -> None:
+                                explain: Optional[ExplainResult],
+                                execution_status: str) -> None:
         """Keep the stored report consistent with the final security verdict."""
         if policy is None or not self.db.get_report(run_id):
             return
@@ -887,12 +887,14 @@ class WorkflowExecutor:
         passport = self.report_builder.build_security_passport(bundle.coverage, policy, bundle.findings)
         readable = self.report_builder.build_readable_markdown(
             run_id, workflow_name, passport, policy, bundle.findings, explain,
+            execution_status=execution_status,
         )
         official = self.report_builder.build_official_json(
             run_id,
             str(run_row.get("workflow_id") or "workflow-unknown"),
             str(run_row.get("revision_id") or "revision-unknown"),
             passport, policy, bundle.findings, explain,
+            execution_status=execution_status,
         )
         self.db.save_report(
             run_id=run_id,
