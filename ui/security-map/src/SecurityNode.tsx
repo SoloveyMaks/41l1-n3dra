@@ -47,21 +47,20 @@ export const SecurityNode = memo(({ data, selected }: NodeProps) => {
         </span>
         <span className="sm-node-kind">{meta.label}</span>
         {node.unknown ? (
-          <span className="sm-node-unknown" title="Есть неподтверждённая связь">
+          <span className="sm-node-unknown" title="Связь не установлена">
             ?
           </span>
         ) : null}
       </div>
       <div className="sm-node-title">{node.label}</div>
-      <div className="sm-node-symbol">{node.symbolKey}</div>
       <div className="sm-node-stats">
         <span>
           <b>{node.evidenceCount}</b>{" "}
-          {plural(node.evidenceCount, "evidence", "evidence", "evidence")}
+          {plural(node.evidenceCount, "доказательство", "доказательства", "доказательств")}
         </span>
         <span className={node.findingCount ? "has-findings" : ""}>
           <b>{node.findingCount}</b>{" "}
-          {plural(node.findingCount, "находка", "находки", "находок")}
+          {plural(node.findingCount, "проблема", "проблемы", "проблем")}
         </span>
       </div>
       <Handle

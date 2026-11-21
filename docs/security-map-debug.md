@@ -46,41 +46,57 @@ npm run build --prefix frontend
 Все три команды прошли. `npm run lint --prefix frontend` — только
 существующие warnings других компонентов, без errors.
 
-## Initial focus и узкий экран
+## Человеческая подача
 
-Поверх UI-коммита `19a34d2`:
+- Категории: «Кто обращается», «Адрес запроса», «Правило доступа»,
+  «Какие запросы охватывает правило», «Проверка доступа»,
+  «Обработчик запроса», «Входные данные», «Операция», «Данные», «Настройка».
+- Главная карточка: человеческая категория, label/endpoint из кода и
+  «N доказательств / N проблем». `symbolKey`, producer, версии и ID
+  убраны в «Технические данные»; на карточке их больше нет.
+- Стрелки: «Обращается», «Подходит под правило», «Разрешает», «Требует»,
+  «Вызывает», «Передаёт данные», «Читает», «Изменяет»; source/target
+  остались фактическими, направление не переворачивалось.
+- Находки: человеческие заголовки вместо ruleId, status/severity/confidence
+  переведены; выбранная проблема показывает «Почему так» с реальными
+  reason из DTO, без AI-догадок.
+- Unknown: «связь не установлена», жёлтый пунктир, banner и source
+  сохраняются. Покрытие: «Проверенный объём завершён» /
+  «Проверено неполностью», не «проект безопасен».
+- Пробелы `runtime-configuration`, `runtime-guards`,
+  `binaries-and-archives` получили человеческое пояснение; raw-строки и
+  коды остались в «Технические подробности покрытия».
+- Первый экран: строка «Откуда приходит запрос, как проверяется доступ и
+  какие данные затрагиваются» + «Нажмите на стрелку, чтобы увидеть
+  основание».
+- Initial focus — читаемый участок `route/guard/function/sink` (на 1440
+  scale≈0.86, cards≈214px); на узком canvas — один route-узел при scale≈0.9.
+  Полная карта и unknown не скрываются: «Вся карта» / «Показать путь».
+- MiniMap скрыт на узком по умолчанию, кнопка «Мини» включает вручную.
 
-- `initialFocusNodeIds()` выбирает preferred finding по severity/status,
-  берёт sink/data/function seed и строит реальный путь от actor (или route,
-  если actor нет) до sink. Никаких hardcoded synthetic node.
-- `focusViewport()` после измерения нод ставит meaningful subset в левый верх
-  canvas, а не `DEFAULT_VIEWPORT`. Reset снова применяет этот focus.
-- Layout получил barycenter-проход: слой выравнивается по строкам входящих
-  рёбер, поэтому actor/route/handler не разъезжаются по вертикали.
-- «Вся карта» делает fit всех нод; «Показать путь» центрирует выбранный
-  узел/связь/находку или initial focus; unknown-связи не скрываются.
-- На узком (<700px canvas) focus показывает route → function → sink,
-  а MiniMap скрыт по умолчанию; кнопка «Мини» включает его вручную.
-- Тексты заменены: «жёлтый пунктир», «источник анализа»,
-  «Загружаем фрагмент», «Расположение блоков можно менять»,
-  «КАРТА ДОСТУПА / СТАТИЧЕСКИЙ АНАЛИЗ»; технические поля — в details.
+## Проверка
 
-Live default 33 на 1440: actor внутри canvas на 24px, route не обрезан,
-правый край focus `1026 < 1050`, scale≈0.422. На 390: route/function/sink
-видны, MiniMap скрыт, scroll `390×850`, scale≈0.40. TeamB 43: overlap `0`,
-actor в графе отсутствует — focus корректно падает на route.
+- default 33: `33 узла / 32 связи / 6 проблем / 39 доказательств`,
+  1440 и 390, overlap `0`, overflow нет.
+- TeamB 43: `43 / 32 / 15 / 67`, overlap `0`, health
+  «Проверенный объём завершён».
+- Реальный App: 10 узлов, 13 проблем, masked source `загружен`
+  (`@GetMapping("/dump-database")`), 4 unknown-связи.
+- `npm run check --prefix ui/security-map`, build ui/security-map и
+  build frontend прошли.
 
-## Скриншоты (после focus-правки)
+## Скриншоты (human labels)
 
-`/tmp/security-map-shots-5/default-33-initial-1440.png`
-sha256 `35cc7d101802b2c4f884966c592bc6bda097cc8d90ceb2975d8538841b1a39ad`;
-`/tmp/security-map-shots-5/default-33-initial-390.png`
-sha256 `8bc0b9d13dfd6109f86171036c3cdfa0bc462e65ee4f746819b434d76a1b8bea`;
-`/tmp/security-map-shots-5/teamb-43-initial-1440.png`
-sha256 `a4759902231eaa4623e7d0fd5353ef48c3ddbc4e945eeb20de5f8d0d9e2b2ace`.
+`/tmp/security-map-shots-6/human-default-33-1440-final.png`
+sha256 `09724aa46162f412370e1186379a26341428223ec1c73074886e0fb8445ccaea`;
+`/tmp/security-map-shots-6/human-default-33-390-final.png`
+sha256 `d88577b8ed5ff39cbb4fb7d6bb4fdf7ca14fa7438478105a22dc055117e003ad`;
+`/tmp/security-map-shots-6/human-teamb-43-1440-final.png`
+sha256 `caa1564b3f0da2314d221480e123eab4b72e4b61b17400408b83589e4d85f2e8`;
+`/tmp/security-map-shots-6/human-teamb-43-390-final.png`
+sha256 `f6191815fba5198655da3bbe3f2561e87f4fb89be4c7115328b9db758cb8238c`.
 
-Ранние скриншоты: `/tmp/security-map-shots/`, `/tmp/security-map-shots-3/`,
-`/tmp/security-map-shots-4/`.
+Ранние скриншоты: `/tmp/security-map-shots-5/`, `/tmp/security-map-shots-4/`.
 
 ## Что осталось интеграции
 
