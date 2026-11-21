@@ -11,8 +11,8 @@
 - `main` — после приёмки. Merge/push в `main` делает координатор, не worker.
 - `https://nedra.soloveyka.bond` опубликован: отдельный Cloudflare Tunnel,
   shared demo access gate. Хост — локальный ПК; `Linger=no`, после reboot нужен
-  пользовательский login. Работающий образ `c01c96d`; интегрированный Team B
-  adapter ожидает финальную пересборку. Production readiness не заявляется.
+  пользовательский login. Team B adapter проверен в контейнере на отдельном
+  workflow, default engine сохранён. Production readiness не заявляется.
 
 ## Живая проверка (факты)
 
@@ -131,9 +131,27 @@ bundle и не заменяет global comparison.
 
 ## Перед слиянием в main
 
-1. Закончить отрицательные API/БД сценарии: scope, immutability, ошибочные ZIP.
-2. Пересобрать итоговый dev с optional Team B package и проверить публичный путь.
+1. Принять запрошенный пользователем новый визуал карты в стиле редактора.
+2. Пересобрать итоговый dev с новой картой и принятыми исправлениями БД;
+   повторить публичный путь без повторения всех неизменившихся сценариев.
 3. Обновить PR и слить `dev → main` с сохранением истории.
+
+## Отладка БД и API
+
+В отдельных временных PostgreSQL/workspace проверены: два run одного artifact,
+неизменность опубликованного envelope и hash после рестарта, cross-workspace
+доступ, ошибочные ZIP и отсутствие лишних artifact rows после отказа.
+
+Исправлены единый workspace resolver, runtime DDL startup race, missing/foreign
+run findings/nodes (404). После исправлений два backend одновременно стартовали
+на пустой БД; конфликт workspace config останавливает старт. Evidence разных
+запусков не смешиваются. Идентификатор finding читается вместе с run/workspace.
+
+Публичный контейнер: Team B run `cc781c1b-f60e-4d60-908a-4c04036b1a97`,
+15 findings, 43 nodes, 32 edges, все 67 evidence ready, publication успешна.
+Default workflow остался на backend engine. HTML получает `no-cache,
+must-revalidate`, отсутствующий asset — 404/no-store; загрузочный экран и error
+boundary позволяют увидеть сбой интерфейса вместо белого root.
 
 ## Оставшиеся ограничения
 

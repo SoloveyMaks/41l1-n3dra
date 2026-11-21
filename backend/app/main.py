@@ -85,6 +85,22 @@ if _origins:
 
 
 @app.middleware("http")
+async def frontend_cache_policy(request: Request, call_next):
+    """Keep SPA HTML revalidated and hashed assets immutable after redeploy."""
+    if request.url.path.startswith("/api"):
+        return await call_next(request)
+    response = await call_next(request)
+    path = request.url.path
+    if response.status_code == 200 and path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif response.status_code == 200 and response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path.startswith("/assets/") and response.status_code == 404:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.middleware("http")
 async def same_origin_session(request: Request, call_next):
     path = request.url.path
     if not path.startswith("/api"):
