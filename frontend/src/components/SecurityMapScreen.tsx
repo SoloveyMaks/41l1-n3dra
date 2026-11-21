@@ -18,11 +18,33 @@ import {
   getRunSecurityMap,
 } from '../api/securityMap';
 
-interface SecurityMapScreenProps {
+/**
+ * Actual map load state for the currently selected run.
+ *
+ * Emits `loading` as soon as a run is selected, then exactly one terminal value
+ * for that request: `ready`, `partial`, `empty` or `error`. A retry emits a new
+ * `loading`. Late responses are rejected: a superseded run, an aborted request,
+ * an unmounted screen or a stale reload never emits. With `runId === null`
+ * nothing is emitted at all — there is no map to load, so the owner keeps its
+ * own "no run" state. The same value may repeat (StrictMode double effect), so
+ * consumers must treat it as a level, not an event.
+ */
+export type SecurityMapLoadStateChange = (state: LoadState) => void;
+
+export interface SecurityMapScreenProps {
   runId: string | null;
+  /**
+   * Observes the actual map load state; it never drives loading itself.
+   * Wired by the run owner so a parent (e.g. the live-run motion view) knows
+   * whether the map is really built for this run, not merely requested.
+   */
+  onLoadStateChange?: SecurityMapLoadStateChange;
 }
 
-export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) => {
+export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({
+  runId,
+  onLoadStateChange,
+}) => {
   const [identity, setIdentity] = useState<RunScope | null>(null);
   const [data, setData] = useState<SecurityMapDto | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -35,6 +57,16 @@ export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) =
   const sourceSeq = useRef(0);
   const mapAbort = useRef<AbortController | null>(null);
   const sourceAbort = useRef<AbortController | null>(null);
+  const loadStateListener = useRef(onLoadStateChange);
+
+  useEffect(() => {
+    loadStateListener.current = onLoadStateChange;
+  }, [onLoadStateChange]);
+
+  const applyLoadState = useCallback((next: LoadState) => {
+    setLoadState(next);
+    loadStateListener.current?.(next);
+  }, []);
 
   useEffect(() => {
     mapAbort.current?.abort();
@@ -50,7 +82,7 @@ export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) =
     const controller = new AbortController();
     mapAbort.current = controller;
     const seq = ++loadSeq.current;
-    setLoadState('loading');
+    applyLoadState('loading');
 
     getRunSecurityMap(runId, controller.signal)
       .then((payload) => {
@@ -63,7 +95,7 @@ export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) =
         setData(payload.map);
         setFindings(payload.findings);
         setError(undefined);
-        setLoadState(
+        applyLoadState(
           empty
             ? 'empty'
             : payload.map.coverage.status === 'complete'
@@ -82,11 +114,11 @@ export const SecurityMapScreen: React.FC<SecurityMapScreenProps> = ({ runId }) =
               ? 'source_unavailable'
               : 'map_load_failed',
         });
-        setLoadState('error');
+        applyLoadState('error');
       });
 
     return () => controller.abort();
-  }, [runId, reloadKey]);
+  }, [runId, reloadKey, applyLoadState]);
 
   useEffect(
     () => () => {
