@@ -18,7 +18,7 @@ change canonical SECRET/SCA/SAST findings, policy, verdict or comparison.
 | `backend/app/ai/scan_prompt.py` | versioned prompt and closed rule-class set |
 | `backend/app/ai/scan_validator.py` | strict quote/line/ref grounding, server byte bounds, CVE/severity bans, dedupe |
 | `backend/app/ai/scan_service.py` | one bounded ReformBoss request, validation, provenance, degraded paths |
-| `backend/app/demo/default_workflow.py` | default draft includes `node_ai_scan` as a side branch (artifact + findings for dedupe, no outgoing edge); frozen pre-AI_SCAN baseline for safe upgrades |
+| `backend/app/demo/default_workflow.py` | default draft includes `node_ai_scan` (artifact + findings for dedupe) and one advisory edge to the report's dedicated AI input; no edge into policy/canonical findings; frozen pre-AI_SCAN baseline for safe upgrades |
 | `backend/app/demo/default_workflow_upgrade.py` | explicit revision-preserving upgrade/CLI for existing production defaults; user-modified drafts are reported, not overwritten |
 | `docs/ai-scanner-implementation.md` | this document |
 
@@ -53,10 +53,12 @@ output blow-up.
 
 ## 3. Input selection and privacy
 
-`AI_SCAN` runs in the system default workflow as a separate side branch. It has
-no outgoing edge: canonical findings, policy and the report path never consume
-`ai_scan_result`. Adding it to the default did not rewrite existing user
-workflows; see section 10 for the explicit upgrade.
+`AI_SCAN` runs in the system default workflow. Its only outgoing edge goes to
+`BUILD_REPORT.ai_scan_result`, the report's dedicated advisory input: the
+persisted Markdown and official JSON show status/coverage/hypotheses, while
+canonical findings, policy counts and the verdict never consume the result.
+Adding it to the default did not rewrite existing user workflows; see section
+10 for the explicit upgrade and surgical insertion.
 
 1. The executor resolves the same frozen artifact as deterministic scanners;
    `load_snapshot_sources` verifies every snapshot path and SHA-256 before
@@ -78,7 +80,10 @@ workflows; see section 10 for the explicit upgrade.
 Coverage records `filesTotal`, selected/sent counts, byte counts, truncated
 files, omitted files (bounded sample), failures and `providerErrors`. It is
 stored in `AiScanResult.coverage`; it is never merged into
-`FindingsBundle.coverage` or the Security Passport.
+`FindingsBundle.coverage` or the Security Passport. An excerpt capped at 220
+lines, or centered on a deterministic finding without covering the rest of the
+file, is listed in `truncatedFiles` and makes coverage `partial`; `truncated`
+on the selected file is true as well.
 
 **Data egress:** the block being present is the authorization to send the
 redacted excerpts to ReformBoss. The default workflow now contains it, so a
@@ -120,7 +125,10 @@ Validator rules (`backend/app/ai/scan_validator.py`):
   model output is normalized to LF for the comparison; `byteRange` is still
   recomputed against the raw bytes.
 - Columns and `byteRange` are recomputed from the frozen source by the server;
-  model offsets are never used.
+  model offsets are never used. For a single-line quote the exclusive end column
+  is `startColumn + len(quote)`, not `len(quote) + 1`, so a quote that starts
+  mid-line slices exactly the quoted bytes. Multiline quotes still end on the
+  last line's column.
 - Any `CVE-...` in quote/rationale/remediation → `AI_CVE_FORBIDDEN`.
 - `severity` must be `low|medium|high`; `critical` → `AI_SEVERITY_FORBIDDEN`.
 - `confidence`/`status` are forced to `potential`; `origin` is
@@ -158,6 +166,11 @@ One request per node execution, `temperature=0`, timeout from
 
 `AiScanResult.status` and `coverage.status` are honest about limits:
 `complete` means complete for the selected subset, never full-project coverage.
+
+`provenance.configVersion` hashes every output-changing request setting:
+prompt/validator/selection versions, provider/model, the full non-secret request
+route (credentials, query and fragment stripped), effective `maxTokens`,
+`temperature` and the `AI_JSON_MODE` flag.
 
 The executor catches all AI_SCAN exceptions into a degraded result, and
 `analysis_failed` excludes `AI_SCAN` in addition to `NOTIFY`. A provider outage
@@ -346,6 +359,43 @@ printed. No production service, push or main branch was touched.
   both ground to the raw byte range `[15, 43]`; before the fix the LF quote was
   rejected with `AI_QUOTE_NOT_FOUND`.
 
+### 7.7 Race, dry-run and report verification (2026-11-21)
+
+- Re-ran the independent PG probe (`/tmp/ai-exact-c84-review.py`) on a
+  disposable database. Nominal upgrade: dry-run twice `would_upgrade` with one
+  revision, apply `upgraded` to two revisions, apply again `already_current`.
+- Race with a fresh user edit after the upgrade read: `user_modified`,
+  `freshEditPreserved=true`, binding `art_new_user_selection`, 2 revisions; the
+  upgrade did not write. Two concurrent upgrades returned
+  `['already_current', 'upgraded']` with exactly 2 revisions.
+- Dry-run against a fresh workspace created 0 workspace rows (`0 -> 0`) and
+  exited 0. Dry-run on a database with no runtime schema returned exit 2 and
+  left `data_contract`/`runtime` schemas absent, proving no `init_db` side
+  effect. Missing workspace and non-UUID workspace are explicit errors.
+- Report path: no-key and unreachable runs kept 15 deterministic findings and
+  zero `aiobs_*` canonical rows; stored `official_json` now contains `aiScan`,
+  stored Markdown contains `ИИ-сканер`, and JSONC keeps
+  `aiHypotheses.countsAsFindings=false`.
+- Local HTTP fixture: one grounded SSRF hypothesis, `officialHasAI=true`,
+  export observations 1; fabricated quote gave `rejected`,
+  `AI_QUOTE_NOT_FOUND`, 0 observations. No false clean.
+- Surgical insertion on a prod-like modified draft (custom scanner configs,
+  positions, description, `art_fbe70934d1e3`): dry-run `would_add_ai_scan` with
+  `+node_ai_scan` and 3 edges, apply `added_ai_scan` to a new revision,
+  all 11 existing nodes/13 edges/positions/config/artifact preserved; repeat
+  `already_present`. Factory `--apply` on a user-modified draft returned exit 1
+  `user_modified`; `--add-ai-scan --apply` returned exit 0 and applied.
+- The surgical revision executed with no provider: `succeeded`/`fail`, 15
+  findings, stored `aiScan.status=degraded`, Markdown section present, zero
+  `aiobs_*` canonical rows.
+- Single-line grounding fixture `val prefix = URL(userUrl).readText()` now
+  grounds to columns `14..37`, bytes `[13,36]`, slicing exactly
+  `URL(userUrl).readText()`; CRLF multiline still slices the full quote.
+- Coverage window fixture: a 300-line file selects lines 1–220,
+  `truncated=true`, `truncatedFiles=['big.kt']`, coverage `partial`.
+- Config identity: `/v1` vs `/v2` routes and `AI_JSON_MODE` off/on produce
+  different `configVersion` values; userinfo/query/fragment are not hashed.
+
 ## 8. Limitations
 
 - The model sees only a bounded selected subset. Zero observations does not
@@ -356,9 +406,10 @@ printed. No production service, push or main branch was touched.
 - AI observations are not canonical evidence, not comparable across runs, and
   not eligible for “fixed/introduced” claims. Model/prompt/config changes can
   change observations; `configVersion` records that.
-- No frontend panel, router endpoint or report section was added; the frontend
-  consumes the existing node-run output/SSE contract above. Reports remain
-  deterministic-only.
+- The stored Markdown and official JSON now include a separate advisory
+  `aiScan` block; JSONC/DOCX exports read the same node run. No frontend panel
+  or new router endpoint was added; the frontend consumes the existing node-run
+  output/SSE contract above.
 - No DB migration: the result lives in `runtime.node_runs.output_data_masked`
   and the SSE event. A typed observation table is a later decision.
 
@@ -388,29 +439,52 @@ merged into main, not deployed.**
 
 ## 10. Default workflow and safe production upgrade
 
-`get_default_workflow_draft()` now returns 12 nodes: the deterministic chain is
-unchanged and `node_ai_scan` is appended as a side branch. It is connected to
-`node_project.artifact` and `node_merge.findings_bundle` (dedupe context) and
-has no outgoing edge. The executor therefore records a separate node run and
-SSE event; nothing consumes `ai_scan_result` in the deterministic path.
+`get_default_workflow_draft()` returns 12 nodes. The deterministic chain is
+unchanged and `node_ai_scan` is connected to `node_project.artifact` and
+`node_merge.findings_bundle` (dedupe context). Its only outgoing edge goes to
+`node_report.ai_scan_result`; the report shows the advisory result, but nothing
+feeds policy, canonical findings or the verdict.
 
 The API seeds `wf_secure_pr_gate` only when a workspace has no workflows. It
-does not rewrite an existing workflow, so production needs an explicit step:
+does not rewrite an existing workflow, so production needs an explicit step.
+The CLI requires an explicit workspace and is read-only on dry-run:
 
 ```bash
-# dry run: says missing | would_upgrade | already_current | user_modified
+# dry run: no init_db, no DDL, no workspace row; says missing |
+# would_upgrade | already_current | user_modified
 DATABASE_URL=... RUNTIME_WORKSPACE_ID=<workspace-uuid> \
   python -m backend.app.demo.default_workflow_upgrade --workflow-id wf_secure_pr_gate
 
-# write a new revision only when the active draft still matches the old
+# factory replacement only when the active draft still matches the old
 # factory default (a user-selected artifactId is preserved)
 DATABASE_URL=... RUNTIME_WORKSPACE_ID=<workspace-uuid> \
   python -m backend.app.demo.default_workflow_upgrade --workflow-id wf_secure_pr_gate --apply
+
+# real modified draft: insert only AI_SCAN, preserve every existing node,
+# config, position, edge and the selected artifactId
+DATABASE_URL=... RUNTIME_WORKSPACE_ID=<workspace-uuid> \
+  python -m backend.app.demo.default_workflow_upgrade --workflow-id wf_secure_pr_gate --add-ai-scan --apply
 ```
 
-`backend.app.demo.default_workflow_upgrade.upgrade_system_default_workflow`
-detects the exact frozen pre-AI_SCAN draft, creates a new revision with
-`DatabaseRepository.save_workflow` (old revisions are kept), and returns
-`user_modified` without writing when the draft differs. The only override is
-the explicit `--force-user-edits`; it still creates a new revision instead of
-mutating history. The CLI never prints `DATABASE_URL` or provider keys.
+`upgrade_system_default_workflow` detects the frozen pre-AI_SCAN draft and
+returns `user_modified` without writing when the draft differs. The only
+factory override is the explicit `--force-user-edits`. A requested `--apply`
+that does not apply returns a non-zero exit: `user_modified`, `not_applicable`,
+`invalid_*` and `stale_upgrade` are failures for deployment automation.
+`already_current` / `already_present` are successful noops.
+
+`add_ai_scan_surgically` is the reviewed path for a real modified draft. It
+adds one `AI_SCAN` node and up to three edges (artifact, optional findings,
+optional report input), validates the result, and previews a diff such as
+`added nodes: node_ai_scan`, `added edges: ...` with counts of preserved
+nodes/edges and the preserved `artifactId`. It refuses with `not_applicable`
+when Project Input is missing or ambiguous; it never replaces the draft.
+
+Both paths read the active revision once and call
+`DatabaseRepository.save_workflow_if_latest`, which compares the expected
+`latest_revision_id` and inserts the next revision under one row lock. On a
+conflict it returns the winner's revision and draft from that transaction; the
+caller re-evaluates without a second racing read. A fresh user edit or a second
+upgrade therefore cannot be overwritten, and concurrent upgrades produce one
+new revision plus one `already_current`. The CLI never prints `DATABASE_URL` or
+provider keys.

@@ -138,7 +138,13 @@ def _locate_quote(
 
     start_column = len(before.rsplit("\n", 1)[-1]) + 1
     last_segment = quote.rsplit("\n", 1)[-1]
-    end_column = len(last_segment) + 1
+    if quote_start_line == quote_end_line:
+        # Single-line quote starts somewhere inside the line: the exclusive
+        # end column is the start column plus the quote length.
+        end_column = start_column + len(last_segment)
+    else:
+        # A multiline quote's last segment starts at column 1.
+        end_column = len(last_segment) + 1
     try:
         start_byte = offset_at(source.text, quote_start_line, start_column)
         # End offset from the raw source, not from the normalized quote length:

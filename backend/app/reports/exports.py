@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from backend.app.ai.provider import mask_sensitive_text
 from backend.app.codefacts.source import mask_text
-from backend.app.reports.language import completeness_label, evidence_markdown, naturalize
+from backend.app.reports.language import completeness_label, naturalize
 from backend.app.storage.database import DatabaseRepository
 
 EXPORT_SCHEMA_VERSION = "nedra-report-export/1"
@@ -377,29 +377,10 @@ def build_markdown(bundle: ExportBundle) -> str:
         str(bundle.run.get("id") or ""), bundle.workflow_name, passport, policy,
         [Finding.model_validate(item) for item in bundle.findings], explanation,
         execution_status=str(bundle.run.get("execution_status") or "queued"),
+        ai_scan=bundle.ai_scan,
     )
     if bundle.report is None:
         text += "\n\nСохранённый отчёт не сформирован; показаны только сохранённые результаты запуска.\n"
-    text += "\n\n## Гипотезы ИИ-сканера\n\n"
-    text += "Гипотезы не подтверждены, не входят в счётчики находок и не меняют итог проверки.\n"
-    scan_status = str(bundle.ai_scan.get("status") or "disabled")
-    text += f"\nСтатус ИИ-сканера: {_AI_SCAN_STATUS_LABELS.get(scan_status, scan_status)}.\n"
-    for item in bundle.ai_scan.get("observations") or []:
-        text += (
-            f"\n### {item.get('ruleClass')} — {_severity_label(item.get('severity'))}\n"
-            f"\n- **ID гипотезы:** `{item.get('id')}`"
-            f"\n- **Где:** `{_location_text(item.get('primaryLocation'))}`"
-            f"\n- **Почему:** {item.get('rationale') or 'без пояснения'}"
-            f"\n- **Что проверить:** {item.get('remediation') or 'без рекомендации'}\n"
-        )
-        if item.get("redactedEvidence"):
-            text += evidence_markdown(item["redactedEvidence"])
-    if not bundle.ai_scan.get("observations"):
-        text += "\nИИ-сканер не сформировал гипотез для этого запуска.\n"
-    if bundle.ai_scan.get("limitations"):
-        text += "\n**Ограничения:**\n"
-    for limitation in bundle.ai_scan.get("limitations") or []:
-        text += f"\n- {mask_sensitive_text(naturalize(str(limitation)))}"
     return text + "\n"
 
 

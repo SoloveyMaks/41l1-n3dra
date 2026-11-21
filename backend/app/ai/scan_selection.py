@@ -282,6 +282,7 @@ def select_sources(
             failed.append(AiScanCoverageIssue(path=path, code="empty_excerpt", detail=""))
             continue
         sent_end_line = start_line + consumed_lines - 1
+        window_truncated = start_line > 1 or sent_end_line < line_count
         ref_index = 1
         while f"sf_{ref_index}" in used_refs:
             ref_index += 1
@@ -294,10 +295,10 @@ def select_sources(
             start_line=start_line,
             end_line=sent_end_line,
             excerpt=excerpt,
-            truncated=was_truncated,
+            truncated=was_truncated or window_truncated,
         ))
         total_bytes += len(excerpt.encode("utf-8"))
-        if was_truncated:
+        if was_truncated or window_truncated:
             truncated.append(path)
 
     coverage.filesSelected = len(result.files)

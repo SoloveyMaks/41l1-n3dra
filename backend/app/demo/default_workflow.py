@@ -122,8 +122,9 @@ def _ai_scan_node() -> WorkflowNode:
         id=AI_SCAN_NODE_ID,
         kind=NodeKind.AI_SCAN,
         title="AI Vulnerability Scanner",
-        # Deliberately a side branch: no outgoing edge, so hypotheses cannot
-        # reach policy, canonical findings or the report pipeline.
+        # Advisory side branch: the only outgoing edge goes to the report's
+        # dedicated AI input. It never reaches policy, canonical findings or
+        # the deterministic counts.
         position={"x": 760, "y": 430},
         config={
             "profile": "balanced",
@@ -144,6 +145,10 @@ def _ai_scan_edges() -> list[WorkflowEdge]:
         WorkflowEdge(
             id="e_merge_ai_scan", source="node_merge", sourcePort="findings_bundle",
             target=AI_SCAN_NODE_ID, targetPort="findings_bundle",
+        ),
+        WorkflowEdge(
+            id="e_ai_scan_report", source=AI_SCAN_NODE_ID, sourcePort="ai_scan_result",
+            target="node_report", targetPort="ai_scan_result",
         ),
     ]
 

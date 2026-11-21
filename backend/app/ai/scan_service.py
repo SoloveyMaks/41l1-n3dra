@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from backend.app.ai.provider import (
     AiProviderError,
     complete_json,
+    effective_route,
+    json_mode_enabled,
     mask_sensitive_text,
     resolve_provider_config,
 )
@@ -92,6 +94,8 @@ def _config_version(limits: ScanLimits, provider: Any) -> str:
         "provider": getattr(provider, "provider", "none") if provider else "none",
         "model": getattr(provider, "model", "") if provider else "",
         "endpoint": getattr(provider, "endpoint", "") if provider else "",
+        "requestRoute": effective_route(getattr(provider, "base_url", "")) if provider else "",
+        "jsonMode": json_mode_enabled(),
         # Provenance identity must move with the values that change output.
         "maxTokens": min(4096, int(getattr(provider, "max_tokens", 0) or 0)) if provider else 0,
         "temperature": float(getattr(provider, "temperature", 0.0) or 0.0) if provider else 0.0,

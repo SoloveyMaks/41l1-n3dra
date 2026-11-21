@@ -189,7 +189,8 @@ NODE_REGISTRY: Dict[NodeKind, NodeDefinition] = {
         inputs=[
             PortDefinition(id="findings_bundle", name="Findings In", type=PortType.FINDINGS_BUNDLE),
             PortDefinition(id="policy_result", name="Policy In", type=PortType.POLICY_RESULT),
-            PortDefinition(id="explain_result", name="AI Explain (Optional)", type=PortType.EXPLAIN_RESULT)
+            PortDefinition(id="explain_result", name="AI Explain (Optional)", type=PortType.EXPLAIN_RESULT),
+            PortDefinition(id="ai_scan_result", name="AI Hypotheses (Optional, advisory)", type=PortType.AI_SCAN_RESULT)
         ],
         outputs=[
             PortDefinition(id="report", name="Report Out", type=PortType.REPORT)
