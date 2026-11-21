@@ -7,6 +7,9 @@
 * границы: размер архива, суммарный распакованный размер, число файлов,
   размер одного файла, compression ratio, глубина пути;
 * распаковка потоковая, с повторной проверкой фактических байтов;
+* единственная папка-обёртка архива снимается, только если внутри неё лежит
+  однозначный корень проекта (build-маркер): sourceManifest и extracted_path
+  считаются от корня проекта, а не от имени папки, в которую его запаковали;
 * код проекта никогда не импортируется и не исполняется — только чтение байтов;
 * после распаковки строится sourceManifest (path/sizeBytes/sha256), его
   канонический hash и immutable snapshotId.
@@ -56,6 +59,18 @@ CHUNK = 1024 * 1024
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _CONTROL_RE = re.compile(r"[\u0000-\u001f\u007f]")
 _SKIP_DIR_NAMES = {".git", ".hg", ".svn", "node_modules", "__MACOSX", "build", "target", ".gradle"}
+
+# Маркеры корня сборки, которые сами по себе доказывают, что верхняя папка —
+# это корень проекта, а не просто каталог с исходниками.
+_ROOT_BUILD_MARKERS = {
+    "settings.gradle", "settings.gradle.kts",
+    "build.gradle", "build.gradle.kts",
+}
+# Прочие манифесты ecosystems: недостаточны без каталога исходников рядом.
+_ROOT_MARKERS_WITH_SRC = {
+    "pom.xml", "build.sbt", "package.json", "pyproject.toml", "Cargo.toml",
+    "go.mod", "CMakeLists.txt", "pubspec.yaml", "composer.json",
+}
 
 
 def _now() -> str:
@@ -129,6 +144,57 @@ def _count_gradle(paths: Iterable[str]) -> int:
         1 for path in paths
         if path.endswith((".gradle", ".gradle.kts")) or path.rsplit("/", 1)[-1] in names
     )
+
+
+def _detect_wrapper_root(paths: Iterable[str]) -> Optional[str]:
+    """Return the wrapper directory only when it is provably the project root.
+
+    A ZIP is usually produced by packing a project folder, so every entry is
+    prefixed with that folder name. The prefix is dropped only when the layout
+    is unambiguous:
+
+    * no file sits at archive root (flat and multi-module projects already are
+      the root and must keep ``module/src/...`` or ``src/...`` as-is);
+    * every file lives under one and the same top-level directory;
+    * that directory contains a build-root marker at its own depth. Gradle
+      ``settings``/``build`` files are enough; other ecosystem manifests
+      additionally require a sibling ``src/`` tree.
+
+    Everything else (several top-level trees, wrapper without markers, a
+    nested project without its own marker) returns ``None``: callers keep the
+    original paths instead of guessing.
+    """
+    wrapper: Optional[str] = None
+    inner: List[str] = []
+    for path in paths:
+        head, sep, tail = path.partition("/")
+        if not sep:
+            return None
+        if wrapper is None:
+            wrapper = head
+        elif head != wrapper:
+            return None
+        inner.append(tail)
+    if wrapper is None:
+        return None
+    root_names = {path.split("/", 1)[0] for path in inner if "/" not in path}
+    if root_names & _ROOT_BUILD_MARKERS:
+        return wrapper
+    if root_names & _ROOT_MARKERS_WITH_SRC and any(path.startswith("src/") for path in inner):
+        return wrapper
+    return None
+
+
+def _strip_wrapper_root(rel: str, wrapper: Optional[str]) -> str:
+    if not wrapper:
+        return rel
+    prefix = f"{wrapper}/"
+    if not rel.startswith(prefix):
+        raise SafeIntakeError(f"Путь вне выбранного корня проекта: {rel!r}")
+    stripped = rel[len(prefix):]
+    if not stripped:
+        raise SafeIntakeError(f"Пустой путь после нормализации: {rel!r}")
+    return stripped
 
 
 def build_snapshot_from_directory(root: Path, workspace: str) -> Dict[str, Any]:
@@ -300,6 +366,12 @@ class SafeArtifactIntake:
             if total_declared > max(1024 * 1024, archive_bytes * MAX_COMPRESSION_RATIO):
                 raise SafeIntakeError("Подозрительная общая степень сжатия архива")
 
+            # Zip-slip/symlink/duplicate/limits уже проверены по исходным
+            # путям. Обёртку снимаем только после этого и только при
+            # доказанном корне проекта; архивный hash остаётся хэшем ZIP.
+            wrapper_root = _detect_wrapper_root(
+                [_normalize_entry_name(info.filename) for info in entries]
+            )
             artifact_id = _archive_id()
             target_dir = (self.storage_root / artifact_id).resolve()
             self.storage_root.mkdir(parents=True, exist_ok=True)
@@ -316,7 +388,8 @@ class SafeArtifactIntake:
             try:
                 for info in entries:
                     rel = _normalize_entry_name(info.filename)
-                    destination = (target_dir / rel).resolve()
+                    stored = _strip_wrapper_root(rel, wrapper_root)
+                    destination = (target_dir / stored).resolve()
                     if target_dir != destination and target_dir not in destination.parents:
                         raise SafeIntakeError(f"Путь выходит за каталог распаковки: {rel!r}")
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -344,7 +417,7 @@ class SafeArtifactIntake:
                     if file_size != info.file_size:
                         raise SafeIntakeError(f"Размер распакованного файла не совпал: {rel!r}")
                     records.append({
-                        "path": rel,
+                        "path": stored,
                         "sizeBytes": file_size,
                         "sha256": digest.hexdigest(),
                     })
@@ -390,6 +463,7 @@ class SafeArtifactIntake:
             "workspace_id": ws,
             "snapshot_id": sid,
             "snapshot_manifest_hash": mhash,
+            "source_root_prefix": wrapper_root or "",
         }
         meta = {
             "artifactId": artifact_id,
@@ -405,6 +479,7 @@ class SafeArtifactIntake:
             "filename": safe_name,
             "createdAt": manifest["created_at"],
             "expiresAt": manifest["expires_at"],
+            "sourceRootPrefix": wrapper_root or "",
         }
         self.store.save_artifact_meta(ws, artifact_id, meta)
         return manifest
