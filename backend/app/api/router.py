@@ -356,6 +356,7 @@ def load_training_artifact(request: Request):
                 "filename": manifest["filename"],
                 "createdAt": manifest["created_at"],
                 "expiresAt": manifest.get("expires_at"),
+                "sourceRootPrefix": manifest.get("source_root_prefix", ""),
                 "sourceRef": source_ref,
             },
         )
