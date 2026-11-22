@@ -600,6 +600,12 @@ export interface RunSummary {
   statusReasons?: string[];
 }
 
+/** POST /runs/{id}/cancel answer: a terminal status, or that the stop is still winding down. */
+export interface RunCancelResponse {
+  runId: string;
+  status: ExecutionStatus | 'cancelling';
+}
+
 export interface RunRevisionResponse {
   run_id: string;
   revision_id: string;

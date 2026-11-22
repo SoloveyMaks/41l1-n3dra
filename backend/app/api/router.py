@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +107,21 @@ class _ManualRunTasks:
             return
         if exc is not None:
             logger.warning("Manual run task failed: %s", type(exc).__name__)
+
+    def cancel(self, run_id: str) -> bool:
+        """Cancel the detached manual-run task of this run; True if one was alive.
+
+        Only the task named ``manual-run-<id>`` is cancelled: other runs keep
+        running, and the done callback still removes the task from the set, so
+        shutdown and aclose see a consistent registry.
+        """
+        target = f"manual-run-{run_id}"
+        cancelled = False
+        for task in list(self._tasks):
+            if not task.done() and task.get_name() == target:
+                task.cancel()
+                cancelled = True
+        return cancelled
 
     async def aclose(self) -> None:
         while self._tasks:
@@ -566,6 +582,52 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
 @api_router.get("/runs")
 def list_runs():
     return db_repo.list_runs()
+
+
+_TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "interrupted", "cancelled"})
+# How long POST /runs/{id}/cancel waits for a running executor to settle
+# before answering "cancelling"; the terminal state then arrives over SSE.
+CANCEL_WAIT_SECONDS = float(os.getenv("CG_CANCEL_WAIT_SECONDS", "5"))
+CANCEL_POLL_SECONDS = 0.1
+
+
+@api_router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, request: Request):
+    """Idempotent «Стоп»: a queued run dies here, a running one stops cooperatively.
+
+    Authenticated and workspace-scoped: a foreign run is a 404. An already
+    terminal run answers 200 with its current status and changes nothing, so a
+    repeated stop never duplicates the run_status event. A running run gets a
+    cooperative cancel flag (plus a task cancel for manual runs) and the
+    answer waits for the settlement: "cancelled" when it landed, "cancelling"
+    when the executor is still winding down (the SSE stream then delivers the
+    terminal run_status).
+    """
+    _require_authenticated(request)
+    run = db_repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    current = str(run.get("execution_status") or "")
+    if current in _TERMINAL_RUN_STATUSES:
+        return {"runId": run_id, "status": current}
+    if current == "queued" and await executor.cancel_queued_run(run_id):
+        return {"runId": run_id, "status": "cancelled"}
+    # Either the run was already running, or it started while the queued stop
+    # was racing the claim: re-read once, then stop it cooperatively.
+    current = str((db_repo.get_run(run_id) or {}).get("execution_status") or "")
+    if current in _TERMINAL_RUN_STATUSES:
+        return {"runId": run_id, "status": current}
+    executor.request_cancel(run_id)
+    manual_run_tasks.cancel(run_id)
+    deadline = time.monotonic() + CANCEL_WAIT_SECONDS
+    while True:
+        row = await asyncio.to_thread(db_repo.get_run, run_id)
+        status_now = str((row or {}).get("execution_status") or "")
+        if status_now in _TERMINAL_RUN_STATUSES:
+            return {"runId": run_id, "status": status_now}
+        if time.monotonic() >= deadline:
+            return {"runId": run_id, "status": "cancelling"}
+        await asyncio.sleep(CANCEL_POLL_SECONDS)
 
 
 @api_router.get("/runs/{run_id}")

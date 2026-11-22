@@ -60,6 +60,13 @@ interface WorkflowCanvasProps {
   runVerdict?: SecurityVerdict | null;
   /** Opens «Ход проверки»; the editor itself never leaves its tab. */
   onOpenRun?: () => void;
+  /**
+   * Stops the run shown in the progress bar. Only passed while that run is
+   * queued/running, so the button exists exactly as long as it can work.
+   */
+  onStopRun?: () => void;
+  /** True while the stop request is in flight: the button reads «Останавливаем…». */
+  stopRequested?: boolean;
 }
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -87,6 +94,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   progress = null,
   runVerdict = null,
   onOpenRun,
+  onStopRun,
+  stopRequested = false,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
   const edgeTypes = useMemo(() => ({ executionEdge: ExecutionEdge }), []);
@@ -452,6 +461,18 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 />
               </span>
               <span className="min-w-0 truncate text-[11px] font-medium text-slate-100">{progressLabel}</span>
+              {onStopRun && progress.phase === 'running' && (
+                <button
+                  type="button"
+                  onClick={onStopRun}
+                  disabled={stopRequested}
+                  data-run-stop={stopRequested ? 'stopping' : 'ready'}
+                  className="shrink-0 rounded-lg border border-rose-700 bg-rose-600/90 px-2 py-1 text-[10px] font-semibold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
+                  title="Остановить запуск"
+                >
+                  {stopRequested ? 'Останавливаем…' : 'Стоп'}
+                </button>
+              )}
               {progress.phase === 'done' && runVerdict && runVerdict !== 'pending' && (
                 <span
                   className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${

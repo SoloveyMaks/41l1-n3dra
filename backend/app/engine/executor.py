@@ -89,6 +89,10 @@ class WorkflowExecutor:
         self._run_sem = asyncio.Semaphore(concurrency)
         self._max_inflight_runs = concurrency + MAX_QUEUED_RUNS
         self._dispatched_runs: Set[str] = set()
+        # Stop requests keyed by run id: checked before the claim, while the
+        # run waits for a slot and before every node, so a cancelled run never
+        # starts, never resurrects and settles exactly once.
+        self._cancel_requests: Set[str] = set()
 
     async def _finish_queued_run(self, run_id: str, status: str, message: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -130,6 +134,61 @@ class WorkflowExecutor:
         if hook not in self.run_completion_hooks:
             self.run_completion_hooks.append(hook)
 
+    def request_cancel(self, run_id: str) -> None:
+        """Mark a run as stop-requested. Idempotent, callable from any task."""
+        self._cancel_requests.add(run_id)
+
+    def is_cancel_requested(self, run_id: str) -> bool:
+        return run_id in self._cancel_requests
+
+    async def cancel_queued_run(self, run_id: str) -> bool:
+        """Stop a queued run before any dispatcher can claim it.
+
+        Wins the queued->cancelled transition and emits the single
+        ``run_status`` event here. Returns False when the run already left the
+        queue: the caller must then treat it as a running run and stop it
+        cooperatively instead.
+        """
+        self._cancel_requests.add(run_id)
+        now = datetime.now(timezone.utc).isoformat()
+        if not self.db.cancel_queued_run(run_id, now):
+            return False
+        try:
+            await self._await_operation(self.sse.emit_event(
+                run_id, "run_status",
+                {"status": "cancelled", "verdict": "inconclusive"},
+            ), propagate_cancel=False)
+        except Exception:  # noqa: BLE001 - the row is already terminal
+            logger.exception("Failed to emit cancellation event for %s", run_id)
+        return True
+
+    async def _settle_cancelled_run(self, run_id: str) -> None:
+        """Terminal cancelled for a stop request: report, row and one event.
+
+        Idempotent by construction: a run the cancel endpoint (or an earlier
+        handler) already settled is left untouched, and a run that reached
+        another terminal state first keeps that honest outcome — a stop must
+        never rewrite what already finished.
+        """
+        current = self.db.get_run(run_id) or {}
+        status = current.get("execution_status")
+        if status == "cancelled":
+            if current.get("finished_at"):
+                return  # fully settled: never duplicate the event
+        elif status in {"succeeded", "failed", "interrupted"}:
+            return  # a terminal outcome already exists; a stop may not rewrite it
+        verdict = self._finish_saved_report(run_id, "cancelled")
+        self.db.update_run_status(
+            run_id, execution_status="cancelled", security_verdict=verdict,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+        try:
+            await self._await_operation(self.sse.emit_event(
+                run_id, "run_status", {"status": "cancelled", "verdict": verdict},
+            ), propagate_cancel=False)
+        except Exception:  # noqa: BLE001 - the row is already terminal
+            logger.exception("Failed to emit cancellation event for %s", run_id)
+
     async def execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                           trigger_type: str = "manual", workflow_id: Optional[str] = None,
                           revision_id: Optional[str] = None) -> None:
@@ -145,7 +204,12 @@ class WorkflowExecutor:
                 run_id, draft, artifact_id, trigger_type, workflow_id, revision_id
             )
         finally:
-            await self._notify_run_completed(run_id)
+            try:
+                await self._notify_run_completed(run_id)
+            finally:
+                # The settlement is already durable by now; dropping the flag
+                # keeps the registry proportional to live runs.
+                self._cancel_requests.discard(run_id)
 
     async def _notify_run_completed(self, run_id: str) -> None:
         if not self.run_completion_hooks:
@@ -194,6 +258,11 @@ class WorkflowExecutor:
             except asyncio.CancelledError:
                 await self._finish_queued_run(run_id, "interrupted", "Ожидание запуска прервано")
                 raise
+            if self.is_cancel_requested(run_id):
+                # The stop request owns the settlement (queued->cancelled was
+                # its atomic transition); never claim a run the user aborted.
+                logger.info("Run %s cancelled while waiting to start", run_id)
+                return
             try:
                 await self._execute_run(
                     run_id, draft, artifact_id, trigger_type, workflow_id, revision_id
@@ -210,6 +279,9 @@ class WorkflowExecutor:
                 # finished_at, report and event are settled. Finish that
                 # settlement here instead of leaving a half-terminal row.
                 settle_status = status if status in {"interrupted", "cancelled", "failed"} else "interrupted"
+                if self.is_cancel_requested(run_id):
+                    # The abort was requested, not a crash: report it as such.
+                    settle_status = "cancelled"
                 verdict = self._finish_saved_report(run_id, settle_status)
                 self.db.update_run_status(
                     run_id, execution_status=settle_status, security_verdict=verdict,
@@ -223,19 +295,25 @@ class WorkflowExecutor:
                     logger.exception("Failed to emit interruption event for %s", run_id)
                 raise
             except Exception:  # noqa: BLE001 - run must not stay queued/running
-                logger.exception("Run %s failed unexpectedly", run_id)
-                verdict = self._finish_saved_report(run_id, "failed")
-                self.db.update_run_status(
-                    run_id, execution_status="failed", security_verdict=verdict,
-                    finished_at=datetime.now(timezone.utc).isoformat()
-                )
-                try:
-                    await self.sse.emit_event(run_id, "run_status", {
-                        "status": "failed", "verdict": verdict,
-                        "error": "Внутренняя ошибка выполнения",
-                    })
-                except Exception:  # noqa: BLE001
-                    logger.exception("Failed to emit failure event for %s", run_id)
+                if self.is_cancel_requested(run_id):
+                    # Work aborted by a stop request may fail on its way out;
+                    # the honest outcome for the run stays cancelled.
+                    logger.info("Run %s raised after a stop request", run_id)
+                    await self._settle_cancelled_run(run_id)
+                else:
+                    logger.exception("Run %s failed unexpectedly", run_id)
+                    verdict = self._finish_saved_report(run_id, "failed")
+                    self.db.update_run_status(
+                        run_id, execution_status="failed", security_verdict=verdict,
+                        finished_at=datetime.now(timezone.utc).isoformat()
+                    )
+                    try:
+                        await self.sse.emit_event(run_id, "run_status", {
+                            "status": "failed", "verdict": verdict,
+                            "error": "Внутренняя ошибка выполнения",
+                        })
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Failed to emit failure event for %s", run_id)
             finally:
                 self.team_b.release(run_id)
         finally:
@@ -246,13 +324,18 @@ class WorkflowExecutor:
     async def _execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                            trigger_type: str = "manual", workflow_id: Optional[str] = None,
                            revision_id: Optional[str] = None) -> None:
+        run_row = self.db.get_run(run_id) or {}
+        if run_row.get("execution_status") != "queued" or self.is_cancel_requested(run_id):
+            # Status check before the claim: a cancelled (or already started)
+            # run must never be promoted to running by this dispatcher.
+            logger.info("Run %s is not startable anymore; skipping start", run_id)
+            return
         start_time_iso = datetime.now(timezone.utc).isoformat()
         if not self.db.claim_run_start(run_id, start_time_iso):
             # A second dispatcher may hold the same run through a stale watch
             # lease: only the caller that promoted queued->running executes it.
             logger.info("Run %s is not queued anymore; skipping duplicate start", run_id)
             return
-        run_row = self.db.get_run(run_id) or {}
         workflow_id = workflow_id or str(run_row.get("workflow_id") or "workflow-unknown")
         revision_id = revision_id or str(run_row.get("revision_id") or "revision-unknown")
         workflow_name = draft.name
@@ -292,6 +375,11 @@ class WorkflowExecutor:
 
         # Topological execution loop
         while True:
+            if self.is_cancel_requested(run_id):
+                # Cooperative stop: settle between nodes, so no further work
+                # starts on a run the user asked to abort.
+                await self._settle_cancelled_run(run_id)
+                return
             # Find next ready node
             ready_node_id = None
             for n_id, status in node_statuses.items():
@@ -454,6 +542,11 @@ class WorkflowExecutor:
                     edge_active_states[out_e.id] = False
 
         # Finalize run status and verdict
+        if self.is_cancel_requested(run_id):
+            # The stop arrived while the last node was finishing: the graph is
+            # done, but the run must settle as cancelled, never as succeeded.
+            await self._settle_cancelled_run(run_id)
+            return
         if findings_bundle is None:
             final_verdict = SecurityVerdict.INCONCLUSIVE
         else:
