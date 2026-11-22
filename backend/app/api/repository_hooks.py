@@ -139,6 +139,53 @@ class _HookIgnored(Exception):
         self.provider = provider
 
 
+def _parse_event(provider: str, event: str, payload: Any,
+                 watch: Dict[str, Any]) -> Tuple[str, str, str]:
+    if event in {"pull_request", "merge_request"}:
+        return _parse_review_request(provider, payload, watch)
+    return _parse_push(provider, payload, watch)
+
+
+def _parse_review_request(provider: str, payload: Any,
+                          watch: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Return (head sha, source ref, canonical_repo) for a PR/MR event."""
+    if not isinstance(payload, dict):
+        raise _bad_payload("Тело вебхука должно быть JSON-объектом")
+    if provider == "github":
+        action = payload.get("action")
+        if action not in {"opened", "reopened", "synchronize"}:
+            raise _HookIgnored("Действие pull request не требует проверки", provider)
+        request_data = payload.get("pull_request") or {}
+        repository = payload.get("repository") or {}
+        repo_url = repository.get("html_url") if isinstance(repository, dict) else None
+        base = ((request_data.get("base") or {}).get("ref"))
+        head = request_data.get("head") or {}
+        sha = head.get("sha")
+        branch = head.get("ref")
+    else:
+        action = (payload.get("object_attributes") or {}).get("action")
+        if action not in {"open", "reopen", "update"}:
+            raise _HookIgnored("Действие merge request не требует проверки", provider)
+        attrs = payload.get("object_attributes") or {}
+        project = payload.get("project") or {}
+        repo_url = project.get("web_url") if isinstance(project, dict) else None
+        base = attrs.get("target_branch")
+        sha = (attrs.get("last_commit") or {}).get("id")
+        branch = attrs.get("source_branch")
+    canonical = _canonical_repo_url(repo_url)
+    if canonical is None:
+        raise _bad_payload("В событии нет корректного адреса репозитория")
+    watch_repo = _canonical_repo_url(watch.get("url"))
+    if canonical != watch_repo:
+        raise _HookIgnored("Другой репозиторий", provider)
+    if base != watch.get("branch"):
+        raise _HookIgnored("Pull request направлен в другую ветку", provider)
+    if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
+        raise _bad_payload("Некорректный SHA head-коммита")
+    ref = f"refs/heads/{branch}" if isinstance(branch, str) and branch else ""
+    return sha, ref, canonical
+
+
 def _parse_push(provider: str, payload: Any, watch: Dict[str, Any]
                 ) -> Tuple[str, str, str]:
     """Return (commit_sha, ref, canonical_repo) or raise HookIgnored."""
@@ -216,18 +263,22 @@ async def _handle_scoped_hook(db: Any, watch: Dict[str, Any], workspace: str,
     if provider == "github":
         if event == "ping":
             return _ignored("Проверка подключения (ping)", provider)
-        if event != "push":
-            return _ignored("Событие не является push", provider)
-    elif event and event != "push hook":
-        return _ignored("Событие не является push", provider)
+        if event not in {"push", "pull_request"}:
+            return _ignored("Событие не является push или pull request", provider)
+    elif event and event not in {"push hook", "merge request"}:
+        return _ignored("Событие не является push или merge request", provider)
 
     try:
         payload = json.loads(body)
     except (TypeError, ValueError):
         raise _bad_payload("Тело вебхука не является JSON") from None
     if provider == "gitlab" and isinstance(payload, dict):
-        if payload.get("object_kind") != "push":
-            return _ignored("Событие не является push", provider)
+        kind = payload.get("object_kind")
+        if kind not in {"push", "merge_request"}:
+            return _ignored("Событие не является push или merge request", provider)
+        event = "push" if kind == "push" else "merge_request"
+    elif provider == "github":
+        event = "push" if event == "push" else "pull_request"
 
     if not watch.get("enabled"):
         return _ignored("Отслеживание приостановлено", provider)
@@ -236,7 +287,7 @@ async def _handle_scoped_hook(db: Any, watch: Dict[str, Any], workspace: str,
     if delivery_id is None:
         raise _bad_payload("Некорректный идентификатор доставки")
     try:
-        commit_sha, ref, _ = _parse_push(provider, payload, watch)
+        commit_sha, ref, _ = _parse_event(provider, event, payload, watch)
     except _HookIgnored as exc:
         return _ignored(exc.detail, provider, delivery_id)
     except HTTPException:
@@ -303,5 +354,39 @@ def create_repository_hook_router(db: Any) -> APIRouter:
             raise HTTPException(
                 status_code=408, detail="Превышено время обработки вебхука"
             ) from None
+
+    @router.get("/repository-hooks/{watch_id}/ci-template")
+    def repository_hook_ci_template(watch_id: str) -> JSONResponse:
+        if not _WATCH_ID_RE.fullmatch(watch_id):
+            raise HTTPException(status_code=404, detail="Вебхук не найден")
+        content = "\n".join([
+            "name: nedra-security",
+            "on:",
+            "  pull_request:",
+            "    branches: [main]",
+            "jobs:",
+            "  nedra:",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - name: Trigger NEDRA security workflow",
+            "        env:",
+            "          NEDRA_HOOK_URL: ${{ secrets.NEDRA_HOOK_URL }}",
+            "          NEDRA_HOOK_SECRET: ${{ secrets.NEDRA_HOOK_SECRET }}",
+            "        run: |",
+            "          body=$(printf '{\"ref\":\"%s\"}' \"$GITHUB_REF\")",
+            "          sig=$(printf '%s' \"$body\" | openssl dgst -sha256 -hmac \"$NEDRA_HOOK_SECRET\" | sed 's/^.* //')",
+            "          curl --fail --silent --show-error -X POST \"$NEDRA_HOOK_URL\" \\",
+            "            -H 'Content-Type: application/json' \\",
+            "            -H 'X-GitHub-Event: pull_request' \\",
+            "            -H \"X-Hub-Signature-256: sha256=$sig\" \\",
+            "            --data \"$body\"",
+            "",
+        ])
+        return JSONResponse({
+            "filename": "nedra-security.yml",
+            "watch_id": watch_id,
+            "content": content,
+            "note": "Подставьте NEDRA_HOOK_URL и NEDRA_HOOK_SECRET в GitHub Actions secrets.",
+        })
 
     return router
