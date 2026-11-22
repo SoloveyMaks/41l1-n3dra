@@ -80,7 +80,7 @@ def _base_nodes(artifact_id: str) -> list[WorkflowNode]:
             kind=NodeKind.AI_EXPLAIN,
             title="AI Explain & Fix",
             position={"x": 1420, "y": 150},
-            config={"model": "deepseek-v4.1-flash-1017", "strictValidation": True}
+            config={"strictValidation": True}
         ),
         WorkflowNode(
             id="node_report",

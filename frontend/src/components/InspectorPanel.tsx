@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Trash2, Settings, ShieldAlert, GitFork, Clock, Send, Sparkles } from 'lucide-react';
-import { ArtifactManifest, WorkflowNode } from '../types';
+import { AiProviderInfo, ArtifactManifest, WorkflowNode } from '../types';
+import { apiClient } from '../api/client';
 import {
   getCustomCheckStatus,
   listCustomChecks,
@@ -26,9 +27,19 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   const [customChecks, setCustomChecks] = useState<CustomCheckDefinition[]>([]);
   const [customSandbox, setCustomSandbox] = useState<CustomCheckStatus | null>(null);
   const [customError, setCustomError] = useState('');
+  const [aiProvider, setAiProvider] = useState<AiProviderInfo | null>(null);
 
   const nodeKind = node?.kind;
   const nodeId = node?.id;
+  useEffect(() => {
+    if (nodeKind !== 'ai_explain') return;
+    const controller = new AbortController();
+    apiClient.getAiProvider()
+      .then((value) => { if (!controller.signal.aborted) setAiProvider(value); })
+      .catch(() => { if (!controller.signal.aborted) setAiProvider(null); });
+    return () => controller.abort();
+  }, [nodeKind]);
+
   useEffect(() => {
     if (!nodeId || nodeKind !== 'custom_check') return;
     const controller = new AbortController();
@@ -313,10 +324,14 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               <div>
                 <label className="block text-[10px] text-slate-400 mb-1">Модель LLM:</label>
                 <div className="w-full rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-200">
-                  reformboss · deepseek-v4.1-flash-1017
+                  {aiProvider
+                    ? aiProvider.configured && aiProvider.provider
+                      ? `${aiProvider.provider} · ${aiProvider.model || 'модель не указана'}`
+                      : 'серверный AI не настроен'
+                    : 'проверяю серверную конфигурацию…'}
                 </div>
                 <p className="mt-1 text-[10px] text-slate-500">
-                  Модель и ключ задаются сервером через AI_MODEL/REFORMBOSS_API_KEY.
+                  Модель и ключ задаются только на сервере (AI_PROVIDER/AI_MODEL/OPENCODE_API_KEY). Ключ в браузер не передаётся.
                 </p>
               </div>
 

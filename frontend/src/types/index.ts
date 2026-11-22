@@ -522,6 +522,12 @@ export interface RepositorySource {
   commit_sha: string;
 }
 
+export interface AiProviderInfo {
+  configured: boolean;
+  provider: string | null;
+  model: string | null;
+}
+
 export interface ArtifactManifest {
   id: string;
   filename: string;

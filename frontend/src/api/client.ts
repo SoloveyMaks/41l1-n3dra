@@ -1,5 +1,6 @@
 import {
   AccountCredentials,
+  AiProviderInfo,
   ArtifactManifest,
   AdminOverview,
   ComparisonDto,
@@ -379,6 +380,10 @@ export const apiClient = {
       `/schedules/${scheduleId}`,
       jsonInit('PATCH', { enabled }),
     )).json();
+  },
+
+  async getAiProvider(): Promise<AiProviderInfo> {
+    return (await request('/ai/provider')).json();
   },
 
   async runAiSyntheticTest(runId?: string): Promise<any> {

@@ -281,7 +281,7 @@ function renderConfigSummary(kind: NodeKind, config: Record<string, any>) {
         </div>
       );
     case 'ai_explain':
-      return <div className="text-fuchsia-300">Модель: deepseek-v4.1-flash-1017</div>;
+      return <div className="text-fuchsia-300">Модель: задаётся сервером</div>;
     case 'ai_scan':
       return (
         <div className="text-fuchsia-300">

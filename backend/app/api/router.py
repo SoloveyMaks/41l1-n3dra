@@ -1114,6 +1114,21 @@ def get_webhook_logs(request: Request):
 
 
 # --- AI Synthetic Test for Jury Demo ---
+@api_router.get("/ai/provider")
+def get_ai_provider() -> Dict[str, Any]:
+    """Public provider identity without the API key."""
+    from backend.app.ai.provider import resolve_provider_config
+
+    config = resolve_provider_config()
+    if config is None:
+        return {"configured": False, "provider": None, "model": None}
+    return {
+        "configured": bool(config.api_key),
+        "provider": config.provider,
+        "model": config.model,
+    }
+
+
 @api_router.post("/ai/synthetic-test")
 def run_ai_synthetic_test(payload: Dict[str, Any], request: Request):
     require_admin(request)
