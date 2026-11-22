@@ -114,6 +114,11 @@ def test_nested_archive_is_not_opened(tmp_path: Path):
 
 
 def test_binary_and_unread_text_scopes(tmp_path: Path):
+    (tmp_path / "src/main/kotlin").mkdir(parents=True)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src/main/kotlin/App.kt").write_text("class App\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# readme\n", encoding="utf-8")
+    (tmp_path / "docs/logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
     (tmp_path / "lib").mkdir()
     make_zip(tmp_path / "lib" / "app.jar", {"META-INF/MANIFEST.MF": "Manifest-Version: 1.0\n"})
     findings, scopes, skipped = scan_archives_and_binaries(
@@ -122,8 +127,10 @@ def test_binary_and_unread_text_scopes(tmp_path: Path):
         read_paths=["src/main/kotlin/App.kt"],
     )
     by_path = {s["path"]: s for s in scopes}
+    assert by_path["docs/logo.png"]["ruleId"] == "CF-BINARY-STATIC"
     assert by_path["docs/logo.png"]["status"] == "not_applicable"
     assert "Бинарный файл" in by_path["docs/logo.png"]["reason"]
+    assert by_path["README.md"]["ruleId"] == "CF-FILE-STATIC"
     assert by_path["README.md"]["status"] == "not_applicable"
     assert by_path["lib/app.jar"]["ruleId"] == "CF-ARCHIVE-STATIC"
     assert by_path["lib/app.jar"]["status"] == "checked"

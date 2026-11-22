@@ -33,7 +33,6 @@ from backend.app.codefacts.source import (
     SourceFile,
     _PEM_RE,
     _SECRET_ASSIGN_RE,
-    is_text_path,
     mask_text,
 )
 from backend.app.contracts.schemas import (
@@ -303,8 +302,8 @@ def _binary_scope(rel_path: str) -> Dict[str, Any]:
         "category": "SAST",
         "status": "not_applicable",
         "reason": (
-            "Бинарный файл (изображение/ресурс): статические правила исходного "
-            "кода и конфигурации к нему неприменимы."
+            "Бинарный файл (по содержимому, не по суффиксу): статические "
+            "правила исходного кода и конфигурации к нему неприменимы."
         ),
     }
 
@@ -321,6 +320,25 @@ def _unread_text_scope(rel_path: str) -> Dict[str, Any]:
             "сборка, метаданные."
         ),
     }
+
+
+def _looks_binary(target: Path) -> bool:
+    """Решает по первым байтам, а не по одному суффиксу.
+
+    Суффикс врёт в обе стороны: ``.gitignore`` и ``gradlew`` не имеют
+    текстового суффикса, а ``.png`` — не текст. Читаем только префикс
+    (лимит 8 КБ), содержимое не исполняется.
+    """
+    try:
+        if target.is_symlink():
+            return True
+        with target.open("rb") as handle:
+            prefix = handle.read(8192)
+    except OSError:
+        return True
+    if not prefix:
+        return False
+    return b"\x00" in prefix
 
 
 def scan_archives_and_binaries(
@@ -360,7 +378,8 @@ def scan_archives_and_binaries(
             if outcome.scope:
                 scopes.append(outcome.scope)
             continue
-        if not is_text_path(rel):
+        target = root / rel
+        if not target.is_file() or _looks_binary(target):
             scopes.append(_binary_scope(rel))
             continue
         if rel not in read:
