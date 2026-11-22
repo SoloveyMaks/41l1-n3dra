@@ -62,3 +62,21 @@ def test_template_view_hides_draft_by_default():
     })
     assert "draft" not in view
     assert view["nodeCount"] == 2
+
+
+def test_copy_disables_notify_delivery():
+    from backend.app.storage.workflow_library import disable_delivery
+    draft = disable_delivery(sanitize_template_draft({
+        "nodes": [{
+            "kind": "notify",
+            "config": {
+                "enabled": True,
+                "webhookUrl": "https://hooks.example/secret",
+                "secretToken": "s3cr3t",
+            },
+        }],
+    }))
+    config = draft["nodes"][0]["config"]
+    assert config["enabled"] is False
+    assert "webhookUrl" not in config
+    assert "secretToken" not in config

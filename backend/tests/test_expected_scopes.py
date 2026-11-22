@@ -56,3 +56,14 @@ def test_unavailable_status_is_not_verified():
         workflow("secret_scan"),
     )
     assert result is False
+
+
+def test_builder_coverage_shape_is_supported():
+    result = {
+        "scanResults": [
+            {"coverage": {"scopes": [{"category": "SAST", "status": "checked"}]}},
+            {"coverage": {"scopes": [{"category": "SECRET", "status": "checked"}]}},
+            {"coverage": {"scopes": [{"category": "SCA", "status": "checked"}]}},
+        ]
+    }
+    assert expected_scopes_verified(result, workflow("secret_scan", "sca_scan", "kotlin_sast")) is True

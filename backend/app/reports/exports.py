@@ -722,13 +722,16 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
     }
     status_label = _STATUS_LABELS.get(str(run.get("execution_status")), str(run.get("execution_status") or ""))
     verdict_label = _VERDICT_LABELS.get(str(run.get("security_verdict")), str(run.get("security_verdict") or ""))
+    def one_line(value: Any) -> str:
+        return " ".join(str(value if value is not None else "").split())
+
     header = [
         "// NEDRA — человекочитаемый экспорт проверки (JSONC).",
-        f"// Запуск: {run.get('id')} · сценарий: {bundle.workflow_name} · ревизия: {run.get('revision_id')}",
-        f"// Статус: {status_label} · вердикт: {verdict_label} · находок: {len(bundle.findings)}.",
+        f"// Запуск: {one_line(run.get('id'))} · сценарий: {one_line(bundle.workflow_name)} · ревизия: {one_line(run.get('revision_id'))}",
+        f"// Статус: {one_line(status_label)} · вердикт: {one_line(verdict_label)} · находок: {len(bundle.findings)}.",
         "// Проверено собственными SECRET/SCA/SAST по сохранённому снимку; AI-гипотезы в счётчики не входят.",
         *[
-            "// Ограничение: " + " ".join(_sanitize_text(str(item)).split())
+            "// Ограничение: " + one_line(_sanitize_text(str(item)))
             for item in limitations
         ],
         "// Ниже — те же данные, что в official.json; комментарии не являются находками.",

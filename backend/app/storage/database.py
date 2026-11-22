@@ -783,18 +783,17 @@ class DatabaseRepository:
             )
 
     def recover_orphaned_runs_server(self) -> int:
-        """Finalize runs left queued/running by a hard process stop.
+        """Finalize runs that were executing when the process died.
 
-        Called once at startup, before any run is dispatched: at that moment no
-        run can legitimately be active in this process. A bounded hard-kill or
-        graceful-timeout otherwise leaves the run ``running`` forever.
+        Only ``running`` rows are orphaned: a queued run has not started, so the
+        scheduler/repository recovery can still dispatch it legitimately.
         """
         now = datetime.now(timezone.utc)
         recovered = 0
         with get_pool().connection() as conn:
             rows = conn.execute(
                 "SELECT workspace_id, id FROM runtime.runs "
-                "WHERE execution_status IN ('queued', 'running') ORDER BY created_at"
+                "WHERE execution_status = 'running' ORDER BY created_at"
             ).fetchall()
             for row in rows:
                 workspace = row["workspace_id"]

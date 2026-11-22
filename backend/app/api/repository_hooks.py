@@ -260,12 +260,15 @@ async def _handle_scoped_hook(db: Any, watch: Dict[str, Any], workspace: str,
     event = request.headers.get(
         "x-github-event" if provider == "github" else "x-gitlab-event", ""
     ).strip().lower()
+    normalized_event = event.replace(" ", "_")
     if provider == "github":
-        if event == "ping":
+        if normalized_event == "ping":
             return _ignored("Проверка подключения (ping)", provider)
-        if event not in {"push", "pull_request"}:
+        if normalized_event not in {"push", "pull_request"}:
             return _ignored("Событие не является push или pull request", provider)
-    elif event and event not in {"push hook", "merge request"}:
+    elif normalized_event and normalized_event not in {
+        "push_hook", "merge_request", "merge_request_hook",
+    }:
         return _ignored("Событие не является push или merge request", provider)
 
     try:
@@ -278,7 +281,7 @@ async def _handle_scoped_hook(db: Any, watch: Dict[str, Any], workspace: str,
             return _ignored("Событие не является push или merge request", provider)
         event = "push" if kind == "push" else "merge_request"
     elif provider == "github":
-        event = "push" if event == "push" else "pull_request"
+        event = "push" if normalized_event == "push" else "pull_request"
 
     if not watch.get("enabled"):
         return _ignored("Отслеживание приостановлено", provider)
@@ -373,13 +376,14 @@ def create_repository_hook_router(db: Any) -> APIRouter:
             "          NEDRA_HOOK_URL: ${{ secrets.NEDRA_HOOK_URL }}",
             "          NEDRA_HOOK_SECRET: ${{ secrets.NEDRA_HOOK_SECRET }}",
             "        run: |",
-            "          body=$(printf '{\"ref\":\"%s\"}' \"$GITHUB_REF\")",
+            "          body=$(cat \"$GITHUB_EVENT_PATH\")",
             "          sig=$(printf '%s' \"$body\" | openssl dgst -sha256 -hmac \"$NEDRA_HOOK_SECRET\" | sed 's/^.* //')",
             "          curl --fail --silent --show-error -X POST \"$NEDRA_HOOK_URL\" \\",
             "            -H 'Content-Type: application/json' \\",
             "            -H 'X-GitHub-Event: pull_request' \\",
+            "            -H \"X-GitHub-Delivery: ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\" \\",
             "            -H \"X-Hub-Signature-256: sha256=$sig\" \\",
-            "            --data \"$body\"",
+            "            --data-binary \"$body\"",
             "",
         ])
         return JSONResponse({

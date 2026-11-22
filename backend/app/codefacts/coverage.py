@@ -33,7 +33,11 @@ def observed_scope_statuses(envelope: Dict[str, Any]) -> Dict[str, Set[str]]:
     for result in envelope.get("scanResults") or []:
         if not isinstance(result, dict):
             continue
-        coverage = ((result.get("codeFacts") or {}).get("coverage") or {})
+        coverage = (
+            result.get("coverage")
+            or ((result.get("codeFacts") or {}).get("coverage"))
+            or {}
+        )
         for scope in coverage.get("scopes") or []:
             if not isinstance(scope, dict):
                 continue

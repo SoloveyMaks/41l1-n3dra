@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional
 
 from backend.app.storage.database import _jsonb, _now, get_pool
 
-_SECRET_KEYS = {"secretToken", "secret_token", "webhookSecret", "webhook_secret"}
+_SECRET_KEYS = {
+    "secretToken", "secret_token", "webhookSecret", "webhook_secret",
+    "webhookUrl", "webhook_url",
+}
 
 
 def sanitize_template_draft(value: Any) -> Any:
@@ -25,6 +28,21 @@ def sanitize_template_draft(value: Any) -> Any:
     if isinstance(value, list):
         return [sanitize_template_draft(item) for item in value]
     return value
+
+
+def disable_delivery(draft: Dict[str, Any]) -> Dict[str, Any]:
+    """A public template must not carry a live receiver or auto-send."""
+    for node in draft.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("kind") != "notify":
+            continue
+        config = node.get("config")
+        if isinstance(config, dict):
+            config.pop("webhookUrl", None)
+            config.pop("webhook_url", None)
+            config["enabled"] = False
+            config["allowLocal"] = False
+            config["allowExternal"] = False
+    return draft
 
 
 def _template_row(row: Any) -> Dict[str, Any]:

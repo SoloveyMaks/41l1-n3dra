@@ -13,6 +13,7 @@ from backend.app.contracts.schemas import WorkflowDraft
 from backend.app.engine.validator import WorkflowValidator
 from backend.app.storage.database import DatabaseRepository
 from backend.app.storage.workflow_library import (
+    disable_delivery,
     get_template,
     list_templates,
     publish_template,
@@ -93,7 +94,7 @@ def create_workflow_library_router(db: DatabaseRepository) -> APIRouter:
         workflow = db.get_workflow(value.workflowId)
         if not workflow or not workflow.get("draft"):
             raise HTTPException(status_code=404, detail="Сценарий не найден")
-        draft = sanitize_template_draft(workflow["draft"])
+        draft = disable_delivery(sanitize_template_draft(workflow["draft"]))
         _validate_draft(draft)
         name = (value.name or workflow.get("name") or "Шаблон проверки").strip()
         description = (value.description or workflow.get("description") or "").strip()
@@ -111,7 +112,7 @@ def create_workflow_library_router(db: DatabaseRepository) -> APIRouter:
         row = get_template(template_id)
         if not row:
             raise HTTPException(status_code=404, detail="Шаблон не найден")
-        draft = _clear_project_artifact(sanitize_template_draft(row.get("draft") or {}))
+        draft = _clear_project_artifact(disable_delivery(sanitize_template_draft(row.get("draft") or {})))
         _validate_draft(draft)
         workflow_id = f"wf_{uuid.uuid4().hex[:12]}"
         name = (value.name or f"{row['name']} (копия)")[:200]

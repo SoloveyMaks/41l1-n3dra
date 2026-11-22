@@ -47,3 +47,12 @@ def test_jsonc_comments_do_not_swallow_slash_slash_values():
     body = "\n".join(line for line in text.splitlines() if not line.startswith("//"))
     document = json.loads(body)
     assert document["deterministic"]["findings"][0]["path"] == "src//nested/File.kt"
+
+
+def test_multiline_workflow_name_does_not_break_comments():
+    import dataclasses
+    bundle = dataclasses.replace(make_bundle(), workflow_name="Первый\nВторой")
+    text = build_jsonc(bundle).decode("utf-8")
+    body = "\n".join(line for line in text.splitlines() if not line.startswith("//"))
+    document = json.loads(body)
+    assert document["run"]["id"] == "run_jsonc_1"

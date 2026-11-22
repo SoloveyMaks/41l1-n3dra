@@ -570,7 +570,15 @@ def get_run(run_id: str):
         skipped = list(details.get("skippedScopes") or [])
         if skipped:
             reasons.append("пропущены: " + ", ".join(str(item) for item in skipped))
-        result["publicationStatus"] = "published" if details.get("bundleHash") else "unpublished"
+        publication = details.get("publication") or {}
+        if publication.get("published") is True:
+            result["publicationStatus"] = "published"
+        elif publication:
+            result["publicationStatus"] = "unpublished"
+            if publication.get("reason"):
+                reasons.append(str(publication["reason"]))
+        else:
+            result["publicationStatus"] = "unavailable"
         result["coverageStatus"] = details.get("coverageStatus") or "unavailable"
         result["expectedScopesVerified"] = bool(details.get("expectedScopesVerified"))
         result["statusReasons"] = reasons
