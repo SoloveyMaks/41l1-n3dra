@@ -110,8 +110,12 @@ export const apiClient = {
     return (await request('/auth/me')).json();
   },
 
-  async getHistory(limit = 20): Promise<HistoryResponse> {
-    return (await request(`/auth/history?limit=${encodeURIComponent(String(limit))}`)).json();
+  async getHistory(limit = 20, filters: Record<string, string | number | undefined> = {}): Promise<HistoryResponse> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    });
+    return (await request(`/auth/history?${query.toString()}`)).json();
   },
 
   async getProfile(): Promise<ProfileData> {
