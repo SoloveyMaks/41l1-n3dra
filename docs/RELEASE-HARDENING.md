@@ -69,10 +69,11 @@
 |---|---|---|
 | 1 | 22s | **упал** на старте БД: `Database is uninitialized and superuser password is not specified` — `podman run --env POSTGRES_PASSWORD` передаёт значение из окружения скрипта, а скрипт его не экспортировал. Исправлено: сгенерированные `POSTGRES_*` экспортируются (пароль по-прежнему не в argv). Cleanup отработал: свои контейнеры/volumes/сеть удалены |
 | 2 | 24.5s | **зелёный** |
+| 3 (финальный, на закоммиченном дереве `d1f5f7f69c`) | 38.2s | **зелёный**; после прогона контейнеров/volumes/сетей `nedra-rel-e2e-*` нет, порт свободен, `nedra-app`/`nedra-db` в исходном состоянии |
 
-Детали второго прогона: сборка образа 9s (кэш), БД healthy 6s, backend
-healthy 2s, миграции 13/13 за 1s, регистрация 0s, импорт `before.zip` 0s,
-сценарий `wf_secure_pr_gate`, run `3d134c36-…` завершился `succeeded` за 3s,
+Детали зелёных прогонов: сборка образа 9–23s, БД healthy 6s, backend
+healthy 2–3s, миграции 13/13, регистрация 0s, импорт `before.zip` 0s,
+сценарий `wf_secure_pr_gate`, run завершается `succeeded` за 3s,
 official.json/export.jsonc/export.md/export.docx — 200, DOCX (39 абзацев)
 открыт `python-docx 1.2.0` из образа, security-map — 200. После прогона:
 контейнеров/volumes/сетей `nedra-rel-e2e-*` нет, портов нет,
