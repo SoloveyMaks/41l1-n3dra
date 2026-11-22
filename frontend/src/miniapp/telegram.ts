@@ -91,6 +91,9 @@ export function loadTelegramSdk(): Promise<TelegramWebApp | null> {
     // Старые клиенты могут не вызвать onload; не держим экран в вечной загрузке.
     window.setTimeout(() => finish(getTelegramWebApp()), 8000)
   })
+  void sdkPromise.then((app) => {
+    if (!app) sdkPromise = null
+  })
   return sdkPromise
 }
 
