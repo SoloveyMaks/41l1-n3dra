@@ -2,9 +2,9 @@
 
 Дата: 2026-11-22, Asia/Tokyo. Область: `backend/app/telegram/miniapp.py` и `miniapp_auth.py`; документация контракта — `docs/telegram-miniapp.md`.
 
-Исходная точная база: `35d27d30ae44fd955824001e18eff895197c933c` (`dev`). Проверенное состояние кода: `0c4488afc3307bca1035e20bb6861bc4fb39fa5a` поверх `69beddd27bd8d99c4b0f0d015aa91b339c1f61db`, worktree `audit-all-miniapi-1122`, ветка `SoloveyMaks/audit-all-miniapi-1122`. Отчёт и `docs/telegram-miniapp.md` закоммичены отдельно после этого SHA; итоговый HEAD указан в `worker_done`.
+Исходная точная база: `35d27d30ae44fd955824001e18eff895197c933c` (`dev`). Проверенное состояние кода: `0c4488afc3307bca1035e20bb6861bc4fb39fa5a` поверх `69beddd27bd8d99c4b0f0d015aa91b339c1f61db`, worktree `audit-all-miniapi-1122`, ветка `SoloveyMaks/audit-all-miniapi-1122`. Документация — `4371b7116ab9c25585d819c5478bc3f2865806b4`, сопровождение существующих тестов — `a8f49e2b076cf98096b1eec473708575ac442f96`; отчёт закоммичен после них, итоговый HEAD указан в `worker_done`.
 
-**Вывод:** восемь подтверждённых проблем исправлены. Локальные пробы ниже прошли на реальном router/auth/exporter/executor. Полная интеграция root app + PostgreSQL + реальный импорт/фронт остаётся непроверенной: доступ к БД и контейнеру запрещён ограничением задачи. Известная остаточная зависимость — `backend/tests/test_telegram_miniapp.py` всё ещё задаёт `TELEGRAM_ENABLED=0` для HTTP-класса; это файл вне моей области, исправление не внесено (см. блокеры).
+**Вывод:** восемь подтверждённых продуктовых проблем исправлены, существующие проверки приведены к v2/`TELEGRAM_ENABLED=1` без добавления ритуальных тестов. Локальные пробы ниже прошли на реальном router/auth/exporter/executor. Полная интеграция root app + PostgreSQL + реальный импорт/фронт остаётся непроверенной: доступ к БД и контейнеру запрещён ограничением задачи.
 
 ## Охват и границы
 
@@ -102,6 +102,15 @@
 
 **Ограничение:** реальный SQL и race с настоящим rebind не исполнены без PostgreSQL. Интеграция обязана включить storage-коммит `a6ed0de` (или эквивалент); на старом storage вызов с kwargs даст `TypeError`, поэтому cutover этих веток должен быть атомарным.
 
+## Сопровождение существующих проверок
+
+`backend/tests/test_telegram_miniapp.py` приведён к текущему контракту без новых тестов:
+
+- `_sign_claims` подписывает `v2.<payload>`, а базовый payload role/TTL-кейса имеет `"v": 2`; теперь эти кейсы проверяют отказ по роли и TTL, а не общий отказ legacy v1;
+- `MiniAppHttpTests.setUpClass` выставляет `TELEGRAM_ENABLED=1`, иначе обязательная bot-enabled проверка даёт `503` до обработчика `/auth`; `ASGITransport` lifespan не запускает, поэтому polling в тесте не стартует. `RunStartTests` с explicit provider не менялся.
+
+Проверка: `InitDataTests`+`TokenTests` — 11/11 OK. Дополнительная локальная проба текущего helper: `role=admin` → `token claims are invalid`, `exp=now+901` → `token lifetime is invalid`, оба не `token version is invalid`. HTTP-класс с PostgreSQL в этом окружении не запускался.
+
 ## Соответствие текущему фронту
 
 - `frontend/src/miniapp/api.ts` строит пути от `${API_BASE}/telegram/mini`; auth/bind/bootstrap/settings/runs/detail/report совпадают с `MINI_PREFIX`.
@@ -153,12 +162,12 @@ git diff --check
 
 ## Открытые блокеры и зависимости
 
-1. **PostgreSQL/root app acceptance.** Запрещённый `podman start nedra-mini-integration-pg` не повторялся и не обходился; старые DB-пробы, другой контейнер/сервер/production DB не использовались. Нужен отдельно разрешённый стенд для real root app + PostgreSQL + merged `telegram.binding_epoch_seq` migration и disabled guards. На нём повторить auth/bind/bootstrap/settings → настоящий intake/executor → detail/report; saturated executor → 2 accepted + immediate 429; cancel/shutdown → terminal rows; unbind/rebind старого token → 401; disabled account/bot → отказ.
-2. **`backend/tests/test_telegram_miniapp.py` (вне моей области, не менялся).** `MiniAppHttpTests.setUpClass` (`:203`) ставит `TELEGRAM_ENABLED="0"` и ожидает `200` от `/auth`; после обязательной проверки bot enabled это `503 TELEGRAM_MINIAPP_UNAVAILABLE` (подтверждено HTTP-пробой). Нужно поставить `1` в этом классе (ASGITransport не запускает lifespan/бот) и обновить `_sign_claims` (`:144-148`) на v2, иначе role/TTL-кейсы проходят только потому, что v1 отвергается. `RunStartTests` использует explicit provider и не затронут.
-3. **Storage cutover.** `get_settings` с identity kwargs существует в `audit-all-telegram-1122` (`a6ed0de`, коммит `b46823b`); без него текущие вызовы дадут `TypeError`. Sequence-миграция — зависимость data-владельца; координатор сообщил, что номер `013` переносится на `016` из-за занятого `013_custom_checks`. В этом checkout миграции не менялись. Отчёт Telegram-владельца на `a6ed0de` фиксирует Mini API на `69beddd`; его пункты про token `v1` и unscoped `get_settings` к текущему `0c4488afc3` уже не относятся.
+1. **PostgreSQL/root app acceptance.** Запрещённый `podman start nedra-mini-integration-pg` не повторялся и не обходился; старые DB-пробы, другой контейнер/сервер/production DB не использовались. Нужен отдельно разрешённый стенд для real root app + PostgreSQL + merged `016_telegram_binding_generation.up.sql` и disabled guards. На нём повторить auth/bind/bootstrap/settings → настоящий intake/executor → detail/report; saturated executor → 2 accepted + immediate 429; cancel/shutdown → terminal rows; unbind/rebind старого token → 401; disabled account/bot → отказ. В частности, только там можно исполнить `MiniAppHttpTests` после `TELEGRAM_ENABLED=1`.
+2. **`backend/tests/test_telegram_miniapp.py` согласован (`a8f49e2b07`).** `_sign_claims` и role/TTL payload теперь v2; `MiniAppHttpTests` работает при `TELEGRAM_ENABLED=1`. Pure-часть проходит 11/11; HTTP-класс остаётся skipped без `NEDRA_TEST_DATABASE_URL`.
+3. **Storage cutover.** `get_settings` с identity kwargs существует в `audit-all-telegram-1122` на `a6ed0de42c781dbc84c949c787bca2ceac9b785b` (коммит `b46823b`); без него текущие вызовы дадут `TypeError`. Sequence-миграция — data-финал `c529ae420760eff186f7df9dce3d68ac42afe2fe`, файл `db/migrations/016_telegram_binding_generation.up.sql` (перенумерован с 013 из-за занятого `013_custom_checks`). В этом worktree чужие миграции не менялись. Отчёт Telegram-владельца на `a6ed0de` фиксирует Mini API на `69beddd`; его пункты про token `v1` и unscoped `get_settings` к текущему `0c4488afc3` уже не относятся.
 4. **Engine cancellation.** Mini API сам финализирует отменённые `queued`/`running` runs. `WorkflowExecutor.execute_run` ловит `Exception`, но не `CancelledError`; ручные/scheduler-пути вне Mini API зависят от engine-владельца.
 5. **Crash recovery/глобальная ёмкость.** SIGKILL не выполняет lifespan; process admission не является распределённым. Это эксплуатационные ограничения, не обещание текущего кода.
-6. **Документация.** `docs/telegram-miniapp.md` обновлён в этом worktree: v2/legacy cutover, admission pending+running, 429/503, `TELEGRAM_ENABLED` gate, scoped settings read. `docs/telegram-bot.md` не менялся.
+6. **Документация.** `docs/telegram-miniapp.md` (`4371b7116a`) сверен после правки тестов: v2, legacy v1 только как отвергаемый формат, admission pending+running, 429/503, `TELEGRAM_ENABLED` gate и scoped settings read не противоречат коду. `docs/telegram-bot.md` не менялся.
 
 ## Коммиты
 
@@ -166,6 +175,8 @@ git diff --check
 - `425889def673e7bc315f1c734ced94566d505e2c` — bounded admission и завершение отменённых запусков.
 - `69beddd27bd8d99c4b0f0d015aa91b339c1f61db` — сохранение admission при отмене I/O и счётчики фронта.
 - `0c4488afc3307bca1035e20bb6861bc4fb39fa5a` — bearer v2/payload2, отказ v1, identity-scoped `get_settings`.
-- Отчёт и `docs/telegram-miniapp.md` — отдельный коммит после `0c4488afc3`.
+- `4371b7116ab9c25585d819c5478bc3f2865806b4` — `docs/telegram-miniapp.md` и предыдущая версия этого отчёта.
+- `a8f49e2b076cf98096b1eec473708575ac442f96` — существующие тесты Mini App переведены на v2 и `TELEGRAM_ENABLED=1`; новых тестов нет.
+- Этот отчёт с данными `a8f49e2b07`/`4371b7116a` — отдельный коммит после них; итоговый HEAD указан в `worker_done`.
 
-Чужие модули и ветки не менялись; push/merge не выполнялись.
+Правки вне `miniapp.py`/`miniapp_auth.py` сделаны только с разрешения координатора: `docs/telegram-miniapp.md` и `backend/tests/test_telegram_miniapp.py`. Чужие ветки, data/Telegram-модули и миграции не менялись; push/merge не выполнялись.
