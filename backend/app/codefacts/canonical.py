@@ -82,6 +82,13 @@ RULE_FAMILY = {
     "CF-ROUTE-UNAUTH-PII": "route-authorization",
     "CF-SQL-PARAM-INTERPOLATION": "sql-injection",
     "CF-OWNER-CHECK-UNPROVEN": "object-authorization",
+    "CF-CONFIG-STATIC": "runtime-configuration",
+    "CF-CONFIG-ACTUATOR-EXPOSED": "runtime-configuration",
+    "CF-CONFIG-DEBUG-ENABLED": "runtime-configuration",
+    "CF-CONFIG-SSL-DISABLED": "runtime-configuration",
+    "CF-CONFIG-SECURITY-DISABLED": "runtime-configuration",
+    "CF-CONFIG-DEFAULT-CREDS": "runtime-configuration",
+    "CF-CONFIG-CORS-WILDCARD": "runtime-configuration",
 }
 
 
@@ -630,11 +637,27 @@ class CanonicalMapBuilder:
     def _build_coverage(self) -> Tuple[Dict[str, Any], List[str]]:
         files_total = len(self.snapshot_files)
         visited = sorted(set(self.facts.files_read))
+        config_paths = set(getattr(self.facts, "config_paths", []))
         scopes: List[Dict[str, Any]] = []
         for path in visited:
             if not is_safe_source_path(path):
                 continue
             decode_error = self.sources.get(path).decode_error if path in self.sources else None
+            if path in config_paths:
+                # Конфиги читает config_static: scope называет реально
+                # применённую проверку, а не общий CF-SPRING-STATIC.
+                scopes.append({
+                    "path": path,
+                    "ruleId": "CF-CONFIG-STATIC",
+                    "category": "SAST",
+                    "status": "partial" if decode_error else "checked",
+                    "reason": (
+                        "Конфигурация проверена статически по тексту файла; "
+                        "runtime-значения не подставлялись."
+                        if not decode_error else f"Частичное чтение: {decode_error}"
+                    ),
+                })
+                continue
             scopes.append({
                 "path": path,
                 "ruleId": "CF-SPRING-STATIC",
@@ -647,11 +670,9 @@ class CanonicalMapBuilder:
             diag["id"] for diag in self.diagnostics
             if diag["code"] in {"CF-DECODE-ERROR", "CF-NODE-WITHOUT-EVIDENCE"}
         ]
-        skipped: List[str] = [
-            "runtime-configuration",
-            "runtime-guards",
-            "binaries-and-archives",
-        ]
+        # skippedScopes считается только по фактическим причинам: что-то
+        # непроверенное появляется здесь с конкретным путём и причиной.
+        skipped: List[str] = list(dict.fromkeys(getattr(self.facts, "config_skipped", [])))
         unresolved = list(dict.fromkeys(self.facts.unresolved_symbols))
         limits = list(self.facts.limits)
         complete = (

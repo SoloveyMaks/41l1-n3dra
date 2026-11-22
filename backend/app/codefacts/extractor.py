@@ -59,6 +59,48 @@ RULE_DEFINITIONS = [
         "family": "object-authorization",
         "title": "Проверка владельца объекта не доказана",
     },
+    {
+        "id": "CF-CONFIG-STATIC",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Статическая проверка конфигурации приложения",
+    },
+    {
+        "id": "CF-CONFIG-ACTUATOR-EXPOSED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Открыт опасный actuator-эндпоинт",
+    },
+    {
+        "id": "CF-CONFIG-DEBUG-ENABLED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Включён debug/trace в конфигурации",
+    },
+    {
+        "id": "CF-CONFIG-SSL-DISABLED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Отключена проверка TLS",
+    },
+    {
+        "id": "CF-CONFIG-SECURITY-DISABLED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Отключена проверка доступа в конфигурации",
+    },
+    {
+        "id": "CF-CONFIG-DEFAULT-CREDS",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Дефолтные или placeholder-креды в конфигурации",
+    },
+    {
+        "id": "CF-CONFIG-CORS-WILDCARD",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Wildcard CORS в конфигурации",
+    },
 ]
 RULE_BY_ID = {rule["id"]: rule for rule in RULE_DEFINITIONS}
 
@@ -217,6 +259,9 @@ class ExtractionResult:
     limits: List[str] = field(default_factory=list)
     rules: List[SecurityRule] = field(default_factory=list)
     routes: List[RouteInfo] = field(default_factory=list)
+    # Статически проверенные конфиги и причины, которые нельзя разрешить.
+    config_paths: List[str] = field(default_factory=list)
+    config_skipped: List[str] = field(default_factory=list)
 
     def node(self, symbol: str, kind: str, label: str, evidence: List[Dict[str, Any]]) -> None:
         existing = self.nodes.get(symbol)
@@ -491,6 +536,7 @@ class SpringFactExtractor:
         self._emit_method_sinks()
         self._emit_sql_findings()
         self._emit_route_findings()
+        self._scan_runtime_configs()
 
         if not self.rules:
             self.result.diag(
@@ -504,6 +550,19 @@ class SpringFactExtractor:
         return self.result
 
     # --- parsing ---------------------------------------------------------
+    def _scan_runtime_configs(self) -> None:
+        """Статическая проверка конфигурации: находки + честные skipped-причины."""
+        from backend.app.codefacts.config_static import scan_configs
+
+        findings, paths, skipped = scan_configs(self.sources)
+        for path in paths:
+            if path not in self.result.files_read:
+                self.result.files_read.append(path)
+        self.result.config_paths.extend(paths)
+        self.result.config_skipped.extend(skipped)
+        for finding in findings:
+            self.result.findings.append(finding)
+
     def _parse_schemas(self) -> None:
         for path, source in sorted(self.sources.items()):
             if not path.endswith(".sql"):
