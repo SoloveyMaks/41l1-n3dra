@@ -3,8 +3,9 @@
 ## Ревизия и метод
 
 - База задания: `35d27d30ae44fd955824001e18eff895197c933c` (dev).
-- Проверенное состояние кода: `297926454464dfb3636130bfdaf0c288e3080a5a`.
-- Рабочее дерево после проверок: чистое. Этот отчёт добавлен отдельным коммитом после `2979264`.
+- Проверенное состояние кода: `94daf33c3a8fa2e35eeb57975f6e4bf3ea2c87df`
+  (предыдущая область `297926454464dfb3636130bfdaf0c288e3080a5a`).
+- Рабочее дерево после проверок: чистое. Отчёт добавлен отдельным коммитом.
 - Область: `backend/app/engine/`, `backend/app/scenario_builder/`,
   `backend/app/contracts/`, `backend/app/api/scenario_builder.py`,
   `backend/app/api/sql_pattern.py`, `backend/app/demo/`.
@@ -198,6 +199,57 @@ revision, а не stale workflow; для отсутствующей ревизи
 - P4/P5: в репозитории нет документов/меток P4/P5; проверены соответствующие
   коду пути (revision/draft/artifact/run, validation, executor/SSE/scheduler).
 
+## Lifecycle follow-up: main и ручные run tasks
+
+Коммит: `94daf33c3a8fa2e35eeb57975f6e4bf3ea2c87df`.
+
+Разрешённое продолжение затронуло только `backend/app/main.py`,
+lifecycle/task-ownership hunks `backend/app/api/router.py` и этот отчёт.
+
+Исходная причина: `main.lifespan` вызывал синхронный `scheduler.stop()` и
+закрывал DB pool, не дожидаясь задач, созданных `trigger_run` через
+`asyncio.create_task`. При shutdown такие run tasks и их `to_thread` могли
+пережить закрытие пула; поздняя ошибка инициализации тоже требовала
+гарантированной очистки.
+
+Исправление:
+
+- lifespan переведён на `AsyncExitStack`; `db_repo.close` регистрируется
+  первым и выполняется последним;
+- `scheduler.aclose` подключён через `push_async_callback`; `stop()` остаётся
+  синхронным сигналом;
+- добавлен `_ManualRunTasks`: `trigger_run` регистрирует задачу, done-callback
+  снимает её и читает исключение, `aclose()` отменяет и ждёт все задачи;
+- порядок очистки: telegram-start task → manual runs → telegram.stop →
+  notifications.stop → scheduler.aclose → DB close. Ручные запуски
+  отменяются раньше scheduled, чтобы не ждать освобождения общего
+  executor-семафора;
+- сохранены release-семантики `2489ca7`: close при config error, очистка при
+  сбое `notifications.start`, отмена `telegram-start`, очистка
+  notifications/telegram/scheduler при частичном старте;
+- router не переписывался: добавлен только lifecycle-класс и замена одной
+  строки создания task. Account-hunks `2ec64ff`/`fc5258d` не затрагивались;
+  main `98c276e` и custom-check wiring не мержились.
+
+Проверка (реальные asyncio tasks, без PostgreSQL):
+
+- `lifecycle_probe.py` 10/10: порядок cleanup
+  `manual → telegram → notifications → scheduler → db.close`, закрытие БД
+  последним, очистка после ошибки `notifications.start`, закрытие БД при
+  config error, отмена `telegram-start`;
+- реальный `_ManualRunTasks.aclose` отменил и дождался задачи, done-callback
+  убрал завершённую задачу;
+- связка registry → реальный `WorkflowExecutor` с fake-repo: отмена задачи
+  дала `run=interrupted`, `node=cancelled`, SSE `run_status`/`node_status`,
+  registry пуст;
+- реальный `WorkflowScheduler.aclose` в AsyncExitStack отменил циклы и
+  дождался задач.
+
+Ограничение: `scheduler.aclose` ждёт задачи, но raw `asyncio.to_thread` в
+watch-DB вызовах после отмены может завершаться в фоне; executor-узлы этот
+случай закрывают через `_await_operation`. Полный PostgreSQL shutdown e2e не
+выполнялся.
+
 ## Команды и фактические результаты
 
 ```text
@@ -208,6 +260,13 @@ python3 -m compileall -q backend/app/engine backend/app/api \
 
 /tmp/nedra-audit-engine/.venv/bin/python /tmp/nedra-audit-engine/probe.py
 → 50/50 passed
+
+/tmp/nedra-audit-engine/.venv/bin/python /tmp/nedra-audit-engine/lifecycle_probe.py
+→ 10/10 passed (AsyncExitStack order, init failure, config error,
+  telegram-start cancel, real task registry)
+
+registry → реальный executor, fake-repo
+→ task cancelled; run=interrupted; node=cancelled; SSE run/node; registry empty
 
 /tmp/nedra-audit-engine/.venv/bin/python backend/tests/test_telegram_buttons.py
 → 95/95 checks passed (DB probe skipped)
@@ -227,6 +286,7 @@ git status --short
 8f048df4338d2016a3500c38c579ede3b0174ddb  Недра: ограничить очередь запусков и финализировать отмену
 e0c17e3a5dac5f0a40e27ba6e0c2d21f12c68635  Недра: дождаться фоновых задач планировщика при остановке
 297926454464dfb3636130bfdaf0c288e3080a5a  Недра: останавливать Telegram-задачу при потере доступа
+94daf33c3a8fa2e35eeb57975f6e4bf3ea2c87df  Недра: дождаться ручных запусков и планировщика при остановке
 ```
 
 ## Открытые блокеры и ограничения
@@ -240,14 +300,16 @@ e0c17e3a5dac5f0a40e27ba6e0c2d21f12c68635  Недра: дождаться фон�
    `frontend/src/api/scenarioBuilder.ts:62` у `build_report.inputs` нет
    `ai_scan_result`, хотя backend и registry его отдают. `isPreview` отклонит
    валидный граф, Apply будет недоступен. Файл принадлежит frontend-владельцу.
-3. **Интеграция shutdown.** `backend/app/main.py:115` всё ещё вызывает
-   синхронный `scheduler.stop()`. Нужен `await scheduler.aclose()` (например,
-   через `AsyncExitStack.push_async_callback`) на точном SHA `2979264` или
-   новее. `aclose()` идемпотентен и сохраняет `stop()` как сигнал.
-4. **Ручные запуски не отслеживаются.** `backend/app/api/router.py:485`
-   создаёт задачу `asyncio.create_task` без хранения; `scheduler.aclose()` её
-   не видит. При остановке приложения такая задача может быть отменена без
-   ожидания. Нужен tracking на уровне API/executor; файл вне этой области.
+3. **Merge-согласование shutdown.** В этом worktree `main.py` уже использует
+   `AsyncExitStack` + `scheduler.aclose`, а ручные запуски отслеживаются
+   registry (коммит `94daf33`). При координаторском merge нужно взять эти
+   hunks поверх release `2489ca7`, не заменяя его cleanup-семантику, и
+   сохранить account-hunks `fc5258d`/`2ec64ff` в router. Main-ветку и
+   custom-check wiring `98c276e` самостоятельно не мержить.
+4. **Остаточный риск raw to_thread.** `scheduler.aclose` ждёт задачи, но
+   `asyncio.to_thread` в watch-DB вызовах после отмены задачи может завершаться
+   в фоне; executor-узлы закрывают этот случай через `_await_operation`.
+   Полный PostgreSQL shutdown e2e не выполнялся.
 5. **Custom-checks sandbox** (`reference_checks`/custom checks) не аудировался
    и не менялся: вне владения. `backend/app/api/comparison.py` сохраняет
    старую схему записи вывода в файлы; это отдельная область, здесь не
