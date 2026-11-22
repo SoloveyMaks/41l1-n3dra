@@ -240,8 +240,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   return (
     <div className="relative min-h-[420px] w-full min-w-0 bg-slate-950 xl:h-full xl:min-h-0 xl:flex-1">
       {/* Top Bar on Canvas */}
-      <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-col gap-2 2xl:flex-row 2xl:items-start">
-        <div className="pointer-events-auto grid w-full min-w-0 gap-2 rounded-xl border border-slate-800 bg-slate-900/95 p-2 shadow-lg backdrop-blur-md 2xl:w-[460px] 2xl:shrink-0">
+      <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-col gap-2 min-[1760px]:flex-row min-[1760px]:items-start">
+        <div className="pointer-events-auto grid w-full min-w-0 gap-2 rounded-xl border border-slate-800 bg-slate-900/95 p-2 shadow-lg backdrop-blur-md min-[1760px]:w-[460px] min-[1760px]:shrink-0">
           <label className="flex min-w-0 flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Сценарий</span>
             <select
@@ -286,7 +286,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 <button
                   type="button"
                   onClick={onCreateWorkflow}
-                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-indigo-800 bg-indigo-950/60 px-2.5 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 sm:flex-none"
+                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-indigo-800 bg-indigo-950/60 px-2.5 text-xs font-medium text-indigo-200 transition hover:bg-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 sm:flex-none"
                   title="Создать новый сценарий на основе текущих блоков"
                 >
                   <Plus size={13} /> Новый сценарий
@@ -296,7 +296,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
                 <button
                   type="button"
                   onClick={onGenerateWorkflow}
-                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-fuchsia-800 bg-fuchsia-950/60 px-2.5 text-[11px] font-medium text-fuchsia-100 transition hover:bg-fuchsia-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400 sm:flex-none"
+                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-fuchsia-800 bg-fuchsia-950/60 px-2.5 text-xs font-medium text-fuchsia-100 transition hover:bg-fuchsia-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400 sm:flex-none"
                   title="Собрать черновик сценария из текста или голоса"
                 >
                   <Sparkles size={13} /> По описанию
@@ -320,7 +320,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
         <div className="pointer-events-auto flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <div
-            className={`flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[11px] font-medium shadow-lg backdrop-blur-md ${
+            className={`flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-medium shadow-lg backdrop-blur-md ${
               hasErrors
                 ? 'border-rose-800 bg-rose-950/90 text-rose-200'
                 : validationUnavailable
@@ -338,7 +338,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
           {executionNotice && (
             <div
-              className="flex min-w-0 max-w-xl items-start gap-1.5 rounded-xl border border-amber-800 bg-amber-950/90 px-2.5 py-2 text-[11px] leading-snug text-amber-100 shadow-lg backdrop-blur-md"
+              className="flex min-w-0 max-w-xl items-start gap-1.5 rounded-xl border border-amber-800 bg-amber-950/90 px-2.5 py-2 text-xs leading-snug text-amber-100 shadow-lg backdrop-blur-md"
               data-execution-binding="mismatch"
             >
               <AlertCircle size={13} className="mt-0.5 shrink-0" />
@@ -347,12 +347,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           )}
         </div>
 
-        <div className="pointer-events-auto grid w-full grid-cols-2 gap-2 2xl:ml-auto 2xl:flex 2xl:w-auto 2xl:flex-wrap 2xl:justify-end">
+        <div className="pointer-events-auto grid w-full grid-cols-2 gap-2 min-[1760px]:ml-auto min-[1760px]:flex min-[1760px]:w-auto min-[1760px]:flex-wrap min-[1760px]:justify-end">
           {onOpenMap && (
             <button
               type="button"
               onClick={onOpenMap}
-              className="col-span-2 flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl border border-sky-800 bg-sky-950/90 px-2.5 py-1.5 text-[11px] font-medium text-sky-100 shadow-lg backdrop-blur-md transition hover:bg-sky-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 2xl:col-auto"
+              className="col-span-2 flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl border border-sky-800 bg-sky-950/90 px-2.5 py-1.5 text-xs font-medium text-sky-100 shadow-lg backdrop-blur-md transition hover:bg-sky-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 min-[1760px]:col-auto"
               title="Открыть карту доступа выбранного запуска"
             >
               Карта доступа →
@@ -361,7 +361,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
           <button
             type="button"
             onClick={onResetToTemplate}
-            className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 shadow-lg backdrop-blur-md transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-xs font-medium text-slate-200 shadow-lg backdrop-blur-md transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
             title="Вернуть сохранённый draft с сервера"
           >
             <RotateCcw size={13} />
@@ -373,7 +373,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
             onClick={onSaveDraft}
             disabled={isSaving}
             title="Сохранить черновик сценария на сервере"
-            className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+            className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
             <Save size={13} />
             <span className="whitespace-nowrap">{isSaving ? 'Сохранение…' : 'Сохранить draft'}</span>
