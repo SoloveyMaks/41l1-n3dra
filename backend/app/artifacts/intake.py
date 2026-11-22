@@ -94,6 +94,11 @@ _ROOT_MARKERS_WITH_SRC = {
     "pom.xml", "build.sbt", "package.json", "pyproject.toml", "Cargo.toml",
     "go.mod", "CMakeLists.txt", "pubspec.yaml", "composer.json",
 }
+# Root-level docs/VCS files do not make the archive a multi-root project.
+_WRAPPER_ROOT_NOISE = {
+    "readme", "readme.md", "readme.txt", "license", "license.md",
+    "license.txt", ".gitignore", ".gitattributes", ".editorconfig",
+}
 
 
 def _now() -> str:
@@ -168,42 +173,49 @@ def _count_gradle(paths: Iterable[str]) -> int:
     )
 
 
+def _project_root_names(inner: Iterable[str]) -> set[str]:
+    """Names of entries directly inside a candidate project root."""
+    return {path.split("/", 1)[0] for path in inner if "/" not in path}
+
+
+def _is_project_root(inner: Iterable[str]) -> bool:
+    inner = list(inner)
+    names = _project_root_names(inner)
+    if names & _ROOT_BUILD_MARKERS:
+        return True
+    if names & _ROOT_MARKERS_WITH_SRC and any(path.startswith("src/") for path in inner):
+        return True
+    # Source-only project (no build manifest): the folder still owns src/.
+    return any(path.startswith("src/") or "/src/" in path for path in inner)
+
+
 def _detect_wrapper_root(paths: Iterable[str]) -> Optional[str]:
-    """Return the wrapper directory only when it is provably the project root.
+    """Pick the project subtree when a ZIP wraps it in a folder.
 
-    A ZIP is usually produced by packing a project folder, so every entry is
-    prefixed with that folder name. The prefix is dropped only when the layout
-    is unambiguous:
-
-    * no file sits at archive root (flat and multi-module projects already are
-      the root and must keep ``module/src/...`` or ``src/...`` as-is);
-    * every file lives under one and the same top-level directory;
-    * that directory contains a build-root marker at its own depth. Gradle
-      ``settings``/``build`` files are enough; other ecosystem manifests
-      additionally require a sibling ``src/`` tree.
-
-    Everything else (several top-level trees, wrapper without markers, a
-    nested project without its own marker) returns ``None``: callers keep the
-    original paths instead of guessing.
+    A training/repository archive may contain the project plus docs, ground
+    truth and other top-level directories. The project root is the one that
+    carries a build marker (or, for source-only fixtures, a ``src/`` tree).
+    A single wrapper is accepted even with root-level README/VCS noise.
+    Multiple candidate subtrees are ambiguous and are kept as-is.
     """
-    wrapper: Optional[str] = None
-    inner: List[str] = []
+    groups: Dict[str, List[str]] = {}
     for path in paths:
         head, sep, tail = path.partition("/")
         if not sep:
-            return None
-        if wrapper is None:
-            wrapper = head
-        elif head != wrapper:
-            return None
-        inner.append(tail)
-    if wrapper is None:
+            continue
+        groups.setdefault(head, []).append(tail)
+    if not groups:
         return None
-    root_names = {path.split("/", 1)[0] for path in inner if "/" not in path}
-    if root_names & _ROOT_BUILD_MARKERS:
-        return wrapper
-    if root_names & _ROOT_MARKERS_WITH_SRC and any(path.startswith("src/") for path in inner):
-        return wrapper
+
+    if len(groups) == 1:
+        wrapper, inner = next(iter(groups.items()))
+        if _is_project_root(inner):
+            return wrapper
+        return None
+
+    candidates = [name for name, inner in groups.items() if _is_project_root(inner)]
+    if len(candidates) == 1:
+        return candidates[0]
     return None
 
 
@@ -212,6 +224,8 @@ def _strip_wrapper_root(rel: str, wrapper: Optional[str]) -> str:
         return rel
     prefix = f"{wrapper}/"
     if not rel.startswith(prefix):
+        if rel.casefold() in _WRAPPER_ROOT_NOISE:
+            return rel
         raise SafeIntakeError(f"Путь вне выбранного корня проекта: {rel!r}")
     stripped = rel[len(prefix):]
     if not stripped:
@@ -408,6 +422,18 @@ class SafeArtifactIntake:
             wrapper_root = _detect_wrapper_root(
                 [_normalize_entry_name(info.filename) for info in entries]
             ) if strip_wrapper_root else None
+            if wrapper_root:
+                # Only the selected project subtree belongs to the snapshot;
+                # sibling ground-truth/docs trees are not project sources.
+                entries = [
+                    info for info in entries
+                    if (
+                        (rel := _normalize_entry_name(info.filename)) == wrapper_root
+                        or rel.startswith(f"{wrapper_root}/")
+                    )
+                ]
+                if not entries:
+                    raise SafeIntakeError("После выбора корня проекта не осталось файлов")
             artifact_id = _archive_id()
             target_dir = (self.storage_root / artifact_id).resolve()
             self.storage_root.mkdir(parents=True, exist_ok=True)
