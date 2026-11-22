@@ -72,7 +72,7 @@
 - Новый forward-файл `dispatch_guard.sql` добавляет BEFORE trigger на terminal status с тем же workspace advisory lock, что save_settings/authorize/finish. Вставка completion теперь сериализуется с отменой настроек.
 - Новая колонка `retry_cancelled` фиксирует отмену будущих повторов для уже authorized строки при disable/смене URL/flags. Уже начатый запрос всё ещё записывает настоящий успешный или неуспешный исход.
 - finish берёт workspace lock и не возвращает отменённый повтор в pending. authorize отказывает и после reclaim такого lease.
-- initialize применяет forward-файл после неизменённого базового schema.sql в той же транзакции. `ADD COLUMN IF NOT EXISTS`, CREATE OR REPLACE FUNCTION и переустановка собственного trigger позволяют повторный startup.
+- initialize делегирует установку `storage.database.initialize_notification_schema(conn=None)`: base `schema.sql` + forward `dispatch_guard.sql` и notification DDL lock принадлежат data helper. Store больше не читает SQL и не открывает собственную DDL-транзакцию; повторный startup и readiness gate — зона data helper.
 
 **Это исправление не прошло PostgreSQL исполнение/конкурентную проверку.** SQL не применялся ни к одной БД. Перед интеграцией нужны: fresh и existing startup дважды; обе очередности completion/opt-out; finish(retry=True) одновременно с opt-out; disable/enable до finish; worker crash после authorization, opt-out и reclaim; 2 workspace, stale lease и attempts cap. Новая колонка не восстанавливает историю отмен, случившихся до установки исправления.
 
@@ -131,3 +131,11 @@ exit 0, без замечаний
 3. Реальные TLS/DNS, внешний webhook, Telegram и production run не проверялись и в рамках данного задания наружу не отправлялись. Внешняя доставка здесь не объявляется успешной.
 
 Локальные дефекты исправлены и проверены в описанных границах; полную готовность уведомлений этот отчёт не подтверждает.
+
+## Follow-up после независимого ревью
+
+F2/F4/F6 исправлены в `backend/app/notifications/store.py` и `dispatch_guard.sql`: durable marker `runtime.notification_migrations` + `legacy_active_consent_purge_v1` (purge только при отсутствии marker), fail-closed isolation check в terminal run trigger и `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` для notification-соединений, `clock_timestamp()` для lease/authorization/finish timestamps. F3/F8 readiness-контракт (marker + `retry_cancelled` default + триггеры, pre-check без повторного DDL, bounded `pg_try_advisory_xact_lock`/`lock_timeout`) согласован с data owner через orchestration (`ctx_b9e273e2ca13`, подтверждение `msg_2696833173a2`); соответствующий data commit ещё должен приехать. F7 остаётся честным ограничением: pin на `addresses[0]`, без address failover и без нового POST при неопределённом результате.
+
+Отдельно: текст upgrade contract в ревизии `87e9067` (пункты про «store.initialize берёт DDL lock» и «store.initialize исполняет SQL») устарел после delegation. Единственный владелец установки — `storage.database.initialize_notification_schema`; его readiness gate и bounded trylock зафиксированы в data commit `cbfc878` (data HEAD `9efe14e`), а store лишь вызывает helper.
+
+Подробности, точные SHA, статусы доказательств и непроверенная PostgreSQL-матрица — в `docs/reviews/full-audit-notifications-independent.md`. SQL не исполнялся, PostgreSQL не запускался; combined acceptance не заявляется.

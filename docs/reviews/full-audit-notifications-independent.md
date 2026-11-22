@@ -1,119 +1,125 @@
-# Независимое ревью: notifications — первый пакет и integration delta
+# Независимое ревью: notifications — финальные F2/F3/F4/F6/F7
 
-Дата: 2026-11-22. Режим: read-only, без вложенных агентов. Изменён только этот отчёт.
+Дата: 2026-11-22. Режим: read-only по чужим веткам; изменения только в разрешённых notification-файлах и двух review-документах.
 
-## Идентичность проверки
+## Идентичность и границы
 
-- Worktree: `/home/rodion/orca/workspaces/41l1-n3dra/audit-review-notifications-1122`, HEAD `f673bea9f6151e7f2a0df16a44d7e03e59e92ab8`, ветка `SoloveyMaks/audit-review-notifications-1122`.
-- База диффа: `35d27d30ae44fd955824001e18eff895197c933c`. Первый пакет: `47cbbd29fcdb31eb38a88112c4885cfb8c6c3322`, отчёт `f673bea`.
-- Целевое состояние, на которое указывает координатор: notifications HEAD `87e906710bb1f1c2d136f98774ea792ac449d8cc`, SQL guard `52c34600884b1fba8ca96c875bf1d6ddc120689e`.
-- `87e9067`/`52c3460` не выкладывались в рабочий worktree: просмотр через `git show`/`git archive`; reset/clean/restore не выполнялись.
-- `initialize_notification_schema` отсутствует во всех git refs. В data worktree `.../audit-all-data-1122/backend/app/storage/database.py` helper есть, но файл `M` (uncommitted) и не входит ни в один ref. Для проб собрано временное combined-дерево в `/tmp/nedra-audit-review-notifications/combined`; это симуляция, не приёмка combined snapshot.
-- Ограничения: PostgreSQL, containers, services, volumes, ports, network, production, credentials и реальные уведомления не затрагивались. Ранее запрещённый `podman start` не повторялся и не обходился. Внешний HTTP не использовался; HTTP-проба — только AF_UNIX socket.
+- Worktree: `/home/rodion/orca/workspaces/41l1-n3dra/audit-review-notifications-1122`, ветка `SoloveyMaks/audit-review-notifications-1122`.
+- Точная база store/guard: `87e906710bb1f1c2d136f98774ea792ac449d8cc`; файлы взяты через `git show`, без reset/clean/merge и без checkout чужой ветки.
+- Data: HEAD `9efe14e09ff56af694f468f2e765e72ce934b866`; gate `cbfc878626dee8f6e5d0f65bf1d5213c5f7cedfd`; helper `d2ba621`/`f132489`.
+- Изменены только: `backend/app/notifications/store.py`, `backend/app/notifications/dispatch_guard.sql`, `docs/reviews/full-audit-notifications.md`, этот отчёт. Store/guard базируются на `87e9067`; координатор отдельно разрешит конфликт с `87`.
+- Запреты соблюдены: PostgreSQL, containers, services, listeners, volumes, внешняя сеть, production, credentials и реальные уведомления не затрагивались. Пробы — только `/tmp/nedra-audit-review-notifications`.
+- Combined-дерево для проб: `87e9067` + наши store/guard + `database.py` из data `9efe14e`. Это симуляция combined merge, не запуск приложения.
 
 ## Вердикт
 
-**Не принимать как интеграционно готовый пакет.** F1 — жёсткий блокер: `87e9067` нельзя импортировать/запустить отдельно, и ни в одном ref нет реализации helper. F2/F3/F4 должны быть закрыты или явно приняты как ограничение до приёмки. В проверенном локальном объёме исправления router/URL/stream/2xx/asyncio держатся; SQL и MVCC проверены только по исходникам, живого PostgreSQL нет.
+F2/F4/F6 исправлены в коде; F3/F8 readiness-контракт реализован в data commit `cbfc878` и совместим с нашим guard; F1 снят для combined snapshot (data helper закоммичен), но изолированная review-ветка всё ещё зависит от data merge. F7 остаётся честным ограничением. **Это не подтверждение пригодности продукта:** PostgreSQL-матрица не исполнена, combined startup/DDL/триггеры/гонки не проверены живьём.
 
-## Находки
+## Что изменено в этой ветке
 
-### F1 — BLOCKER: HEAD 87e9067 импортирует отсутствующий helper; приложение не стартует
+1. `store.py` (exact base `87e9067`): `initialize()` делегирует data helper; добавлен `_connection()` с `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` для каждого notification-соединения; `claim`, `authorize`, `finish`, `save_settings` используют `clock_timestamp()` для времени эффекта.
+2. `dispatch_guard.sql` (exact base `87e9067`): durable `runtime.notification_migrations` + marker `legacy_active_consent_purge_v1`; purge только при отсутствии marker, в одной транзакции, под `LOCK TABLE`; fail-closed проверка `retry_cancelled boolean NOT NULL DEFAULT`; terminal trigger отклоняет транзакцию, если isolation не `read committed`.
+3. Оба review-документа: обновлены статусы, stale-текст `87e9067` про DDL lock/store.initialize исправлен; PG-матрица сохранена как непроверенная.
 
-- Файлы/строки: `backend/app/notifications/store.py:29` (`from backend.app.storage.database import get_pool, initialize_notification_schema`), `store.py:68-69` (`initialize()` -> `initialize_notification_schema()`); `backend/app/main.py:22` импортирует `backend.app.notifications` безусловно.
-- Последовательность: merge/deploy `87e9067` без data commit -> `import backend.app.notifications` -> `ImportError` -> падает импорт `backend.app.main`; lifespan, health и API не поднимаются. Ошибка возникает на импорте, до `NotificationRuntime.start()` и до любого `try/finally`.
-- Факт: в дереве `87e9067` `backend/app/storage/database.py` содержит `get_pool` (строка 111) и не содержит helper. `git grep` по всем refs находит имя только в ветке notifications (в `store.py` и тексте этого отчёта), ни одного определения в `database.py`; `git log --all -S'initialize_notification_schema'` показывает только `87e9067` (саму ссылку). Uncommitted helper в data worktree находится по пути `/home/rodion/orca/workspaces/41l1-n3dra/audit-all-data-1122/backend/app/storage/database.py:259`.
-- Доказательство: **реально исполнено** на чистом архиве `87e9067`: `ImportError: cannot import name 'initialize_notification_schema' from 'backend.app.storage.database'`. Для контроля combined-дерево с uncommitted data helper импортируется, но это временная симуляция, не запуск приложения и не проверка БД.
-- Последствия: ветка несамостоятельна; merge notifications-only — гарантированный отказ старта. Запись в отчёте «pending combined verification» точна, но неполна: коммита-контрагента не существует, поэтому combined snapshot невоспроизводим из refs.
-- Минимальная рекомендация: сначала закоммитить/влить data helper с точным контрактом (`conn=None`/`conn`, DDL lock), затем повторить реальный import и старт приложения; `87e9067` отдельно не мержить.
+## Статусы находок
 
-### F2 — HIGH: fail-closed purge legacy-строк пропускается на БД, где уже применялся 47cbbd2
+### F1 — RESOLVED В COMBINED, зависимость ветки остаётся
 
-- Файлы/строки: `backend/app/notifications/dispatch_guard.sql:2-22`; `git show 47cbbd2 -- backend/app/notifications/dispatch_guard.sql`.
-- Факт: `47cbbd2` добавил `retry_cancelled boolean NOT NULL DEFAULT false` через `ADD COLUMN IF NOT EXISTS` и **не** делал purge. `52c3460` обернул и добавление колонки, и оба UPDATE в `IF NOT EXISTS (pg_attribute ... retry_cancelled)`. Если БД уже прошла `47cbbd2`, колонка есть -> весь DO-блок, включая `UPDATE ... retry_cancelled=true` и перевод unauthorized pending/sending в `skipped`, не выполняется.
-- Последовательность: existing DB с legacy pending/sending (созданными до политики согласия) -> применён `47cbbd2` -> применён `52c3460` -> guard видит колонку и молчит -> legacy pending остаётся `pending`, `retry_cancelled=false` -> claim/authorize отправляет его при текущем `enabled=true`, даже если между созданием и доставкой был disable/enable.
-- Последствия: нарушено обещание «never resume their unproven consent»; старый completion может уйти после opt-out/opt-in. Readiness-check data helper (uncommitted `database.py:227-256`) проверяет наличие/форму колонки и триггеров, но не факт выполнения purge, и тоже не поймает пропущенный purge.
-- Доказательство: **по исходникам** (два `git show`, точная логика guard). PostgreSQL не запускался.
-- Минимальная рекомендация: одноразовый durable marker (строка миграции/version в `runtime.schema_meta` или отдельная notification-migration таблица), независимый от существования колонки; выполнить purge ровно один раз и на пути `47cbbd2→52c3460`, и на пути `35d27d3→52c3460`; добавить оба пути в PG-матрицу.
+- Изначальный факт: `87e9067` импортировал `initialize_notification_schema`, которого не было ни в одном ref; `import backend.app.notifications` падал.
+- Сейчас helper закоммичен (`d2ba621`, data HEAD `9efe14e`), и combined-симуляция с data `database.py` + нашими store/guard импортируется: `combined import OK`.
+- Изолированная review-ветка (без data merge) по-прежнему не запускается: это ожидаемая зависимость, не новый блокер. Финальный merge/конфликт с `87e9067` и data делает координатор.
+- Доказательство: **реально исполнено** (import combined); PostgreSQL startup не выполнялся.
 
-### F3 — HIGH: новый BEFORE trigger замыкает deadlock-цикл со startup-DDL
+### F2 — FIXED В КОДЕ (source-only)
 
-- Файлы/строки: `dispatch_guard.sql:24-41` (BEFORE trigger на terminal status берёт workspace advisory lock); `schema.sql:48-55,79-81` (startup SQL берёт ACCESS EXCLUSIVE на `notification_settings`/`completion_notifications` и `runs`); `store.py:93` (`save_settings`: workspace lock -> settings/completion), `store.py:220` (`authorize`: workspace -> completion row), `store.py:302` (`finish`: workspace -> completion row); `main.py:104` (`store.initialize` в lifespan); uncommitted data helper вызывает тот же install из `init_db`.
-- Последовательность (rolling deploy/restart при работающем старом инстансе):
-  1. T1 (startup DDL) держит ACCESS EXCLUSIVE на `notification_settings`/`completion_notifications`, затем ждёт ACCESS EXCLUSIVE на `runtime.runs` для `DROP/CREATE TRIGGER`.
-  2. T2 (`authorize`/`finish`/`save_settings`) уже взял workspace advisory lock и ждёт ACCESS SHARE/row lock на notification-таблицах, удерживаемых T1.
-  3. T3 (terminal UPDATE `runtime.runs`) держит RowExclusive/row lock на `runs`, а в новом BEFORE trigger ждёт workspace advisory lock, удерживаемый T2.
-  Цикл: T1 -> T3 -> T2 -> T1.
-- Последствия: PostgreSQL deadlock detector через `deadlock_timeout` абортит одного участника — startup (crash-loop при повторных рестартах), либо пользовательский `save_settings`/`finish`, либо terminal UPDATE run (500/застрявший run). Даже без deadlock каждый startup берёт ACCESS EXCLUSIVE на `runtime.runs` и блокирует завершения; data helper выполняет scripts дважды за процесс (`init_db` + `store.initialize`), удваивая окно. До нового BEFORE trigger у T3 не было ожидания workspace lock, поэтому именно этот trigger замыкает цикл.
-- Доказательство: **по исходникам и семантике блокировок PostgreSQL**; не исполнялось (нет PG). Режимы: `ALTER TABLE`/`DROP TRIGGER` — ACCESS EXCLUSIVE, `CREATE TRIGGER` — SHARE ROW EXCLUSIVE, UPDATE — ROW EXCLUSIVE, SELECT — ACCESS SHARE; в указанном порядке они конфликтуют.
-- Минимальная рекомендация: вынести notification DDL из runtime startup в отдельную versioned-миграцию до начала обслуживания (rolling deploy: старые инстансы не обслуживают); как минимум — readiness/version gate, не выполнять `DROP/CREATE TRIGGER` при уже установленном контракте, задать `lock_timeout` и fail-closed с retry, а не ждать бесконечно; добавить PG-тест «DDL одновременно с terminal UPDATE + save_settings/authorize».
+- `dispatch_guard.sql:12-18` создаёт `runtime.notification_migrations(name text primary key, applied_at timestamptz not null default clock_timestamp())`.
+- `dispatch_guard.sql:20-55`: `LOCK TABLE ... EXCLUSIVE`; если marker `legacy_active_consent_purge_v1` отсутствует — при необходимости `ADD COLUMN retry_cancelled boolean NOT NULL DEFAULT false`, затем `retry_cancelled=true` для pending/sending, unauthorized pending/sending -> `skipped`, затем `INSERT` marker. Если marker есть — rows не трогаются.
+- Колонка больше не является ключом миграции: БД, прошедшая `47cbbd2` (колонка есть, marker нет), получает purge; БД, прошедшая `52c3460`, тоже. Это закрывает F2.
+- Первый marker-run сознательно fail-closed отменяет **все** активные rows, включая созданные после раннего hotfix: достоверной per-row истории согласия нет. Это документированный компромисс, не тихая потеря terminal history.
+- `dispatch_guard.sql:56-68`: при наличии marker, но отсутствии/неверной колонки — `RAISE EXCEPTION`, purge не повторяется.
+- Data gate `cbfc878` требует marker row; наш guard и data gate должны ехать одним merge, иначе startup fail-closed.
+- Доказательство: **по исходникам**; SQL на PostgreSQL не исполнялся. Residual: первая marker-миграция может отменить новые active rows на БД, где уже применялся частичный hotfix.
 
-### F4 — MEDIUM: AFTER trigger и MVCC — гарантия верна только при READ COMMITTED и VOLATILE
+### F3 — CONTRACT РЕАЛИЗОВАН У DATA (source-only)
 
-- Файлы/строки: `dispatch_guard.sql:24-36` (BEFORE lock), `schema.sql:57-77` (AFTER `capture_run_completion` читает `notification_settings`), `store.py:93,220,302`.
-- Ожидаемый путь: T1 (`save_settings`) коммитит disable; completion-транзакция ждёт advisory lock в BEFORE; AFTER trigger function объявлена без volatility qualifier, т.е. по умолчанию VOLATILE; её `INSERT ... SELECT` получает свежий snapshot после ожидания и видит committed disable -> вставляет `skipped`. Обратный порядок: completion коммитит pending, `save_settings` после lock видит строку и отменяет её. Пул не задаёт isolation (`get_pool` без `SET TRANSACTION ISOLATION`), поэтому фактический уровень — READ COMMITTED.
-- Ограничение/провал: при REPEATABLE READ/SERIALIZABLE AFTER trigger использует snapshot транзакции, взятый до opt-out. Completion может вставить `pending`, несмотря на disable; если пользователь успеет сделать enable до claim, `authorize` увидит `enabled=true`, `retry_cancelled=false` и отправит completion, созданный до opt-out. Аналогично `save_settings` после lock в RR может не увидеть конкурирующую вставку. Это не воспроизведено; вывод по документированной семантике VOLATILE/snapshot и исходникам. Сам отчёт (строка 161) признаёт, что свежесть snapshot требует живого PG.
-- Последствия: при смене isolation-уровня (или внешнем клиенте/будущем коде) теряется ключевая гарантия opt-out; текущий код не фиксирует это предположение.
-- Доказательство: **по исходникам/документации PostgreSQL**, PG не запускался.
-- Минимальная рекомендация: явно зафиксировать/проверить READ COMMITTED для транзакций terminal UPDATE `runtime.runs` (и для `save_settings`/`authorize`/`finish`), либо ввести durable settings generation и проверять его в `authorize`; добавить PG-тесты обеих очередностей под READ COMMITTED и RR/SERIALIZABLE. Не объявлять гарантию независимой от isolation.
+- Data `cbfc878` (`database.py`): `_notification_contract_ready` — catalog-only проверка marker row, `retry_cancelled boolean NOT NULL DEFAULT false` (через `pg_get_expr`), обоих триггеров; `_apply_notification_schema` при ready возвращается без DDL и без advisory wait.
+- Если не ready: `_wait_notification_ddl_lock` — `pg_try_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))`, 50 попыток по 0.1 s (5 s), затем `DatabaseUnavailable`; после lock — повторный readiness check, `SET LOCAL lock_timeout='5s'`, scripts один раз, verify, иначе fail-closed.
+- `store.initialize()` только вызывает helper; своего DDL/installer в notifications нет. `init_db` + `store.initialize` на готовой схеме не делают DDL.
+- Согласовано с актуальным data owner `ctx_b9e273e2ca13` (прежний `ctx_95b2bdfd615c` завершён) через orchestration; подтверждение `msg_2696833173a2`; точные константы — в `cbfc878`.
+- Доказательство: **по исходникам/коммиту**; PostgreSQL не запускался. Residual: первый install при работающем старом инстансе всё ещё может дать deadlock victim/abort; `lock_timeout=5s` и trylock ограничивают ожидание, но конкурентный сценарий требует PG-теста. Нормальный ready startup DDL не выполняет.
 
-### F5 — MEDIUM (документация): upgrade contract в отчёте противоречит фактическому delegation
+### F4 — FIXED FAIL-CLOSED (source-only)
 
-- Файлы/строки: `docs/reviews/full-audit-notifications.md:75` («initialize применяет forward-файл...»), `:145` («Их последовательно исполняет текущий store.initialize»), `:147` («В notification initialize уже берётся pg_advisory_xact_lock...»); фактически `store.py:68-69` только вызывает helper, а DDL lock обязан брать data helper (новый раздел, строка 180).
-- Последствия: владелец data может реализовать второй install без того же lock или решить, что store всё ещё применяет SQL; риск параллельного DDL/неверного порядка. Это ровно та integration-зона, где уже возник F1.
-- Доказательство: **по исходникам** `87e9067` и тексту отчёта.
-- Минимальная рекомендация: в том же integration-коммите обновить строки 75/145/147: единственный владелец — helper, lock `hashtext('nedra-completion-notifications-v1')`, семантика `conn=None`/`conn`, вызовы из `init_db` и lifespan; SQL-файлы не читаются store.
+- `dispatch_guard.sql:74-83`: на terminal `INSERT/UPDATE` trigger проверяет `lower(current_setting('transaction_isolation')) = 'read committed'`; иначе `RAISE EXCEPTION` до advisory lock и до capture. Это не даёт AFTER trigger прочитать stale `enabled=true` под REPEATABLE READ/SERIALIZABLE.
+- `store.py:69-81` (`_connection`) ставит `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` первым statement каждой notification-транзакции; все `settings/save_settings/inbox/mark_*/claim/authorize/abort/finish` используют его.
+- Поддерживаемая isolation: READ COMMITTED. Неподдерживаемая: terminal run update аварийно завершается (fail-closed), уведомление не создаётся.
+- Доказательство: **по исходникам**; PostgreSQL не запускался. Residual: операционный эффект аварийного отказа при RR/SERIALIZABLE нужно явно документировать/проверить.
 
-### F6 — LOW: `claim` по-прежнему считает lease через `now()`, а не `clock_timestamp()`
+### F5 — FIXED В ДОКУМЕНТАХ
 
-- Файлы/строки: `store.py:198-201` (`lease_until < now()`, `lease_until=now()+interval '45 seconds'`); `52c3460` исправил только `authorize:223` на `clock_timestamp()`.
-- Последовательность: claim-транзакция стартует, ждёт table lock (например, startup DDL), затем выдаёт lease с `now()+45s`, который уже в прошлом. Worker вызывает `authorize` -> `clock_timestamp()` показывает истёкший lease -> `lost`, POST не выполняется; строка ждёт следующего reclaim-цикла. Параллельно candidate-условие с `now()` может не увидеть строки, истёкшие за время ожидания. Дублирующего POST нет, потому что `authorize` — гейт.
-- Последствия: задержка/лишний цикл reclaim, не потеря и не дубль; при частых DDL-паузах — заметная деградация доставки.
-- Доказательство: **по исходникам**; PG не запускался.
-- Минимальная рекомендация: использовать `clock_timestamp()` и для `lease_until`, и для candidate-условий (или heartbeat); добавить в PG-матрицу сценарий «claim ждёт table lock дольше 45s».
+- `docs/reviews/full-audit-notifications.md:75` обновлён: store делегирует helper, DDL lock/readiness — у data.
+- В follow-up явно указано, что текст upgrade contract в ревизии `87e9067` про «store.initialize берёт DDL lock/исполняет SQL» устарел; актуальный владелец — `initialize_notification_schema`, gate `cbfc878`.
 
-### F7 — LOW: pinning всегда использует только `addresses[0]`
+### F6 — FIXED (source-only)
 
-- Файлы/строки: `runtime.py:92` (`_pinned_url(..., decision.addresses[0])`), `webhook.py:57-60` (`addresses[0]`).
-- Последовательность: внешний host с несколькими A/AAAA; `validate_webhook_url` возвращает отсортированный набор; первый адрес недоступен; все 3 авторизованные попытки идут на него, хотя другой валидированный global-адрес жив. Уведомление не доставляется, хотя DNS-ответ содержит рабочий адрес.
-- Последствия: ложные failed после исчерпания попыток; SSRF-границы не нарушаются (все адреса прошли policy).
-- Доказательство: **по исходникам**; реальный DNS/TLS не проверялся.
-- Минимальная рекомендация: перебирать валидированные адреса при connection failure (по-прежнему pinned, без redirects), либо документировать/принять это ограничение.
+- `store.py:207-224`: `claim` использует `clock_timestamp()` и для candidate-условий (`next_attempt_at`, `lease_until`), и для `lease_until=clock_timestamp()+45s`.
+- `store.py:227-...`: `authorize` пишет `authorized_at=clock_timestamp()`; `lease_valid` уже был `clock_timestamp()`.
+- `store.py:311-335` `finish`: `delivered_at`/`next_attempt_at` через `clock_timestamp()`; `store.py:129` `save_settings.updated_at` тоже.
+- Доказательство: **по исходникам**; PG не запускался. Residual: claim, ждавший table lock дольше 45 s, теперь не выдаёт уже истёкший lease; PG-тест нужен.
 
-### F8 — dependency observations (вне reviewed commit)
+### F7 — ЧЕСТНОЕ ОГРАНИЧЕНИЕ
 
-- Uncommitted data helper `.../audit-all-data-1122/backend/app/storage/database.py:227-256` проверяет `attnotnull`, но не default колонки; NOT NULL без default прошёл бы readiness, а `capture_run_completion` вставляет строку без `retry_cancelled` -> runtime-ошибка на каждом completion. Рекомендация: проверять default/`atthasdef` или явно `SET DEFAULT`.
-- Тот же helper вызывается из `init_db` и затем из `store.initialize` — два полных install за процесс; помимо F3 это удваивает DDL-окно. Рекомендация: идемпотентный gate/version, не выполнять DDL повторно.
-- Это не находки в `87e9067` (кода нет в refs), но они влияют на combined acceptance.
+- `runtime.py` вне разрешённого набора файлов; pin остаётся на `decision.addresses[0]` (`runtime.py:92`, `webhook.py:57-60`).
+- Address failover не добавлен: безопасно отличить connect-failure до отправки от неопределённого исхода после отправки в этом пакете нельзя, а повторный POST при неопределённом результате запрещён. Никакого нового duplicate-path не введено.
+- Существующая at-least-once семантика (`finish(retry=True)` после сетевой ошибки) остаётся; receiver обязан дедуплицировать по `Idempotency-Key`/eventId. Это ограничение, а не исправление F7.
+- Доказательство: **по исходникам**; реальные DNS/TLS/внешний приёмник не проверялись.
 
-## Что проверено и держится (в указанном объёме)
+### F8 — DATA VERIFICATION (source-only)
 
-- **Router 422 / секрет**: реальные ASGI-запросы на combined-дереве: 6/6 malformed (object URL, bool-string, null URL, extra field, malformed JSON, wrong type в другом поле) -> 422 `{"detail":"Некорректные данные уведомления"}`, синтетический маркер не отражён. Структурные URL: 10/10 отклонены (port 0/65536/нечисловой, CR/LF, NUL, пробел, userinfo, query, fragment, ftp). Blank URL: `webhook_url=None`, `expected_url` = сохранённый URL -> контракт keep-URL соблюдён. GET/PUT не отдают полный URL; `webhook_masked` без path/query/userinfo.
-- **asyncio**: 4/4 PASS на реальных потоках: отмена ждёт завершения thread; повторная отмена не возвращает stop раньше; `NotificationRuntime.stop()` ждёт thread и обнуляет task; исключение из thread доставляется вызывающему. Полный lifespan с PostgreSQL не запускался.
-- **stream/2xx**: реальный HTTP по AF_UNIX (без TCP listener): `WebhookNotifier.send` -> 200/203/206 succeeded, 302 failed; 206 с объявленным длинным телом и паузой 1 s при timeout 0.3 s не буферизуется. `runtime.deliver` использует тот же `client.stream` и `200 <= code < 300`, 3xx не следует; выполнение runtime-ветки с БД недоступно.
-- **Policy**: literal-IP 11/11 (no opt-in, loopback v4/v6, private, metadata/link-local, CGNAT, external HTTPS 443, HTTP external, port 8443, query); DNS не вызывался.
-- **Store по исходникам** (без PG): `authorize` проверяет token/status/authorized_at/clock lease/retry_cancelled/settings и возвращает send только по фактическому `UPDATE ... RETURNING attempts`; `finish` под workspace lock и token/authorized_at guard не воскрешает retry при `retry_cancelled`; `save_settings` под тем же lock отменяет только unauthorized pending/sending и ставит retry_cancelled только authorized sending; `claim` — SKIP LOCKED, attempts cap; workspace scope. Это **не** заменяет PG-прогон.
-- **Static**: `ast.parse` 6 notification Python files — OK; `git diff 35d27d3..87e9067 --check` — exit 0.
+- Data gate `cbfc878` проверяет default через `pg_get_expr(...) IN ('false', '''f''::boolean')`, а не только `attnotnull`.
+- Наш guard добавляет `DEFAULT false` и дополнительно требует `atthasdef`; при marker+неверной колонке падает fail-closed.
+- Доказательство: **по исходникам/коммиту**; PG не запускался.
 
-## Обязательная PostgreSQL-матрица (gap)
+## Реально исполненные проверки
 
-Живой PostgreSQL в этом окружении недоступен; ни один SQL-вывод ниже не объявляется исполненным:
+На combined-дереве (`87e9067` + наши store/guard + data `9efe14e`):
 
-1. Import/startup после коммита data helper; fresh install, existing v5 без notifications, существующие notification rows; повторный startup.
-2. Пути upgrade `35d27d3→52c3460` и `47cbbd2→52c3460` (F2), включая legacy authorized sending.
-3. Обе очередности completion/opt-out; disable/enable и URL A→B→A до finish/до reclaim; `finish(retry=True)` одновременно с opt-out.
-4. Worker crash после authorize, lease expiry, opt-out/opt-in, reclaim; `retry_cancelled` сохраняется.
-5. Две authorize одного token; ожидание workspace lock дольше lease (`clock_timestamp`), claim после table-lock паузы (F6).
-6. Startup DDL одновременно с terminal UPDATE и `save_settings`/`authorize` (F3), с `lock_timeout` и без.
-7. READ COMMITTED и REPEATABLE READ/SERIALIZABLE для F4.
-8. Два workspace с одинаковым run_id; чужой lease; attempts cap; 408/429/5xx/network/3xx.
+```text
+import backend.app.notifications                  -> combined import OK
+ast.parse backend/app/notifications/*.py          -> OK
+probe_router.py  malformed 6/6 + structure 10/10  -> FAILURES: []
+probe_async.py   cancel/repeat/stop/exception      -> 4/4 PASS
+probe_webhook_uds.py 200/203/206/302               -> PASS
+probe_policy.py literal IP                         -> 11/11
+git diff 35d27d3..87e9067 --check                  -> exit 0
+```
 
-## Команды/артефакты
+Router: 422 без эха synthetic marker; blank keep-URL с `expected_url`; GET/PUT redaction. Async: отмена ждёт реальный thread, повторная отмена не возвращает stop раньше, exception доставляется. UDS: 206 с длинным телом/паузой не буферизуется; 3xx не следует. Policy: literal IP, без DNS.
 
-- Clean archive: `git archive 87e9067 | tar -x -C /tmp/nedra-audit-review-notifications/tree`.
-- Import target: `ImportError ... initialize_notification_schema` (`87e9067`); combined simulation import OK (uncommitted data helper скопирован только в `/tmp`).
-- Probes: `/tmp/nedra-audit-review-notifications/probe/{probe_router.py,probe_async.py,probe_webhook_uds.py,probe_policy.py}`; результаты выше.
-- Код репозитория не изменялся; добавлен только этот отчёт.
+**Не исполнено:** PostgreSQL, marker SQL, trigger bodies, DDL locks, isolation check, MVCC races, реальный startup/lifespan, TLS/DNS/внешний webhook. Никакой fake DB PASS не заявляется.
 
-## Итог
+## Непроверенная PostgreSQL-матрица
 
-Ревью выполнено в read-only режиме; outcome относится к выполнению ревью, не к пригодности продукта. **Verdict: пакет не готов к интеграции** до закрытия F1 и проверки F2/F3/F4 на живом PostgreSQL; исправления router/URL/stream/2xx/asyncio в проверенном объёме держатся.
+1. Combined startup с data `9efe14e` + notifications `87e9067` + наши store/guard; fresh install; existing v5 без notifications; существующие notification rows; повторный startup.
+2. F2: `35d27d3→new` (колонки нет), `47cbbd2→new` (колонка есть, marker нет), `52c3460→new`; marker present -> rows не трогаются; rollback purge+marker при ошибке; первый marker-run и его overbroad cancel.
+3. F3: ready startup — только catalog reads, без advisory/ACCESS EXCLUSIVE; not ready — trylock 5 s, `lock_timeout=5s`, повторный readiness, scripts ровно один раз; два конкурентных startup; `init_db`+`store.initialize` без второго DDL; 55P03 -> DatabaseUnavailable.
+4. F3 deadlock: startup DDL одновременно с terminal UPDATE `runtime.runs` и `save_settings`/`authorize`; поведение `lock_timeout` и deadlock detector.
+5. F4: terminal INSERT/UPDATE под READ COMMITTED/RR/SERIALIZABLE; `_connection` RC; abort при RR/SERIALIZABLE; отсутствие capture.
+6. F6: claim ждёт table lock >45 s; lease/eligibility/authorized_at/finish timestamps; reclaim после ожидания.
+7. F8: default false expression variants; marker present + malformed column; missing triggers -> repair/verify.
+8. Прежняя матрица: completion/opt-out в обе стороны; disable/enable и URL A→B→A до finish/до reclaim; authorized in-flight success/fail; crash после authorize, lease expiry, opt-out/opt-in, reclaim; retry_cancelled сохраняется; две authorize одного token; attempts cap; 408/429/5xx/network/3xx; два workspace с одинаковым run_id; чужой lease.
+
+## Остаточные риски и границы
+
+- F3: ready startup больше не делает DDL, но первый install в rolling deploy всё ещё может стать deadlock victim; нужен PG-тест и, при необходимости, отдельная migration-фаза до обслуживания.
+- F4: RR/SERIALIZABLE terminal run update теперь аварийно завершается; это fail-closed, но операционный эффект должен быть принят.
+- F2: первая marker-миграция отменяет все active rows; на БД с частичным hotfix это может отменить и более новые pending.
+- F7: pin на `addresses[0]`; при недоступном первом адресе доставка исчерпает попытки, даже если другие DNS-адреса живы; address failover не добавлен.
+- Combined merge с `87e9067` и data `9efe14e` не выполнен; координатор разрешает конфликт. Изолированная review-ветка зависима от data helper.
+- PostgreSQL/TLS/DNS/внешний приёмник не проверялись; продуктовая готовность не заявляется.
+
+## Exact refs
+
+- notifications base: `87e906710bb1f1c2d136f98774ea792ac449d8cc`.
+- data HEAD: `9efe14e09ff56af694f468f2e765e72ce934b866`; readiness gate: `cbfc878626dee8f6e5d0f65bf1d5213c5f7cedfd`; helper: `d2ba621`/`f132489`.
+- This branch report commit: exact SHA выдан в `worker_done`; коммит содержит только перечисленные четыре файла.

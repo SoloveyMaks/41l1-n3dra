@@ -24,10 +24,10 @@ Only :func:`finish` (with ``authorized_at IS NOT NULL``) can record a send
 result; :func:`abort` handles policy/settings refusals before a request starts.
 """
 
-from pathlib import Path
+from contextlib import contextmanager
 from uuid import UUID, uuid4
 
-from backend.app.storage.database import get_pool
+from backend.app.storage.database import get_pool, initialize_notification_schema
 
 MAX_DELIVERY_ATTEMPTS = 3
 DISPATCH_LOCK_NAMESPACE = 'nedra-completion-notifications-dispatch'
@@ -66,11 +66,23 @@ def _settings_row(conn, workspace) -> dict:
     return dict(row) if row else dict(_DEFAULT_SETTINGS)
 
 
-def initialize():
+@contextmanager
+def _connection():
+    """Notification transactions explicitly run at READ COMMITTED.
+
+    The completion-trigger/opt-out contract relies on a fresh statement
+    snapshot after waiting for the workspace advisory lock.  REPEATABLE READ and
+    SERIALIZABLE can keep a pre-opt-out snapshot, so they are not supported;
+    the run-status trigger rejects them as well.  The isolation statement must
+    be the first command in the transaction opened by the pool.
+    """
     with get_pool().connection() as conn:
-        conn.execute("SELECT pg_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))")
-        conn.execute(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
-        conn.execute(Path(__file__).with_name('dispatch_guard.sql').read_text(encoding='utf-8'))
+        conn.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
+        yield conn
+
+
+def initialize():
+    initialize_notification_schema()
 
 
 def settings(workspace):
@@ -79,7 +91,7 @@ def settings(workspace):
     HTTP handlers MUST render this through ``notifications.redact`` and never
     return ``webhook_url`` raw.
     """
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         return _settings_row(conn, workspace)
 
 
@@ -93,7 +105,7 @@ def save_settings(workspace, value, *, webhook_url=None, expected_url=None):
     of saving an unvalidated destination.
     """
     ws = _workspace(workspace)
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         _lock_workspace(conn, ws)
         current = _settings_row(conn, ws)
         if webhook_url is None:
@@ -114,7 +126,7 @@ def save_settings(workspace, value, *, webhook_url=None, expected_url=None):
                ON CONFLICT (workspace_id) DO UPDATE SET enabled=EXCLUDED.enabled,
                webhook_url=EXCLUDED.webhook_url,webhook_ref=EXCLUDED.webhook_ref,
                allow_local=EXCLUDED.allow_local,
-               allow_external=EXCLUDED.allow_external,updated_at=now()""",
+               allow_external=EXCLUDED.allow_external,updated_at=clock_timestamp()""",
             (ws, value.enabled, effective_url, webhook_ref,
              value.allow_local, value.allow_external),
         )
@@ -151,7 +163,7 @@ def save_settings(workspace, value, *, webhook_url=None, expected_url=None):
 
 def inbox(workspace, limit=50):
     ws = _workspace(workspace)
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         rows = conn.execute(
             """SELECT n.run_id,n.execution_status,n.security_verdict,n.delivery_status,
                n.attempts,n.status_code,n.detail,n.created_at,n.completed_at,
@@ -174,7 +186,7 @@ def inbox(workspace, limit=50):
 
 
 def mark_read(workspace, run_id):
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         return conn.execute(
             """UPDATE runtime.completion_notifications SET read_at=coalesce(read_at,now())
                WHERE workspace_id=%s AND run_id=%s RETURNING run_id""",
@@ -183,7 +195,7 @@ def mark_read(workspace, run_id):
 
 
 def mark_all_read(workspace):
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         row = conn.execute(
             """UPDATE runtime.completion_notifications SET read_at=now()
                WHERE workspace_id=%s AND read_at IS NULL RETURNING run_id""",
@@ -194,15 +206,15 @@ def mark_all_read(workspace):
 
 def claim():
     token = uuid4().hex
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         row = conn.execute(
             """WITH candidate AS (
                  SELECT workspace_id,run_id FROM runtime.completion_notifications
-                 WHERE (delivery_status='pending' AND next_attempt_at<=now())
-                    OR (delivery_status='sending' AND lease_until<now())
+                 WHERE (delivery_status='pending' AND next_attempt_at<=clock_timestamp())
+                    OR (delivery_status='sending' AND lease_until<clock_timestamp())
                  ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT 1)
                UPDATE runtime.completion_notifications n SET delivery_status='sending',
-                   lease_token=%s,lease_until=now()+interval '45 seconds',
+                   lease_token=%s,lease_until=clock_timestamp()+interval '45 seconds',
                    authorized_at=NULL
                FROM candidate c
                WHERE (n.workspace_id,n.run_id)=(c.workspace_id,c.run_id)
@@ -220,11 +232,11 @@ def authorize(row, *, expected_url, allow_local, allow_external):
     perform a network request.
     """
     ws = row['workspace_id']
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         _lock_workspace(conn, ws)
         current = conn.execute(
             """SELECT delivery_status,lease_token,attempts,authorized_at,retry_cancelled,
-                      (lease_until > now()) AS lease_valid
+                      (lease_until > clock_timestamp()) AS lease_valid
                FROM runtime.completion_notifications
                WHERE workspace_id=%s AND run_id=%s FOR UPDATE""",
             (ws, row['run_id']),
@@ -263,7 +275,7 @@ def authorize(row, *, expected_url, allow_local, allow_external):
             return {'action': 'exhausted'}
         authorized = conn.execute(
             """UPDATE runtime.completion_notifications
-               SET authorized_at=now(),attempts=attempts+1,detail='Отправка начата'
+               SET authorized_at=clock_timestamp(),attempts=attempts+1,detail='Отправка начата'
                WHERE workspace_id=%s AND run_id=%s AND lease_token=%s
                  AND delivery_status='sending' AND authorized_at IS NULL
                RETURNING attempts""",
@@ -286,7 +298,7 @@ def _skip_locked(conn, row, detail):
 
 def abort(row, status, detail, code=None):
     """Record a refusal before any request started (never a delivery claim)."""
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         conn.execute(
             """UPDATE runtime.completion_notifications SET delivery_status=%s,detail=%s,
                status_code=%s,lease_until=NULL,lease_token=NULL
@@ -302,7 +314,7 @@ def finish(row, status, detail, code=None, retry=False):
     The ``authorized_at IS NOT NULL`` and lease-token guards mean a late worker
     can never turn a skipped/revoked row into ``delivered``.
     """
-    with get_pool().connection() as conn:
+    with _connection() as conn:
         _lock_workspace(conn, row['workspace_id'])
         current = conn.execute(
             """SELECT retry_cancelled FROM runtime.completion_notifications
@@ -319,8 +331,8 @@ def finish(row, status, detail, code=None, retry=False):
         conn.execute(
             """UPDATE runtime.completion_notifications SET delivery_status=%s,detail=%s,
                status_code=%s,
-               delivered_at=CASE WHEN %s='delivered' THEN now() ELSE delivered_at END,
-               next_attempt_at=now()+interval '10 seconds',
+               delivered_at=CASE WHEN %s='delivered' THEN clock_timestamp() ELSE delivered_at END,
+               next_attempt_at=clock_timestamp()+interval '10 seconds',
                authorized_at=CASE WHEN %s THEN NULL ELSE authorized_at END,
                lease_until=NULL,lease_token=NULL
                WHERE workspace_id=%s AND run_id=%s AND lease_token=%s
