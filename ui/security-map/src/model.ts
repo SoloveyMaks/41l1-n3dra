@@ -5,7 +5,7 @@ import type {
   RunScope,
   SecurityMapDto,
 } from "../../../docs/data-contracts/contracts";
-import type { MapViewModel, SourceState } from "./types";
+import type { MapViewModel, SourceState, ViewNode } from "./types";
 
 export const scopeKey = (s: RunScope) =>
   JSON.stringify([s.workspaceId, s.runId, s.snapshotId]);
@@ -231,31 +231,83 @@ export function productionModel(
   data: SecurityMapDto,
   findings: readonly Finding[],
 ): MapViewModel {
-  return {
-    scope: data.identity,
-    revision: data.bundleHash,
-    provenance: "analyzer",
-    nodes: data.nodes,
-    edges: data.edges,
-    evidence: data.evidence,
-    findings: findings.map((f) => ({
+  const evidencePath = new Map(data.evidence.map((item) => [item.id, item.location.path]));
+  const pathsByNode = new Map(
+    data.nodes.map((node) => [
+      node.id,
+      new Set(node.evidenceRefs.map((id) => evidencePath.get(id)).filter((path): path is string => Boolean(path))),
+    ]),
+  );
+  const preferredKinds: Record<string, true> = {
+    function: true,
+    sink: true,
+    data: true,
+    route: true,
+  };
+  const findingRefs = (finding: Finding): string[] => [
+    ...new Set([
+      finding.primaryEvidenceId,
+      ...finding.relatedEvidenceIds,
+      ...finding.traceEvidenceIds,
+    ]),
+  ];
+  const fallbackNodeIds = (finding: Finding): string[] => {
+    const paths = new Set(
+      findingRefs(finding).map((id) => evidencePath.get(id)).filter((path): path is string => Boolean(path)),
+    );
+    if (!paths.size) return [];
+    return data.nodes
+      .filter((node) => preferredKinds[node.kind] === true)
+      .filter((node) => {
+        const nodePaths = pathsByNode.get(node.id);
+        if (!nodePaths) return false;
+        for (const path of paths) if (nodePaths.has(path)) return true;
+        return false;
+      })
+      .map((node) => node.id);
+  };
+  const syntheticNodes: ViewNode[] = [];
+  const syntheticByPath = new Map<string, string>();
+  const syntheticNodeFor = (finding: Finding): string => {
+    const path = evidencePath.get(finding.primaryEvidenceId) || "файл не указан";
+    const known = syntheticByPath.get(path);
+    if (known) return known;
+    const id = `file:${path}`;
+    syntheticByPath.set(path, id);
+    syntheticNodes.push({
+      id,
+      kind: "file",
+      label: path,
+      symbolKey: `file:${path}`,
+      evidenceRefs: [],
+      producerVersion: "nedra-map/file-group",
+    });
+    return id;
+  };
+  const viewFindings = findings.map((f) => {
+    const explicit = data.findingNodeLinks
+      .filter((l) => l.findingId === f.id)
+      .map((l) => l.nodeId);
+    const linked = explicit.length ? explicit : fallbackNodeIds(f);
+    return {
       id: f.id,
       label: findingTitle(f.ruleId, f.confidence, f.status),
       status: f.status.toLowerCase(),
       severity: f.severity.toLowerCase(),
       confidence: f.confidence.toLowerCase(),
       reasons: [f.severityBasis, f.confidenceBasis, ...f.coverageWarnings],
-      evidenceRefs: [
-        ...new Set([
-          f.primaryEvidenceId,
-          ...f.relatedEvidenceIds,
-          ...f.traceEvidenceIds,
-        ]),
-      ],
-      nodeIds: data.findingNodeLinks
-        .filter((l) => l.findingId === f.id)
-        .map((l) => l.nodeId),
-    })),
+      evidenceRefs: findingRefs(f),
+      nodeIds: linked.length ? linked : [syntheticNodeFor(f)],
+    };
+  });
+  return {
+    scope: data.identity,
+    revision: data.bundleHash,
+    provenance: "analyzer",
+    nodes: [...data.nodes, ...syntheticNodes],
+    edges: data.edges,
+    evidence: data.evidence,
+    findings: viewFindings,
     policies: data.policyInputs.map((p) => ({
       id: p.id,
       status: p.approvalStatus,

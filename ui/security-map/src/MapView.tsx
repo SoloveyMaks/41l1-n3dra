@@ -594,6 +594,8 @@ export function MapView(props: MapViewProps) {
   const unlinkedFindingCount = model.findings.filter(
     (item) => item.nodeIds.length === 0,
   ).length;
+  const unlinkedFindings = model.findings.filter((item) => item.nodeIds.length === 0);
+  const edgeLabel = (id: string) => model.nodes.find((node) => node.id === id)?.label ?? id;
   const unknownNodeIds = new Set(
     unknownEdges.flatMap((item) => [item.fromId, item.toId]),
   );
@@ -1232,44 +1234,6 @@ export function MapView(props: MapViewProps) {
         </span>
       </div>
 
-      {unresolvedEdges.length > 0 && (
-        <button
-          className="sm-unknown-banner"
-          onClick={() => choose({ kind: "edge", id: unresolvedEdges[0].id })}
-        >
-          <span>
-            {unknownEdges.length && partialEdges.length
-              ? `Не установлено: ${unknownEdges.length} · частично: ${partialEdges.length}`
-              : unknownEdges.length
-                ? `${unknownEdges.length} ${plural(unknownEdges.length, "связь не установлена", "связи не установлены", "связей не установлено")}`
-                : `${partialEdges.length} ${plural(partialEdges.length, "связь подтверждена частично", "связи подтверждены частично", "связей с частичным подтверждением")}`}
-          </span>
-          <small>
-            {unknownEdges.length
-              ? "Жёлтый пунктир — это пробел анализа, а не безопасное состояние. Открыть первую связь →"
-              : "Связи подтверждены частично — проверьте основание. Открыть первую связь →"}
-          </small>
-        </button>
-      )}
-
-      {unlinkedFindingCount > 0 && (
-        <div className="sm-unlinked-note" role="note">
-          <b>
-            {unlinkedFindingCount}{" "}
-            {plural(unlinkedFindingCount, "проблема", "проблемы", "проблем")}
-          </b>{" "}
-          {plural(
-            unlinkedFindingCount,
-            "не привязана",
-            "не привязаны",
-            "не привязаны",
-          )}{" "}
-          к узлам карты: путь для{" "}
-          {plural(unlinkedFindingCount, "неё", "них", "них")} не строится. Они
-          остаются в списке «Проблемы» и не выдаются за конец цепочки.
-        </div>
-      )}
-
       {model.provenance === "manual_source_review" && (
         <div className="sm-provenance" role="note">
           Ручной разбор исходника — не результат анализатора
@@ -1328,6 +1292,61 @@ export function MapView(props: MapViewProps) {
                       {path.findings.length ? (
                         <i className="is-risk">{path.findings.length} проблем</i>
                       ) : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+          {unlinkedFindingCount > 0 && (
+            <section className="sm-rail-section">
+              <h2>
+                Вне графа <span>{unlinkedFindingCount}</span>
+              </h2>
+              <p className="sm-rail-empty">
+                Для этих проблем нет узла в графе: путь не строится. Они остаются в списке
+                «Проблемы» и не выдаются за конец цепочки.
+              </p>
+              <div className="sm-path-list">
+                {unlinkedFindings.slice(0, 60).map((finding) => (
+                  <button
+                    key={finding.id}
+                    type="button"
+                    className="sm-path-row"
+                    onClick={() => choose({ kind: "finding", id: finding.id })}
+                    title={finding.label}
+                  >
+                    <span className="sm-path-chain">{finding.label}</span>
+                    <span className="sm-path-badges">
+                      <i className={`is-${finding.severity}`}>{finding.severity}</i>
+                      <i className="is-muted">{finding.status}</i>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+          {unresolvedEdges.length > 0 && (
+            <section className="sm-rail-section">
+              <h2>
+                Неустановленные связи <span>{unresolvedEdges.length}</span>
+              </h2>
+              <p className="sm-rail-empty">
+                Пробел анализа, а не безопасное состояние. Откройте связь, чтобы увидеть основание.
+              </p>
+              <div className="sm-path-list">
+                {unresolvedEdges.slice(0, 30).map((edge) => (
+                  <button
+                    key={edge.id}
+                    type="button"
+                    className="sm-path-row"
+                    onClick={() => choose({ kind: "edge", id: edge.id })}
+                  >
+                    <span className="sm-path-chain">
+                      {edgeLabel(edge.fromId)} → {edgeLabel(edge.toId)}
+                    </span>
+                    <span className="sm-path-badges">
+                      <i className="is-warn">{edge.resolution}</i>
                     </span>
                   </button>
                 ))}

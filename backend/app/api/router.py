@@ -177,6 +177,8 @@ def _public_artifact(row: Dict[str, Any]) -> Dict[str, Any]:
             public["source_ref"] = meta.get("sourceRef")
         if isinstance(meta.get("repository"), dict):
             public["repository"] = meta.get("repository")
+        if isinstance(meta.get("projectKind"), dict):
+            public["project_kind"] = meta.get("projectKind")
     return _strip_private_paths(public)
 
 

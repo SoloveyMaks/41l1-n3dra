@@ -1700,3 +1700,8 @@
   background: var(--sm-panel);
   opacity: 1;
 }
+.sm-path-badges .is-critical { color: #fecdd3; background: rgba(251, 113, 133, 0.2); }
+.sm-path-badges .is-high { color: #fed7aa; background: rgba(251, 146, 60, 0.18); }
+.sm-path-badges .is-medium { color: #fde68a; background: rgba(245, 158, 11, 0.16); }
+.sm-path-badges .is-low { color: #bae6fd; background: rgba(56, 189, 248, 0.16); }
+.sm-path-badges .is-muted { color: #cbd5e1; background: rgba(148, 163, 184, 0.14); }

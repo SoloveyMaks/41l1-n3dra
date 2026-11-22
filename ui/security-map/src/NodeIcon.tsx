@@ -138,6 +138,12 @@ const META: Record<string, NodeMeta> = {
     tone: "config",
     icon: icons.config,
   },
+  file: {
+    label: "Файл",
+    hint: "Группа находок по файлу: у этого файла нет отдельного узла в графе доступа.",
+    tone: "config",
+    icon: icons.source,
+  },
 };
 
 export const KIND_FALLBACK: NodeMeta = {
