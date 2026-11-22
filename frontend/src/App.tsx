@@ -3,6 +3,7 @@ import { WorkflowCanvas } from './components/WorkflowCanvas';
 import { CustomCheckModal } from './components/CustomCheckModal';
 import { listCustomChecks, type CustomCheckDefinition } from './api/customChecks';
 import { addCheck } from './workflow/addCheck';
+import { resolveRunDraftSource, type LoadedDraft } from './workflow/runDraftSource';
 import { NodePalette } from './components/NodePalette';
 import { InspectorPanel } from './components/InspectorPanel';
 import { LiveRunView } from './components/LiveRunView';
@@ -832,7 +833,11 @@ export const App: React.FC = () => {
     setAccountError(null);
   };
 
-  const handleSelectRun = (runId: string) => {
+  // draftOverride допустим только когда run.workflow_id === workflowIdRef.current
+  // (ветка else ниже): handleSelectWorkflow передаёт здесь свежезагруженный
+  // nextDraft, потому что замыкание `draft` ещё содержит граф предыдущего
+  // сценария. Иначе — всегда грузим workflow по run.workflow_id.
+  const handleSelectRun = (runId: string, draftOverride?: LoadedDraft) => {
     if (!runId) return;
     const previousRunId = selectedRunRef.current;
     closeSSE();
@@ -848,7 +853,8 @@ export const App: React.FC = () => {
         showNotice('error', 'Черновик изменён во время загрузки запуска. Выберите запуск ещё раз.');
         return;
       }
-      if (run.workflow_id !== workflowIdRef.current) {
+      const source = resolveRunDraftSource(run.workflow_id, workflowIdRef.current, draftOverride, draft);
+      if (source.mode === 'fetch') {
         try {
           const workflow = await apiClient.getWorkflow(run.workflow_id);
           if (selection !== workflowSelectSeq.current || epoch !== authRef.current.epoch) return;
@@ -873,7 +879,9 @@ export const App: React.FC = () => {
           }
         }
       } else {
-        const nextDraft = withArtifact(draft, run.artifact_id || '');
+        // Источник уже проверен на принадлежность run.workflow_id
+        // (см. инвариант в resolveRunDraftSource): чужой draft не подставить.
+        const nextDraft = withArtifact(source.draft, run.artifact_id || '');
         setDraft(nextDraft);
         draftVersion.current += 1;
         void validateDraft(run.workflow_id, nextDraft);
@@ -928,7 +936,7 @@ export const App: React.FC = () => {
       setCurrentArtifactId(draftArtifactId(nextDraft));
       storeSelectedWorkflowId(nextWorkflowId);
       setSelectedNodeId(null);
-      if (nextRun) handleSelectRun(nextRun.id);
+      if (nextRun) handleSelectRun(nextRun.id, { workflowId: nextWorkflowId, draft: nextDraft });
       else resetRunSelection();
       const appliedSelection = workflowSelectSeq.current;
       await validateDraft(nextWorkflowId, nextDraft);
