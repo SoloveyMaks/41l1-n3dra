@@ -108,9 +108,17 @@ load_runtime_env() {
   rm -- "$pairs_tmp"
 
   for name in DATABASE_URL POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD \
-              REFORMBOSS_API_KEY CG_SESSION_SECRET CG_ACCESS_CODE; do
+              CG_SESSION_SECRET CG_ACCESS_CODE; do
     [ -n "${!name:-}" ] || die "runtime.env: отсутствует $name"
   done
+  local ai_key_name=""
+  for name in OPENCODE_API_KEY AI_API_KEY REFORMBOSS_API_KEY; do
+    if [ -n "${!name:-}" ]; then
+      ai_key_name=$name
+      break
+    fi
+  done
+  [ -n "$ai_key_name" ] || die "runtime.env: отсутствует AI key (OPENCODE_API_KEY, AI_API_KEY или REFORMBOSS_API_KEY)"
 }
 
 wait_for_db_health() {

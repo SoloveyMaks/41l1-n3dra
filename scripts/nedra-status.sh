@@ -18,7 +18,7 @@ if container_running "$NEDRA_APP_CONTAINER"; then
     warn "backend /api/health: HTTP ${code:-нет ответа}; fallback отключён"
     fail=1
   fi
-  for env_name in CG_DATA_DIR CG_PUBLIC_DEMO VECTOR_RETRIEVAL_ENABLED AI_MODEL; do
+  for env_name in CG_DATA_DIR CG_PUBLIC_DEMO VECTOR_RETRIEVAL_ENABLED AI_PROVIDER AI_MODEL; do
     value=$(podman inspect -f "{{range .Config.Env}}{{println .}}{{end}}" "$NEDRA_APP_CONTAINER" 2>/dev/null | sed -n "s/^${env_name}=//p" | tail -n 1)
     if [ -n "$value" ]; then say "$env_name=$value"; fi
   done

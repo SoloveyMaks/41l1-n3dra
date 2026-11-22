@@ -69,8 +69,10 @@
 
    Скрипт пишет `runtime.env` атомарно (`mktemp` + `mv`), ставит `600`,
    каталогу — `700`. Существующие `CG26_*`, кастомные `CG_*`/`VECTOR_*` и
-   остальные не-managed строки сохраняются. `AI_PROVIDER`, `AI_MODEL`,
-   `VECTOR_RETRIEVAL_ENABLED` по-прежнему фиксируются bootstrap'ом.
+   остальные не-managed строки сохраняются. `AI_PROVIDER`/`AI_MODEL`
+   выбираются bootstrap'ом по типу выбранного ключа; `AI_BASE_URL` сохраняется
+   для local `openai-compatible` и legacy, но не переносится для Go;
+   `VECTOR_RETRIEVAL_ENABLED` фиксируется.
 
 3. Проверить только имена ключей:
 

@@ -20,7 +20,8 @@ Usage: scripts/nedra-bootstrap.sh [--check | --write] [--refresh-key]
 
   --check        Dry run: validate tools, source key, runtime.env shape and port.
   --write        Create/update ~/.config/nedra/runtime.env with mode 600.
-  --refresh-key  With --write, re-read REFORMBOSS_API_KEY from the source env.
+  --refresh-key  With --write, re-read the selected AI key from the source env
+                 (OPENCODE_API_KEY, AI_API_KEY or REFORMBOSS_API_KEY).
 
 All existing non-managed CG_*/VECTOR_* entries are preserved. Missing
 CG_SESSION_SECRET, CG_ANCHOR_HMAC_KEY, CG_ACCESS_CODE and CG_ADMIN_ACCESS_CODE
@@ -35,9 +36,9 @@ done
 
 managed_key() {
   case "$1" in
-    REFORMBOSS_API_KEY|POSTGRES_USER|POSTGRES_DB|POSTGRES_PASSWORD|DATABASE_URL|\
+    OPENCODE_API_KEY|AI_API_KEY|REFORMBOSS_API_KEY|POSTGRES_USER|POSTGRES_DB|POSTGRES_PASSWORD|DATABASE_URL|\
     CG_SESSION_SECRET|CG_ANCHOR_HMAC_KEY|CG_ACCESS_CODE|CG_ADMIN_ACCESS_CODE|CG_DATA_DIR|\
-    CG_PUBLIC_DEMO|CG_ALLOWED_ORIGINS|CG_TRUST_PROXY|AI_PROVIDER|AI_MODEL|\
+    CG_PUBLIC_DEMO|CG_ALLOWED_ORIGINS|CG_TRUST_PROXY|AI_PROVIDER|AI_MODEL|LLM_MODEL|AI_BASE_URL|\
     VECTOR_RETRIEVAL_ENABLED|CG26_HMAC_KEY|CG26_HMAC_KEY_VERSION|CG26_ADVISORY_ROOT|\
     CG26_ADVISORY_DB)
       return 0
@@ -54,14 +55,36 @@ check_key() {
   python3 "$ENV_PY" --source "$1" --key "$2" --check
 }
 
-require_source_key() {
+AI_KEY_NAMES="OPENCODE_API_KEY AI_API_KEY REFORMBOSS_API_KEY"
+SOURCE_AI_KEY_NAME=""
+SOURCE_AI_KEY_VALUE=""
+
+load_source_ai_key() {
   [ -f "$NEDRA_SECRET_SOURCE" ] || die "нет файла с ключом: $NEDRA_SECRET_SOURCE"
-  local key
-  key=$(python3 "$ENV_PY" --source "$NEDRA_SECRET_SOURCE" --key REFORMBOSS_API_KEY) \
-    || die "REFORMBOSS_API_KEY не найден или пуст в $NEDRA_SECRET_SOURCE"
-  case "$key" in
-    *[[:space:]]*) die "REFORMBOSS_API_KEY содержит пробельные символы" ;;
-  esac
+  local name value
+  for name in $AI_KEY_NAMES; do
+    value=$(python3 "$ENV_PY" --source "$NEDRA_SECRET_SOURCE" --key "$name" --allow-missing)
+    case "$value" in
+      *[[:space:]]*) die "$name содержит пробельные символы" ;;
+    esac
+    if [ -n "$value" ]; then
+      SOURCE_AI_KEY_NAME=$name
+      SOURCE_AI_KEY_VALUE=$value
+      return 0
+    fi
+  done
+  die "нужен OPENCODE_API_KEY, AI_API_KEY или REFORMBOSS_API_KEY в $NEDRA_SECRET_SOURCE"
+}
+
+existing_ai_key_name() {
+  local name
+  for name in $AI_KEY_NAMES; do
+    if [ -n "$(existing_value "$name")" ]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  return 1
 }
 
 existing_value() {
@@ -119,16 +142,16 @@ run_check() {
   say "runtime env: $NEDRA_RUNTIME_ENV (mode $(runtime_env_mode))"
   say "secret source: $NEDRA_SECRET_SOURCE"
 
-  local existing_ref
-  existing_ref=$(existing_value REFORMBOSS_API_KEY)
+  local existing_key_name
+  existing_key_name=$(existing_ai_key_name || true)
   if [ "$REFRESH_KEY" = "1" ]; then
-    require_source_key
-    say "REFORMBOSS_API_KEY будет обновлён из источника (--refresh-key)"
-  elif [ -n "$existing_ref" ]; then
-    say "REFORMBOSS_API_KEY уже есть; без --refresh-key сохраняется"
+    load_source_ai_key
+    say "$SOURCE_AI_KEY_NAME будет обновлён из источника (--refresh-key)"
+  elif [ -n "$existing_key_name" ]; then
+    say "$existing_key_name уже есть; без --refresh-key сохраняется"
   else
-    require_source_key
-    say "REFORMBOSS_API_KEY будет прочитан из источника (ключа ещё нет)"
+    load_source_ai_key
+    say "$SOURCE_AI_KEY_NAME будет прочитан из источника (ключа ещё нет)"
   fi
 
   if [ -f "$NEDRA_RUNTIME_ENV" ]; then
@@ -168,7 +191,7 @@ run_check() {
     say "CG_ADMIN_ACCESS_CODE: отсутствует, будет сгенерирован отдельно от CG_ACCESS_CODE (значение не печатается)"
   fi
   say "public: CG_PUBLIC_DEMO=1, CG_ALLOWED_ORIGINS=https://$NEDRA_DOMAIN"
-  say "AI: AI_PROVIDER=reformboss, AI_MODEL=deepseek-v4.1-flash-1017, ключ только env"
+  say "AI: OpenCode Go по умолчанию, legacy ReformBoss совместим; ключ только env"
   say "vectors: VECTOR_RETRIEVAL_ENABLED=0"
 
   check_port
@@ -212,15 +235,68 @@ run_check() {
 run_write() {
   require_cmd podman
   require_cmd python3
-  local ref_key existing_ref password session_secret anchor_key access_code admin_code database_url tmp pairs_tmp team_b_key team_b_version team_b_root team_b_db
-  existing_ref=$(existing_value REFORMBOSS_API_KEY)
-  if [ "$REFRESH_KEY" = "1" ] || [ -z "$existing_ref" ]; then
-    require_source_key
-    ref_key=$(python3 "$ENV_PY" --source "$NEDRA_SECRET_SOURCE" --key REFORMBOSS_API_KEY)
+  local ai_key_name ai_key_value existing_key_name ai_provider ai_model ai_base existing_model existing_base password session_secret anchor_key access_code admin_code database_url tmp pairs_tmp team_b_key team_b_version team_b_root team_b_db
+  existing_key_name=$(existing_ai_key_name || true)
+  if [ "$REFRESH_KEY" = "1" ] || [ -z "$existing_key_name" ]; then
+    load_source_ai_key
+    ai_key_name=$SOURCE_AI_KEY_NAME
+    ai_key_value=$SOURCE_AI_KEY_VALUE
   else
-    ref_key=$existing_ref
-    say "REFORMBOSS_API_KEY сохранён; --refresh-key не указан"
+    ai_key_name=$existing_key_name
+    ai_key_value=$(existing_value "$ai_key_name")
+    say "$ai_key_name сохранён; --refresh-key не указан"
   fi
+  case "$ai_key_value" in
+    *[[:space:]]*) die "$ai_key_name содержит пробельные символы" ;;
+  esac
+
+  existing_model=$(existing_value AI_MODEL)
+  [ -n "$existing_model" ] || existing_model=$(existing_value LLM_MODEL)
+  existing_base=$(existing_value AI_BASE_URL)
+  case "$ai_key_name" in
+    OPENCODE_API_KEY)
+      ai_provider="opencode-go"
+      ai_base=""
+      if [ -n "$existing_model" ] && [ "$existing_model" != "deepseek-v4.1-flash-1017" ]; then
+        ai_model=$existing_model
+      else
+        ai_model="deepseek-v4.1-flash"
+      fi
+      ;;
+    AI_API_KEY)
+      if [ -n "$existing_base" ]; then
+        ai_provider="openai-compatible"
+        ai_base=$existing_base
+        [ -n "$existing_model" ] || die "AI_API_KEY с AI_BASE_URL требует AI_MODEL/LLM_MODEL"
+        ai_model=$existing_model
+      else
+        ai_provider="opencode-go"
+        ai_base=""
+        if [ -n "$existing_model" ] && [ "$existing_model" != "deepseek-v4.1-flash-1017" ]; then
+          ai_model=$existing_model
+        else
+          ai_model="deepseek-v4.1-flash"
+        fi
+      fi
+      ;;
+    REFORMBOSS_API_KEY)
+      ai_provider="reformboss"
+      ai_base=$existing_base
+      if [ -n "$existing_model" ] && [ "$existing_model" != "deepseek-v4.1-flash" ]; then
+        ai_model=$existing_model
+      else
+        ai_model="deepseek-v4.1-flash-1017"
+      fi
+      ;;
+    *) die "неизвестный AI key: $ai_key_name" ;;
+  esac
+  case "$ai_model" in
+    *[[:space:]]*|"") die "AI_MODEL пустой или содержит пробельные символы" ;;
+  esac
+  if [ -n "$existing_base" ] && [ "$ai_provider" = "opencode-go" ]; then
+    warn "AI_BASE_URL не переносится для opencode-go; используется Go endpoint"
+  fi
+
   password=$(existing_value POSTGRES_PASSWORD)
   if [ -z "$password" ]; then
     password=$(generate_hex_32)
@@ -277,7 +353,7 @@ run_write() {
   fi
 
   {
-    printf 'REFORMBOSS_API_KEY=%s\n' "$ref_key"
+    printf '%s=%s\n' "$ai_key_name" "$ai_key_value"
     printf 'POSTGRES_USER=%s\n' "$NEDRA_DB_USER"
     printf 'POSTGRES_DB=%s\n' "$NEDRA_DB_NAME"
     printf 'POSTGRES_PASSWORD=%s\n' "$password"
@@ -290,8 +366,11 @@ run_write() {
     printf 'CG_PUBLIC_DEMO=1\n'
     printf 'CG_ALLOWED_ORIGINS=https://%s\n' "$NEDRA_DOMAIN"
     printf 'CG_TRUST_PROXY=1\n'
-    printf 'AI_PROVIDER=reformboss\n'
-    printf 'AI_MODEL=deepseek-v4.1-flash-1017\n'
+    printf 'AI_PROVIDER=%s\n' "$ai_provider"
+    printf 'AI_MODEL=%s\n' "$ai_model"
+    if [ -n "$ai_base" ]; then
+      printf 'AI_BASE_URL=%s\n' "$ai_base"
+    fi
     printf 'VECTOR_RETRIEVAL_ENABLED=0\n'
     printf 'CG26_HMAC_KEY=%s\n' "$team_b_key"
     printf 'CG26_HMAC_KEY_VERSION=%s\n' "$team_b_version"
@@ -307,7 +386,7 @@ run_write() {
   [ "$(runtime_env_mode)" = "600" ] || die "не удалось выставить 600 на $NEDRA_RUNTIME_ENV"
   say "записан $NEDRA_RUNTIME_ENV (mode 600); access codes не выводились"
   if [ "$REFRESH_KEY" = "1" ]; then
-    say "REFORMBOSS_API_KEY обновлён из $NEDRA_SECRET_SOURCE"
+    say "$ai_key_name обновлён из $NEDRA_SECRET_SOURCE"
   fi
 }
 

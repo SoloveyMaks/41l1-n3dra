@@ -3,6 +3,7 @@
 
 Supports export, quoted values and comments after quoted values in source
 files. Canonical mode accepts only the literal KEY=value format used by Podman.
+Only the requested key is emitted; unselected provider keys are not copied.
 """
 from __future__ import annotations
 

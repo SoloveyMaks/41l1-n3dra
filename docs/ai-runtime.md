@@ -1,29 +1,49 @@
 # AI и optional vector runtime
 
-Коротко: `backend/app/ai/service.py` вызывает ReformBoss через
-OpenAI-compatible `/chat/completions`, проверяет JSON и grounding, пишет
+Коротко: `backend/app/ai/service.py` вызывает выбранный OpenAI-compatible
+провайдер через `/chat/completions`, проверяет JSON и grounding, пишет
 provenance модели. Любая ошибка провайдера, ключа или валидатора даёт
 детерминированный fallback и не ломает отчёт. Exact pgvector retrieval —
 отдельный optional шаг с typed `unavailable`; он не откатывает scan/report.
 
 ## Chat provider
 
-Провайдер один — ReformBoss. Другие ключи и провайдеры не используются.
+Общий resolver `backend/app/ai/provider.py` используют объяснение находок,
+AI-скан, scenario builder и другие серверные AI-вызовы. По умолчанию
+выбирается OpenCode Go, если задан Go credential; legacy ReformBoss остаётся
+только для совместимости и не подхватывает Go-ключ.
 
 | Env | Значение |
 | --- | --- |
-| `REFORMBOSS_API_KEY` | ключ ReformBoss из окружения сервера |
-| `AI_MODEL` / `LLM_MODEL` | override модели; default `deepseek-v4.1-flash-1017` |
-| `AI_BASE_URL` | override base URL; default `https://api.reformboss.com/v1` |
+| `AI_PROVIDER` | `opencode-go` (default), `reformboss` (legacy), `openai-compatible` (local) |
+| `OPENCODE_API_KEY` | ключ OpenCode Go |
+| `AI_API_KEY` | общий override ключа; для Go/legacy имеет приоритет |
+| `REFORMBOSS_API_KEY` | legacy-ключ ReformBoss |
+| `AI_BASE_URL` | override base URL; для Go default `https://opencode.ai/inference/go/v1`, для legacy `https://api.reformboss.com/v1` |
+| `AI_MODEL` / `LLM_MODEL` | override модели; Go default `deepseek-v4.1-flash`, legacy `deepseek-v4.1-flash-1017` |
 | `AI_TIMEOUT_SECONDS` | таймаут запроса, default 30 |
 | `AI_MAX_TOKENS` | верхний предел на батч, default 4096 |
 | `AI_BATCH_SIZE` | findings на запрос, default 4 (допустимо 1..8) |
 | `AI_TEMPERATURE` | default 0 |
 | `AI_JSON_MODE` | `1` только если шлюз реально поддерживает `response_format=json_object` |
 
-Если `REFORMBOSS_API_KEY` не задан в процессе, ключ читается внутри процесса
-из `~/.omp/agent/.env`. В argv, логи, provenance и отчёт ключ не попадает. Нет
-ключа → `status=fallback`, `provenance.fallback_reason=provider_not_configured`.
+Правила выбора: явный `AI_PROVIDER=opencode-go` берёт только
+`AI_API_KEY`/`OPENCODE_API_KEY` и Go-endpoint; legacy-ключ и legacy-endpoint
+при этом не используются. Если `AI_BASE_URL` указывает на
+`api.reformboss.com`, Go-провайдер заменяет его на Go endpoint; другие
+local/proxy override сохраняются. Явный `AI_PROVIDER=reformboss` берёт
+`AI_API_KEY`/`REFORMBOSS_API_KEY` и legacy-endpoint; Go-ключ сам по себе его
+не включает. Без `AI_PROVIDER` сначала выбирается Go при наличии
+`OPENCODE_API_KEY`, затем generic `AI_API_KEY` (Go, либо local при заданном
+`AI_BASE_URL`), затем legacy. Для `openai-compatible` нужны `AI_API_KEY`,
+`AI_BASE_URL` и явный `AI_MODEL`/`LLM_MODEL`; без модели конфиг не считается
+настроенным, чтобы не угадывать чужую модель.
+
+Legacy-совместимость: если `REFORMBOSS_API_KEY` нет в процессе, старое
+значение всё ещё читается из `~/.omp/agent/.env`; Go и local ключи читаются
+только из окружения. Продукт не открывает внешнюю credential DB. Ключ не
+попадает в argv, логи, provenance или отчёт. Нет выбранного ключа →
+`status=fallback`, `provenance.fallback_reason=provider_not_configured`.
 
 ## Что проверяется
 
@@ -82,10 +102,10 @@ scope; без scope или с чужим scope возвращается `unavail
 `POST /embeddings` и сверки с active row `embedding_specs`. Функция проверяет
 точное совпадение provider/model/model_version/metric и версий подготовки;
 несовпадение или другой dimension дают `unavailable`, а не «похожую» выдачу.
-Проверка каталога ReformBoss `/v1/models` не показывает embedding-модель,
+Каталог выбранного chat-провайдера не даёт подтверждённой embedding-модели,
 поэтому рабочие embeddings сейчас не заявляются, а retrieval остаётся
 `unavailable`, пока интегратор/D не даст подтверждённый endpoint и spec.
-Реальный POST `/v1/embeddings` с `text-embedding-3-small` вернул 403
+Исторический POST `/v1/embeddings` с `text-embedding-3-small` вернул 403
 `token_model_not_allowed`; размерность из ответа не получена и не выдумывается.
 
 Ряд exact retrieval содержит `source_ref`, `redacted_before`, `redacted_fix`,

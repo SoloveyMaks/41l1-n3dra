@@ -128,7 +128,7 @@ admin-маршрутах — `403`.
              "schedulesEnabled": 0, "runs": 1, "running": 0, "queued": 0, "failed": 0},
   "db": {"healthy": true, "latencyMs": 0.3,
          "migrations": {"applied": 4, "latestAppliedAt": "..."}},
-  "ai": {"provider": "reformboss", "model": "...", "configured": true},
+  "ai": {"provider": "opencode-go", "model": "...", "configured": true},
   "vector": {"enabled": false, "available": true, "installedVersion": null,
              "status": "disabled", "activeEmbeddingSpecs": 0},
   "uploads": {"maxArchiveBytes": 52428800, "maxUncompressedBytes": 262144000},

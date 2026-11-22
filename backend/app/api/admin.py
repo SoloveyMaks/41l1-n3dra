@@ -117,7 +117,7 @@ def admin_overview(request: Request) -> Dict[str, Any]:
     provider: Optional[str] = None
     model = str(getattr(ai_service, "model_name", "") or "")
     if provider_config is not None:
-        provider = str(getattr(provider_config, "provider", "reformboss"))
+        provider = str(getattr(provider_config, "provider", "none") or "none")
         model = str(getattr(provider_config, "model", model) or model)
     else:
         provider = "deterministic"

@@ -63,9 +63,10 @@ manifest и SQLite fallback лежат на volume `nedra-app-data`, а не в 
 
 ## Секреты и окружение
 
-Источник — `~/.omp/agent/.env`. Читается **только** `REFORMBOSS_API_KEY`;
-WikiVibe GPT key не читается и не копируется. Парсер
-`scripts/nedra_env.py` — единственный парсер dotenv: поддерживает
+Источник — `~/.omp/agent/.env`. Bootstrap ищет AI-ключ в порядке
+`OPENCODE_API_KEY`, `AI_API_KEY`, `REFORMBOSS_API_KEY`; Go и generic ключи
+читаются только из окружения/источника, продукт не открывает credential DB.
+Парсер `scripts/nedra_env.py` — единственный парсер dotenv: поддерживает
 `export KEY=value`, одинарные/двойные кавычки и full-line комментарии, не
 запускает shell и не печатает значения. Путь источника можно переопределить
 через `NEDRA_SECRET_SOURCE`. `load_runtime_env` не делает `source`: Python
@@ -81,16 +82,22 @@ quoted/export значения парсятся и переписываются 
 
 - каталог `700`, файл `600`;
 - существующие custom `CG_*`/`VECTOR_*` значения сохраняются семантически;
-- `REFORMBOSS_API_KEY`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`,
-  `DATABASE_URL` — обязательные; без `--refresh-key` существующий
-  `REFORMBOSS_API_KEY` сохраняется, источник читается только если ключа нет;
+- один выбранный AI-ключ (`OPENCODE_API_KEY`, `AI_API_KEY` или legacy
+  `REFORMBOSS_API_KEY`), `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`,
+  `DATABASE_URL` — обязательные; без `--refresh-key` существующий AI-ключ
+  сохраняется, источник читается только если ключа нет;
 - `CG_SESSION_SECRET`, `CG_ANCHOR_HMAC_KEY`, `CG_ACCESS_CODE` генерируются
   только если отсутствуют и дальше сохраняются;
 - `CG_DATA_DIR=/app/data`, `CG_PUBLIC_DEMO=1`,
   `CG_ALLOWED_ORIGINS=https://nedra.soloveyka.bond`, `CG_TRUST_PROXY=1`
   (cloudflared передаёт `X-Forwarded-Proto`, поэтому Secure cookie),
-  `AI_PROVIDER=reformboss`, `AI_MODEL=deepseek-v4.1-flash-1017`,
-  `VECTOR_RETRIEVAL_ENABLED=0`;
+  `VECTOR_RETRIEVAL_ENABLED=0`; `AI_PROVIDER` выбирается по типу ключа и
+  конфигу (`opencode-go` для Go/generic без base, `openai-compatible` для
+  generic с `AI_BASE_URL`, `reformboss` для legacy), `AI_MODEL` —
+  `deepseek-v4.1-flash` для Go и `deepseek-v4.1-flash-1017` для legacy;
+  `AI_BASE_URL` для Go не переносится (чтобы Go не взял legacy endpoint);
+  для local `openai-compatible` и legacy он сохраняется как явный override;
+  resolver также игнорирует ReformBoss-host в `AI_BASE_URL`, если выбран Go;
 - optional Team B: `CG26_HMAC_KEY` (отдельный persistent random secret);
   `CG26_HMAC_KEY_VERSION`, `CG26_ADVISORY_ROOT`, `CG26_ADVISORY_DB` получают
   дефолты только при отсутствии, существующие custom значения сохраняются при
@@ -147,8 +154,8 @@ owner label и не используют `podman rm -f`; чужие контей
   ложный успех.
 - `scripts/nedra-status.sh` показывает контейнеры, `/api/health`,
   Docker healthcheck, `pg_isready`, версию pgvector, `CG_DATA_DIR`,
-  `CG_PUBLIC_DEMO`, `VECTOR_RETRIEVAL_ENABLED`, `AI_MODEL` и отсутствие
-  host-портов у БД.
+  `CG_PUBLIC_DEMO`, `VECTOR_RETRIEVAL_ENABLED`, `AI_PROVIDER`, `AI_MODEL` и
+  отсутствие host-портов у БД.
 - `HEALTHCHECK` встроен в образ (`deploy/healthcheck.py`); образ собирается в
   формате `docker`, иначе Podman игнорирует healthcheck.
 - Логи: `podman logs -f nedra-app`, `podman logs -f nedra-db`.

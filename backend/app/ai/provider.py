@@ -1,11 +1,14 @@
-"""Small OpenAI-compatible chat client used by the AI explanation layer.
+"""Small OpenAI-compatible chat client shared by all AI features.
 
-The only provider is ReformBoss. The key is read from REFORMBOSS_API_KEY in
-the process environment, or from ~/.omp/agent/.env when the variable is unset.
-The key is never logged, stored in provenance or returned to callers.
-
-The base URL, model and limits can be overridden with AI_BASE_URL,
-AI_MODEL/LLM_MODEL, AI_TIMEOUT_SECONDS, AI_MAX_TOKENS and AI_TEMPERATURE.
+The default provider is OpenCode Go. An explicit ``AI_PROVIDER=opencode-go``
+uses ``OPENCODE_API_KEY`` or the generic ``AI_API_KEY`` and the Go endpoint;
+it never falls back to a legacy ReformBoss key or endpoint. Legacy ReformBoss
+remains available only when selected or when only its key is configured.
+``AI_BASE_URL``/``AI_MODEL``/``LLM_MODEL`` stay supported for local
+OpenAI-compatible gateways. Keys are never logged, stored in provenance or
+returned to callers. The product never opens an external credential database;
+only process environment is read, plus the existing legacy agent .env fallback
+for ``REFORMBOSS_API_KEY`` alone.
 """
 from __future__ import annotations
 
@@ -44,8 +47,13 @@ def open_same_host(request: urllib.request.Request, timeout: float):
     return _OPENER.open(request, timeout=timeout)
 
 
+OPENCODE_GO_PROVIDER = "opencode-go"
+OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/v1"
+OPENCODE_GO_DEFAULT_MODEL = "deepseek-v4.1-flash"
+REFORMBOSS_PROVIDER = "reformboss"
 REFORMBOSS_BASE_URL = "https://api.reformboss.com/v1"
 REFORMBOSS_DEFAULT_MODEL = "deepseek-v4.1-flash-1017"
+LOCAL_PROVIDER = "openai-compatible"
 AGENT_ENV_FILE = Path.home() / ".omp" / "agent" / ".env"
 
 _SECRET_PATTERNS = (
@@ -139,7 +147,14 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
 
 
 def _read_agent_env_value(name: str) -> str:
-    """Read one value from ~/.omp/agent/.env without exposing the file."""
+    """Legacy-only fallback from ~/.omp/agent/.env.
+
+    Only ``REFORMBOSS_API_KEY`` is looked up here. OpenCode Go and local keys
+    are process environment only; no credential database or auth store is
+    opened by the product.
+    """
+    if name != "REFORMBOSS_API_KEY":
+        return ""
     try:
         lines = AGENT_ENV_FILE.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -162,21 +177,102 @@ def _read_agent_env_value(name: str) -> str:
     return ""
 
 
+def _provider_alias(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+
+
+def _model_override() -> str:
+    return os.getenv("AI_MODEL", "").strip() or os.getenv("LLM_MODEL", "").strip()
+
+
+def _base_override() -> str:
+    return os.getenv("AI_BASE_URL", "").strip().rstrip("/")
+
+
+def _is_reformboss_endpoint(url: str) -> bool:
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return False
+    return (host or "").lower() == "api.reformboss.com"
+
+
 def resolve_provider_config() -> Optional[ProviderConfig]:
-    """Return ReformBoss config, or None when REFORMBOSS_API_KEY is absent."""
-    key = os.getenv("REFORMBOSS_API_KEY", "").strip() or _read_agent_env_value("REFORMBOSS_API_KEY")
-    if not key:
+    """Resolve Go, legacy ReformBoss or a local OpenAI-compatible gateway.
+
+    Explicit ``AI_PROVIDER`` wins. ``AI_PROVIDER=opencode-go`` uses only
+    ``AI_API_KEY``/``OPENCODE_API_KEY`` and never a legacy ReformBoss key or
+    endpoint. With no provider selection, a Go credential wins, then a generic
+    local key, then a legacy key. Missing keys return ``None`` instead of
+    guessing another provider's secret.
+    """
+    generic_key = os.getenv("AI_API_KEY", "").strip()
+    opencode_key = os.getenv("OPENCODE_API_KEY", "").strip()
+    reform_key = os.getenv("REFORMBOSS_API_KEY", "").strip()
+    explicit = _provider_alias(os.getenv("AI_PROVIDER", ""))
+    base_override = _base_override()
+    model_override = _model_override()
+
+    go_key = generic_key or opencode_key
+    # The generic key is an explicit override for legacy too; the provider
+    # specific legacy key remains the backward-compatible fallback.
+    legacy_key = generic_key or reform_key or _read_agent_env_value("REFORMBOSS_API_KEY")
+
+    go_aliases = {"opencode-go", "opencode", "go"}
+    legacy_aliases = {"reformboss", "reform-boss", "legacy"}
+    local_aliases = {"openai-compatible", "openai", "local", "custom", "openai-api"}
+
+    provider: Optional[str] = None
+    key = ""
+    base_url = ""
+    default_model = ""
+
+    if explicit:
+        if explicit in go_aliases:
+            provider, key, default_model = OPENCODE_GO_PROVIDER, go_key, OPENCODE_GO_DEFAULT_MODEL
+            base_url = base_override or OPENCODE_GO_BASE_URL
+        elif explicit in legacy_aliases:
+            provider, key, default_model = REFORMBOSS_PROVIDER, legacy_key, REFORMBOSS_DEFAULT_MODEL
+            base_url = base_override or REFORMBOSS_BASE_URL
+        elif explicit in local_aliases or (base_override and generic_key):
+            provider = LOCAL_PROVIDER if explicit in local_aliases else explicit
+            key, base_url, default_model = generic_key, base_override, REFORMBOSS_DEFAULT_MODEL
+        else:
+            # Unknown explicit provider without a complete local endpoint is
+            # fail-closed: never silently reuse Go or legacy credentials.
+            return None
+    elif opencode_key:
+        provider, key, default_model = OPENCODE_GO_PROVIDER, go_key, OPENCODE_GO_DEFAULT_MODEL
+        base_url = base_override or OPENCODE_GO_BASE_URL
+    elif generic_key and base_override:
+        provider, key, base_url, default_model = (
+            LOCAL_PROVIDER, generic_key, base_override, REFORMBOSS_DEFAULT_MODEL,
+        )
+    elif generic_key:
+        provider, key, default_model = OPENCODE_GO_PROVIDER, generic_key, OPENCODE_GO_DEFAULT_MODEL
+        base_url = base_override or OPENCODE_GO_BASE_URL
+    elif reform_key or legacy_key:
+        provider, key, default_model = REFORMBOSS_PROVIDER, legacy_key, REFORMBOSS_DEFAULT_MODEL
+        base_url = base_override or REFORMBOSS_BASE_URL
+
+    if not provider or not key or not base_url:
         return None
 
-    base_url = os.getenv("AI_BASE_URL", "").strip() or REFORMBOSS_BASE_URL
-    model = (
-        os.getenv("AI_MODEL", "").strip()
-        or os.getenv("LLM_MODEL", "").strip()
-        or REFORMBOSS_DEFAULT_MODEL
-    )
+    # Explicit Go must not inherit a legacy ReformBoss endpoint from a stale
+    # AI_BASE_URL. A different local/proxy override remains allowed.
+    if provider == OPENCODE_GO_PROVIDER and _is_reformboss_endpoint(base_url):
+        base_url = OPENCODE_GO_BASE_URL
+
+    # A local/custom OpenAI-compatible gateway has no safe built-in model.
+    # Require AI_MODEL/LLM_MODEL there; Go and legacy keep their defaults.
+    known_default = provider in {OPENCODE_GO_PROVIDER, REFORMBOSS_PROVIDER}
+    model = model_override or (default_model if known_default else "")
+    if not model:
+        return None
+
     return ProviderConfig(
-        provider="reformboss",
-        base_url=base_url.rstrip("/"),
+        provider=provider,
+        base_url=base_url,
         api_key=key,
         model=model,
         timeout_seconds=_env_float("AI_TIMEOUT_SECONDS", 30.0, 5.0, 120.0),

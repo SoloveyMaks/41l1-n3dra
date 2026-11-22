@@ -75,7 +75,7 @@ class AiService:
         if not self.provider_config:
             result = self._generate_expert_fallback(
                 findings,
-                summary_prefix="[AI НЕ НАСТРОЕН]: Нет REFORMBOSS_API_KEY в окружении или ~/.omp/agent/.env. Применен детерминированный fallback:",
+                summary_prefix="[AI НЕ НАСТРОЕН]: Нет ключа AI-провайдера (AI_API_KEY, OPENCODE_API_KEY или legacy REFORMBOSS_API_KEY). Применен детерминированный fallback:",
                 provenance=self._fallback_provenance("provider_not_configured"),
             )
             return self._attach_retrieval(result, findings, execute=True)
