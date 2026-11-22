@@ -16,6 +16,7 @@ from backend.app.api.router import (
     executor,
     telegram_runtime,
     manual_run_tasks,
+    sse_broker,
 )
 from backend.app.api.admin import admin_router
 from backend.app.artifacts.repository import import_repository
@@ -103,6 +104,14 @@ async def lifespan(app: FastAPI):
         # Registered before start so a partially started scheduler is still
         # cancelled and awaited on a later initialization failure.
         cleanup.push_async_callback(scheduler.aclose)
+        # Runs left queued/running by a hard stop cannot be active in this fresh
+        # process. Finalize them before the scheduler can dispatch new work.
+        try:
+            recovered = db_repo.recover_orphaned_runs_server()
+            if recovered:
+                logger.warning("Recovered %s orphaned runs as interrupted", recovered)
+        except Exception:  # noqa: BLE001 - startup must not be blocked by recovery
+            logger.exception("Failed to recover orphaned runs")
         scheduler.start()
         notifications_runtime = NotificationRuntime()
         cleanup.push_async_callback(notifications_runtime.stop)
@@ -111,6 +120,9 @@ async def lifespan(app: FastAPI):
         # await them before scheduled runs so shared permits cannot deadlock
         # shutdown.
         cleanup.push_async_callback(manual_run_tasks.aclose)
+        # Reverse order: close live SSE streams first, otherwise uvicorn waits
+        # for them until the container timeout and SIGKILL leaves runs running.
+        cleanup.push_async_callback(sse_broker.close)
         await notifications_runtime.start()
         if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
             telegram_task = asyncio.create_task(telegram_runtime.start(), name="telegram-start")

@@ -77,4 +77,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "/app/deploy/healthcheck.py"]
 
 # Bind all interfaces inside the container; the host publishes only 127.0.0.1:18080.
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "18080", "--no-access-log"]
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "18080", "--no-access-log", "--timeout-graceful-shutdown", "10"]

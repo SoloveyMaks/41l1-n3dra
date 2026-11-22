@@ -618,7 +618,7 @@ class WorkflowExecutor:
                 "status": result.status,
                 "count": len(result.findings),
                 "findings": payload["findings"],
-            })
+            }, node_id=node.id)
             return {"custom_findings": payload}, None
 
         elif kind == NodeKind.MERGE_FINDINGS:

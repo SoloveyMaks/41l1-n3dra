@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -776,6 +777,74 @@ class DatabaseRepository:
                 f"UPDATE runtime.runs SET {', '.join(sets)} WHERE workspace_id = %s AND id = %s",
                 params,
             )
+
+    def recover_orphaned_runs_server(self) -> int:
+        """Finalize runs left queued/running by a hard process stop.
+
+        Called once at startup, before any run is dispatched: at that moment no
+        run can legitimately be active in this process. A bounded hard-kill or
+        graceful-timeout otherwise leaves the run ``running`` forever.
+        """
+        now = datetime.now(timezone.utc)
+        recovered = 0
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT workspace_id, id FROM runtime.runs "
+                "WHERE execution_status IN ('queued', 'running') ORDER BY created_at"
+            ).fetchall()
+            for row in rows:
+                workspace = row["workspace_id"]
+                run_id = row["id"]
+                conn.execute(
+                    "UPDATE runtime.runs SET execution_status = 'interrupted', "
+                    "security_verdict = 'inconclusive', finished_at = %s "
+                    "WHERE workspace_id = %s AND id = %s",
+                    (now, workspace, run_id),
+                )
+                conn.execute(
+                    "UPDATE runtime.node_runs SET status = 'cancelled', finished_at = %s, "
+                    "error_message = COALESCE(error_message, 'Выполнение прервано остановкой сервиса') "
+                    "WHERE workspace_id = %s AND run_id = %s AND status IN ('queued', 'running')",
+                    (now, workspace, run_id),
+                )
+                report = conn.execute(
+                    "SELECT official_json, readable_markdown FROM runtime.reports "
+                    "WHERE workspace_id = %s AND run_id = %s",
+                    (workspace, run_id),
+                ).fetchone()
+                if report:
+                    try:
+                        official = json.loads(report["official_json"])
+                        official.setdefault("metadata", {})["executionStatus"] = "interrupted"
+                        readable = re.sub(
+                            r"(?m)^\*\*Статус:\*\*[^\n]*",
+                            "**Статус:** прерван  ",
+                            report["readable_markdown"],
+                        )
+                        conn.execute(
+                            "UPDATE runtime.reports SET official_json = %s, readable_markdown = %s "
+                            "WHERE workspace_id = %s AND run_id = %s",
+                            (
+                                json.dumps(official, ensure_ascii=False, indent=2),
+                                readable,
+                                workspace,
+                                run_id,
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 - recovery must continue for other runs
+                        logger.exception("Failed to finalize report for orphaned run %s", run_id)
+                conn.execute(
+                    "INSERT INTO runtime.run_events (workspace_id, run_id, timestamp, type, node_id, payload_json) "
+                    "VALUES (%s, %s, %s, 'run_status', NULL, %s)",
+                    (
+                        workspace,
+                        run_id,
+                        now,
+                        _jsonb({"status": "interrupted", "verdict": "inconclusive", "recovered": True}),
+                    ),
+                )
+                recovered += 1
+        return recovered
 
     def claim_run_start(self, run_id: str, started_at: str) -> bool:
         """Atomically promote a queued run to running.

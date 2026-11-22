@@ -17,6 +17,24 @@ class SSEBroker:
         self.db = db
         self._subscribers: Dict[str, List[asyncio.Queue]] = defaultdict(list)
         self._lock = asyncio.Lock()
+        self._closing = False
+
+    async def close(self) -> None:
+        """Stop every active stream so graceful shutdown can finish.
+
+        Without this uvicorn waits for open SSE connections until the
+        container timeout, gets SIGKILL, and leaves the run ``running``.
+        """
+        async with self._lock:
+            self._closing = True
+            queues = [queue for group in self._subscribers.values() for queue in group]
+            self._subscribers.clear()
+        for queue in queues:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
 
     @staticmethod
     def _historical_message(ev: Dict[str, Any]) -> str:
@@ -61,6 +79,8 @@ class SSEBroker:
         last_seq = after_seq
 
         async with self._lock:
+            if self._closing:
+                return
             self._subscribers[run_id].append(queue)
 
         try:
@@ -74,10 +94,12 @@ class SSEBroker:
                 yield self._historical_message(ev)
 
             # 2. Stream new live events
-            while True:
+            while not self._closing:
                 try:
                     ev = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
                 except asyncio.TimeoutError:
+                    if self._closing:
+                        return
                     # Scheduler/HTTP workers may persist events in another
                     # process, outside this broker's in-memory subscriber list.
                     missed = await asyncio.to_thread(
