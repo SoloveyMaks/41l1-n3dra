@@ -177,7 +177,7 @@ def build_draft_from_plan(
     include_notify = "notify" in selected
     # Explain and notify are only visible through a report; add one so a
     # selected block never ends as an unconnected, discarded result.
-    include_report = "report" in selected or include_explain or include_notify
+    include_report = "report" in selected or include_ai or include_explain or include_notify
 
     nodes: List[WorkflowNode] = []
     edges: List[WorkflowEdge] = []
@@ -286,6 +286,8 @@ def build_draft_from_plan(
     if not selected.intersection(_SCANNER_INTENTS):
         warnings.append("Добавлены секреты, зависимости и Kotlin SAST как источник находок для следующих блоков.")
     if include_ai:
+        if "report" not in selected and not include_explain and not include_notify:
+            warnings.append("Добавлен отчёт, чтобы ИИ-гипотезы были видны в результате.")
         warnings.append(
             "ИИ-гипотезы остаются отдельными и не меняют deterministic findings или вердикт."
         )

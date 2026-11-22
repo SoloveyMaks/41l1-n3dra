@@ -74,6 +74,47 @@ intake = SafeArtifactIntake()
 codefacts_store = CodeFactsStore()
 _INTAKE_SEM = asyncio.Semaphore(int(os.getenv("CG_MAX_CONCURRENT_INTAKE", "2")))
 
+
+class _ManualRunTasks:
+    """Own detached manual-run tasks so shutdown can cancel and await them.
+
+    The HTTP request returns immediately; the run task outlives it. Keeping the
+    task here lets lifespan stop the run and wait for its executor cleanup
+    before the database pool is closed.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task] = set()
+
+    def spawn(self, coroutine: Any, *, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coroutine, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._done)
+        return task
+
+    def _done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning("Manual run task failed: %s", type(exc).__name__)
+
+    async def aclose(self) -> None:
+        while self._tasks:
+            tasks = list(self._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                self._tasks.discard(task)
+
+
+manual_run_tasks = _ManualRunTasks()
+
 # Store last received test webhooks in memory for UI verification (bounded, no secrets)
 received_webhooks: List[Dict[str, Any]] = []
 MAX_WEBHOOK_LOG = 200
@@ -492,7 +533,7 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
             revision_id=rev_id,
         )
 
-    asyncio.create_task(_execute_bounded())
+    manual_run_tasks.spawn(_execute_bounded(), name=f"manual-run-{run_id}")
 
     return {
         "runId": run_id,

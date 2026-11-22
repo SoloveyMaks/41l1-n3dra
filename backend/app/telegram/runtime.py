@@ -1167,7 +1167,9 @@ class TelegramRuntime:
                 alive = await asyncio.to_thread(
                     self.repo.heartbeat_job, job, JOB_LEASE_SECONDS
                 )
-            except Exception as exc:  # noqa: BLE001
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a DB hiccup is not auth loss
                 logger.warning("telegram job heartbeat failed: %s", self._safe_error(exc))
                 owner.cancel()
                 return

@@ -1,4 +1,6 @@
 from collections import defaultdict, deque
+import math
+import re
 from typing import Dict, List
 
 from backend.app.contracts.node_registry import NODE_REGISTRY
@@ -18,11 +20,18 @@ class WorkflowValidator:
             ))
             return WorkflowValidationResult(valid=False, issues=issues)
 
+        if draft.schemaVersion != 1:
+            issues.append(WorkflowValidationIssue(
+                message="Поддерживается только schemaVersion=1",
+            ))
+
         # 1. Check unknown nodes and index them
         node_map = {}
         has_trigger = False
 
         for node in draft.nodes:
+            if not node.id.strip():
+                issues.append(WorkflowValidationIssue(message="Идентификатор ноды не может быть пустым"))
             if node.id in node_map:
                 issues.append(WorkflowValidationIssue(
                     level="error",
@@ -62,6 +71,7 @@ class WorkflowValidator:
                 ))
 
         for node in draft.nodes:
+            issues.extend(self._validate_config(node.id, node.kind, node.config))
             if node.kind == NodeKind.AI_SCAN:
                 issues.extend(self._validate_ai_scan_config(node.id, node.config or {}))
 
@@ -73,7 +83,22 @@ class WorkflowValidator:
 
         target_ports_connected = defaultdict(set)  # node_id -> set of port_ids
 
+        edge_ids = set()
         for edge in draft.edges:
+            if not edge.id.strip():
+                issues.append(WorkflowValidationIssue(message="Идентификатор ребра не может быть пустым"))
+            if edge.id in edge_ids:
+                issues.append(WorkflowValidationIssue(
+                    level="error", edgeId=edge.id,
+                    message=f"Дублирующийся идентификатор ребра: '{edge.id}'",
+                ))
+            edge_ids.add(edge.id)
+            if edge.targetPort in target_ports_connected[edge.target]:
+                issues.append(WorkflowValidationIssue(
+                    level="error", edgeId=edge.id, nodeId=edge.target,
+                    portId=edge.targetPort,
+                    message="К одному входному порту можно подключить только одно ребро",
+                ))
             if edge.source not in node_map:
                 issues.append(WorkflowValidationIssue(
                     level="error",
@@ -139,6 +164,22 @@ class WorkflowValidator:
             node_def = NODE_REGISTRY.get(node.kind)
             if not node_def:
                 continue
+
+            required_ports = {
+                NodeKind.AI_EXPLAIN: ("findings_bundle",),
+                NodeKind.NOTIFY: ("report",),
+                NodeKind.BUILD_REPORT: ("policy_result",),
+            }.get(node.kind, ())
+            for port in required_ports:
+                if port not in target_ports_connected[node.id]:
+                    issues.append(WorkflowValidationIssue(
+                        nodeId=node.id, portId=port,
+                        message=f"Нода {node_def.title} требует подключения входа {port}",
+                    ))
+            if node.kind == NodeKind.BRANCH_MERGE and not target_ports_connected[node.id]:
+                issues.append(WorkflowValidationIssue(
+                    nodeId=node.id, message="Branch Merge требует подключения хотя бы одной ветви",
+                ))
 
             # Project input must have connected trigger
             if node.kind == NodeKind.PROJECT_INPUT and "trigger" not in target_ports_connected[node.id]:
@@ -231,6 +272,62 @@ class WorkflowValidator:
         valid = not any(i.level == "error" for i in issues)
         return WorkflowValidationResult(valid=valid, issues=issues)
 
+    def _validate_config(self, node_id: str, kind: NodeKind,
+                         config: Dict[str, object]) -> List[WorkflowValidationIssue]:
+        issues: List[WorkflowValidationIssue] = []
+
+        def reject(message: str) -> None:
+            issues.append(WorkflowValidationIssue(
+                level="error", nodeId=node_id, message=message,
+            ))
+
+        boolean_keys = {
+            NodeKind.POLICY_GATE: ("failOnCritical", "failOnHigh", "strictCoverageRequired"),
+            NodeKind.NOTIFY: ("enabled", "sendOnFailOnly"),
+        }.get(kind, ())
+        for key in boolean_keys:
+            if key in config and not isinstance(config[key], bool):
+                reject(f"{key} должен быть логическим значением true или false")
+        if kind == NodeKind.POLICY_GATE and "maxAllowedMedium" in config:
+            value = config["maxAllowedMedium"]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                reject("maxAllowedMedium должен быть целым неотрицательным числом")
+        if kind == NodeKind.PROJECT_INPUT and "artifactId" in config:
+            if not isinstance(config["artifactId"], str):
+                reject("artifactId должен быть строкой")
+        if kind == NodeKind.NOTIFY:
+            for key in ("webhookUrl", "secretToken"):
+                if key in config and not isinstance(config[key], str):
+                    reject(f"{key} должен быть строкой")
+        if kind == NodeKind.CONDITION:
+            field = config.get("field", "verdict")
+            if not isinstance(field, str) or field not in {
+                "verdict", "critical_count", "high_count", "medium_count",
+                "low_count", "info_count", "findings_count", "coverage_warnings_count",
+            }:
+                reject("Condition: выберите поле результата политики")
+            operator = config.get("operator", "equals")
+            if operator not in ("equals", "not_equals", "greater_than", "less_than", "regex"):
+                reject("Condition: неизвестный оператор сравнения")
+            target = config.get("targetValue", "fail")
+            if isinstance(target, (dict, list, bool)) or target is None:
+                reject("Condition: targetValue должен быть строкой или числом")
+            elif operator in ("greater_than", "less_than"):
+                try:
+                    if not math.isfinite(float(target)):
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    reject("Condition: числовое сравнение требует конечного числа")
+            elif operator == "regex":
+                if len(str(target)) > 256:
+                    reject("Condition: регулярное выражение не должно превышать 256 символов")
+                else:
+                    try:
+                        re.compile(str(target))
+                    except (re.error, OverflowError):
+                        reject("Condition: некорректное регулярное выражение")
+        return issues
+
     def _validate_ai_scan_config(self, node_id: str, config: Dict[str, object]) -> List[WorkflowValidationIssue]:
         """AI_SCAN config is budget-only; credentials and model routing are server-owned."""
         issues: List[WorkflowValidationIssue] = []
@@ -274,9 +371,15 @@ class WorkflowValidator:
     def _are_ports_compatible(self, src: PortType, tgt: PortType) -> bool:
         if src == tgt:
             return True
-        # Allow Condition Branch to connect to general inputs or BranchMerge
-        if src == PortType.CONDITION_BRANCH or tgt == PortType.CONDITION_BRANCH:
-            return True
+        # Branch tokens gate consumers with shared analysis context. They carry
+        # no artifact or scan result and cannot replace those typed values.
+        if src == PortType.CONDITION_BRANCH:
+            return tgt in {
+                PortType.CONDITION_BRANCH, PortType.FINDINGS_BUNDLE,
+                PortType.POLICY_RESULT, PortType.EXPLAIN_RESULT, PortType.REPORT,
+            }
+        if tgt == PortType.CONDITION_BRANCH:
+            return False
         # Allow PolicyResult into Condition
         if src == PortType.POLICY_RESULT and tgt == PortType.POLICY_RESULT:
             return True

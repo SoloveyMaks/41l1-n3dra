@@ -15,6 +15,7 @@ from backend.app.api.router import (
     db_repo,
     executor,
     telegram_runtime,
+    manual_run_tasks,
 )
 from backend.app.api.admin import admin_router
 from backend.app.artifacts.repository import import_repository
@@ -99,11 +100,17 @@ async def lifespan(app: FastAPI):
                 "CG_SESSION_SECRET не задан: используется эфемерный секрет процесса. "
                 "Это допустимо только для локального режима; для CG_PUBLIC_DEMO=1 секрет обязателен."
             )
-        cleanup.callback(scheduler.stop)
+        # Registered before start so a partially started scheduler is still
+        # cancelled and awaited on a later initialization failure.
+        cleanup.push_async_callback(scheduler.aclose)
         scheduler.start()
         notifications_runtime = NotificationRuntime()
         cleanup.push_async_callback(notifications_runtime.stop)
         cleanup.push_async_callback(telegram_runtime.stop)
+        # Manual runs may be blocked on the executor semaphore; cancel and
+        # await them before scheduled runs so shared permits cannot deadlock
+        # shutdown.
+        cleanup.push_async_callback(manual_run_tasks.aclose)
         await notifications_runtime.start()
         if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
             telegram_task = asyncio.create_task(telegram_runtime.start(), name="telegram-start")
