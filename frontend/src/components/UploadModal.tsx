@@ -51,7 +51,10 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onArt
     setError(null);
   }, [isOpen]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => {
+    requestSeq.current += 1;
+    abortRef.current?.abort();
+  }, []);
 
   if (!isOpen) return null;
 

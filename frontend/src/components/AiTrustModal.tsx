@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Sparkles, X, ShieldAlert, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Sparkles, X, ShieldAlert, Loader2 } from 'lucide-react';
 import { apiClient } from '../api/client';
 
 interface AiTrustModalProps {
@@ -8,24 +8,56 @@ interface AiTrustModalProps {
   onClose: () => void;
 }
 
+interface AiTrustResult {
+  is_valid: boolean;
+  errors: string[];
+  synthetic_response: unknown;
+}
+
+const parseTrustResult = (value: unknown): AiTrustResult | null => {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.is_valid !== 'boolean') return null;
+  return {
+    is_valid: record.is_valid,
+    errors: Array.isArray(record.errors) ? record.errors.filter((item): item is string => typeof item === 'string') : [],
+    synthetic_response: record.synthetic_response ?? null,
+  };
+};
+
 export const AiTrustModal: React.FC<AiTrustModalProps> = ({ runId, isOpen, onClose }) => {
   const [isRunning, setIsRunning] = useState(false);
-  const [result, setResult] = useState<any | null>(null);
+  const [result, setResult] = useState<AiTrustResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestSeq = useRef(0);
+
+  useEffect(() => {
+    requestSeq.current += 1;
+    setIsRunning(false);
+    setResult(null);
+    setError(null);
+  }, [isOpen, runId]);
 
   if (!isOpen) return null;
 
   const handleRunTest = async () => {
+    const seq = ++requestSeq.current;
     setIsRunning(true);
     setResult(null);
     setError(null);
     try {
-      const data = await apiClient.runAiSyntheticTest(runId);
-      setResult(data);
-    } catch (e: any) {
-      setError(e?.message || 'Синтетический тест недоступен');
+      const parsed = parseTrustResult(await apiClient.runAiSyntheticTest(runId));
+      if (seq !== requestSeq.current) return;
+      if (!parsed) {
+        setError('Сервер вернул неполный ответ теста');
+        return;
+      }
+      setResult(parsed);
+    } catch (error: unknown) {
+      if (seq !== requestSeq.current) return;
+      setError(error instanceof Error ? error.message : 'Синтетический тест недоступен');
     } finally {
-      setIsRunning(false);
+      if (seq === requestSeq.current) setIsRunning(false);
     }
   };
 

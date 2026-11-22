@@ -9,6 +9,7 @@ import type {
   SourceState,
 } from '../../../ui/security-map/src/types.ts';
 import { API_BASE } from './client';
+import { productionModel, validateProduction } from '../../../ui/security-map/src/model';
 
 export type RunSecurityMap = {
   identity: RunScope;
@@ -63,7 +64,7 @@ export async function getRunSecurityMap(
 ): Promise<RunSecurityMap> {
   const res = await fetch(
     `${API_BASE}/runs/${encodeURIComponent(runId)}/security-map`,
-    { signal, headers: { Accept: 'application/json' } },
+    { signal, credentials: 'include', cache: 'no-store', headers: { Accept: 'application/json' } },
   );
   if (!res.ok) {
     throw new SecurityMapApiError(
@@ -122,6 +123,17 @@ export async function getRunSecurityMap(
   ) {
     throw new SecurityMapApiError(
       'Ответ security-map неполный или относится к другому запуску',
+      res.status,
+      'map_contract_mismatch',
+    );
+  }
+  try {
+    const issue = validateProduction(identity, map, findings);
+    if (issue) throw new Error(issue);
+    productionModel(map, findings);
+  } catch {
+    throw new SecurityMapApiError(
+      'Карта не прошла проверку снимка или содержит повреждённые данные',
       res.status,
       'map_contract_mismatch',
     );
@@ -185,7 +197,7 @@ export async function getRunEvidence(
 ): Promise<SourceState> {
   const res = await fetch(
     `${API_BASE}/runs/${encodeURIComponent(request.runId)}/evidence/${encodeURIComponent(request.evidenceId)}`,
-    { signal, headers: { Accept: 'application/json' } },
+    { signal, credentials: 'include', cache: 'no-store', headers: { Accept: 'application/json' } },
   );
   if (!res.ok) {
     throw new SecurityMapApiError(

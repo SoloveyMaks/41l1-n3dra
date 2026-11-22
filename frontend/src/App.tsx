@@ -59,6 +59,7 @@ import type { RunTelemetry } from './execution/runTelemetry';
 import { artifactLabel, artifactRepository, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
+type ValidationState = 'checking' | 'ready' | 'unavailable';
 
 const EMPTY_DRAFT: WorkflowDraft = {
   schemaVersion: 1,
@@ -113,6 +114,16 @@ const sameRunGraph = (revisionDraft: WorkflowDraft | null, currentDraft: Workflo
 
 const EMPTY_RUN_TELEMETRY: RunTelemetry = { nodes: {}, edges: {}, lastSeq: 0, live: false };
 
+const draftArtifactId = (value: WorkflowDraft): string =>
+  value.nodes.find((node) => node.kind === 'project_input')?.config.artifactId || '';
+
+const withArtifact = (value: WorkflowDraft, artifactId: string): WorkflowDraft => ({
+  ...value,
+  nodes: value.nodes.map((node) => node.kind === 'project_input'
+    ? { ...node, config: { ...node.config, artifactId } }
+    : node),
+});
+
 // Run status only moves forward: queued → running → terminal. A summary with a
 // lower rank is older than what is already applied, even when the request that
 // carries it was issued later (a reconnect reply or a slow details fetch).
@@ -160,6 +171,9 @@ export const App: React.FC = () => {
   const [draft, setDraft] = useState<WorkflowDraft>(EMPTY_DRAFT);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [validationIssues, setValidationIssues] = useState<Array<{ level: string; message: string }>>([]);
+  // A draft is only reported valid for the exact version the server checked.
+  // During a switch or an in-flight request the previous verdict is stale.
+  const [validationState, setValidationState] = useState<ValidationState>('checking');
   const [isSavingDraft, setIsSavingDraft] = useState(false);
 
   // Artifacts state
@@ -168,7 +182,6 @@ export const App: React.FC = () => {
 
   // Run history and selected run state
   const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [runsLoading, setRunsLoading] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<RunSummary | null>(null);
   // Immutable graph the selected run was created from. null = unknown plan.
@@ -203,12 +216,19 @@ export const App: React.FC = () => {
   const artifactFetchRef = useRef<Map<string, Promise<ArtifactManifest | null>>>(new Map());
   const artifactCacheRef = useRef<Map<string, ArtifactManifest>>(new Map());
   const runLoadSeq = useRef(0);
+  const runsLoadSeq = useRef(0);
+  const initialLoadSeq = useRef(0);
+  const accountLoadSeq = useRef(0);
   const revisionLoadSeq = useRef(0);
   const validateSeq = useRef(0);
   const workflowSelectSeq = useRef(0);
   const adminOverviewSeq = useRef(0);
   const createScenarioSeq = useRef(0);
+  const draftVersion = useRef(0);
+  const triggerPending = useRef(false);
+  const workflowIdRef = useRef(workflowId);
   const authRef = useRef<{ epoch: number; role: SessionRole | undefined }>({ epoch: 0, role: undefined });
+  const inspectorPanelRef = useRef<HTMLDivElement | null>(null);
   const noticeTimer = useRef<number | null>(null);
 
   const showNotice = useCallback((kind: Notice['kind'], text: string) => {
@@ -258,25 +278,23 @@ export const App: React.FC = () => {
 
   const refreshRuns = useCallback(async (): Promise<RunSummary[]> => {
     const epoch = authRef.current.epoch;
-    setRunsLoading(true);
+    const seq = ++runsLoadSeq.current;
     try {
       const list = await apiClient.listRuns();
-      if (epoch !== authRef.current.epoch) return [];
+      if (epoch !== authRef.current.epoch || seq !== runsLoadSeq.current) return [];
       setRuns(list);
       // Overview counters must reflect a completed run and a manual refresh.
       // This is a no-op for user sessions; node-level SSE does not call it.
       if (authRef.current.role === 'admin') void refreshAdminOverview();
       return list;
     } catch (e: any) {
-      if (epoch !== authRef.current.epoch) return [];
+      if (epoch !== authRef.current.epoch || seq !== runsLoadSeq.current) return [];
       if (e instanceof AuthRequiredError) {
         setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
       } else {
         showNotice('error', e?.message || 'Не удалось загрузить историю запусков');
       }
       return [];
-    } finally {
-      if (epoch === authRef.current.epoch) setRunsLoading(false);
     }
   }, [refreshAdminOverview, showNotice]);
 
@@ -286,14 +304,16 @@ export const App: React.FC = () => {
     if (cached) return cached;
     let pending = artifactFetchRef.current.get(artifactId);
     if (!pending) {
+      const epoch = authRef.current.epoch;
       pending = apiClient.getArtifact(artifactId)
         .then((artifact) => {
+          if (epoch !== authRef.current.epoch) return null;
           artifactCacheRef.current.set(artifactId, artifact);
           return artifact;
         })
         .catch(() => null)
         .finally(() => {
-          artifactFetchRef.current.delete(artifactId);
+          if (artifactFetchRef.current.get(artifactId) === pending) artifactFetchRef.current.delete(artifactId);
         });
       artifactFetchRef.current.set(artifactId, pending);
     }
@@ -343,7 +363,7 @@ export const App: React.FC = () => {
       if (runInfo.artifact_id) {
         runArtifact = await ensureArtifact(runInfo.artifact_id);
       }
-      if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
+      if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return null;
       if (runArtifact) {
         const freshArtifact = runArtifact;
         artifactIdsRef.current.add(freshArtifact.id);
@@ -356,6 +376,7 @@ export const App: React.FC = () => {
       }
 
       const accepted = applyRunSummary(runInfo);
+      if (!accepted) return null;
       setNodeRuns(nodes);
       setFindings(runFindings);
       setAiScan(extractAiScan(nodes));
@@ -365,6 +386,7 @@ export const App: React.FC = () => {
         setIsRunning(active);
         if (!active) void refreshRuns();
       }
+      return accepted ? runInfo : null;
     } catch (e: any) {
       if (seq !== runLoadSeq.current || selectedRunRef.current !== runId) return;
       if (e instanceof AuthRequiredError) {
@@ -372,6 +394,7 @@ export const App: React.FC = () => {
       } else {
         showNotice('error', e?.message || 'Не удалось загрузить запуск');
       }
+      return null;
     }
   }, [applyRunSummary, ensureArtifact, refreshRuns, showNotice]);
 
@@ -502,19 +525,26 @@ export const App: React.FC = () => {
 
   const validateDraft = useCallback(async (wfId: string, nextDraft: WorkflowDraft) => {
     const seq = ++validateSeq.current;
+    const epoch = authRef.current.epoch;
+    setValidationState('checking');
     try {
       const result = await apiClient.validateWorkflow(wfId, nextDraft);
-      if (seq === validateSeq.current) setValidationIssues(result.issues || []);
+      if (seq !== validateSeq.current || epoch !== authRef.current.epoch) return null;
+      setValidationIssues(result.issues || []);
+      setValidationState('ready');
       return result;
-    } catch (e: any) {
-      if (e instanceof AuthRequiredError) {
+    } catch (error: unknown) {
+      if (seq !== validateSeq.current || epoch !== authRef.current.epoch) return null;
+      setValidationState('unavailable');
+      if (error instanceof AuthRequiredError) {
         setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
       }
       return null;
     }
   }, []);
 
-  const resetRunSelection = () => {
+  const resetRunSelection = useCallback(() => {
+    workflowSelectSeq.current += 1;
     closeSSE();
     selectedRunRef.current = null;
     runProgressRef.current = null;
@@ -532,10 +562,52 @@ export const App: React.FC = () => {
     setReport(null);
     setEvents([]);
     setIsRunning(false);
-  };
+  }, [closeSSE]);
+
+  const resetWorkspace = useCallback((role?: SessionRole) => {
+    authRef.current = { epoch: authRef.current.epoch + 1, role };
+    initialLoadSeq.current += 1;
+    runsLoadSeq.current += 1;
+    accountLoadSeq.current += 1;
+    workflowSelectSeq.current += 1;
+    validateSeq.current += 1;
+    createScenarioSeq.current += 1;
+    adminOverviewSeq.current += 1;
+    draftVersion.current += 1;
+    artifactIdsRef.current.clear();
+    artifactCacheRef.current.clear();
+    artifactFetchRef.current.clear();
+    resetRunSelection();
+    setArtifacts([]);
+    setCurrentArtifactId('');
+    setWorkflows([]);
+    setDraft(EMPTY_DRAFT);
+    setWorkflowId('');
+    workflowIdRef.current = '';
+    setValidationIssues([]);
+    setValidationState('checking');
+    setRuns([]);
+    setSelectedNodeId(null);
+    setAdminOverview(null);
+    setProfile(null);
+    setAccountHistory([]);
+    setAccountError(null);
+    setAccountLoading(false);
+    setIsAccountOpen(false);
+    setIsUploadOpen(false);
+    setIsAiTestOpen(false);
+    setIsScenarioOpen(false);
+    setIsScenarioPromptOpen(false);
+    setScenarioBusy(false);
+    setIsSavingDraft(false);
+    setNotice(null);
+  }, [resetRunSelection]);
 
   const loadInitialData = useCallback(async () => {
     const epoch = authRef.current.epoch;
+    const seq = ++initialLoadSeq.current;
+    const selection = workflowSelectSeq.current;
+    const isCurrent = () => epoch === authRef.current.epoch && seq === initialLoadSeq.current && selection === workflowSelectSeq.current;
     try {
       const [artifactList, workflowList, runList, definitions, checks] = await Promise.all([
         apiClient.listArtifacts(),
@@ -544,11 +616,10 @@ export const App: React.FC = () => {
         apiClient.getNodeTypes(),
         listCustomChecks().catch(() => []),
       ]);
-      if (epoch !== authRef.current.epoch) return;
+      if (!isCurrent()) return;
       setNodeDefinitions(definitions);
       setCustomChecks(checks);
       setArtifacts(artifactList);
-      setCurrentArtifactId(artifactList[0]?.id || '');
       setWorkflows(workflowList);
       setRuns(runList);
 
@@ -557,33 +628,40 @@ export const App: React.FC = () => {
         workflowList.find((item) => item.id === storedWorkflowId) ||
         workflowList.find((item) => item.id === 'wf_secure_pr_gate') ||
         workflowList[0];
-      if (selectedWorkflow?.draft) {
-        setWorkflowId(selectedWorkflow.id);
-        setDraft(selectedWorkflow.draft);
-        storeSelectedWorkflowId(selectedWorkflow.id);
-        await validateDraft(selectedWorkflow.id, selectedWorkflow.draft);
-      } else {
-        showNotice('error', 'На сервере нет доступного сценария');
-      }
-
       const selectedRuns = selectedWorkflow
         ? runList.filter((run) => run.workflow_id === selectedWorkflow.id)
         : [];
       const latest =
         selectedRuns.find((run) => run.trigger_type !== 'schedule') ||
         selectedRuns[0];
+      if (selectedWorkflow?.draft) {
+        workflowIdRef.current = selectedWorkflow.id;
+        setWorkflowId(selectedWorkflow.id);
+        const nextDraft = latest ? withArtifact(selectedWorkflow.draft, latest.artifact_id || '') : selectedWorkflow.draft;
+        setValidationIssues([]);
+        setDraft(nextDraft);
+        setCurrentArtifactId(draftArtifactId(nextDraft));
+        storeSelectedWorkflowId(selectedWorkflow.id);
+        await validateDraft(selectedWorkflow.id, nextDraft);
+        if (!isCurrent()) return;
+      } else {
+        showNotice('error', 'На сервере нет доступного сценария');
+      }
+
       if (latest) {
         selectedRunRef.current = latest.id;
         lastSeqRef.current = 0;
         setCurrentRunId(latest.id);
         applyRunSummary(latest);
         await loadRunDetails(latest.id);
+        if (!isCurrent()) return;
         void loadRunRevision(latest.id);
         connectSSE(latest.id, latest.last_event_seq ?? null);
       } else {
         resetRunSelection();
       }
     } catch (e: any) {
+      if (!isCurrent()) return;
       if (e instanceof AuthRequiredError) {
         setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
       } else {
@@ -591,7 +669,7 @@ export const App: React.FC = () => {
         showNotice('error', e?.message || 'Сервер недоступен');
       }
     }
-  }, [applyRunSummary, connectSSE, loadRunDetails, loadRunRevision, showNotice, validateDraft]);
+  }, [applyRunSummary, connectSSE, loadRunDetails, loadRunRevision, resetRunSelection, showNotice, validateDraft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -599,6 +677,7 @@ export const App: React.FC = () => {
       try {
         const state = await apiClient.getSession();
         if (cancelled) return;
+        resetWorkspace(state.role);
         setSession(state);
         if (!state.authRequired || state.authenticated) await loadInitialData();
       } catch (e: any) {
@@ -615,9 +694,14 @@ export const App: React.FC = () => {
     })();
     return () => {
       cancelled = true;
+      initialLoadSeq.current += 1;
       closeSSE();
     };
-  }, [closeSSE, loadInitialData]);
+  }, [closeSSE, loadInitialData, resetWorkspace]);
+
+  useEffect(() => {
+    if (session?.authRequired && !session.authenticated) resetWorkspace();
+  }, [session?.authRequired, session?.authenticated, resetWorkspace]);
 
   // While a run is queued/running, poll as a fallback when SSE is silent or reconnects.
   useEffect(() => {
@@ -638,9 +722,7 @@ export const App: React.FC = () => {
         setAuthError('Этот код не даёт доступ к админ-панели');
         return;
       }
-      authRef.current = { epoch: authRef.current.epoch + 1, role: state.role };
-      setAdminOverview(null);
-      adminOverviewSeq.current += 1;
+      resetWorkspace(state.role);
       setSession(state);
       await loadInitialData();
       setAdminSection('overview');
@@ -659,9 +741,7 @@ export const App: React.FC = () => {
       const state = mode === 'register'
         ? await apiClient.registerAccount(input)
         : await apiClient.loginAccount(input.email, input.password);
-      authRef.current = { epoch: authRef.current.epoch + 1, role: state.role };
-      setAdminOverview(null);
-      adminOverviewSeq.current += 1;
+      resetWorkspace(state.role);
       setSession(state);
       await loadInitialData();
       setAdminSection('overview');
@@ -686,6 +766,9 @@ export const App: React.FC = () => {
     setAccountError(null);
     setProfile(null);
     setAccountHistory([]);
+    const seq = ++accountLoadSeq.current;
+    const epoch = authRef.current.epoch;
+    const isCurrent = () => seq === accountLoadSeq.current && epoch === authRef.current.epoch;
     try {
       const profilePromise = session?.mode === 'demo'
         ? Promise.resolve(null)
@@ -697,24 +780,26 @@ export const App: React.FC = () => {
         profilePromise,
         apiClient.getHistory(20),
       ]);
+      if (!isCurrent()) return;
       setProfile(profileValue);
       setAccountHistory(historyValue.items);
     } catch (error: unknown) {
-      setAccountError(error instanceof Error ? error.message : 'Не удалось загрузить аккаунт');
+      if (isCurrent()) setAccountError(error instanceof Error ? error.message : 'Не удалось загрузить аккаунт');
     } finally {
-      setAccountLoading(false);
+      if (isCurrent()) setAccountLoading(false);
     }
   };
 
   const handleLogout = async () => {
-    // Invalidate in-flight admin/overview work before the network await.
-    authRef.current = { epoch: authRef.current.epoch + 1, role: 'user' };
-    adminOverviewSeq.current += 1;
-    setAdminOverview(null);
+    resetWorkspace();
+    setSession((prev) => ({ authenticated: false, authRequired: true, workspaceId: prev?.workspaceId || '', expiresInSec: 0 }));
+    setAuthBusy(true);
     try {
       await apiClient.logout();
     } catch {
-      // Cookie already gone or server unavailable; local state still resets.
+      setAuthError('Сервер не подтвердил выход. Повторите выход после восстановления связи.');
+    } finally {
+      setAuthBusy(false);
     }
     closeSSE();
     selectedRunRef.current = null;
@@ -749,9 +834,52 @@ export const App: React.FC = () => {
 
   const handleSelectRun = (runId: string) => {
     if (!runId) return;
+    const previousRunId = selectedRunRef.current;
     closeSSE();
     selectedRunRef.current = runId;
     const listed = runs.find((run) => run.id === runId);
+    const selection = ++workflowSelectSeq.current;
+    const epoch = authRef.current.epoch;
+    const version = draftVersion.current;
+    const alignWorkflow = async (run: RunSummary | null | undefined) => {
+      if (!run || selection !== workflowSelectSeq.current || epoch !== authRef.current.epoch) return;
+      if (version !== draftVersion.current) {
+        resetRunSelection();
+        showNotice('error', 'Черновик изменён во время загрузки запуска. Выберите запуск ещё раз.');
+        return;
+      }
+      if (run.workflow_id !== workflowIdRef.current) {
+        try {
+          const workflow = await apiClient.getWorkflow(run.workflow_id);
+          if (selection !== workflowSelectSeq.current || epoch !== authRef.current.epoch) return;
+          if (version !== draftVersion.current) {
+            resetRunSelection();
+            return;
+          }
+          if (!workflow?.draft) throw new Error('У сценария запуска нет сохранённого черновика');
+          workflowIdRef.current = run.workflow_id;
+          setWorkflowId(run.workflow_id);
+          storeSelectedWorkflowId(run.workflow_id);
+          const nextDraft = withArtifact(workflow.draft, run.artifact_id || '');
+          setValidationIssues([]);
+          setDraft(nextDraft);
+          draftVersion.current += 1;
+          setSelectedNodeId(null);
+          void validateDraft(run.workflow_id, nextDraft);
+        } catch (error: unknown) {
+          if (selection === workflowSelectSeq.current && epoch === authRef.current.epoch) {
+            showNotice('error', error instanceof Error ? error.message : 'Не удалось открыть сценарий запуска');
+            resetRunSelection();
+          }
+        }
+      } else {
+        const nextDraft = withArtifact(draft, run.artifact_id || '');
+        setDraft(nextDraft);
+        draftVersion.current += 1;
+        void validateDraft(run.workflow_id, nextDraft);
+      }
+      if (selection === workflowSelectSeq.current && epoch === authRef.current.epoch) setCurrentArtifactId(run.artifact_id || '');
+    };
     // Seed from the list row only to avoid opening a stream for a run the list
     // already reports as finished. Details replace it with authoritative data.
     runProgressRef.current = listed
@@ -762,7 +890,9 @@ export const App: React.FC = () => {
     setCurrentRunId(runId);
     setCurrentRun(null);
     setRunRevision(null);
-    setMapLoadState(null);
+    // The map is a fact about the run's immutable snapshot, so reselecting the
+    // same run keeps its actual load state; another run must not inherit it.
+    setMapLoadState((previous) => (previousRunId === runId ? previous : null));
     setNodeRuns([]);
     setFindings([]);
     setAiScan(null);
@@ -772,6 +902,8 @@ export const App: React.FC = () => {
     // last_event_seq tells history apart from live motion. Unknown runs stay
     // null until the API summary arrives, so replay cannot animate.
     connectSSE(runId, runs.find((run) => run.id === runId)?.last_event_seq ?? null);
+    if (listed) void alignWorkflow(listed);
+    else void apiClient.getRun(runId).then(alignWorkflow).catch(() => undefined);
     void loadRunDetails(runId);
     void loadRunRevision(runId);
   };
@@ -786,15 +918,21 @@ export const App: React.FC = () => {
         showNotice('error', 'У сценария нет сохранённого draft');
         return;
       }
+      workflowIdRef.current = nextWorkflowId;
+      const nextRun = runs.find((run) => run.workflow_id === nextWorkflowId);
+      const nextDraft = nextRun ? withArtifact(workflow.draft, nextRun.artifact_id || '') : workflow.draft;
       setWorkflowId(nextWorkflowId);
-      setDraft(workflow.draft);
+      setValidationIssues([]);
+      setDraft(nextDraft);
+      draftVersion.current += 1;
+      setCurrentArtifactId(draftArtifactId(nextDraft));
       storeSelectedWorkflowId(nextWorkflowId);
       setSelectedNodeId(null);
-      const nextRun = runs.find((run) => run.workflow_id === nextWorkflowId);
       if (nextRun) handleSelectRun(nextRun.id);
       else resetRunSelection();
-      await validateDraft(nextWorkflowId, workflow.draft);
-      if (seq !== workflowSelectSeq.current) return;
+      const appliedSelection = workflowSelectSeq.current;
+      await validateDraft(nextWorkflowId, nextDraft);
+      if (appliedSelection !== workflowSelectSeq.current) return;
       showNotice('ok', `Открыт сценарий: ${workflow.name || nextWorkflowId}`);
     } catch (e: any) {
       if (seq === workflowSelectSeq.current) showNotice('error', e?.message || 'Не удалось открыть сценарий');
@@ -802,6 +940,7 @@ export const App: React.FC = () => {
   };
 
   const handleDraftChange = (updated: WorkflowDraft) => {
+    draftVersion.current += 1;
     setDraft(updated);
     void validateDraft(workflowId, updated);
   };
@@ -836,6 +975,7 @@ export const App: React.FC = () => {
       return;
     }
     const seq = ++createScenarioSeq.current;
+    const selection = workflowSelectSeq.current;
     setScenarioBusy(true);
     setScenarioError(null);
     const nextDraft: WorkflowDraft = {
@@ -854,8 +994,16 @@ export const App: React.FC = () => {
       if (seq !== createScenarioSeq.current) return;
       const entry = { id: created.id, name, draft: nextDraft };
       setWorkflows((prev) => [entry, ...prev.filter((workflow) => workflow.id !== created.id)]);
+      if (selection !== workflowSelectSeq.current) {
+        setIsScenarioOpen(false);
+        showNotice('ok', `Сценарий создан: ${name}. Выберите его в списке сценариев.`);
+        return;
+      }
+      workflowSelectSeq.current += 1;
+      workflowIdRef.current = created.id;
       setWorkflowId(created.id);
       setDraft(nextDraft);
+      draftVersion.current += 1;
       storeSelectedWorkflowId(created.id);
       setSelectedNodeId(null);
       resetRunSelection();
@@ -878,19 +1026,26 @@ export const App: React.FC = () => {
   };
 
   const handleSaveDraft = async () => {
+    const selection = workflowSelectSeq.current;
+    const epoch = authRef.current.epoch;
+    const version = draftVersion.current;
     setIsSavingDraft(true);
     try {
       await apiClient.saveWorkflowDraft(workflowId, draft);
+      if (selection !== workflowSelectSeq.current || epoch !== authRef.current.epoch || version !== draftVersion.current) return;
       const result = await validateDraft(workflowId, draft);
-      if (result?.valid) {
+      if (selection !== workflowSelectSeq.current || epoch !== authRef.current.epoch || version !== draftVersion.current) return;
+      if (!result) {
+        showNotice('error', 'Draft сохранён, но сервер не подтвердил проверку графа');
+      } else if (result.valid) {
         showNotice('ok', 'Draft сохранён, граф валиден');
       } else {
         showNotice('error', `Draft сохранён, но есть ошибки валидации (${result?.issues?.length || 0})`);
       }
     } catch (e: any) {
-      showNotice('error', e?.message || 'Ошибка сохранения draft');
+      if (selection === workflowSelectSeq.current && epoch === authRef.current.epoch) showNotice('error', e?.message || 'Ошибка сохранения draft');
     } finally {
-      setIsSavingDraft(false);
+      if (epoch === authRef.current.epoch) setIsSavingDraft(false);
     }
   };
 
@@ -904,6 +1059,9 @@ export const App: React.FC = () => {
       }
     }
     const added = addCheck(draft, kind, nodeDefinitions.find((item) => item.kind === kind), custom);
+    if (kind === 'project_input' && !added.node.config.artifactId) {
+      added.node.config = { ...added.node.config, artifactId: currentArtifactId };
+    }
     handleDraftChange(added.draft);
     setSelectedNodeId(added.node.id);
     if (kind === 'ai_scan') showNotice('ok', 'ИИ-проверка добавлена. Проверьте связи и сохраните сценарий.');
@@ -917,6 +1075,11 @@ export const App: React.FC = () => {
   };
 
   const handleUpdateNodeConfig = (nodeId: string, newConfig: Record<string, any>, newTitle?: string) => {
+    const node = draft.nodes.find((item) => item.id === nodeId);
+    if (node?.kind === 'project_input' && newConfig.artifactId !== node.config.artifactId) {
+      handleSelectArtifact(newConfig.artifactId || '');
+      return;
+    }
     const updatedNodes = draft.nodes.map((node) => {
       if (node.id !== nodeId) return node;
       return {
@@ -938,23 +1101,42 @@ export const App: React.FC = () => {
   };
 
   const handleResetToTemplate = async () => {
+    const selection = workflowSelectSeq.current;
+    const version = draftVersion.current;
+    const epoch = authRef.current.epoch;
     try {
       const workflow = await apiClient.getWorkflow(workflowId);
+      if (selection !== workflowSelectSeq.current || version !== draftVersion.current || epoch !== authRef.current.epoch) return;
       if (!workflow?.draft) {
         showNotice('error', 'У сценария нет сохранённого draft');
         return;
       }
+      setValidationIssues([]);
       setDraft(workflow.draft);
+      draftVersion.current += 1;
+      setCurrentArtifactId(draftArtifactId(workflow.draft));
       setSelectedNodeId(null);
       await validateDraft(workflowId, workflow.draft);
-      showNotice('ok', 'Draft сброшен к сохранённому состоянию');
+      if (selection === workflowSelectSeq.current && epoch === authRef.current.epoch) showNotice('ok', 'Draft сброшен к сохранённому состоянию');
     } catch (e: any) {
-      showNotice('error', e?.message || 'Не удалось сбросить draft');
+      if (selection === workflowSelectSeq.current && epoch === authRef.current.epoch) showNotice('error', e?.message || 'Не удалось сбросить draft');
     }
   };
 
   const handleTriggerRun = async (skipDraftSave = false, navigate = true) => {
-    if (isRunning) return;
+    if (isRunning || triggerPending.current) return;
+    if (!workflowId) {
+      showNotice('error', 'Сценарий ещё не загружен. Дождитесь загрузки рабочего пространства.');
+      return;
+    }
+    if (validationState === 'checking') {
+      showNotice('error', 'Граф ещё проверяется сервером. Дождитесь результата проверки.');
+      return;
+    }
+    if (validationState === 'unavailable') {
+      showNotice('error', 'Граф не проверен сервером. Запуск заблокирован; повторите проверку графа.');
+      return;
+    }
     const hasErrors = validationIssues.some((issue) => issue.level === 'error');
     if (hasErrors) {
       if (navigate) {
@@ -964,17 +1146,34 @@ export const App: React.FC = () => {
       showNotice('error', 'Сценарий проверки пока не готов к запуску');
       return;
     }
+    const epoch = authRef.current.epoch;
+    const selection = workflowSelectSeq.current;
+    const version = draftVersion.current;
+    const isCurrent = () => epoch === authRef.current.epoch && selection === workflowSelectSeq.current;
+    triggerPending.current = true;
     setIsRunning(true);
-    setEvents([]);
-    setReport(null);
     try {
-      if (!skipDraftSave) await apiClient.saveWorkflowDraft(workflowId, draft);
+      if (!skipDraftSave) await apiClient.saveWorkflowDraft(workflowId, withArtifact(draft, currentArtifactId));
+      if (!isCurrent()) return;
+      if (version !== draftVersion.current) {
+        setIsRunning(false);
+        showNotice('error', 'Сценарий изменён во время сохранения. Запустите проверку ещё раз.');
+        return;
+      }
       const result = await apiClient.triggerRun(workflowId, currentArtifactId || undefined, 'manual');
+      if (!isCurrent()) return;
+      if (version !== draftVersion.current) {
+        setIsRunning(false);
+        void refreshRuns();
+        showNotice('ok', 'Запуск создан для сохранённого сценария. Откройте его в истории.');
+        return;
+      }
       selectedRunRef.current = result.runId;
       runProgressRef.current = null;
       lastSeqRef.current = 0;
       revisionLoadSeq.current += 1;
       setCurrentRunId(result.runId);
+      setEvents([]);
       setCurrentRun(null);
       setRunRevision(null);
       setMapLoadState(null);
@@ -992,8 +1191,13 @@ export const App: React.FC = () => {
       await loadRunDetails(result.runId);
       await refreshRuns();
     } catch (e: any) {
-      setIsRunning(false);
-      showNotice('error', e?.message || 'Ошибка запуска проверки');
+      if (isCurrent()) {
+        setIsRunning(false);
+        showNotice('error', e?.message || 'Ошибка запуска проверки');
+      }
+    } finally {
+      triggerPending.current = false;
+      if (isCurrent() && selectedRunRef.current === null) setIsRunning(false);
     }
   };
 
@@ -1011,14 +1215,7 @@ export const App: React.FC = () => {
     artifactIdsRef.current.add(manifest.id);
     setArtifacts((prev) => [manifest, ...prev.filter((item) => item.id !== manifest.id)]);
     setCurrentArtifactId(manifest.id);
-    handleDraftChange({
-      ...draft,
-      nodes: draft.nodes.map((node) =>
-        node.kind === 'project_input'
-          ? { ...node, config: { ...node.config, artifactId: manifest.id } }
-          : node,
-      ),
-    });
+    handleDraftChange(withArtifact(draft, manifest.id));
     // Новый проект выбран: старый результат относился к другому артефакту.
     resetRunSelection();
     const repository = manifest.repository;
@@ -1032,22 +1229,21 @@ export const App: React.FC = () => {
 
   const handleSelectArtifact = (artifactId: string) => {
     setCurrentArtifactId(artifactId);
-    handleDraftChange({
-      ...draft,
-      nodes: draft.nodes.map((node) =>
-        node.kind === 'project_input'
-          ? { ...node, config: { ...node.config, artifactId } }
-          : node,
-      ),
-    });
+    resetRunSelection();
+    handleDraftChange(withArtifact(draft, artifactId));
   };
 
   const handleUserSelectArtifact = (artifactId: string) => {
     handleSelectArtifact(artifactId);
-    resetRunSelection();
   };
 
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) || null;
+
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    if (!window.matchMedia('(max-width: 767px)').matches) return;
+    inspectorPanelRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedNodeId]);
 
   // The run's own artifact, not merely the id copied into a mutable draft.
   const currentRunArtifact = currentRun
@@ -1150,7 +1346,6 @@ export const App: React.FC = () => {
   }
 
   if (!isAdmin) {
-    const userRuns = runs.filter((run) => run.workflow_id === workflowId);
     return (
       <div className="flex h-screen w-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
         <Navbar
@@ -1162,11 +1357,6 @@ export const App: React.FC = () => {
           isRunning={isRunning}
           latestVerdict={currentRun?.security_verdict}
           findingsCount={findings.length}
-          runs={userRuns}
-          currentRunId={currentRunId}
-          runsLoading={runsLoading}
-          onSelectRun={handleSelectRun}
-          onRefreshRuns={() => void refreshRuns()}
           onLogout={() => void handleLogout()}
           isAdmin={false}
           user={session?.user || null}
@@ -1176,7 +1366,7 @@ export const App: React.FC = () => {
 
         <main className="relative flex flex-1 overflow-hidden">
           {activeTab === 'editor' && (
-            <div className="flex h-full flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
+            <div className="flex h-full flex-1 flex-col overflow-auto xl:flex-row xl:overflow-hidden">
               <NodePalette
                 onAddNode={handleAddNode}
                 onCreateCustomBlock={() => setIsCustomCheckOpen(true)}
@@ -1191,6 +1381,7 @@ export const App: React.FC = () => {
                 telemetry={canvasTelemetry}
                 executionNotice={runGraphNotice}
                 validationIssues={validationIssues}
+                validationState={validationState}
                 onSaveDraft={() => void handleSaveDraft()}
                 onResetToTemplate={() => void handleResetToTemplate()}
                 isSaving={isSavingDraft}
@@ -1206,7 +1397,7 @@ export const App: React.FC = () => {
                 onOpenMap={() => setActiveTab('map')}
               />
               {selectedNode && (
-                <div className="fixed inset-x-0 bottom-0 z-30 flex min-h-0 flex-col shadow-2xl md:static md:z-auto md:shrink-0">
+                <div ref={inspectorPanelRef} className="flex min-h-0 w-full shrink-0 scroll-mt-2 flex-col border-t border-slate-800 shadow-2xl xl:w-auto xl:border-t-0">
                   <InspectorPanel
                     key={session?.workspaceId}
                     node={selectedNode}
@@ -1416,7 +1607,7 @@ export const App: React.FC = () => {
                 Сценарий: {workflowId}
               </span>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto xl:flex-row xl:overflow-hidden">
               <NodePalette
                 onAddNode={handleAddNode}
                 onCreateCustomBlock={() => setIsCustomCheckOpen(true)}
@@ -1431,6 +1622,7 @@ export const App: React.FC = () => {
                 telemetry={canvasTelemetry}
                 executionNotice={runGraphNotice}
                 validationIssues={validationIssues}
+                validationState={validationState}
                 onSaveDraft={handleSaveDraft}
                 onResetToTemplate={handleResetToTemplate}
                 isSaving={isSavingDraft}
