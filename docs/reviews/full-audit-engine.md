@@ -3,8 +3,8 @@
 ## Ревизия и метод
 
 - База задания: `35d27d30ae44fd955824001e18eff895197c933c` (dev).
-- Проверенное состояние кода: `94daf33c3a8fa2e35eeb57975f6e4bf3ea2c87df`
-  (предыдущая область `297926454464dfb3636130bfdaf0c288e3080a5a`).
+- Проверенное состояние кода: `3f9bb1047b39a911322e4dd08349c158b8e53c2a`
+  (предыдущая область `94daf33c3a8fa2e35eeb57975f6e4bf3ea2c87df`).
 - Рабочее дерево после проверок: чистое. Отчёт добавлен отдельным коммитом.
 - Область: `backend/app/engine/`, `backend/app/scenario_builder/`,
   `backend/app/contracts/`, `backend/app/api/scenario_builder.py`,
@@ -249,10 +249,46 @@ lifecycle/task-ownership hunks `backend/app/api/router.py` и этот отчё�
   тестовая run-task отменена. Это доказывает порядок «задачи → pool», а не
   только наличие callback.
 
-Ограничение: `scheduler.aclose` ждёт задачи, но raw `asyncio.to_thread` в
-watch-DB вызовах после отмены может завершаться в фоне; executor-узлы этот
-случай закрывают через `_await_operation`. Полный PostgreSQL shutdown e2e не
-выполнялся.
+Ограничение: `scheduler.aclose` ждёт задачи; raw `asyncio.to_thread` в
+watch-DB вызовах закрыт отдельным follow-up ниже. Полный PostgreSQL shutdown
+e2e не выполнялся.
+
+## Scheduler raw-thread follow-up
+
+Коммит: `3f9bb1047b39a911322e4dd08349c158b8e53c2a`.
+
+Исходная причина: `RepositoryWatchService._db` и schedule/watch/recovery
+вызовы использовали `await asyncio.to_thread(...)`. Отмена задачи
+освобождала coroutine, но рабочий поток продолжал обращаться к БД; `aclose`
+мог вернуться, а `db.close` — выполниться до фактического выхода потока.
+
+Исправление: один общий `_await_thread(function, *args, **kwargs)`:
+
+- запускает `asyncio.to_thread` как отдельную задачу и ждёт её через
+  `asyncio.shield`;
+- при отмене ждёт фактического завершения underlying operation; повторная
+  отмена во время ожидания игнорируется и не прерывает ожидание;
+- сохраняет workspace ContextVar (его копирует `asyncio.to_thread`),
+  пробрасывает обычные ошибки потока, а при отмене — `CancelledError`, с
+  ошибкой потока в `__cause__`;
+- не добавляет таймаут и не отменяет SQL/поток ложно.
+
+Заменены все raw `asyncio.to_thread` в scheduler: watch `_db`, watch claim,
+schedule claim, workflow read, disable/advance/create schedule, recovery query,
+recovery run/revision/update и workspace-scoped ветки.
+
+Проверка `scheduler_thread_probe.py` 16/16 на реальном медленном Python
+thread + `threading.Event`:
+
+- `aclose` не завершается и `db.close` не вызывается, пока поток не отпущен;
+  после выхода потока cleanup завершается;
+- отдельно проверены watch-ветка (`_db`, watch claim) и
+  schedule/recovery-ветки;
+- повторная отмена не прерывает ожидание;
+- ошибка потока пробрасывается без отмены; при отмене сохраняется в
+  `CancelledError.__cause__`;
+- `workspace_scope` виден внутри потока (`workspace_id()` вернул заданный
+  UUID).
 
 ## Команды и фактические результаты
 
@@ -268,6 +304,10 @@ python3 -m compileall -q backend/app/engine backend/app/api \
 /tmp/nedra-audit-engine/.venv/bin/python /tmp/nedra-audit-engine/lifecycle_probe.py
 → 10/10 passed (AsyncExitStack order, init failure, config error,
   telegram-start cancel, real task registry)
+
+/tmp/nedra-audit-engine/.venv/bin/python /tmp/nedra-audit-engine/scheduler_thread_probe.py
+→ 16/16 passed (slow real thread, watch/schedule/recovery, repeated cancel,
+  exception/cancel cause, workspace ContextVar)
 
 registry → реальный executor, fake-repo
 → task cancelled; run=interrupted; node=cancelled; SSE run/node; registry empty
@@ -291,6 +331,7 @@ git status --short
 e0c17e3a5dac5f0a40e27ba6e0c2d21f12c68635  Недра: дождаться фоновых задач планировщика при остановке
 297926454464dfb3636130bfdaf0c288e3080a5a  Недра: останавливать Telegram-задачу при потере доступа
 94daf33c3a8fa2e35eeb57975f6e4bf3ea2c87df  Недра: дождаться ручных запусков и планировщика при остановке
+3f9bb1047b39a911322e4dd08349c158b8e53c2a  Недра: дожидаться потоковых DB-операций планировщика при отмене
 ```
 
 ## Открытые блокеры и ограничения
@@ -310,10 +351,11 @@ e0c17e3a5dac5f0a40e27ba6e0c2d21f12c68635  Недра: дождаться фон�
    hunks поверх release `2489ca7`, не заменяя его cleanup-семантику, и
    сохранить account-hunks `fc5258d`/`2ec64ff` в router. Main-ветку и
    custom-check wiring `98c276e` самостоятельно не мержить.
-4. **Остаточный риск raw to_thread.** `scheduler.aclose` ждёт задачи, но
-   `asyncio.to_thread` в watch-DB вызовах после отмены задачи может завершаться
-   в фоне; executor-узлы закрывают этот случай через `_await_operation`.
-   Полный PostgreSQL shutdown e2e не выполнялся.
+4. **Raw to_thread закрыт для scheduler.** Все watchdog/schedule/recovery
+   DB-вызовы идут через `_await_thread`; `aclose` ждёт фактического выхода
+   потока. Остаются только ограничения среды: полный PostgreSQL shutdown e2e
+   не выполнялся (см. п.1), а сетевой importer watch по-прежнему вне этой
+   области.
 5. **Custom-checks sandbox** (`reference_checks`/custom checks) не аудировался
    и не менялся: вне владения. `backend/app/api/comparison.py` сохраняет
    старую схему записи вывода в файлы; это отдельная область, здесь не
