@@ -82,9 +82,59 @@ _SECRET_PATTERNS = (
 )
 
 
+_YAML_BLOCK_KEY_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<key>[^:#\s][^:#]*)\s*:\s*(?P<style>[|>])[+-]?\d*\s*(?:#.*)?$"
+)
+_YAML_SECRET_WORD_RE = re.compile(
+    r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)"
+)
+
+
+def _indent_width(line: str) -> int:
+    width = 0
+    for char in line:
+        if char == " ":
+            width += 1
+        elif char == "\t":
+            width += 8
+        else:
+            break
+    return width
+
+
+def mask_yaml_block_scalars(text: str) -> str:
+    """Mask YAML block scalars under secret-looking keys.
+
+    ``password: |-`` keeps its value in the following indented lines, which the
+    line-oriented secret patterns never see. Mask the whole block up to the
+    next line at the same or lower indentation.
+    """
+    lines = text.split("\n")
+    out = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = _YAML_BLOCK_KEY_RE.match(line)
+        if not match or not _YAML_SECRET_WORD_RE.search(match.group("key")):
+            out.append(line)
+            index += 1
+            continue
+        indent = _indent_width(match.group("indent"))
+        out.append(f'{match.group("indent")}{match.group("key")}: "***"')
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and _indent_width(candidate) <= indent:
+                break
+            out.append("" if not candidate.strip() else f"{match.group('indent')}  ***")
+            index += 1
+    return "\n".join(out)
+
+
 def mask_sensitive_text(text: str) -> str:
     """Best-effort masking for anything that leaves the process."""
-    masked = mask_uri_credentials(text or "")
+    masked = mask_yaml_block_scalars(text or "")
+    masked = mask_uri_credentials(masked)
     for pattern, replacement in _SECRET_PATTERNS:
         masked = pattern.sub(replacement, masked)
     return masked
