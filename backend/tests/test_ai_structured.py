@@ -1,6 +1,7 @@
 import json
 
 from backend.app.ai.service import AiService
+from backend.app.contracts.schemas import AiItem, ExplainResult
 from backend.app.ai.validator import AiResponseValidator
 from backend.app.contracts.schemas import (
     Confidence, Finding, FindingStatus, Location, Severity,
@@ -108,3 +109,19 @@ def test_potential_endpoint_fallback_does_not_claim_proof():
     assert "глобальные securityfilterchain" in text
     assert "не проверялись" in text
     assert "при подтверждении" in text
+
+
+def test_ai_paths_are_relative_to_project_root():
+    service = AiService()
+    finding = make_finding(path="training-project/src/main/kotlin/X.kt", evidence="class X")
+    normalized = service._normalize_finding_paths([finding], "training-project")
+    assert normalized[0].primaryLocation.path == "src/main/kotlin/X.kt"
+    result = ExplainResult(
+        status="succeeded", model="test", summary="Файл training-project/src/main/kotlin/X.kt",
+        items=[AiItem(findingId="f1", explanation="training-project/src/main/kotlin/X.kt",
+                      remediation="ok")],
+        validation_errors=[], raw_secrets_checked=True,
+    )
+    result = service._strip_result_prefix(result, "training-project")
+    assert result.summary == "Файл src/main/kotlin/X.kt"
+    assert result.items[0].explanation == "src/main/kotlin/X.kt"

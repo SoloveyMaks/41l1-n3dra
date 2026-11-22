@@ -52,8 +52,58 @@ class AiService:
         except ValueError:
             self.batch_size = 4
 
+    @staticmethod
+    def _strip_project_prefix(path: str, prefix: Optional[str]) -> str:
+        if not prefix:
+            return path
+        marker = prefix.rstrip("/") + "/"
+        return path[len(marker):] if path.startswith(marker) else path
+
+    def _normalize_finding_paths(
+        self, findings: List[Finding], prefix: Optional[str]
+    ) -> List[Finding]:
+        if not prefix:
+            return findings
+        normalized: List[Finding] = []
+        for finding in findings:
+            clone = finding.model_copy(deep=True)
+            clone.primaryLocation.path = self._strip_project_prefix(clone.primaryLocation.path, prefix)
+            for location in clone.relatedLocations:
+                location.path = self._strip_project_prefix(location.path, prefix)
+            for step in clone.trace:
+                if step.location:
+                    step.location.path = self._strip_project_prefix(step.location.path, prefix)
+            normalized.append(clone)
+        return normalized
+
+    def _strip_result_prefix(self, result: ExplainResult, prefix: Optional[str]) -> ExplainResult:
+        if not prefix:
+            return result
+        marker = prefix.rstrip("/") + "/"
+        result.summary = result.summary.replace(marker, "")
+        for item in result.items:
+            for field in (
+                "problem", "attackScenario", "impact", "preconditions",
+                "verification", "explanation", "remediation",
+            ):
+                value = getattr(item, field, None)
+                if isinstance(value, str):
+                    setattr(item, field, value.replace(marker, ""))
+            if item.suggestedFixedVersion:
+                item.suggestedFixedVersion = item.suggestedFixedVersion.replace(marker, "")
+        return result
+
     def explain_findings(self, findings: List[Finding], force_fallback: bool = False,
-                         *, session_id: Optional[str] = None) -> ExplainResult:
+                         *, session_id: Optional[str] = None,
+                         project_prefix: Optional[str] = None) -> ExplainResult:
+        normalized = self._normalize_finding_paths(findings, project_prefix)
+        result = self._explain_findings_impl(
+            normalized, force_fallback, session_id=session_id,
+        )
+        return self._strip_result_prefix(result, project_prefix)
+
+    def _explain_findings_impl(self, findings: List[Finding], force_fallback: bool = False,
+                               *, session_id: Optional[str] = None) -> ExplainResult:
         """
         Main AI entry point:
         1. Formats masked findings context (no full repo, no raw secrets).

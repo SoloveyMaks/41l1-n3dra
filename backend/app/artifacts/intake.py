@@ -219,6 +219,31 @@ def _detect_wrapper_root(paths: Iterable[str]) -> Optional[str]:
     return None
 
 
+def detect_project_directory(root: Path) -> Optional[str]:
+    """Infer a single project subtree in an already extracted artifact.
+
+    Legacy artifacts were extracted before wrapper stripping. This helper is
+    read-only: it does not mutate the artifact and is used to present paths
+    relative to the project root.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    root_names = {item.name for item in root.iterdir()}
+    if root_names & _ROOT_BUILD_MARKERS:
+        return None
+    candidates = []
+    for item in root.iterdir():
+        if not item.is_dir():
+            continue
+        names = {child.name for child in item.iterdir()}
+        if names & _ROOT_BUILD_MARKERS:
+            candidates.append(item.name)
+        elif (item / "src").is_dir():
+            candidates.append(item.name)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _strip_wrapper_root(rel: str, wrapper: Optional[str]) -> str:
     if not wrapper:
         return rel

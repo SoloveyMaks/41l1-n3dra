@@ -24,6 +24,7 @@ from backend.app.codefacts.extractor import RULE_DEFINITIONS, extract_facts
 from backend.app.codefacts.identity import run_uuid, workspace_id
 from backend.app.codefacts.map_builder import build_run_map, ensure_artifact_meta
 from backend.app.codefacts.publish import publish_run_artifact
+from backend.app.artifacts.intake import detect_project_directory
 from backend.app.codefacts.source import load_snapshot_sources
 from backend.app.codefacts.store import CodeFactsStore
 from backend.app.custom_checks.sandbox import SandboxCancelled, SandboxUnavailable
@@ -984,7 +985,11 @@ class WorkflowExecutor:
                 raise ValueError("AI Explain: Отсутствуют находки для объяснения")
 
             # Call AI/fallback in a worker thread: провайдер может быть сетевым.
-            exp_res = await asyncio.to_thread(self.ai_service.explain_findings, bundle.findings)
+            exp_res = await asyncio.to_thread(
+                self.ai_service.explain_findings,
+                bundle.findings,
+                project_prefix=self._artifact_project_prefix(default_artifact_id),
+            )
             return {"explain_result": exp_res}, None
 
         elif kind == NodeKind.BUILD_REPORT:
@@ -1298,6 +1303,22 @@ class WorkflowExecutor:
         store.save_run(workspace, run_uuid(run_id), payload)
         if not result.get("published"):
             logger.info("Immutable bundle not published for %s: %s", run_id, result.get("reason"))
+
+    def _artifact_project_prefix(self, artifact_id: Optional[str]) -> Optional[str]:
+        if not artifact_id:
+            return None
+        artifact = self.db.get_artifact(artifact_id)
+        if not artifact:
+            return None
+        try:
+            meta = CodeFactsStore().load_artifact_meta(workspace_id(), artifact_id) or {}
+        except Exception:  # noqa: BLE001 - display-only hint
+            meta = {}
+        prefix = str(meta.get("sourceRootPrefix") or "").strip()
+        if prefix:
+            return prefix
+        path = artifact.get("extracted_path")
+        return detect_project_directory(Path(path)) if path else None
 
     def _resolve_artifact_path(self, artifact_id: str) -> str:
         artifact = self.db.get_artifact(artifact_id)
