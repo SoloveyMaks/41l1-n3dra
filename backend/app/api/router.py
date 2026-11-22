@@ -36,6 +36,7 @@ from backend.app.api.session import (
     verify_access_code,
     verify_admin_code,
 )
+from backend.app.artifacts.project_kind import project_kind_for_artifact, unsupported_project_message
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
 from backend.app.artifacts.repository import RepositoryImportError, import_repository
 from backend.app.artifacts.sample_source import build_zip_from_directory
@@ -514,8 +515,21 @@ async def trigger_run(workflow_id: str, payload: Optional[Dict[str, Any]] = None
         else:
             artifact_id = _load_sample_artifact_internal()["id"]
 
-    if not db_repo.get_artifact(artifact_id):
+    artifact_row = db_repo.get_artifact(artifact_id)
+    if not artifact_row:
         raise HTTPException(status_code=404, detail="Артефакт не найден")
+    project_kind = project_kind_for_artifact(
+        codefacts_store, str(configured_workspace_id()), artifact_row
+    )
+    if project_kind.get("supported") is False:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "UNSUPPORTED_PROJECT",
+                "message": unsupported_project_message(project_kind),
+                "projectKind": project_kind,
+            },
+        )
 
     run_id = str(uuid.uuid4())
     db_repo.create_run(

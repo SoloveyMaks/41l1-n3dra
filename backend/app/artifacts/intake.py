@@ -518,5 +518,6 @@ class SafeArtifactIntake:
             "expiresAt": manifest["expires_at"],
             "sourceRootPrefix": wrapper_root or "",
         }
+        meta["projectKind"] = detect_project_kind(target_dir)
         self.store.save_artifact_meta(ws, artifact_id, meta)
         return manifest
