@@ -1,11 +1,14 @@
+import bisect
 import hashlib
 import json
 import os
 import re
 import time
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from analyzers.cg26.kotlin_lexer import lex
 from backend.app.analyzers.base import BaseAnalyzer
 from backend.app.analyzers.file_discovery import prune_scan_dirs
 from backend.app.analyzers.version_comparator import matches_version_range
@@ -38,7 +41,7 @@ class ScaAnalyzer(BaseAnalyzer):
         unresolved_deps = 0
 
         root_path = Path(artifact_path)
-        if not root_path.exists():
+        if not root_path.is_dir():
             return ScanResult(
                 analyzer=self.name,
                 findings=[],
@@ -58,43 +61,33 @@ class ScaAnalyzer(BaseAnalyzer):
         version_catalog_libs: Dict[str, Tuple[str, str, str]] = {}  # alias -> (group, name, version)
 
         catalog_path = root_path / "gradle" / "libs.versions.toml"
-        if catalog_path.exists():
+        if catalog_path.is_symlink():
+            diagnostics.append(Diagnostic(level="warning", message="Символическая ссылка libs.versions.toml пропущена", source="ScaAnalyzer"))
+        elif catalog_path.exists():
             files_scanned += 1
             try:
                 lines = catalog_path.read_text(encoding="utf-8").splitlines()
                 lines_of_code += len(lines)
-                current_section = ""
-                for line in lines:
-                    line_clean = line.strip()
-                    if line_clean.startswith("[") and line_clean.endswith("]"):
-                        current_section = line_clean[1:-1].strip()
+                catalog = tomllib.loads("\n".join(lines))
+                version_catalog_versions = catalog.get("versions", {})
+                for alias, entry in catalog.get("libraries", {}).items():
+                    normalized_alias = re.sub(r"[._-]", "_", alias)
+                    if isinstance(entry, str):
+                        parts = entry.split(":")
+                        if len(parts) == 3:
+                            version_catalog_libs[normalized_alias] = tuple(parts)
                         continue
-                    if current_section == "versions" and "=" in line_clean:
-                        parts = line_clean.split("=", 1)
-                        v_key = parts[0].strip()
-                        v_val = parts[1].strip().strip('"\'')
-                        version_catalog_versions[v_key] = v_val
-                    elif current_section == "libraries" and "=" in line_clean:
-                        parts = line_clean.split("=", 1)
-                        lib_alias = parts[0].strip()
-                        lib_val = parts[1].strip()
-                        # parse e.g. { module = "org.apache.logging.log4j:log4j-core", version.ref = "log4j" }
-                        # or "group:name:version"
-                        mod_match = re.search(r'module\s*=\s*["\']([^"\']+)["\']', lib_val)
-                        ref_match = re.search(r'version\.ref\s*=\s*["\']([^"\']+)["\']', lib_val)
-                        ver_match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', lib_val)
-
-                        if mod_match:
-                            module = mod_match.group(1)
-                            if ":" in module:
-                                g, n = module.split(":", 1)
-                                resolved_v = ""
-                                if ref_match and ref_match.group(1) in version_catalog_versions:
-                                    resolved_v = version_catalog_versions[ref_match.group(1)]
-                                elif ver_match:
-                                    resolved_v = ver_match.group(1)
-                                if resolved_v:
-                                    version_catalog_libs[lib_alias] = (g, n, resolved_v)
+                    if not isinstance(entry, dict):
+                        continue
+                    module = entry.get("module")
+                    if not module and entry.get("group") and entry.get("name"):
+                        module = f"{entry['group']}:{entry['name']}"
+                    version = entry.get("version")
+                    if isinstance(version, dict):
+                        version = version_catalog_versions.get(version.get("ref"))
+                    if isinstance(module, str) and module.count(":") == 1 and isinstance(version, str):
+                        group, name = module.split(":")
+                        version_catalog_libs[normalized_alias] = (group, name, version)
             except Exception as e:
                 diagnostics.append(Diagnostic(
                     level="warning",
@@ -103,11 +96,12 @@ class ScaAnalyzer(BaseAnalyzer):
                 ))
 
         # 2. Parse all *.gradle.kts and *.gradle files
+        # Both Kotlin DSL calls and Groovy declarations are valid Gradle input.
         dep_pattern_single = re.compile(
-            r"""(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*\(\s*["']([^:"']+):([^:"']+):([^:"']+)["']\s*\)"""
+            r"""(?<![\w.])(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*(?:\(\s*)?["']([^:"']+):([^:"']+):([^:"']+)["']"""
         )
         dep_pattern_args = re.compile(
-            r"""(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*\(\s*group\s*=\s*["']([^"']+)["']\s*,\s*name\s*=\s*["']([^"']+)["']\s*,\s*version\s*=\s*["']([^"']+)["']\s*\)"""
+            r"""(?<![\w.])(?:implementation|api|compileOnly|runtimeOnly|testImplementation)\s*(?:\(\s*)?group\s*[:=]\s*["']([^"']+)["']\s*,\s*name\s*[:=]\s*["']([^"']+)["']\s*,\s*version\s*[:=]\s*["']([^"']+)["']"""
         )
         dep_pattern_catalog = re.compile(
             r"""(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*libs\.([a-zA-Z0-9._]+)\s*\)"""
@@ -121,53 +115,67 @@ class ScaAnalyzer(BaseAnalyzer):
 
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
+                if file_path.is_symlink():
+                    diagnostics.append(Diagnostic(level="warning", message=f"Символическая ссылка пропущена: {rel_path}", source="ScaAnalyzer"))
+                    continue
                 files_scanned += 1
 
                 try:
-                    raw_lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                    content = file_path.read_text(encoding="utf-8")
+                    raw_lines = content.splitlines(keepends=True)
+                    code = list(content)
+                    for token in lex(content).tokens:
+                        if token.kind == "COMMENT":
+                            code[token.start:token.end] = ["\n" if char == "\n" else " " for char in token.text]
+                    code_text = "".join(code)
+                    code_line_starts = [0]
+                    for offset, char in enumerate(code_text):
+                        if char == "\n":
+                            code_line_starts.append(offset + 1)
                     lines_of_code += len(raw_lines)
 
-                    for line_idx, line in enumerate(raw_lines):
-                        line_num = line_idx + 1
+                    def _location(offset: int) -> Tuple[int, int]:
+                        index = bisect.bisect_right(code_line_starts, offset) - 1
+                        return index, offset - code_line_starts[index]
 
-                        # Single string dependency: "group:name:version"
-                        for match in dep_pattern_single.finditer(line):
-                            group, name, version = match.groups()
-                            self._check_dependency(
-                                group=group, name=name, version=version,
-                                provenance="requested_exact",
-                                rel_path=rel_path, line_num=line_num, line=line,
-                                match=match, findings=findings
-                            )
+                    def _emit(match: Any, group: str, name: str, version: str, provenance: str) -> None:
+                        start_index, start_col = _location(match.start())
+                        end_index, end_col = _location(match.end())
+                        self._check_dependency(
+                            group=group, name=name, version=version,
+                            provenance=provenance,
+                            rel_path=rel_path,
+                            line_num=start_index + 1,
+                            end_line=end_index + 1,
+                            line=raw_lines[start_index] if start_index < len(raw_lines) else "",
+                            start_col=start_col,
+                            end_col=end_col,
+                            findings=findings, diagnostics=diagnostics
+                        )
 
-                        # Named arguments dependency: group = "...", name = "...", version = "..."
-                        for match in dep_pattern_args.finditer(line):
-                            group, name, version = match.groups()
-                            self._check_dependency(
-                                group=group, name=name, version=version,
-                                provenance="requested_exact",
-                                rel_path=rel_path, line_num=line_num, line=line,
-                                match=match, findings=findings
-                            )
+                    # Match the comment-stripped text, not one physical line: Gradle
+                    # declarations routinely span lines and must keep real coordinates.
+                    for match in dep_pattern_single.finditer(code_text):
+                        _emit(match, *match.groups(), "requested_exact")
 
-                        # Version catalog alias: libs.some.lib
-                        for match in dep_pattern_catalog.finditer(line):
-                            alias = match.group(1).replace(".", "_").replace("-", "_")
-                            if alias in version_catalog_libs:
-                                group, name, version = version_catalog_libs[alias]
-                                self._check_dependency(
-                                    group=group, name=name, version=version,
-                                    provenance="catalog_recorded",
-                                    rel_path=rel_path, line_num=line_num, line=line,
-                                    match=match, findings=findings
-                                )
-                            else:
-                                unresolved_deps += 1
-                                diagnostics.append(Diagnostic(
-                                    level="info",
-                                    message=f"Не удалось разрешить alias зависимости: libs.{match.group(1)} в {rel_path}:{line_num}",
-                                    source="ScaAnalyzer"
-                                ))
+                    # Named arguments dependency: group = "...", name = "...", version = "..."
+                    for match in dep_pattern_args.finditer(code_text):
+                        _emit(match, *match.groups(), "requested_exact")
+
+                    # Version catalog alias: libs.some.lib
+                    for match in dep_pattern_catalog.finditer(code_text):
+                        alias = match.group(1).replace(".", "_").replace("-", "_")
+                        if alias in version_catalog_libs:
+                            group, name, version = version_catalog_libs[alias]
+                            _emit(match, group, name, version, "catalog_recorded")
+                        else:
+                            unresolved_deps += 1
+                            line_num = _location(match.start())[0] + 1
+                            diagnostics.append(Diagnostic(
+                                level="info",
+                                message=f"Не удалось разрешить alias зависимости: libs.{match.group(1)} в {rel_path}:{line_num}",
+                                source="ScaAnalyzer"
+                            ))
 
                 except Exception as e:
                     diagnostics.append(Diagnostic(
@@ -176,6 +184,7 @@ class ScaAnalyzer(BaseAnalyzer):
                         source="ScaAnalyzer"
                     ))
 
+        unresolved_deps += sum(1 for diagnostic in diagnostics if diagnostic.details and diagnostic.details.get("code") == "sca.unresolved-version")
         duration_ms = (time.time() - start_time) * 1000
         coverage = Coverage(
             files_scanned=files_scanned,
@@ -195,8 +204,15 @@ class ScaAnalyzer(BaseAnalyzer):
         )
 
     def _check_dependency(self, group: str, name: str, version: str, provenance: str,
-                          rel_path: str, line_num: int, line: str, match: Any,
-                          findings: List[Finding]) -> None:
+                          rel_path: str, line_num: int, end_line: int, line: str,
+                          start_col: int, end_col: int,
+                          findings: List[Finding], diagnostics: List[Diagnostic]) -> None:
+        if not re.fullmatch(r"[0-9]+(?:[.][0-9]+)*(?:[-.](?:alpha|beta|milestone|rc|cr|snapshot|final|ga|release|sp)[.-]?[0-9]*)?", version, re.IGNORECASE):
+            diagnostics.append(Diagnostic(
+                level="warning", message=f"Неразрешённая или неподдерживаемая версия зависимости в {rel_path}:{line_num}",
+                source="ScaAnalyzer", details={"code": "sca.unresolved-version", "path": rel_path, "line": line_num},
+            ))
+            return
         coord = f"{group}:{name}"
         for adv in self.advisories:
             if adv.get("package") != coord:
@@ -216,17 +232,15 @@ class ScaAnalyzer(BaseAnalyzer):
                 if not fixed_versions and adv.get("fixed_version"):
                     fixed_versions = [str(adv["fixed_version"])]
                 sources = [str(item) for item in adv.get("sources", []) if str(item)]
-                fingerprint = hashlib.sha256(f"sca:{coord}:{version}:{cve_id}".encode("utf-8")).hexdigest()[:16]
+                fingerprint = hashlib.sha256(f"sca:{rel_path}:{line_num}:{start_col}:{coord}:{version}:{cve_id}".encode("utf-8")).hexdigest()[:16]
                 finding_id = f"fnd_sca_{fingerprint}"
 
-                col_start = match.start() + 1
-                col_end = match.end() + 1
                 location = Location(
                     path=rel_path,
                     startLine=line_num,
-                    endLine=line_num,
-                    startColumn=col_start,
-                    endColumn=col_end,
+                    endLine=end_line,
+                    startColumn=start_col + 1,
+                    endColumn=end_col + 1,
                     byteRange=None
                 )
 
@@ -248,9 +262,9 @@ class ScaAnalyzer(BaseAnalyzer):
                     ruleVersion="1.0.0",
                     severity=sev,
                     severityBasis=f"Уязвимая зависимость {coord}:{version} подпадает под {cve_id} ({adv.get('title', '')})",
-                    confidence=Confidence.CONFIRMED,
-                    confidenceBasis=f"Версия явно объявлена в файле сборки (provenance: {provenance})",
-                    status=FindingStatus.CONFIRMED,
+                    confidence=Confidence.POTENTIAL,
+                    confidenceBasis=f"Запрошенная версия объявлена в файле сборки (provenance: {provenance}); resolved dependency graph не проверен",
+                    status=FindingStatus.POTENTIAL,
                     primaryLocation=location,
                     relatedLocations=[],
                     trace=[
@@ -264,7 +278,7 @@ class ScaAnalyzer(BaseAnalyzer):
                             description=(
                                 f"Сопоставление со справочником уязвимостей: обнаружена известная уязвимость "
                                 f"{', '.join(advisory_ids)}. Рекомендуемая безопасная версия: "
-                                f"{', '.join(fixed_versions) if fixed_versions else 'latest'}."
+                                f"{', '.join(fixed_versions) if fixed_versions else 'не указана в справочнике'}."
                                 + (f" Источники: {', '.join(sources)}." if sources else "")
                             ),
                             location=None
@@ -272,6 +286,6 @@ class ScaAnalyzer(BaseAnalyzer):
                     ],
                     redactedEvidence=line.strip(),
                     advisoryIds=advisory_ids,
-                    coverageWarnings=[]
+                    coverageWarnings=["Статическое объявление не доказывает итоговую resolved-версию Gradle"]
                 )
                 findings.append(finding)

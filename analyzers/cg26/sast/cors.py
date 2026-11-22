@@ -58,11 +58,17 @@ def _assignment(tokens: list[Token], index: int) -> list[Token]:
 
 
 def _wildcard(rhs: list[Token]) -> bool:
-    return any(token.kind == "STRING" and token.value == "*" for token in rhs)
+    if len(rhs) < 4 or rhs[0].text not in {"listOf", "mutableListOf", "arrayListOf", "setOf"}:
+        return False
+    if not rhs[1].is_op("(") or not rhs[-1].is_op(")"):
+        return False
+    return all(token.kind == "STRING" or token.is_op(",") for token in rhs[2:-1]) and any(
+        token.kind == "STRING" and token.value == "*" for token in rhs[2:-1]
+    )
 
 
 def _true(rhs: list[Token]) -> bool:
-    return any(token.kind == "IDENT" and token.text == "true" for token in rhs)
+    return len(rhs) == 1 and rhs[0].is_ident("true")
 
 
 def analyze(project) -> tuple[list[Finding], list[Diagnostic]]:

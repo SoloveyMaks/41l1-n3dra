@@ -473,12 +473,15 @@ class SpringFactExtractor:
             source = self.sources[path]
             self.result.files_read.append(path)
             if source.decode_error:
+                # Replacement characters change UTF-8 byte lengths, so neither
+                # evidence bytes nor graph anchors can be derived from this text.
                 self.result.diag(
                     "CF-DECODE-ERROR",
-                    f"Файл прочитан с заменой некорректного UTF-8: {source.decode_error}",
+                    f"Файл пропущен: некорректный UTF-8 ({source.decode_error}); "
+                    "координаты доказательств по заменённому тексту не строятся",
                     path=path,
-                    evidence=make_evidence(source, 1, 1),
                 )
+                continue
             if path.endswith((".kt", ".java")):
                 self._parse_source(source)
 

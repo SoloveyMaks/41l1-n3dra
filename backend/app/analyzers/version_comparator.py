@@ -59,8 +59,8 @@ def compare_versions(v1_str: str, v2_str: str) -> int:
 
     max_len = max(len(t1), len(t2))
     for i in range(max_len):
-        part1 = t1[i] if i < len(t1) else 0
-        part2 = t2[i] if i < len(t2) else 0
+        part1 = t1[i] if i < len(t1) else ("" if isinstance(t2[i], str) else 0)
+        part2 = t2[i] if i < len(t2) else ("" if isinstance(t1[i], str) else 0)
 
         if isinstance(part1, int) and isinstance(part2, int):
             if part1 != part2:
@@ -95,10 +95,12 @@ def matches_version_range(version: str, range_clause: str) -> bool:
       "== 1.2.3"
     """
     sub_clauses = [c.strip() for c in range_clause.split(",") if c.strip()]
+    if not sub_clauses:
+        return False
     for sc in sub_clauses:
-        m = re.match(r"^([<>!=]=?)\s*(.+)$", sc)
+        m = re.fullmatch(r"(<=|>=|==|!=|<|>|=)\s*(.+)", sc)
         if not m:
-            continue
+            return False
         op, target_v = m.groups()
         cmp = compare_versions(version, target_v)
         if op == "<" and not (cmp < 0):

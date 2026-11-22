@@ -275,6 +275,7 @@ class Store:
         return self._manifest
 
     def _ensure_manifest(self, workspace_id: str, run_id: str) -> dict[str, Any]:
+        self._check_manifest(workspace_id)
         self.path.mkdir(parents=True, exist_ok=True)
         if not self.manifest:
             self._manifest = {
@@ -288,6 +289,11 @@ class Store:
             }
             self._write_json(self.manifest_path, self._manifest)
             return self._manifest
+        return self.manifest
+
+    def _check_manifest(self, workspace_id: str) -> None:
+        if not self.manifest:
+            return
         stored_spec = self.manifest.get("embeddingSpec") or {}
         if self.manifest.get("specId") != spec_id() or stored_spec != spec():
             raise SpecMismatch(
@@ -299,7 +305,6 @@ class Store:
             raise WorkspaceMismatch(
                 "store belongs to another workspace; cross-workspace search is not allowed"
             )
-        return self.manifest
 
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:
@@ -456,6 +461,7 @@ class Store:
         if not workspace_id or not run_id or not snapshot_id:
             raise StoreError("bundle identity must contain workspaceId, runId and snapshotId")
 
+        self._check_manifest(workspace_id)
         before = set(self.load())
         events = list(self._bundle_events(bundle))
         new = [event for event in events if event["id"] not in before]
@@ -595,6 +601,7 @@ class Store:
                 yield event
 
     def ingest_examples(self, payload: dict[str, Any], *, run_id: str, workspace_id: str, dry_run: bool = False) -> dict[str, Any]:
+        self._check_manifest(workspace_id)
         examples = payload.get("examples") or []
         if not isinstance(examples, list):
             raise StoreError("examples payload must contain an examples array")
@@ -679,6 +686,8 @@ class Store:
         kinds: Iterable[str] | None = None,
         category: str | None = None,
         rule_family: str | None = None,
+        language: str | None = None,
+        framework: str | None = None,
         statuses: Iterable[str] | None = None,
         max_distance: float | None = None,
     ) -> dict[str, Any]:
@@ -712,6 +721,10 @@ class Store:
             if category and element.payload.get("category") != category:
                 continue
             if rule_family and element.payload.get("ruleFamily") != rule_family:
+                continue
+            if language and element.payload.get("language") != language:
+                continue
+            if framework and element.payload.get("framework") != framework:
                 continue
             if allowed_statuses is not None and element.kind == "fix" and element.payload.get("status") not in allowed_statuses:
                 continue
@@ -763,6 +776,8 @@ class Store:
             k=k,
             kinds=("fix",),
             rule_family=rule_family,
+            language=language,
+            framework=framework,
             statuses=statuses,
         )
         if result["status"] != "available":
@@ -792,7 +807,7 @@ class Store:
                 }
             )
         if not items:
-            return {"status": "unavailable", "reason": "no verified fix matches the filters", "items": []}
+            return {"status": "unavailable", "reason": "no fix matches the requested status and scope filters", "items": []}
         return {"status": "available", "reason": None, "items": items}
 
     # -- reporting --------------------------------------------------------

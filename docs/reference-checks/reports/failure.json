@@ -9,8 +9,8 @@
     "sha": "ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1",
     "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
     "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
-    "bundleContentSha256": "653da0fcb59cf5ae84421a3aa773fe7e18ec21b9d35c1dcada671329dfb6e714",
-    "bundleSha256": "fef9bcf20cc8f620b951bb8f53e9db668f3777e564011249cbd60ee56007fd30",
+    "bundleContentSha256": "a5868546ba086c95815c7927760b5376d74c410689c9a3b4f537e43cfbc3fd7c",
+    "bundleSha256": "72bb792cef15bd37dafaaa968277f43b1eac1b3a4834b22f59a688747d2b13ed",
     "runnerVersion": "cg26-analyzers/0.1.0",
     "snapshotPresent": false
   },

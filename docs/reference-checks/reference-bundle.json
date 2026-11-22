@@ -1,0 +1,1175 @@
+{
+  "schemaVersion": "0.1",
+  "identity": {
+    "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+    "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+    "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+    "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+    "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+    "workflowRevisionId": "dc5978d2-8e5a-5840-b913-6f9a88c5eac9"
+  },
+  "signature": {
+    "parserVersion": "cg26-parser/0.1.0",
+    "rulesVersion": "cg26-rules/0.1.0",
+    "advisoryVersion": "osv-maven/2026-11-16",
+    "configVersion": "cg26-config/1",
+    "hmacKeyVersion": "local-demo-1",
+    "parserHash": "fc9747f7ad0a128b1e16dd40afdf0bfd72ecb016c4c48db5c146957da1459496",
+    "rulesHash": "25598be9b534c1fcd9aa782c419e98db382864522ee1cdda0216b11e0a9b8a9e",
+    "advisoryHash": "5b9fb142cdd8e7fe9a7885709920cb686e061564e7b6cac249597e689ef450ca",
+    "scanConfigHash": "67e1cca99a94de1b0123d6c6de092d25e5bde195e921c49df6732f3d7dea72ff",
+    "domainPolicyRevisionId": "cdd1d094-c895-57c5-947e-887203981154",
+    "domainPolicyVersion": "cg26-policy/1",
+    "domainPolicyHash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703"
+  },
+  "scanResults": [
+    {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+        "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+        "workflowRevisionId": "dc5978d2-8e5a-5840-b913-6f9a88c5eac9"
+      },
+      "signature": {
+        "parserVersion": "cg26-parser/0.1.0",
+        "rulesVersion": "cg26-rules/0.1.0",
+        "advisoryVersion": "osv-maven/2026-11-16",
+        "configVersion": "cg26-config/1",
+        "hmacKeyVersion": "local-demo-1",
+        "parserHash": "fc9747f7ad0a128b1e16dd40afdf0bfd72ecb016c4c48db5c146957da1459496",
+        "rulesHash": "25598be9b534c1fcd9aa782c419e98db382864522ee1cdda0216b11e0a9b8a9e",
+        "advisoryHash": "5b9fb142cdd8e7fe9a7885709920cb686e061564e7b6cac249597e689ef450ca",
+        "scanConfigHash": "67e1cca99a94de1b0123d6c6de092d25e5bde195e921c49df6732f3d7dea72ff",
+        "domainPolicyRevisionId": "cdd1d094-c895-57c5-947e-887203981154",
+        "domainPolicyVersion": "cg26-policy/1",
+        "domainPolicyHash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703"
+      },
+      "category": "SECRET",
+      "status": "complete",
+      "producerVersion": "cg26-analyzers/0.1.0",
+      "durationMs": 0,
+      "findings": [
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "67d61b32-c838-538a-8e77-68e27d825e86",
+          "fingerprintVersion": "fp/v1",
+          "category": "SECRET",
+          "ruleId": "CG26-SEC-004",
+          "ruleVersion": "1",
+          "ruleFamily": "secret-fallback",
+          "severity": "low",
+          "severityBasis": "Секрет используется только при отсутствии переменной окружения.",
+          "confidence": "high",
+          "confidenceBasis": "Правая часть Elvis-выражения после чтения окружения является литералом.",
+          "status": "confirmed",
+          "primaryLocation": {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "line": 5,
+            "column": 1,
+            "endLine": 5,
+            "endColumn": 94,
+            "byteStart": 42,
+            "byteEnd": 135
+          },
+          "primaryEvidenceId": "362eb7af-fa3d-5d71-852e-03a7fdaa1603",
+          "relatedEvidenceIds": [
+            "019f7e7a-8d05-5e22-af84-ffe1f714c180"
+          ],
+          "traceEvidenceIds": [],
+          "graphNodeIds": [],
+          "anchor": {
+            "normalizedPath": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "symbolKey": "OrderClient.apiKey",
+            "normalizedContextHash": "5a4e493e9fc329a801e9193cd222cd14834e534edd356e3f5b1fbda5a8462285",
+            "role": "declaration",
+            "secretHmac": "4626086e99e8ff08d9a8e24d5e7879caac8ccad8a64cb3b3b4fe8070aacdf886"
+          },
+          "advisoryIds": [],
+          "coverageWarnings": [],
+          "fingerprint": "2a7ec8eeea546f80c0f897b47f42c991f55f59426f225f7b9c1b4ecc791ff61f"
+        },
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "d26968b9-ff32-55f1-9298-47b40ca05eed",
+          "fingerprintVersion": "fp/v1",
+          "category": "SECRET",
+          "ruleId": "CG26-SEC-003",
+          "ruleVersion": "1",
+          "ruleFamily": "configuration-token",
+          "severity": "high",
+          "severityBasis": "Токен хранится в конфигурации репозитория открытым текстом.",
+          "confidence": "high",
+          "confidenceBasis": "Значение является литералом, а не ссылкой на переменную окружения.",
+          "status": "confirmed",
+          "primaryLocation": {
+            "path": "src/main/resources/application.yml",
+            "line": 3,
+            "column": 1,
+            "endLine": 3,
+            "endColumn": 43,
+            "byteStart": 20,
+            "byteEnd": 62
+          },
+          "primaryEvidenceId": "a804e148-16c8-50e5-a894-64de2da101c5",
+          "relatedEvidenceIds": [],
+          "traceEvidenceIds": [],
+          "graphNodeIds": [],
+          "anchor": {
+            "normalizedPath": "src/main/resources/application.yml",
+            "symbolKey": "orders.callback.authorization",
+            "normalizedContextHash": "3de1a102d6539fa60ee15753286dd26c80a29377a5e6b336e1597dc78ca99240",
+            "role": "declaration",
+            "secretHmac": "e4d3fa4fc1ce45e7b24967b34de894ed9b365632e0fd2245e471d315f3976780"
+          },
+          "advisoryIds": [],
+          "coverageWarnings": [],
+          "fingerprint": "e07512e7bc85ab9859ec968a5323c766929c522673c44f53098a35c1205ef2fa"
+        }
+      ],
+      "evidence": [
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "019f7e7a-8d05-5e22-af84-ffe1f714c180",
+          "location": {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "line": 5,
+            "column": 1,
+            "endLine": 5,
+            "endColumn": 94,
+            "byteStart": 42,
+            "byteEnd": 135
+          },
+          "kind": "ast",
+          "redactedSnippet": "    private val apiKey: String = System.getenv(\"[redacted]\") ?: \"[redacted]\"",
+          "sourceHash": "064fe5fae3c31e7233fead6cf969ef28b375e17b627f86ba6f3f951b69807618",
+          "producerVersion": "cg26-analyzers/0.1.0"
+        },
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "362eb7af-fa3d-5d71-852e-03a7fdaa1603",
+          "location": {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "line": 5,
+            "column": 1,
+            "endLine": 5,
+            "endColumn": 94,
+            "byteStart": 42,
+            "byteEnd": 135
+          },
+          "kind": "ast",
+          "redactedSnippet": "    private val apiKey: String = System.getenv(\"[redacted]\") ?: \"[redacted]\"",
+          "sourceHash": "064fe5fae3c31e7233fead6cf969ef28b375e17b627f86ba6f3f951b69807618",
+          "producerVersion": "cg26-analyzers/0.1.0"
+        },
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "a804e148-16c8-50e5-a894-64de2da101c5",
+          "location": {
+            "path": "src/main/resources/application.yml",
+            "line": 3,
+            "column": 1,
+            "endLine": 3,
+            "endColumn": 43,
+            "byteStart": 20,
+            "byteEnd": 62
+          },
+          "kind": "source",
+          "redactedSnippet": "    authorization: \"[redacted]\"",
+          "sourceHash": "30a8aa47760ddeb1be51ce2a10737bc60001b1b4909bc2ef775fdd0f803774e4",
+          "producerVersion": "cg26-analyzers/0.1.0"
+        }
+      ],
+      "diagnostics": [],
+      "coverage": {
+        "status": "complete",
+        "filesTotal": 4,
+        "filesVisited": 4,
+        "rulesApplied": [
+          "CG26-SEC-001",
+          "CG26-SEC-002",
+          "CG26-SEC-003",
+          "CG26-SEC-004",
+          "CG26-SEC-005"
+        ],
+        "scopes": [
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SEC-001",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SEC-002",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SEC-003",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SEC-004",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SEC-005",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SEC-001",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SEC-002",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SEC-003",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SEC-004",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SEC-005",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SEC-001",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SEC-002",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SEC-003",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SEC-004",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SEC-005",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/resources/application.yml",
+            "ruleId": "CG26-SEC-001",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/resources/application.yml",
+            "ruleId": "CG26-SEC-002",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/resources/application.yml",
+            "ruleId": "CG26-SEC-003",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/resources/application.yml",
+            "ruleId": "CG26-SEC-004",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/resources/application.yml",
+            "ruleId": "CG26-SEC-005",
+            "category": "SECRET",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          }
+        ],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [],
+        "limitsReached": []
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+        "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+        "workflowRevisionId": "dc5978d2-8e5a-5840-b913-6f9a88c5eac9"
+      },
+      "signature": {
+        "parserVersion": "cg26-parser/0.1.0",
+        "rulesVersion": "cg26-rules/0.1.0",
+        "advisoryVersion": "osv-maven/2026-11-16",
+        "configVersion": "cg26-config/1",
+        "hmacKeyVersion": "local-demo-1",
+        "parserHash": "fc9747f7ad0a128b1e16dd40afdf0bfd72ecb016c4c48db5c146957da1459496",
+        "rulesHash": "25598be9b534c1fcd9aa782c419e98db382864522ee1cdda0216b11e0a9b8a9e",
+        "advisoryHash": "5b9fb142cdd8e7fe9a7885709920cb686e061564e7b6cac249597e689ef450ca",
+        "scanConfigHash": "67e1cca99a94de1b0123d6c6de092d25e5bde195e921c49df6732f3d7dea72ff",
+        "domainPolicyRevisionId": "cdd1d094-c895-57c5-947e-887203981154",
+        "domainPolicyVersion": "cg26-policy/1",
+        "domainPolicyHash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703"
+      },
+      "category": "SCA",
+      "status": "partial",
+      "producerVersion": "cg26-analyzers/0.1.0",
+      "durationMs": 0,
+      "findings": [],
+      "evidence": [],
+      "diagnostics": [],
+      "coverage": {
+        "status": "unavailable",
+        "filesTotal": 0,
+        "filesVisited": 0,
+        "rulesApplied": [
+          "CG26-SCA-001"
+        ],
+        "scopes": [],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [],
+        "limitsReached": []
+      }
+    },
+    {
+      "schemaVersion": "0.1",
+      "identity": {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+        "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+        "workflowRevisionId": "dc5978d2-8e5a-5840-b913-6f9a88c5eac9"
+      },
+      "signature": {
+        "parserVersion": "cg26-parser/0.1.0",
+        "rulesVersion": "cg26-rules/0.1.0",
+        "advisoryVersion": "osv-maven/2026-11-16",
+        "configVersion": "cg26-config/1",
+        "hmacKeyVersion": "local-demo-1",
+        "parserHash": "fc9747f7ad0a128b1e16dd40afdf0bfd72ecb016c4c48db5c146957da1459496",
+        "rulesHash": "25598be9b534c1fcd9aa782c419e98db382864522ee1cdda0216b11e0a9b8a9e",
+        "advisoryHash": "5b9fb142cdd8e7fe9a7885709920cb686e061564e7b6cac249597e689ef450ca",
+        "scanConfigHash": "67e1cca99a94de1b0123d6c6de092d25e5bde195e921c49df6732f3d7dea72ff",
+        "domainPolicyRevisionId": "cdd1d094-c895-57c5-947e-887203981154",
+        "domainPolicyVersion": "cg26-policy/1",
+        "domainPolicyHash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703"
+      },
+      "category": "SAST",
+      "status": "partial",
+      "producerVersion": "cg26-analyzers/0.1.0",
+      "durationMs": 0,
+      "findings": [
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "68b08b61-da97-5fab-9ec5-42f6b12e71c3",
+          "fingerprintVersion": "fp/v1",
+          "category": "SAST",
+          "ruleId": "CG26-SAST-001",
+          "ruleVersion": "1",
+          "ruleFamily": "sql-injection",
+          "severity": "high",
+          "severityBasis": "Параметр запроса управляет текстом SQL, поэтому значение может изменить условие выборки.",
+          "confidence": "high",
+          "confidenceBasis": "Источник объявлен аннотацией параметра, sink — вызов JDBC; связь видна в одном теле функции.",
+          "status": "confirmed",
+          "primaryLocation": {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "line": 12,
+            "column": 1,
+            "endLine": 13,
+            "endColumn": 122,
+            "byteStart": 370,
+            "byteEnd": 554
+          },
+          "primaryEvidenceId": "b8067c03-0d2b-5e76-8887-62cc1a432fde",
+          "relatedEvidenceIds": [
+            "457826cc-4a55-5d6c-b4e4-2f8ac4439e63"
+          ],
+          "traceEvidenceIds": [
+            "2e54e523-9e84-5f66-8a4a-aa69d3ec61a7"
+          ],
+          "graphNodeIds": [
+            "070d92c8-2efc-5b8a-9f28-d759536b3976",
+            "b5bc0df3-fb84-505c-913f-f51f2b2f720b",
+            "2e486c33-dd99-5359-9348-c758b6cffc9c",
+            "1571dff5-96e8-52b7-92e7-34a2a1943cbd"
+          ],
+          "anchor": {
+            "normalizedPath": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "symbolKey": "OrderLookupController.find",
+            "normalizedContextHash": "9732c10648ef35967cb773e43ba6518553e82173f374b96650839f9ac7b2aa69",
+            "role": "sink",
+            "secretHmac": null
+          },
+          "advisoryIds": [],
+          "coverageWarnings": [],
+          "fingerprint": "161edf21315328462ffdfb3379ca75d8ad9ea365ff462b51925ab4292417e84c"
+        }
+      ],
+      "evidence": [
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "2e54e523-9e84-5f66-8a4a-aa69d3ec61a7",
+          "location": {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "line": 12,
+            "column": 1,
+            "endLine": 12,
+            "endColumn": 63,
+            "byteStart": 370,
+            "byteEnd": 432
+          },
+          "kind": "ast",
+          "redactedSnippet": "    fun find(@RequestParam customerId: String): List<String> =",
+          "sourceHash": "1492ffc7678eaa04c128d02dd5d419e7d951e25c5f79b6cd40c732232a1221a4",
+          "producerVersion": "cg26-analyzers/0.1.0"
+        },
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "457826cc-4a55-5d6c-b4e4-2f8ac4439e63",
+          "location": {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "line": 13,
+            "column": 1,
+            "endLine": 13,
+            "endColumn": 122,
+            "byteStart": 433,
+            "byteEnd": 554
+          },
+          "kind": "ast",
+          "redactedSnippet": "        jdbcTemplate.query(\"SELECT ticket_code FROM orders WHERE customer_id = $customerId\") { rs, _ -> rs.getString(1) }",
+          "sourceHash": "1492ffc7678eaa04c128d02dd5d419e7d951e25c5f79b6cd40c732232a1221a4",
+          "producerVersion": "cg26-analyzers/0.1.0"
+        },
+        {
+          "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+          "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+          "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+          "id": "b8067c03-0d2b-5e76-8887-62cc1a432fde",
+          "location": {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "line": 12,
+            "column": 1,
+            "endLine": 13,
+            "endColumn": 122,
+            "byteStart": 370,
+            "byteEnd": 554
+          },
+          "kind": "ast",
+          "redactedSnippet": "    fun find(@RequestParam customerId: String): List<String> =\n        jdbcTemplate.query(\"SELECT ticket_code FROM orders WHERE customer_id = $customerId\") { rs, _ -> rs.getString(1) }",
+          "sourceHash": "1492ffc7678eaa04c128d02dd5d419e7d951e25c5f79b6cd40c732232a1221a4",
+          "producerVersion": "cg26-analyzers/0.1.0"
+        }
+      ],
+      "diagnostics": [],
+      "coverage": {
+        "status": "partial",
+        "filesTotal": 3,
+        "filesVisited": 3,
+        "rulesApplied": [
+          "CG26-SAST-001",
+          "CG26-SAST-002",
+          "CG26-SAST-003",
+          "CG26-SAST-004",
+          "CG26-SAST-005"
+        ],
+        "scopes": [
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SAST-001",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SAST-002",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SAST-003",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SAST-004",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+            "ruleId": "CG26-SAST-005",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SAST-001",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SAST-002",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SAST-003",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SAST-004",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+            "ruleId": "CG26-SAST-005",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SAST-001",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SAST-002",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SAST-003",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SAST-004",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          },
+          {
+            "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+            "ruleId": "CG26-SAST-005",
+            "category": "SAST",
+            "status": "checked",
+            "reason": "Файл прочитан, правило применено к его содержимому."
+          }
+        ],
+        "skippedScopes": [],
+        "parserErrors": [],
+        "unresolvedSymbols": [
+          "Ни одно правило authorizeHttpRequests не сопоставлено с маршрутом.",
+          "Ни одно правило authorizeHttpRequests не сопоставлено с маршрутом."
+        ],
+        "limitsReached": []
+      }
+    }
+  ],
+  "codeFacts": {
+    "schemaVersion": "0.1",
+    "identity": {
+      "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+      "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+      "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+      "artifactHash": "fd93a4cbdb067fd407785ed91c722593333cebf4646cdc1f29758df1034f3608",
+      "snapshotManifestHash": "6be987bf4d12c6ca1d18cc72dc75afd622301cedd02231fa0b98644df36d5772",
+      "workflowRevisionId": "dc5978d2-8e5a-5840-b913-6f9a88c5eac9"
+    },
+    "signature": {
+      "parserVersion": "cg26-parser/0.1.0",
+      "rulesVersion": "cg26-rules/0.1.0",
+      "advisoryVersion": "osv-maven/2026-11-16",
+      "configVersion": "cg26-config/1",
+      "hmacKeyVersion": "local-demo-1",
+      "parserHash": "fc9747f7ad0a128b1e16dd40afdf0bfd72ecb016c4c48db5c146957da1459496",
+      "rulesHash": "25598be9b534c1fcd9aa782c419e98db382864522ee1cdda0216b11e0a9b8a9e",
+      "advisoryHash": "5b9fb142cdd8e7fe9a7885709920cb686e061564e7b6cac249597e689ef450ca",
+      "scanConfigHash": "67e1cca99a94de1b0123d6c6de092d25e5bde195e921c49df6732f3d7dea72ff",
+      "domainPolicyRevisionId": "cdd1d094-c895-57c5-947e-887203981154",
+      "domainPolicyVersion": "cg26-policy/1",
+      "domainPolicyHash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703"
+    },
+    "nodes": [
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "070d92c8-2efc-5b8a-9f28-d759536b3976",
+        "kind": "function",
+        "symbolKey": "OrderLookupController.find@src/main/kotlin/demo/orders/OrderLookupController.kt",
+        "label": "OrderLookupController.find",
+        "evidenceRefs": [
+          "b8067c03-0d2b-5e76-8887-62cc1a432fde"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "3269cfaf-d4b9-5d37-8748-fb6aea2bb007",
+        "kind": "function",
+        "symbolKey": "SafeOrderLookupController.find@src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+        "label": "SafeOrderLookupController.find",
+        "evidenceRefs": [
+          "5326b8a9-115d-5072-a306-f8c486bf0c4a"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "b5bc0df3-fb84-505c-913f-f51f2b2f720b",
+        "kind": "function",
+        "symbolKey": "OrderLookupController.find@src/main/kotlin/demo/orders/OrderLookupController.kt",
+        "label": "OrderLookupController.find",
+        "evidenceRefs": [
+          "b8067c03-0d2b-5e76-8887-62cc1a432fde"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "88292075-de63-57ac-b823-6a02d454788a",
+        "kind": "function",
+        "symbolKey": "SafeOrderLookupController.find@src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+        "label": "SafeOrderLookupController.find",
+        "evidenceRefs": [
+          "5326b8a9-115d-5072-a306-f8c486bf0c4a"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "ad151341-cb16-56b3-9be8-bf45753648fc",
+        "kind": "source",
+        "symbolKey": "find.customerId",
+        "label": "customerId",
+        "evidenceRefs": [
+          "2e54e523-9e84-5f66-8a4a-aa69d3ec61a7"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "6ad8f533-22f8-523a-a307-fc5df4282e91",
+        "kind": "source",
+        "symbolKey": "find.customerId",
+        "label": "customerId",
+        "evidenceRefs": [
+          "4079dbf0-6baa-5b92-836d-852429293e1d"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "2e486c33-dd99-5359-9348-c758b6cffc9c",
+        "kind": "route",
+        "symbolKey": "GET /api/orders",
+        "label": "GET /api/orders",
+        "evidenceRefs": [
+          "b8067c03-0d2b-5e76-8887-62cc1a432fde"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "b5e3b068-8ae6-502b-a47d-31064320c593",
+        "kind": "route",
+        "symbolKey": "GET /api/orders/safe",
+        "label": "GET /api/orders/safe",
+        "evidenceRefs": [
+          "5326b8a9-115d-5072-a306-f8c486bf0c4a"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "1571dff5-96e8-52b7-92e7-34a2a1943cbd",
+        "kind": "sink",
+        "symbolKey": "sql:src/main/kotlin/demo/orders/OrderLookupController.kt:13",
+        "label": "query SQL",
+        "evidenceRefs": [
+          "457826cc-4a55-5d6c-b4e4-2f8ac4439e63"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "a75422b0-66cf-5cb6-9035-8b19d0eeeba2",
+        "kind": "sink",
+        "symbolKey": "sql:src/main/kotlin/demo/orders/SafeOrderLookupController.kt:13",
+        "label": "query SQL",
+        "evidenceRefs": [
+          "de01283e-9a9a-5fcd-9990-f88a94b47a48"
+        ],
+        "producerVersion": "cg26-analyzers/0.1.0"
+      }
+    ],
+    "edges": [
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "79f7b105-2338-5e5e-84b6-95b80778bfb4",
+        "fromId": "2e486c33-dd99-5359-9348-c758b6cffc9c",
+        "toId": "b5bc0df3-fb84-505c-913f-f51f2b2f720b",
+        "kind": "routes_to",
+        "evidenceRefs": [
+          "b8067c03-0d2b-5e76-8887-62cc1a432fde"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Аннотация маршрута объявлена непосредственно над функцией-обработчиком.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "87d4449c-cce3-5133-acbd-72b6479fc2e7",
+        "fromId": "b5bc0df3-fb84-505c-913f-f51f2b2f720b",
+        "toId": "ad151341-cb16-56b3-9be8-bf45753648fc",
+        "kind": "reads",
+        "evidenceRefs": [
+          "2e54e523-9e84-5f66-8a4a-aa69d3ec61a7"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Параметр `customerId` объявлен в сигнатуре обработчика как request-param.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "39a65ca3-58e1-5ad3-a507-fe94ba37a276",
+        "fromId": "b5bc0df3-fb84-505c-913f-f51f2b2f720b",
+        "toId": "1571dff5-96e8-52b7-92e7-34a2a1943cbd",
+        "kind": "calls",
+        "evidenceRefs": [
+          "457826cc-4a55-5d6c-b4e4-2f8ac4439e63"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Sink объявлен в теле `find`.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "834720a0-fdca-5737-8b3d-d9936dfc1842",
+        "fromId": "b5e3b068-8ae6-502b-a47d-31064320c593",
+        "toId": "88292075-de63-57ac-b823-6a02d454788a",
+        "kind": "routes_to",
+        "evidenceRefs": [
+          "5326b8a9-115d-5072-a306-f8c486bf0c4a"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Аннотация маршрута объявлена непосредственно над функцией-обработчиком.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "9c74f0c0-9745-5f81-911e-e5e38461c8b9",
+        "fromId": "88292075-de63-57ac-b823-6a02d454788a",
+        "toId": "6ad8f533-22f8-523a-a307-fc5df4282e91",
+        "kind": "reads",
+        "evidenceRefs": [
+          "4079dbf0-6baa-5b92-836d-852429293e1d"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Параметр `customerId` объявлен в сигнатуре обработчика как request-param.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "81cb6831-8750-56b2-885b-df261e911eb4",
+        "fromId": "88292075-de63-57ac-b823-6a02d454788a",
+        "toId": "a75422b0-66cf-5cb6-9035-8b19d0eeeba2",
+        "kind": "calls",
+        "evidenceRefs": [
+          "de01283e-9a9a-5fcd-9990-f88a94b47a48"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Sink объявлен в теле `find`.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "e016ac1e-0a60-5130-8ab7-4d8d1b0f84d1",
+        "fromId": "070d92c8-2efc-5b8a-9f28-d759536b3976",
+        "toId": "1571dff5-96e8-52b7-92e7-34a2a1943cbd",
+        "kind": "calls",
+        "evidenceRefs": [
+          "457826cc-4a55-5d6c-b4e4-2f8ac4439e63"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Sink объявлен в теле `find`.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "fcb1ee00-6272-507c-a5b5-d9c867ec3b1f",
+        "fromId": "3269cfaf-d4b9-5d37-8748-fb6aea2bb007",
+        "toId": "a75422b0-66cf-5cb6-9035-8b19d0eeeba2",
+        "kind": "calls",
+        "evidenceRefs": [
+          "de01283e-9a9a-5fcd-9990-f88a94b47a48"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Sink объявлен в теле `find`.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "12f7f2ff-0f24-5bab-9d36-f184fc61e0a9",
+        "fromId": "ad151341-cb16-56b3-9be8-bf45753648fc",
+        "toId": "1571dff5-96e8-52b7-92e7-34a2a1943cbd",
+        "kind": "flows_to",
+        "evidenceRefs": [
+          "457826cc-4a55-5d6c-b4e4-2f8ac4439e63"
+        ],
+        "resolution": "resolved",
+        "resolutionReason": "Параметр запроса интерполируется в SQL-литерал того же тела функции.",
+        "producerVersion": "cg26-analyzers/0.1.0",
+        "basis": "source",
+        "policyRef": null
+      }
+    ],
+    "evidence": [
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "2e54e523-9e84-5f66-8a4a-aa69d3ec61a7",
+        "location": {
+          "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+          "line": 12,
+          "column": 1,
+          "endLine": 12,
+          "endColumn": 63,
+          "byteStart": 370,
+          "byteEnd": 432
+        },
+        "kind": "ast",
+        "redactedSnippet": "    fun find(@RequestParam customerId: String): List<String> =",
+        "sourceHash": "1492ffc7678eaa04c128d02dd5d419e7d951e25c5f79b6cd40c732232a1221a4",
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "4079dbf0-6baa-5b92-836d-852429293e1d",
+        "location": {
+          "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+          "line": 12,
+          "column": 1,
+          "endLine": 12,
+          "endColumn": 63,
+          "byteStart": 379,
+          "byteEnd": 441
+        },
+        "kind": "ast",
+        "redactedSnippet": "    fun find(@RequestParam customerId: String): List<String> =",
+        "sourceHash": "fa5ff96ad663d2a361697d23cf794e2094cf0fefce3c6dc32eb0492100403946",
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "457826cc-4a55-5d6c-b4e4-2f8ac4439e63",
+        "location": {
+          "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+          "line": 13,
+          "column": 1,
+          "endLine": 13,
+          "endColumn": 122,
+          "byteStart": 433,
+          "byteEnd": 554
+        },
+        "kind": "ast",
+        "redactedSnippet": "        jdbcTemplate.query(\"SELECT ticket_code FROM orders WHERE customer_id = $customerId\") { rs, _ -> rs.getString(1) }",
+        "sourceHash": "1492ffc7678eaa04c128d02dd5d419e7d951e25c5f79b6cd40c732232a1221a4",
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "5326b8a9-115d-5072-a306-f8c486bf0c4a",
+        "location": {
+          "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+          "line": 12,
+          "column": 1,
+          "endLine": 13,
+          "endColumn": 124,
+          "byteStart": 379,
+          "byteEnd": 565
+        },
+        "kind": "ast",
+        "redactedSnippet": "    fun find(@RequestParam customerId: String): List<String> =\n        jdbcTemplate.query(\"SELECT ticket_code FROM orders WHERE customer_id = ?\", customerId) { rs, _ -> rs.getString(1) }",
+        "sourceHash": "fa5ff96ad663d2a361697d23cf794e2094cf0fefce3c6dc32eb0492100403946",
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "b8067c03-0d2b-5e76-8887-62cc1a432fde",
+        "location": {
+          "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+          "line": 12,
+          "column": 1,
+          "endLine": 13,
+          "endColumn": 122,
+          "byteStart": 370,
+          "byteEnd": 554
+        },
+        "kind": "ast",
+        "redactedSnippet": "    fun find(@RequestParam customerId: String): List<String> =\n        jdbcTemplate.query(\"SELECT ticket_code FROM orders WHERE customer_id = $customerId\") { rs, _ -> rs.getString(1) }",
+        "sourceHash": "1492ffc7678eaa04c128d02dd5d419e7d951e25c5f79b6cd40c732232a1221a4",
+        "producerVersion": "cg26-analyzers/0.1.0"
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "de01283e-9a9a-5fcd-9990-f88a94b47a48",
+        "location": {
+          "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+          "line": 13,
+          "column": 1,
+          "endLine": 13,
+          "endColumn": 124,
+          "byteStart": 442,
+          "byteEnd": 565
+        },
+        "kind": "ast",
+        "redactedSnippet": "        jdbcTemplate.query(\"SELECT ticket_code FROM orders WHERE customer_id = ?\", customerId) { rs, _ -> rs.getString(1) }",
+        "sourceHash": "fa5ff96ad663d2a361697d23cf794e2094cf0fefce3c6dc32eb0492100403946",
+        "producerVersion": "cg26-analyzers/0.1.0"
+      }
+    ],
+    "coverage": {
+      "status": "partial",
+      "filesTotal": 3,
+      "filesVisited": 3,
+      "rulesApplied": [
+        "CG26-GRAPH"
+      ],
+      "scopes": [
+        {
+          "path": "src/main/kotlin/demo/orders/OrderClient.kt",
+          "ruleId": "CG26-GRAPH",
+          "category": "SAST",
+          "status": "checked",
+          "reason": "Файл прочитан, правило применено к его содержимому."
+        },
+        {
+          "path": "src/main/kotlin/demo/orders/OrderLookupController.kt",
+          "ruleId": "CG26-GRAPH",
+          "category": "SAST",
+          "status": "checked",
+          "reason": "Файл прочитан, правило применено к его содержимому."
+        },
+        {
+          "path": "src/main/kotlin/demo/orders/SafeOrderLookupController.kt",
+          "ruleId": "CG26-GRAPH",
+          "category": "SAST",
+          "status": "checked",
+          "reason": "Файл прочитан, правило применено к его содержимому."
+        }
+      ],
+      "skippedScopes": [],
+      "parserErrors": [],
+      "unresolvedSymbols": [
+        "Ни одно правило authorizeHttpRequests не сопоставлено с маршрутом.",
+        "Ни одно правило authorizeHttpRequests не сопоставлено с маршрутом."
+      ],
+      "limitsReached": []
+    },
+    "policyInputs": [
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "id": "cdd1d094-c895-57c5-947e-887203981154",
+        "version": "cg26-policy/1",
+        "hash": "7235f139de551237f451ba961f3e5b092e4b87559ecd7a904849917073ab5703",
+        "sourceRef": "analyzers/cg26/policy.py#OBJECT_ACCESS_POLICY",
+        "approvalStatus": "assumption",
+        "approvedBy": null,
+        "approvedAt": null,
+        "resources": [
+          {
+            "kind": "ownership",
+            "resource": "repair-ticket",
+            "ownerField": "customer_id",
+            "trustedIdentity": "Principal.id",
+            "roleExceptions": []
+          }
+        ]
+      }
+    ],
+    "diagnostics": [
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "79eb9002-5285-5582-8050-ae543e040951",
+        "category": "SAST",
+        "code": "graph.unresolved",
+        "message": "Ни одно правило authorizeHttpRequests не сопоставлено с маршрутом.",
+        "evidenceId": null
+      },
+      {
+        "workspaceId": "649d5c51-b4a5-5ad2-956f-bb8a4720bac0",
+        "runId": "5b31f17c-c905-5e02-ab60-cbd78e1f8656",
+        "snapshotId": "7c72dc11-b407-5b80-a0ed-ce246e5d587f",
+        "id": "2a115954-874b-5c3f-a339-6c091e68b6a4",
+        "category": "SAST",
+        "code": "graph.unresolved",
+        "message": "Ни одно правило authorizeHttpRequests не сопоставлено с маршрутом.",
+        "evidenceId": null
+      }
+    ]
+  }
+}

@@ -124,26 +124,8 @@ def suffix_source(lower_path: str) -> bool:
 
 
 def _mask_excerpt(text: str) -> str:
-    """Reuse the project's existing redaction without its 600-char truncation.
-
-    `mask_sensitive_text` handles secrets that can span lines (PEM, bearer,
-    assignments); `mask_text` handles URI credentials, long tokens, env defaults
-    and control characters. Chunking keeps `mask_text` below its truncation
-    limit while preserving newlines.
-    """
-    pre_masked = mask_sensitive_text(text)
-    pieces: List[str] = []
-    start = 0
-    length = len(pre_masked)
-    while start < length:
-        end = min(start + 500, length)
-        if end < length:
-            newline = pre_masked.rfind("\n", start, end)
-            if newline > start:
-                end = newline + 1
-        pieces.append(mask_text(pre_masked[start:end]))
-        start = end
-    return "".join(pieces)
+    """Mask the entire bounded window so token matches cannot cross chunk boundaries."""
+    return mask_text(mask_sensitive_text(text), max_chars=None)
 
 
 def _truncate_to_line(text: str, max_bytes: int) -> Tuple[str, bool]:
@@ -224,8 +206,9 @@ def select_sources(
         candidates.append((_source_priority(path), path))
 
     det_windows = _deterministic_windows(findings)
+    eligible_paths = {path for _, path in candidates}
     for path in det_windows:
-        if path in sources and _allowed_path(path):
+        if path in eligible_paths:
             candidates.append((0, path))
     candidates = [(rank, path) for rank, path in candidates]
     best_rank: Dict[str, int] = {}

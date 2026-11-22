@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import tree_sitter
 import tree_sitter_kotlin
+from analyzers.cg26.kotlin_lexer import lex
 from backend.app.analyzers.base import BaseAnalyzer
 from backend.app.analyzers.file_discovery import prune_scan_dirs
 from backend.app.contracts.schemas import (
@@ -40,7 +41,7 @@ class SastAnalyzer(BaseAnalyzer):
         ]
 
         root_path = Path(artifact_path)
-        if not root_path.exists():
+        if not root_path.is_dir():
             return ScanResult(
                 analyzer=self.name,
                 findings=[],
@@ -58,6 +59,10 @@ class SastAnalyzer(BaseAnalyzer):
 
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
+                if file_path.is_symlink():
+                    parser_errors += 1
+                    diagnostics.append(Diagnostic(level="warning", message=f"Символическая ссылка пропущена: {rel_path}", source="SastAnalyzer"))
+                    continue
                 files_scanned += 1
                 sql_observation: Dict[str, Any] = {
                     "rule_id": "KOTLIN-SQL-INJECTION",
@@ -71,7 +76,7 @@ class SastAnalyzer(BaseAnalyzer):
 
                 try:
                     raw_bytes = file_path.read_bytes()
-                    source_text = raw_bytes.decode("utf-8", errors="replace")
+                    source_text = raw_bytes.decode("utf-8")
                     lines = source_text.splitlines(keepends=True)
                     lines_of_code += len(lines)
 
@@ -90,10 +95,16 @@ class SastAnalyzer(BaseAnalyzer):
                         )
 
                     # Run our taint-analysis and AST rules
+                    before = len(findings)
                     self._check_file_ast(
                         rel_path, raw_bytes, lines, tree.root_node, findings,
                         sql_observation=sql_observation,
                     )
+                    if tree.root_node.has_error:
+                        for finding in findings[before:]:
+                            finding.confidence = Confidence.POTENTIAL
+                            finding.status = FindingStatus.POTENTIAL
+                            finding.coverageWarnings.append("Kotlin AST содержит ошибки; результат требует ручной проверки")
 
                 except Exception as e:
                     if sql_observation["status"] != "error":
@@ -160,13 +171,6 @@ class SastAnalyzer(BaseAnalyzer):
         # Extract user input parameters (Sources)
         user_params = self._extract_user_sources(fn_node, raw_bytes)
         if not user_params:
-            # Also check if function has Spring mapping annotation even without explicit @RequestParam
-            has_mapping = "@GetMapping" in fn_text or "@PostMapping" in fn_text or "@RequestMapping" in fn_text
-            if has_mapping:
-                # Any function parameter might be a source
-                user_params = self._extract_all_parameters(fn_node, raw_bytes)
-
-        if not user_params:
             return
 
         # 1. SQL Injection check
@@ -191,39 +195,79 @@ class SastAnalyzer(BaseAnalyzer):
         Returns: list of (param_name, start_line, start_col)
         """
         results = []
-        fn_text = raw_bytes[fn_node.start_byte:fn_node.end_byte].decode("utf-8", errors="replace")
-        is_spring_mapping = any(ann in fn_text for ann in ["@GetMapping", "@PostMapping", "@PutMapping", "@DeleteMapping", "@RequestMapping"])
+        modifiers = next((child for child in fn_node.children if child.type == "modifiers"), None)
+        header = raw_bytes[modifiers.start_byte:modifiers.end_byte].decode("utf-8") if modifiers else ""
+        is_spring_mapping = any(ann in header for ann in ["@GetMapping", "@PostMapping", "@PutMapping", "@DeleteMapping", "@PatchMapping", "@RequestMapping"])
 
         # Find all function_value_parameters
-        containers = []
-        self._find_nodes_by_type(fn_node, ["function_value_parameters"], containers)
+        containers = [child for child in fn_node.children if child.type == "function_value_parameters"]
         for c in containers:
-            c_text = raw_bytes[c.start_byte:c.end_byte].decode("utf-8", errors="replace")
-            # Find parameter nodes inside container
-            params = []
-            self._find_nodes_by_type(c, ["parameter", "function_value_parameter"], params)
-            for p in params:
+            modifiers = ""
+            for p in c.children:
+                if p.type == "parameter_modifiers":
+                    modifiers = raw_bytes[p.start_byte:p.end_byte].decode("utf-8", errors="replace")
+                    continue
+                if p.type not in {"parameter", "function_value_parameter"}:
+                    continue
                 id_nodes = []
                 self._find_nodes_by_type(p, ["identifier", "simple_identifier"], id_nodes)
                 if id_nodes:
                     name = raw_bytes[id_nodes[0].start_byte:id_nodes[0].end_byte].decode("utf-8", errors="replace")
-                    # If whole container or function has Spring annotations, or param has annotation
-                    if is_spring_mapping or any(ann in c_text for ann in ["@RequestParam", "@PathVariable", "@RequestBody", "@RequestHeader"]):
-                        results.append((name, p.start_point[0] + 1, p.start_point[1] + 1))
+                    if is_spring_mapping or any(ann in modifiers for ann in ["@RequestParam", "@PathVariable", "@RequestBody", "@RequestHeader"]):
+                        ident = id_nodes[0]
+                        line_start = raw_bytes.rfind(b"\n", 0, ident.start_byte) + 1
+                        column = len(raw_bytes[line_start:ident.start_byte].decode("utf-8")) + 1
+                        results.append((name, ident.start_point[0] + 1, column))
+                modifiers = ""
 
         return results
 
-    def _extract_all_parameters(self, fn_node: Any, raw_bytes: bytes) -> List[Tuple[str, int, int]]:
-        results = []
-        param_nodes = []
-        self._find_nodes_by_type(fn_node, ["function_value_parameter", "parameter"], param_nodes)
-        for p in param_nodes:
-            id_nodes = []
-            self._find_nodes_by_type(p, ["identifier", "simple_identifier"], id_nodes)
-            if id_nodes:
-                name = raw_bytes[id_nodes[0].start_byte:id_nodes[0].end_byte].decode("utf-8", errors="replace")
-                results.append((name, p.start_point[0] + 1, p.start_point[1] + 1))
-        return results
+    def _sink_calls(self, fn_node: Any, fn_text: str, sinks: List[str]):
+        raw = fn_text.encode("utf-8")
+        calls: List[Any] = []
+
+        def visit(node: Any) -> None:
+            if node != fn_node and node.type == "function_declaration":
+                return
+            if node.type == "call_expression":
+                calls.append(node)
+            for child in node.children:
+                visit(child)
+
+        visit(fn_node)
+        for call in calls:
+            arguments = next((child for child in call.children if child.type == "value_arguments"), None)
+            if arguments is None:
+                continue
+            callee = raw[call.start_byte - fn_node.start_byte:arguments.start_byte - fn_node.start_byte].decode("utf-8").strip()
+            sink = next((name for name in sinks if callee == name.rstrip("(") or callee.endswith("." + name.rstrip("("))), None)
+            if sink is None:
+                continue
+            args = [raw[arg.start_byte - fn_node.start_byte:arg.end_byte - fn_node.start_byte].decode("utf-8")
+                    for arg in arguments.children if arg.type == "value_argument"]
+            yield sink, call, args
+
+    @staticmethod
+    def _argument_uses(argument: str, name: str, *, sql: bool = False) -> bool:
+        tokens = lex(argument).tokens
+        interpolated = any(
+            re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])", part.expr)
+            for token in tokens if token.kind == "STRING" for part in token.interpolations
+        )
+        direct = any(token.kind == "IDENT" and token.text == name for token in tokens)
+        if sql:
+            return interpolated or (direct and any(token.is_op("+") for token in tokens))
+        return interpolated or direct
+
+    @staticmethod
+    def _sink_location(rel_path: str, lines: List[str], node: Any) -> Location:
+        start_line, end_line = node.start_point[0] + 1, node.end_point[0] + 1
+        start_column = len(lines[start_line - 1].encode("utf-8")[:node.start_point[1]].decode("utf-8")) + 1
+        end_column = len(lines[end_line - 1].encode("utf-8")[:node.end_point[1]].decode("utf-8")) + 1
+        start_byte = sum(len(line.encode("utf-8")) for line in lines[:start_line - 1]) + node.start_point[1]
+        end_byte = sum(len(line.encode("utf-8")) for line in lines[:end_line - 1]) + node.end_point[1]
+        return Location(path=rel_path, startLine=start_line, endLine=end_line,
+                        startColumn=start_column, endColumn=end_column, byteRange=[start_byte, end_byte])
 
     def _check_sql_injection(self, rel_path: str, lines: List[str], fn_node: Any,
                              fn_text: str, user_params: List[Tuple[str, int, int]],
@@ -255,29 +299,81 @@ class SastAnalyzer(BaseAnalyzer):
             if observation is not None:
                 observation["findings"] += len(findings) - before
 
+    _SQL_STATEMENT = re.compile(r"(?is)\b(?:select|insert|update|delete|merge|call)\b")
+
+    def _local_assignments(self, fn_node: Any, fn_text: str) -> Dict[str, str]:
+        """Map ``val name = expression`` inside one function to its source text."""
+        raw = fn_text.encode("utf-8")
+        assignments: Dict[str, str] = {}
+
+        def visit(node: Any) -> None:
+            if node != fn_node and node.type == "function_declaration":
+                return
+            if node.type == "property_declaration":
+                name = next(
+                    (child for child in node.children if child.type == "variable_declaration"),
+                    None,
+                )
+                children = list(node.children)
+                eq_index = next(
+                    (index for index, child in enumerate(children) if child.type == "="),
+                    None,
+                )
+                if name is not None and eq_index is not None and eq_index + 1 < len(children):
+                    identifier = next(
+                        (child for child in name.children if child.type == "identifier"),
+                        None,
+                    )
+                    if identifier is not None:
+                        key = raw[
+                            identifier.start_byte - fn_node.start_byte:
+                            identifier.end_byte - fn_node.start_byte
+                        ].decode("utf-8", errors="replace")
+                        value_start = children[eq_index + 1].start_byte - fn_node.start_byte
+                        value_end = children[-1].end_byte - fn_node.start_byte
+                        assignments[key] = raw[value_start:value_end].decode("utf-8", errors="replace")
+                return
+            for child in node.children:
+                visit(child)
+
+        visit(fn_node)
+        return assignments
+
+    @classmethod
+    def _resolve_local(cls, expression: str, assignments: Dict[str, str], seen: Optional[Set[str]] = None) -> str:
+        """Follow ``val`` aliases in the same function; cycles stop at the first name."""
+        seen = set() if seen is None else seen
+        candidate = expression.strip()
+        if re.fullmatch(r"[A-Za-z_]\w*", candidate) and candidate in assignments and candidate not in seen:
+            seen.add(candidate)
+            return cls._resolve_local(assignments[candidate], assignments, seen)
+        return expression
+
     def _check_sql_injection_rules(self, rel_path: str, lines: List[str], fn_node: Any,
                                    fn_text: str, user_params: List[Tuple[str, int, int]],
                                    findings: List[Finding]) -> None:
-        sql_sinks = ["jdbcTemplate.query", "jdbcTemplate.execute", "jdbcTemplate.update",
-                     "createNativeQuery", "executeQuery", "executeUpdate"]
+        # Receiver names vary (``jdbc``, ``jdbcTemplate``, injected bean), so the
+        # rule matches the JDBC method name on any receiver.  The SQL keyword
+        # check below keeps unrelated ``query``/``update`` calls out.
+        sql_sinks = [
+            "query", "queryForList", "queryForObject", "queryForMap", "queryForRowSet",
+            "update", "batchUpdate", "execute", "executeQuery", "executeUpdate",
+            "createNativeQuery", "prepareStatement",
+        ]
+        assignments = self._local_assignments(fn_node, fn_text)
 
-        for sink in sql_sinks:
-            if sink in fn_text:
+        for sink, call, args in self._sink_calls(fn_node, fn_text, sql_sinks):
+            if args:
+                sql_text = self._resolve_local(args[0], assignments)
+                if not self._SQL_STATEMENT.search(sql_text):
+                    continue
                 # Check if any user parameter is interpolated or concatenated into SQL
                 for p_name, p_line, p_col in user_params:
-                    # Look for string concatenation ("... " + p_name) or interpolation ("... $p_name ...")
-                    is_concatenated = f"+ {p_name}" in fn_text or f"{p_name} +" in fn_text
-                    is_interpolated = f"${p_name}" in fn_text or f"${{{p_name}}}" in fn_text
-
-                    if is_concatenated or is_interpolated:
-                        # Find line of the sink
-                        sink_line = p_line
-                        evidence = ""
-                        for l_idx, line in enumerate(lines):
-                            if sink in line or (is_interpolated and p_name in line) or (is_concatenated and p_name in line):
-                                sink_line = l_idx + 1
-                                evidence = line.strip()
-                                break
+                    # Look for string concatenation ("... " + p_name) or interpolation ("... $p_name ..."),
+                    # including an expression assigned to a local val in the same function.
+                    if self._argument_uses(sql_text, p_name, sql=True):
+                        sink_line = call.start_point[0] + 1
+                        evidence = "".join(lines[sink_line - 1:call.end_point[0] + 1]).strip()
 
                         fingerprint = hashlib.sha256(f"sast:sql:{rel_path}:{p_name}:{sink_line}".encode("utf-8")).hexdigest()[:16]
                         finding_id = f"fnd_sast_{fingerprint}"
@@ -286,10 +382,7 @@ class SastAnalyzer(BaseAnalyzer):
                             path=rel_path, startLine=p_line, endLine=p_line,
                             startColumn=p_col, endColumn=p_col + len(p_name)
                         )
-                        loc_sink = Location(
-                            path=rel_path, startLine=sink_line, endLine=sink_line,
-                            startColumn=1, endColumn=len(evidence) if evidence else 50
-                        )
+                        loc_sink = self._sink_location(rel_path, lines, call)
 
                         finding = Finding(
                             id=finding_id,
@@ -300,7 +393,7 @@ class SastAnalyzer(BaseAnalyzer):
                             severity=Severity.CRITICAL,
                             severityBasis="Пользовательский параметр конкатенируется или интерполируется напрямую в SQL-запрос",
                             confidence=Confidence.CONFIRMED,
-                            confidenceBasis="Полноценный Taint-путь от входного параметра контроллера до вызова SQL sink",
+                            confidenceBasis="Входной параметр входит в текст SQL-аргумента вызова напрямую или через локальный val той же функции",
                             status=FindingStatus.CONFIRMED,
                             primaryLocation=loc_sink,
                             relatedLocations=[loc_source],
@@ -323,118 +416,88 @@ class SastAnalyzer(BaseAnalyzer):
                             ],
                             redactedEvidence=evidence,
                             advisoryIds=[],
-                            coverageWarnings=[]
+                            coverageWarnings=["Анализ ограничен интерполяцией и конкатенацией в SQL-аргументе или локальном val той же функции; межпроцедурный поток не проверен"]
                         )
                         findings.append(finding)
                         break
 
-    def _strip_comments(self, text: str) -> str:
-        # Strip // comments and /* */ comments
-        text = re.sub(r'//.*', '', text)
-        text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-        return text
-
     def _check_path_traversal(self, rel_path: str, lines: List[str], fn_node: Any,
                               fn_text: str, user_params: List[Tuple[str, int, int]],
                               findings: List[Finding]) -> None:
-        code_without_comments = self._strip_comments(fn_text)
         file_sinks = ["File(", "FileInputStream(", "FileOutputStream(", "Path.of(", "Paths.get(", "FileReader("]
         handled_params: Set[str] = set()
 
-        for sink in file_sinks:
-            if sink in code_without_comments:
+        for sink, call, args in self._sink_calls(fn_node, fn_text, file_sinks):
+            if args:
                 for p_name, p_line, p_col in user_params:
                     if p_name in handled_params:
                         continue
-                    # Check if parameter is passed to File without canonical/normalize check
-                    if p_name in code_without_comments:
-                        # Check absence of proper boundary checks in code (not comments)
-                        has_safe_guard = ".canonicalPath" in code_without_comments or ".startsWith(" in code_without_comments or ".normalize(" in code_without_comments
-                        if not has_safe_guard:
-                            handled_params.add(p_name)
-                            sink_line = p_line
-                            evidence = ""
-                            for l_idx, line in enumerate(lines):
-                                if sink in line and p_name in line:
-                                    sink_line = l_idx + 1
-                                    evidence = line.strip()
-                                    break
-                            if not evidence:
-                                for l_idx, line in enumerate(lines):
-                                    if sink in line:
-                                        sink_line = l_idx + 1
-                                        evidence = line.strip()
-                                        break
+                    if any(self._argument_uses(argument, p_name) for argument in args):
+                        handled_params.add(p_name)
+                        sink_line = call.start_point[0] + 1
+                        evidence = "".join(lines[sink_line - 1:call.end_point[0] + 1]).strip()
 
-                            fingerprint = hashlib.sha256(f"sast:path:{rel_path}:{p_name}:{sink_line}".encode("utf-8")).hexdigest()[:16]
-                            finding_id = f"fnd_sast_{fingerprint}"
+                        fingerprint = hashlib.sha256(f"sast:path:{rel_path}:{p_name}:{sink_line}".encode("utf-8")).hexdigest()[:16]
+                        finding_id = f"fnd_sast_{fingerprint}"
 
-                            loc_source = Location(
-                                path=rel_path, startLine=p_line, endLine=p_line,
-                                startColumn=p_col, endColumn=p_col + len(p_name)
-                            )
-                            loc_sink = Location(
-                                path=rel_path, startLine=sink_line, endLine=sink_line,
-                                startColumn=1, endColumn=len(evidence) if evidence else 50
-                            )
+                        loc_source = Location(
+                            path=rel_path, startLine=p_line, endLine=p_line,
+                            startColumn=p_col, endColumn=p_col + len(p_name)
+                        )
+                        loc_sink = self._sink_location(rel_path, lines, call)
 
-                            finding = Finding(
-                                id=finding_id,
-                                fingerprint=fingerprint,
-                                analyzer=self.name,
-                                ruleId="KOTLIN-PATH-TRAVERSAL",
-                                ruleVersion="1.0.0",
-                                severity=Severity.HIGH,
-                                severityBasis="Пользовательский параметр используется при формировании пути к файлу без проверки выхода за границы директории",
-                                confidence=Confidence.CONFIRMED,
-                                confidenceBasis="Taint-анализ подтвердил передачу параметра в конструктор пути без санитизации",
-                                status=FindingStatus.CONFIRMED,
-                                primaryLocation=loc_sink,
-                                relatedLocations=[loc_source],
-                                trace=[
-                                    TraceStep(
-                                        step=1,
-                                        description=f"Входной параметр имени файла '{p_name}' получен из внешнего запроса",
-                                        location=loc_source
-                                    ),
-                                    TraceStep(
-                                        step=2,
-                                        description="Формирование файлового пути без вызова .normalize() и проверки .startsWith(baseDir)",
-                                        location=None
-                                    ),
-                                    TraceStep(
-                                        step=3,
-                                        description=f"Передача непроверенного пути в файловый sink '{sink}'",
-                                        location=loc_sink
-                                    )
-                                ],
-                                redactedEvidence=evidence,
-                                advisoryIds=[],
-                                coverageWarnings=[]
-                            )
-                            findings.append(finding)
+                        finding = Finding(
+                            id=finding_id,
+                            fingerprint=fingerprint,
+                            analyzer=self.name,
+                            ruleId="KOTLIN-PATH-TRAVERSAL",
+                            ruleVersion="1.0.0",
+                            severity=Severity.HIGH,
+                            severityBasis="Пользовательский параметр используется при формировании пути к файлу; безопасность границ директории требует проверки",
+                            confidence=Confidence.POTENTIAL,
+                            confidenceBasis="Параметр непосредственно передан в конструктор пути; корректность ограничений пути не доказана",
+                            status=FindingStatus.POTENTIAL,
+                            primaryLocation=loc_sink,
+                            relatedLocations=[loc_source],
+                            trace=[
+                                TraceStep(
+                                    step=1,
+                                    description=f"Входной параметр имени файла '{p_name}' получен из внешнего запроса",
+                                    location=loc_source
+                                ),
+                                TraceStep(
+                                    step=2,
+                                    description="Формирование пути из входного параметра; требуется проверка границ разрешённой директории",
+                                    location=None
+                                ),
+                                TraceStep(
+                                    step=3,
+                                    description=f"Передача непроверенного пути в файловый sink '{sink}'",
+                                    location=loc_sink
+                                )
+                            ],
+                            redactedEvidence=evidence,
+                            advisoryIds=[],
+                            coverageWarnings=["Границы директории и защитные проверки требуют ручного подтверждения"]
+                        )
+                        findings.append(finding)
 
     def _check_command_injection(self, rel_path: str, lines: List[str], fn_node: Any,
                                 fn_text: str, user_params: List[Tuple[str, int, int]],
                                 findings: List[Finding]) -> None:
         cmd_sinks = ["Runtime.getRuntime().exec", "ProcessBuilder("]
-        for sink in cmd_sinks:
-            if sink in fn_text:
+        for sink, call, args in self._sink_calls(fn_node, fn_text, cmd_sinks):
+            if args:
                 for p_name, p_line, p_col in user_params:
-                    if p_name in fn_text:
-                        sink_line = p_line
-                        evidence = ""
-                        for l_idx, line in enumerate(lines):
-                            if sink in line:
-                                sink_line = l_idx + 1
-                                evidence = line.strip()
-                                break
+                    if any(self._argument_uses(argument, p_name) for argument in args):
+                        sink_line = call.start_point[0] + 1
+                        evidence = "".join(lines[sink_line - 1:call.end_point[0] + 1]).strip()
 
                         fingerprint = hashlib.sha256(f"sast:cmd:{rel_path}:{p_name}:{sink_line}".encode("utf-8")).hexdigest()[:16]
                         finding_id = f"fnd_sast_{fingerprint}"
 
                         loc_source = Location(path=rel_path, startLine=p_line, endLine=p_line, startColumn=p_col, endColumn=p_col + len(p_name))
-                        loc_sink = Location(path=rel_path, startLine=sink_line, endLine=sink_line, startColumn=1, endColumn=len(evidence) if evidence else 50)
+                        loc_sink = self._sink_location(rel_path, lines, call)
 
                         finding = Finding(
                             id=finding_id,
@@ -444,19 +507,19 @@ class SastAnalyzer(BaseAnalyzer):
                             ruleVersion="1.0.0",
                             severity=Severity.CRITICAL,
                             severityBasis="Внешний ввод пользователя передается в вызов системного процесса операционной системы",
-                            confidence=Confidence.CONFIRMED,
-                            confidenceBasis="Прямой Taint-путь от аргумента функции в ProcessBuilder/exec",
-                            status=FindingStatus.CONFIRMED,
+                            confidence=Confidence.POTENTIAL,
+                            confidenceBasis="Входной параметр непосредственно передан в аргумент процесса; эксплуатация зависит от запускаемой команды",
+                            status=FindingStatus.POTENTIAL,
                             primaryLocation=loc_sink,
                             relatedLocations=[loc_source],
                             trace=[
                                 TraceStep(step=1, description=f"Параметр '{p_name}' получен из внешнего источника", location=loc_source),
-                                TraceStep(step=2, description="Передача ввода в аргументы вызова системной оболочки", location=None),
+                                TraceStep(step=2, description="Передача ввода в аргументы запускаемого процесса", location=None),
                                 TraceStep(step=3, description=f"Запуск процесса через {sink}", location=loc_sink)
                             ],
                             redactedEvidence=evidence,
                             advisoryIds=[],
-                            coverageWarnings=[]
+                            coverageWarnings=["ProcessBuilder/exec не обязательно запускает оболочку; проверьте управление командой и её аргументами"]
                         )
                         findings.append(finding)
                         break
@@ -511,26 +574,22 @@ class SastAnalyzer(BaseAnalyzer):
     def _check_idor(self, rel_path: str, lines: List[str], fn_node: Any,
                     fn_text: str, user_params: List[Tuple[str, int, int]],
                     findings: List[Finding]) -> None:
-        # Looks for methods like findById(id) where id is from user, without checking Principal/Authentication
-        has_find_by_id = "findById(" in fn_text or "getById(" in fn_text or "repository.get(" in fn_text
+        # Ownership may be enforced in a service outside this function.
         has_owner_check = "principal" in fn_text.lower() or "authentication" in fn_text.lower() or "currentuser" in fn_text.lower()
 
-        if has_find_by_id and not has_owner_check:
+        if has_owner_check:
+            return
+        for sink, call, args in self._sink_calls(fn_node, fn_text, ["findById", "getById", "repository.get"]):
             for p_name, p_line, p_col in user_params:
-                if "id" in p_name.lower():
-                    sink_line = p_line
-                    evidence = ""
-                    for l_idx, line in enumerate(lines):
-                        if ("findById" in line or "getById" in line) and p_name in line:
-                            sink_line = l_idx + 1
-                            evidence = line.strip()
-                            break
+                if "id" in p_name.lower() and any(self._argument_uses(argument, p_name) for argument in args):
+                    sink_line = call.start_point[0] + 1
+                    evidence = "".join(lines[sink_line - 1:call.end_point[0] + 1]).strip()
 
                     fingerprint = hashlib.sha256(f"sast:idor:{rel_path}:{p_name}:{sink_line}".encode("utf-8")).hexdigest()[:16]
                     finding_id = f"fnd_sast_{fingerprint}"
 
                     loc_source = Location(path=rel_path, startLine=p_line, endLine=p_line, startColumn=p_col, endColumn=p_col + len(p_name))
-                    loc_sink = Location(path=rel_path, startLine=sink_line, endLine=sink_line, startColumn=1, endColumn=len(evidence) if evidence else 50)
+                    loc_sink = self._sink_location(rel_path, lines, call)
 
                     finding = Finding(
                         id=finding_id,

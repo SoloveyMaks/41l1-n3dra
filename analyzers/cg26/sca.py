@@ -169,10 +169,11 @@ def analyze(
                     line=declaration.line,
                     end_line=declaration.end_line,
                     rule_id="CG26-SCA-001",
-                    confidence="confirmed",
+                    confidence="confirmed" if lock is not None else "potential",
                     confidence_basis=(
-                        "Объявленная версия прочитана из Gradle, сверена с lock-файлом и "
-                        "проверена числовым сравнением границ."
+                        "Версия записана в lock-файле и проверена числовым сравнением границ."
+                        if lock is not None else
+                        "Запрошенная версия прочитана из Gradle и проверена числовым сравнением; resolved dependency graph не проверен."
                     ),
                     severity_basis=(
                         f"Серьёзность advisory {record['id']}: {record.get('severity', 'MEDIUM')}; "

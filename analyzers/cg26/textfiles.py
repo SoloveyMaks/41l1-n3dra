@@ -103,6 +103,8 @@ def iter_project_files(
     """Return readable text files and a list of skipped entries."""
 
     root_path = Path(root).resolve()
+    if not root_path.is_dir():
+        raise ValueError("Scan root must be an existing project directory")
     suffixes = suffixes or TEXT_SUFFIXES
     excluded = EXCLUDED_DIRS | (excluded_dirs or set())
     files: list[TextFile] = []

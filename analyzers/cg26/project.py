@@ -74,6 +74,14 @@ class Project:
                 )
                 continue
             self.files[text_file.rel_path] = parsed
+            unmatched = [token for index, token in enumerate(parsed.tokens)
+                         if token.kind == "OP" and token.text in {"(", ")", "[", "]", "{", "}"}
+                         and index not in parsed.matching]
+            if unmatched:
+                self.parser_errors.append({
+                    "path": text_file.rel_path,
+                    "message": f"Unbalanced delimiter at line {unmatched[0].line}; structural parsing is incomplete",
+                })
             self.classes.extend(parsed.classes)
             self.functions.extend(parsed.functions)
             self.properties.extend(parsed.properties)

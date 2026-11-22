@@ -31,8 +31,9 @@ _PEM_RE = re.compile(
     re.DOTALL,
 )
 _SECRET_ASSIGN_RE = re.compile(
-    r"(?i)(?P<key>\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|"
-    r"private[_-]?key|access[_-]?key)\b\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\s\"',;]+)"
+    r"(?i)(?P<key>\b[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|"
+    r"private[_-]?key|access[_-]?key)[\w.-]*(?:[\"'])?\s*(?::\s*[\w.<>?]+\s*)?[:=]\s*)"
+    r"(?P<quote>[\"']?)(?P<value>[^\s\"',;]+)"
 )
 _ENV_DEFAULT_RE = re.compile(
     r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*):(?P<value>[^}]*)\}"
@@ -62,12 +63,17 @@ def mask_token(value: str) -> str:
     return f"{value[:2]}****{value[-2:]}"
 
 
-def mask_text(text: str) -> str:
+def mask_text(text: str, *, max_chars: Optional[int] = MAX_SNIPPET_CHARS) -> str:
     """Убирает секреты из фрагмента, сохраняя структуру кода для UI."""
     if not text:
         return ""
     text = _PEM_RE.sub("[REDACTED PRIVATE KEY]", text)
     text = mask_uri_credentials(text)
+    text = re.sub(
+        r'''(?i)(\b[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[\w.-]*(?:["'])?\s*(?::\s*[\w.<>?]+\s*)?[:=]\s*)(["'])([^\r\n]*?)\2''',
+        lambda m: f"{m.group(1)}{m.group(2)}{mask_token(m.group(3))}{m.group(2)}",
+        text,
+    )
     text = _SECRET_ASSIGN_RE.sub(
         lambda m: f"{m.group('key')}{m.group('quote')}{mask_token(m.group('value'))}",
         text,
@@ -79,8 +85,8 @@ def mask_text(text: str) -> str:
     text = _BEARER_RE.sub(lambda m: f"{m.group(1)}{mask_token(m.group(2))}", text)
     text = _LONG_TOKEN_RE.sub(lambda m: mask_token(m.group(0)), text)
     text = _CONTROL_RE.sub(" ", text)
-    if len(text) > MAX_SNIPPET_CHARS:
-        text = text[:MAX_SNIPPET_CHARS] + " …"
+    if max_chars is not None and len(text) > max_chars:
+        text = text[:max_chars] + " …"
     return text
 
 

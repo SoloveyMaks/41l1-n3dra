@@ -147,6 +147,11 @@ def verify_target_snapshot(snapshot: ServerSnapshot, view: BundleView) -> Verifi
         artifact_hash=snapshot.artifact_hash,
     )
     reasons.extend(_commit_reasons(snapshot.commit_sha, snapshot.details.get("provenanceNote")))
+    for name in ("run_id", "snapshot_id", "snapshot_manifest_hash", "artifact_hash", "artifact_row_hash", "manifest_hash", "bundle_content_sha256"):
+        if not getattr(snapshot, name):
+            reasons.append(f"server target provenance has no authoritative {name}")
+    if snapshot.bundle is None:
+        reasons.append("server target snapshot has no published bundle")
     if snapshot.manifest_hash and (
         snapshot.manifest_hash != snapshot.snapshot_manifest_hash
     ):
@@ -180,6 +185,8 @@ def _expected_present(
                 f"reference snapshot has no {expected.category} scanner for {expected.id}"
             )
             continue
+        if not outcome.ready or outcome.scopes.get((expected.path, expected.rule_id)) != "checked":
+            reasons.append(f"reference snapshot has no completed checked scope for {expected.id}")
         candidates = [
             actual
             for actual in outcome.findings
@@ -210,6 +217,8 @@ def _expected_present(
                 f"reference snapshot has no {control.category} scanner for control {control.id}"
             )
             continue
+        if not outcome.ready or outcome.scopes.get((control.path, control.rule_id)) != "checked":
+            reasons.append(f"reference snapshot has no completed checked scope for control {control.id}")
         hits = [
             actual
             for actual in outcome.findings

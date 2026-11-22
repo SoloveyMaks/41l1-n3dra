@@ -11,23 +11,26 @@ ADVISORIES_FILE = Path(__file__).resolve().parent.parent / "analyzers" / "adviso
 class AiResponseValidator:
     def __init__(self, advisories_path: Optional[Path] = None):
         path = advisories_path or ADVISORIES_FILE
-        self.advisory_fixed_versions: Dict[str, str] = {}
+        self.advisory_fixed_versions: Dict[str, Set[str]] = {}
         if path.exists():
             advisories = json.loads(path.read_text(encoding="utf-8"))
             for advisory in advisories:
-                cve_id = str(advisory.get("id") or "").strip()
-                fixed_version = str(advisory.get("fixed_version") or "").strip()
-                if cve_id and fixed_version:
-                    self.advisory_fixed_versions[cve_id] = fixed_version
+                ids = [advisory.get("id"), *advisory.get("aliases", [])]
+                versions = {str(version).strip() for version in advisory.get("fixed_versions", []) if str(version).strip()}
+                if advisory.get("fixed_version"):
+                    versions.add(str(advisory["fixed_version"]).strip())
+                for identifier in ids:
+                    if identifier:
+                        self.advisory_fixed_versions.setdefault(str(identifier).upper(), set()).update(versions)
 
     def allowed_fixed_versions_for(self, finding: Finding) -> List[str]:
         """Only versions tied to this finding's own advisories are allowed."""
         if finding.analyzer != "sca":
             return []
         versions = {
-            self.advisory_fixed_versions[advisory_id]
+            version
             for advisory_id in finding.advisoryIds
-            if advisory_id in self.advisory_fixed_versions
+            for version in self.advisory_fixed_versions.get(advisory_id.upper(), set())
         }
         return sorted(versions)
 
@@ -91,11 +94,11 @@ class AiResponseValidator:
         finding_map: Dict[str, Finding] = {f.id: f for f in original_findings}
         all_allowed_cves: Set[str] = set()
         for finding in original_findings:
-            all_allowed_cves.update(finding.advisoryIds)
+            all_allowed_cves.update(identifier.upper() for identifier in finding.advisoryIds)
 
         summary = ai_data.get("summary")
         if isinstance(summary, str):
-            foreign_summary_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", summary)) - all_allowed_cves
+            foreign_summary_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", summary.upper())) - all_allowed_cves
             if foreign_summary_cves:
                 errors.append(
                     "ОТКЛОНЕНО ВАЛИДАТОРОМ: summary содержит CVE вне advisoryIds находок: "
@@ -136,8 +139,8 @@ class AiResponseValidator:
             explanation = explanation.strip()
             remediation = remediation.strip()
 
-            allowed_cves = set(target_finding.advisoryIds)
-            foreign_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", f"{explanation} {remediation}")) - allowed_cves
+            allowed_cves = {identifier.upper() for identifier in target_finding.advisoryIds}
+            foreign_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", f"{explanation} {remediation}".upper())) - allowed_cves
             if foreign_cves:
                 errors.append(
                     f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {f_id} модель указала CVE вне её advisoryIds: "
@@ -159,13 +162,13 @@ class AiResponseValidator:
                         f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для не-SCA находки {f_id} версия "
                         f"{suggested_fixed_version} недопустима"
                     )
-                    suggested_fixed_version = None
+                    continue
                 elif suggested_fixed_version not in allowed_versions:
                     errors.append(
                         f"ОТКЛОНЕНО ВАЛИДАТОРОМ: версия {suggested_fixed_version} не связана "
                         f"с advisory {sorted(target_finding.advisoryIds)} находки {f_id}"
                     )
-                    suggested_fixed_version = None
+                    continue
 
             valid_items.append(AiItem(
                 findingId=f_id,

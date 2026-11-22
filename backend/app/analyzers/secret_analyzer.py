@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import List, Tuple
@@ -14,8 +15,7 @@ from backend.app.contracts.schemas import (
     Location, ScanResult, Severity, TraceStep
 )
 
-# Secret HMAC key for internal session hashing (prevents rainbow table attacks on short passwords)
-HMAC_SECRET_KEY = b"cyber-garden-2026-secret-hmac-salt"
+_LOCAL_HMAC_KEY = secrets.token_bytes(32)
 
 TEXT_EXTENSIONS = {
     ".kt", ".kts", ".java", ".properties", ".yaml", ".yml",
@@ -27,7 +27,9 @@ MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
 
 
 def compute_secret_hmac(secret: str) -> str:
-    return hmac.new(HMAC_SECRET_KEY, secret.encode("utf-8", errors="ignore"), hashlib.sha256).hexdigest()[:16]
+    configured = (os.getenv("CG26_HMAC_KEY") or os.getenv("CG_ANCHOR_HMAC_KEY") or os.getenv("CG_SESSION_SECRET") or "").strip()
+    key = configured.encode("utf-8") if configured else _LOCAL_HMAC_KEY
+    return hmac.new(key, secret.encode("utf-8", errors="ignore"), hashlib.sha256).hexdigest()[:16]
 
 
 class SecretAnalyzer(BaseAnalyzer):
@@ -86,7 +88,7 @@ class SecretAnalyzer(BaseAnalyzer):
         rules_executed = [r[0] for r in self.rules]
 
         root_path = Path(artifact_path)
-        if not root_path.exists():
+        if not root_path.is_dir():
             return ScanResult(
                 analyzer=self.name,
                 findings=[],
@@ -99,6 +101,10 @@ class SecretAnalyzer(BaseAnalyzer):
             for file_name in files:
                 file_path = Path(root) / file_name
                 rel_path = file_path.relative_to(root_path).as_posix()
+                if file_path.is_symlink():
+                    files_skipped += 1
+                    diagnostics.append(Diagnostic(level="warning", message=f"Символическая ссылка пропущена: {rel_path}", source="SecretAnalyzer"))
+                    continue
 
                 # Skip non-text or oversized
                 ext = file_path.suffix.lower()
@@ -119,8 +125,7 @@ class SecretAnalyzer(BaseAnalyzer):
                         continue
 
                     raw_bytes = file_path.read_bytes()
-                    # Decode as utf-8, replace bad chars
-                    content = raw_bytes.decode("utf-8", errors="replace")
+                    content = raw_bytes.decode("utf-8")
                     lines = content.splitlines(keepends=True)
                     files_scanned += 1
                     lines_of_code += len(lines)
@@ -147,6 +152,15 @@ class SecretAnalyzer(BaseAnalyzer):
                                         if match.lastindex and match.lastindex >= 1
                                         else full_match_str
                                     )
+                                if rule_id != "SECRET-PRIVATE-KEY":
+                                    if raw_for_hmac.startswith(("${", "$", "System.getenv", "getenv(", "process.env")):
+                                        continue
+                                    if re.fullmatch(r"(?i)(?:\*+|<[^>]+>|changeme|change[_-]me|placeholder|redacted)", raw_for_hmac):
+                                        continue
+                                if rule_id == "SECRET-ENV-DEFAULT":
+                                    context = line[:match.start()] + match.group(0).split(":", 1)[0]
+                                    if not re.search(r"(?i)password|passwd|pwd|secret|token|key|credential", context):
+                                        continue
 
                                 # Mask the whole line, including every @ in userinfo.
                                 redacted_evidence = mask_text(line.strip())
@@ -157,7 +171,7 @@ class SecretAnalyzer(BaseAnalyzer):
                                 byte_end = current_byte_offset + len(line[:match.end()].encode("utf-8"))
 
                                 secret_hmac_id = compute_secret_hmac(raw_for_hmac)
-                                fingerprint = hashlib.sha256(f"{rule_id}:{rel_path}:{secret_hmac_id}".encode("utf-8")).hexdigest()[:16]
+                                fingerprint = hashlib.sha256(f"{rule_id}:{rel_path}:{byte_start}:{secret_hmac_id}".encode("utf-8")).hexdigest()[:16]
                                 finding_id = f"fnd_sec_{fingerprint}"
 
                                 location = Location(

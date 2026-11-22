@@ -44,13 +44,7 @@ def _unconditional_true(tokens: list[Token]) -> bool:
     arrow = next((index for index, token in enumerate(clean) if token.is_op("->")), None)
     if arrow is not None:
         clean = clean[arrow + 1 :]
-    if not any(token.is_ident("true") for token in clean):
-        return False
-    if any(token.kind == "IDENT" and token.text in {"if", "when", "false"} for token in clean):
-        return False
-    if any(token.kind == "OP" and token.text in {"&&", "||", "!"} for token in clean):
-        return False
-    return True
+    return len(clean) == 1 and clean[0].is_ident("true")
 
 
 def _lambda_after(tokens: list[Token], matching: dict[int, int], index: int) -> tuple[bool, int]:
@@ -76,7 +70,7 @@ def _has_connection_use(function) -> bool:
 def _trust_manager_disabled(function, matching) -> tuple[bool, int | None]:
     tokens = function.body
     for index, token in enumerate(tokens):
-        if not (token.kind == "IDENT" and token.text in {"checkServerTrusted", "checkClientTrusted"}):
+        if not token.is_ident("checkServerTrusted"):
             continue
         cursor = index + 1
         if cursor < len(tokens) and tokens[cursor].is_op("("):
