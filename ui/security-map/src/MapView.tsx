@@ -126,7 +126,7 @@ const humanCoverageWarning = (warning: string): string => {
 
 const diagnosticText = (code: string, message: string): string => {
   if (code === "CF-STATIC-ONLY")
-    return "Проверялся только исходный код: программа не запускалась, настройки среды и внешние фильтры не проверялись.";
+    return "Статический анализ: программа не запускалась. Конфигурация, проверки доступа и архивы проверены по тексту; значения окружения не подставлялись.";
   return message;
 };
 

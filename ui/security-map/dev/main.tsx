@@ -103,9 +103,9 @@ const probeModel: MapViewModel = {
     { id: "diag-1", code: "CF-STATIC-ONLY", message: "Только статический анализ; runtime не проверялся.", evidenceRefs: [] },
   ],
   coverage: {
-    status: "partial",
+    status: "complete",
     summary: "Проверка раскладки: 17 узлов, 16 связей, 4 проблемы.",
-    warnings: ["runtime-configuration"],
+    warnings: [],
   },
 };
 

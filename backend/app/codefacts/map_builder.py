@@ -134,8 +134,9 @@ def build_run_map(*, workspace: str, internal_run_id: str, run_id: str,
         "analysisBundle": payload.get("analysisBundle"),
         "createdAt": _now(),
         "limitations": [
-            "Статический анализ исходников; код не исполнялся.",
-            "Runtime-конфигурация, прокси и внешние фильтры не проверялись.",
+            "Статический анализ; код не исполнялся.",
+            "Конфигурация, method security и архивы проверены по тексту: "
+            "значения окружения не подставлялись, runtime enforcement не исполнялся.",
             "Owner-check может существовать вне просмотренного пути и не выдумывается.",
         ],
     }

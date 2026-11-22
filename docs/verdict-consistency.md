@@ -89,8 +89,10 @@ SQL narrow proof не менялся; на несравнимой паре он 
 
 ## Ограничение
 
-Пока canonical coverage не покрывает runtime-конфигурацию, runtime-guards и
-бинарники, а `expectedScopesVerified` не выставлен доверенным publish-путём,
-полный `pass` невозможен. Это намеренно: лучше честный `inconclusive`, чем
-ложный `complete`. Для будущего `pass` нужно реально закрыть эти scopes и
-подтвердить expected scopes, не меняя этот guard на «всегда true».
+Canonical coverage теперь проверяет runtime-конфигурацию, method security и
+архивы/бинарники по факту (`config_static`, `guards_static`,
+`archives_static`), а `expectedScopesVerified` выставляется publish-путём.
+Пока `expectedScopesVerified` не подтверждён, полный `pass` невозможен.
+Это намеренно: лучше честный `inconclusive`, чем ложный `complete`. Для
+будущего `pass` нужно подтвердить expected scopes, не меняя этот guard на
+«всегда true».

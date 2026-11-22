@@ -87,3 +87,16 @@ coverage_reasons=[Полнота проверки не установлена: �
 scopes не верифицированы, полная полнота не может быть заявлена. Это
 намеренно; после реального закрытия scopes builder выдаст 100% только при
 подтверждённом complete.
+
+## Обновление 2026-11-22
+
+Три строки `skipped_scopes=[runtime-configuration, runtime-guards,
+binaries-and-archives]` больше не зашиты в `_build_coverage`. Конфигурация,
+method security и архивы/бинарники проверяются по факту
+(`backend/app/codefacts/config_static.py`, `guards_static.py`,
+`archives_static.py`); `skippedScopes` собирается только из реальных причин
+(encrypted / too-large / unsupported archive, unresolved
+security-relevant placeholder, decode error). Найденные риски уходят в карту и
+в отчёт/policy одним потоком `extract_facts` → `merge_extra_findings`.
+Правило `completeness_known=true` только при `coverageStatus=complete` и
+`expectedScopesVerified=true` не менялось.
