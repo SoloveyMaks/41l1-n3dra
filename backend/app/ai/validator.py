@@ -7,6 +7,16 @@ from backend.app.contracts.schemas import AiItem, Finding
 
 ADVISORIES_FILE = Path(__file__).resolve().parent.parent / "analyzers" / "advisories.json"
 
+LOCATION_REF_RE = re.compile(
+    r"([A-Za-z0-9_./\\-]+\.(?:kt|kts|java|xml|ya?ml|properties|gradle|toml|json))"
+    r"(?::(\d+)(?:\s*[-–]\s*\d+)?)?"
+)
+UPDATE_TARGET_RE = re.compile(
+    r"(?i)(?:обнов\w*|upgrade\w*|перейдите\s+на|используйте\s+версию|"
+    r"fixed\s+in|fix(?:ed)?\s+(?:to|in)|version)\s*(?:до|to|на)?\s*[:—-]?\s*"
+    r"(\d+\.\d+(?:\.\d+)?(?:[-.][A-Za-z0-9]+)?)"
+)
+
 
 class AiResponseValidator:
     def __init__(self, advisories_path: Optional[Path] = None):
@@ -69,6 +79,67 @@ class AiResponseValidator:
             fixed_version = item.get("suggestedFixedVersion")
             if fixed_version is not None and not isinstance(fixed_version, str):
                 errors.append(f"Элемент #{idx}: suggestedFixedVersion должен быть строкой или null")
+        return errors
+
+    def _evidence_locations(self, finding: Finding) -> List[Tuple[str, int, int]]:
+        rows: List[Tuple[str, int, int]] = []
+        for location in [finding.primaryLocation, *finding.relatedLocations]:
+            path = str(getattr(location, "path", "") or "").replace("\\", "/").lstrip("./")
+            if not path:
+                continue
+            start = int(getattr(location, "startLine", 0) or 0)
+            end = int(getattr(location, "endLine", start) or start)
+            rows.append((path, start, max(start, end)))
+        return rows
+
+    def _free_text_grounding_errors(
+        self,
+        finding: Finding,
+        text: str,
+        suggested_fixed_version: Optional[str],
+    ) -> List[str]:
+        """Reject file/line and update-target versions the finding cannot back.
+
+        A model may only cite evidence that belongs to the finding it explains:
+        otherwise a plausible-but-invented path, line or upgrade version reaches
+        the report as if it had been verified.
+        """
+        errors: List[str] = []
+        evidence = self._evidence_locations(finding)
+        for match in LOCATION_REF_RE.finditer(text):
+            ref_path = match.group(1).replace("\\", "/").lstrip("./")
+            ref_line = int(match.group(2)) if match.group(2) else None
+            if not ref_path or not evidence:
+                errors.append(
+                    f"ОТКЛОНЕНО ВАЛИДАТОРОМ: находка {finding.id} не имеет evidence для ссылки {ref_path}"
+                )
+                continue
+            matches = [
+                row
+                for row in evidence
+                if row[0] == ref_path
+                or row[0].endswith("/" + ref_path)
+                or ref_path.endswith("/" + row[0])
+            ]
+            if not matches:
+                errors.append(
+                    f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {finding.id} указан путь {ref_path} вне её evidence"
+                )
+                continue
+            if ref_line is not None and not any(start <= ref_line <= end for _, start, end in matches):
+                errors.append(
+                    f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {finding.id} строка {ref_line} "
+                    f"вне evidence {matches[0][0]}:{matches[0][1]}-{matches[0][2]}"
+                )
+        allowed_versions = set(self.allowed_fixed_versions_for(finding))
+        if suggested_fixed_version:
+            allowed_versions.add(suggested_fixed_version)
+        for version in UPDATE_TARGET_RE.findall(text):
+            if version not in allowed_versions:
+                errors.append(
+                    f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {finding.id} предложена версия {version} "
+                    f"без подтверждения в advisory"
+                )
         return errors
 
     def validate(self, ai_data: Dict[str, Any], original_findings: List[Finding]) -> Tuple[bool, List[str], List[AiItem]]:
@@ -169,6 +240,13 @@ class AiResponseValidator:
                         f"с advisory {sorted(target_finding.advisoryIds)} находки {f_id}"
                     )
                     continue
+
+            grounding_errors = self._free_text_grounding_errors(
+                target_finding, f"{explanation}\n{remediation}", suggested_fixed_version
+            )
+            if grounding_errors:
+                errors.extend(grounding_errors)
+                continue
 
             valid_items.append(AiItem(
                 findingId=f_id,

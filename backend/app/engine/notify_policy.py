@@ -14,6 +14,7 @@ DNS-проверка возвращает конкретные адреса. Run
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -58,6 +59,26 @@ def _is_global_ip(value: str) -> bool:
         ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
         or ip.is_reserved or ip.is_unspecified
     )
+
+
+def _server_local_allowlist() -> set[str]:
+    """Destinations the server operator explicitly allows for local delivery.
+
+    A user checkbox must never be enough to POST to an arbitrary port on the
+    server host; the process environment owns the permission.
+    """
+    raw = os.getenv("CG_NOTIFY_ALLOW_LOCAL_HOSTS", "")
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def _local_destination_allowed(host: str, port: int) -> bool:
+    allowlist = _server_local_allowlist()
+    if not allowlist:
+        return False
+    candidates = {host, f"{host}:{port}"}
+    if host == "localhost":
+        candidates.update({"127.0.0.1", "::1", f"127.0.0.1:{port}", f"[::1]:{port}"})
+    return any(item in candidates for item in allowlist)
 
 
 def _is_loopback(value: str) -> bool:
@@ -138,8 +159,13 @@ def validate_webhook_url(url: str, *, allow_local: bool, allow_external: bool) -
             return NotificationDecision(False, "Локальный/частный адрес запрещён без allowLocal=true")
         if not all(_is_loopback(address) for address in addresses):
             return NotificationDecision(False, "В allowLocal разрешён только loopback, не частная сеть")
+        if not _local_destination_allowed(host, port):
+            return NotificationDecision(
+                False,
+                "Локальный приёмник не разрешён серверной настройкой CG_NOTIFY_ALLOW_LOCAL_HOSTS",
+            )
         return NotificationDecision(
-            True, "Локальный тестовый приёмник разрешён явным allowLocal=true",
+            True, "Локальный тестовый приёмник разрешён allowLocal=true и серверным allowlist",
             local=True, addresses=tuple(addresses),
         )
 
