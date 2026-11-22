@@ -106,9 +106,6 @@ class UnixSocketProxyBridge:
                 )
             except OSError:
                 logger.debug("telegram proxy socket is unavailable")
-                writer.close()
-                with contextlib.suppress(Exception):
-                    await writer.wait_closed()
                 return
             try:
                 await asyncio.gather(
@@ -116,13 +113,17 @@ class UnixSocketProxyBridge:
                     self._pipe(unix_reader, writer),
                 )
             finally:
-                for stream in (unix_writer, writer):
-                    stream.close()
-                    with contextlib.suppress(Exception):
-                        await stream.wait_closed()
+                unix_writer.close()
+                with contextlib.suppress(Exception):
+                    await unix_writer.wait_closed()
         finally:
-            if task is not None:
-                self._connections.discard(task)
+            writer.close()
+            try:
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+            finally:
+                if task is not None:
+                    self._connections.discard(task)
 
     @staticmethod
     async def _pipe(

@@ -18,6 +18,8 @@ Telegram network call is made: the API object is a recording fake.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import os
 import sys
 from pathlib import Path
@@ -94,7 +96,11 @@ class FakeRepo:
     def get_binding(self, chat_id: int) -> Optional[Binding]:
         return self.binding
 
-    def get_settings(self, chat_id: int) -> Settings:
+    def get_settings(self, chat_id: int, **kwargs: Any) -> Settings:
+        epoch = kwargs.get("binding_epoch")
+        if epoch is not None:
+            if self.binding is None or int(epoch) != int(self.binding.binding_epoch):
+                return Settings(chat_id=CHAT_ID)
         return self.settings
 
     def set_settings(self, chat_id: int, **kwargs: Any) -> Settings:
@@ -297,7 +303,16 @@ async def check_callbacks() -> None:
     check("foreign chat rejected", not repo.claimed and not api.calls)
 
     # Invalid and oversized data: polite alert, refreshed menu, no write.
-    for index, payload in enumerate(["garbage", "x" * 65, "n1.mode.0.2.deadbeefdead"], start=10):
+    # The n1 callback is signed exactly like the old release, so only the
+    # version check can reject it.
+    legacy_body = "n1.mode.0.2"
+    legacy_signature = hmac.new(
+        SECRET.encode("utf-8"),
+        f"{legacy_body}|{CHAT_ID}|{CHAT_ID}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:12]
+    legacy = f"{legacy_body}.{legacy_signature}"
+    for index, payload in enumerate(["garbage", "x" * 65, legacy], start=10):
         repo, api = bound_repo(), FakeAPI()
         runtime = make_runtime(repo, api)
         await runtime.handle_update(callback_update(payload, update_id=index))
@@ -349,7 +364,7 @@ async def check_callbacks() -> None:
         button["text"]
         for row in edit[4]["reply_markup"]["inline_keyboard"]
         for button in row
-        if button.get("callback_data", "").startswith("n1.mode.")
+        if button.get("callback_data", "").startswith("n2.mode.")
     ]
     check("selected mode has check", "✓ JSON" in labels and "Кратко" in labels, labels)
     check("mode edit mentions delivery", "JSON" in edit[3])
@@ -543,7 +558,7 @@ async def check_start_and_commands() -> None:
         button["callback_data"]
         for row in api.kinds("send")[-1][3]["reply_markup"]["inline_keyboard"]
         for button in row
-        if button.get("callback_data", "").startswith("n1.mode.")
+        if button.get("callback_data", "").startswith("n2.mode.")
     )
     repo.binding = Binding(
         chat_id=CHAT_ID, user_id=USER_ID, workspace_id=WORKSPACE_ID,

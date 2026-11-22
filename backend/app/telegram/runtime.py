@@ -63,6 +63,8 @@ OUTBOX_RETRY_MAX_SECONDS = 300
 JOB_STOP_GRACE_SECONDS = 15
 JOB_RECOVERY_INTERVAL_SECONDS = 5
 JOB_RECOVERY_BATCH = 20
+MAX_ACTIVE_JOB_TASKS = 20
+DELIVERY_TIMEOUT_SECONDS = 75
 
 HELP_TEXT = """NEDRA Telegram
 
@@ -347,8 +349,11 @@ class TelegramRuntime:
 
     async def recover_jobs_once(self) -> int:
         """Bounded pass: settle orphaned runs and spawn claimable jobs."""
+        capacity = MAX_ACTIVE_JOB_TASKS - len(self._active_job_ids)
+        if capacity <= 0:
+            return 0
         ids = await asyncio.to_thread(
-            self.repo.recover_jobs, JOB_RECOVERY_BATCH, MAX_JOB_RECOVERY_ATTEMPTS
+            self.repo.recover_jobs, min(JOB_RECOVERY_BATCH, capacity), MAX_JOB_RECOVERY_ATTEMPTS
         )
         for job_id in ids:
             self._spawn_job(job_id)
@@ -591,10 +596,27 @@ class TelegramRuntime:
                 return item.get("name") or scenario_id
         return f"{scenario_id} (недоступен)"
 
+    async def _binding_settings(self, binding: Any):
+        return await self._repo(
+            "get_settings", binding.chat_id, user_id=binding.user_id,
+            workspace_id=binding.workspace_id, binding_epoch=binding.binding_epoch,
+        )
+
+    async def _current_view(self, binding: Any, text: str, markup: Any) -> tuple:
+        fresh = await self._repo("get_binding", binding.chat_id)
+        if fresh is None or (
+            fresh.user_id != binding.user_id
+            or fresh.workspace_id != binding.workspace_id
+            or fresh.binding_epoch != binding.binding_epoch
+        ):
+            ctx = self._menu_ctx(binding.chat_id, binding.chat_id, 0)
+            return self._binding_text(), binding_markup(ctx) if ctx else None
+        return text, markup
+
     async def _main_view(
         self, binding: Any, sender_id: int, notice: Optional[str] = None,
     ) -> tuple:
-        settings = await self._repo("get_settings", binding.chat_id)
+        settings = await self._binding_settings(binding)
         scenarios = await self._scenarios(binding.workspace_id)
         lines = []
         if notice:
@@ -608,7 +630,9 @@ class TelegramRuntime:
             "и запущу выбранный сценарий.",
         ])
         ctx = self._menu_ctx(binding.chat_id, sender_id, binding.binding_epoch)
-        return "\n".join(lines), main_menu_markup(ctx) if ctx else None
+        return await self._current_view(
+            binding, "\n".join(lines), main_menu_markup(ctx) if ctx else None,
+        )
 
     async def _settings_view(
         self,
@@ -618,7 +642,7 @@ class TelegramRuntime:
         page: int = 0,
         notice: Optional[str] = None,
     ) -> tuple:
-        settings = await self._repo("get_settings", binding.chat_id)
+        settings = await self._binding_settings(binding)
         scenarios = await self._scenarios(binding.workspace_id)
         pages = scenario_page_count(len(scenarios), SCENARIO_PAGE_SIZE)
         safe_page = max(0, min(int(page), pages - 1))
@@ -644,10 +668,10 @@ class TelegramRuntime:
             scenarios=scenarios,
             page=safe_page,
         ) if ctx else None
-        return "\n".join(lines), markup
+        return await self._current_view(binding, "\n".join(lines), markup)
 
     async def _status_view(self, binding: Any, sender_id: int) -> tuple:
-        settings = await self._repo("get_settings", binding.chat_id)
+        settings = await self._binding_settings(binding)
         scenarios = await self._scenarios(binding.workspace_id)
         runs = await self._recent_runs(binding.workspace_id)
         jobs = await self._repo("list_jobs",
@@ -676,7 +700,9 @@ class TelegramRuntime:
         else:
             lines.append("Запусков пока нет. Пришлите ссылку на репозиторий.")
         ctx = self._menu_ctx(binding.chat_id, sender_id, binding.binding_epoch)
-        return "\n".join(lines), checks_markup(ctx) if ctx else None
+        return await self._current_view(
+            binding, "\n".join(lines), checks_markup(ctx) if ctx else None,
+        )
 
     async def _edit_or_send(
         self,
@@ -1080,7 +1106,7 @@ class TelegramRuntime:
         if binding is None:
             await self._render_binding(chat_id, chat_id, None)
             return
-        settings = await self._repo("get_settings", chat_id)
+        settings = await self._binding_settings(binding)
         if not settings.scenario:
             text, markup = await self._settings_view(
                 binding, chat_id,
@@ -1116,7 +1142,7 @@ class TelegramRuntime:
         await self._reply(chat_id, f"Задача принята: {job.job_id}\nИмпорт и запуск сценария идут в фоне.")
 
     def _spawn_job(self, job_id: str) -> None:
-        if job_id in self._active_job_ids:
+        if job_id in self._active_job_ids or len(self._active_job_ids) >= MAX_ACTIVE_JOB_TASKS:
             return
         self._active_job_ids.add(job_id)
         task = asyncio.create_task(self._run_job(job_id), name=f"telegram-job-{job_id}")
@@ -1133,7 +1159,7 @@ class TelegramRuntime:
 
         task.add_done_callback(_done)
 
-    async def _heartbeat_job(self, job: Any) -> None:
+    async def _heartbeat_job(self, job: Any, owner: asyncio.Task) -> None:
         interval = max(5.0, JOB_LEASE_SECONDS / 3)
         while True:
             await asyncio.sleep(interval)
@@ -1143,8 +1169,10 @@ class TelegramRuntime:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("telegram job heartbeat failed: %s", self._safe_error(exc))
+                owner.cancel()
                 return
             if not alive:
+                owner.cancel()
                 return
 
     async def _run_job(self, job_id: str) -> None:
@@ -1154,7 +1182,7 @@ class TelegramRuntime:
         if job is None:
             return
         heartbeat = asyncio.create_task(
-            self._heartbeat_job(job), name=f"telegram-heartbeat-{job_id}"
+            self._heartbeat_job(job, asyncio.current_task()), name=f"telegram-heartbeat-{job_id}"
         )
         try:
             if not await self._repo("job_lease_valid", job):
@@ -1171,6 +1199,8 @@ class TelegramRuntime:
                 revision_id = workflow.get("latest_revision_id")
                 if not revision_id:
                     raise ValueError("workflow revision недоступна")
+                if not await self._repo("job_lease_valid", job):
+                    return
                 run_id = str(uuid.uuid4())
                 await self._db("create_run",
                     run_id=run_id,
@@ -1217,7 +1247,7 @@ class TelegramRuntime:
         except asyncio.CancelledError:
             try:
                 await self._repo("set_job_status",
-                    job_id, "cancelled", error="runtime stopped",
+                    job_id, "cancelled", error="runtime stopped or authorization lost",
                     binding_epoch=job.binding_epoch,
                     lease_token=job.lease_token,
                     allow_cancelled=True,
@@ -1249,7 +1279,7 @@ class TelegramRuntime:
     async def _enqueue_notifications(self, job: Any, run_id: str) -> None:
         if not await self._repo("job_is_current", job):
             return
-        settings = await self._repo("get_settings", job.chat_id)
+        settings = await self._binding_settings(job)
         if settings.delivery_mode in ("alerts", "both"):
             await self._repo("enqueue_outbox",
                 job.chat_id, run_id, "alert",
@@ -1378,11 +1408,17 @@ class TelegramRuntime:
                 await complete("cancelled", error="owner changed")
                 return
             if item.kind == "alert":
-                await self.api.send_message(item.chat_id, text or "")
+                await asyncio.wait_for(
+                    self.api.send_message(item.chat_id, text or ""),
+                    timeout=DELIVERY_TIMEOUT_SECONDS,
+                )
             else:
-                await self.api.send_document(
-                    item.chat_id, report.filename, report.content,
-                    caption=caption or "",
+                await asyncio.wait_for(
+                    self.api.send_document(
+                        item.chat_id, report.filename, report.content,
+                        caption=caption or "",
+                    ),
+                    timeout=DELIVERY_TIMEOUT_SECONDS,
                 )
             if not await complete("sent"):
                 logger.warning("telegram outbox %s finished after cancellation", item.id)

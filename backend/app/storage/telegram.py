@@ -166,6 +166,35 @@ def _outbox(row: Dict[str, Any]) -> OutboxItem:
 class TelegramRepository:
     """All SQL is scoped by explicit chat/user/workspace arguments."""
 
+    @staticmethod
+    def _lock_binding_changes(conn: Any) -> None:
+        # Bind, move and unbind share one transaction lock, including absent rows.
+        conn.execute("SELECT pg_advisory_xact_lock(741205917)")
+
+    @staticmethod
+    def _lock_owner(conn: Any, chat_id: int, user: Any, workspace: Any, epoch: int) -> bool:
+        row = conn.execute(
+            """
+            SELECT b.chat_id FROM telegram.bindings b
+            JOIN account.users u ON u.user_id = b.user_id
+              AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
+            WHERE b.chat_id = %s AND b.user_id = %s
+              AND b.workspace_id = %s AND b.binding_epoch = %s
+            FOR SHARE OF b, u
+            """,
+            (int(chat_id), user, workspace, int(epoch)),
+        ).fetchone()
+        return row is not None
+
+    def _lock_job_owner(self, conn: Any, job_id: Any) -> bool:
+        owner = conn.execute(
+            "SELECT * FROM telegram.jobs WHERE job_id = %s", (job_id,),
+        ).fetchone()
+        return owner is not None and self._lock_owner(
+            conn, owner["chat_id"], owner["user_id"], owner["workspace_id"],
+            owner["binding_epoch"],
+        )
+
     def issue_binding_code(
         self,
         user_id: str,
@@ -180,6 +209,14 @@ class TelegramRepository:
         now = datetime.now(timezone.utc)
         expires = now + timedelta(seconds=ttl)
         with get_pool().connection() as conn:
+            self._lock_binding_changes(conn)
+            active = conn.execute(
+                "SELECT user_id FROM account.users WHERE user_id = %s "
+                "AND workspace_id = %s AND disabled_at IS NULL FOR SHARE",
+                (user, workspace),
+            ).fetchone()
+            if active is None:
+                raise ValueError("Аккаунт недоступен")
             # Only one live code per account; old unopened codes are invalidated.
             conn.execute(
                 "DELETE FROM telegram.binding_codes "
@@ -211,13 +248,17 @@ class TelegramRepository:
         digest = _code_hash(code.strip())
         now = datetime.now(timezone.utc)
         with get_pool().connection() as conn:
+            self._lock_binding_changes(conn)
             row = conn.execute(
                 """
-                UPDATE telegram.binding_codes
+                UPDATE telegram.binding_codes c
                    SET consumed_at = now(), consumed_chat_id = %s
                  WHERE code_hash = %s
                    AND consumed_at IS NULL
                    AND expires_at > now()
+                   AND EXISTS (SELECT 1 FROM account.users u
+                       WHERE u.user_id = c.user_id AND u.workspace_id = c.workspace_id
+                         AND u.disabled_at IS NULL)
                 RETURNING user_id, workspace_id
                 """,
                 (int(chat_id), digest),
@@ -230,6 +271,8 @@ class TelegramRepository:
                     SELECT b.*
                       FROM telegram.binding_codes c
                       JOIN telegram.bindings b ON b.chat_id = c.consumed_chat_id
+                      JOIN account.users u ON u.user_id = b.user_id
+                        AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
                      WHERE c.code_hash = %s
                        AND c.consumed_chat_id = %s
                        AND c.consumed_at > now() - interval '10 minutes'
@@ -242,6 +285,20 @@ class TelegramRepository:
 
             new_user = row["user_id"]
             new_workspace = row["workspace_id"]
+            active = conn.execute(
+                "SELECT user_id FROM account.users WHERE user_id = %s "
+                "AND workspace_id = %s AND disabled_at IS NULL FOR SHARE",
+                (new_user, new_workspace),
+            ).fetchone()
+            if active is None:
+                return None
+            # Consumed codes must not survive destruction of their binding.
+            conn.execute(
+                "DELETE FROM telegram.binding_codes c USING telegram.bindings b "
+                "WHERE b.user_id = %s AND b.chat_id <> %s "
+                "AND c.consumed_chat_id = b.chat_id",
+                (new_user, int(chat_id)),
+            )
             # One chat per account. A re-bind moves the account to this chat.
             conn.execute(
                 "DELETE FROM telegram.bindings WHERE user_id = %s AND chat_id <> %s",
@@ -252,7 +309,9 @@ class TelegramRepository:
                 (int(chat_id),),
             ).fetchone()
             if current is None:
-                epoch = 1
+                epoch = int(conn.execute(
+                    "SELECT nextval('telegram.binding_epoch_seq') AS epoch"
+                ).fetchone()["epoch"])
                 conn.execute(
                     """
                     INSERT INTO telegram.bindings (
@@ -291,7 +350,13 @@ class TelegramRepository:
                         (telegram_username, now, int(chat_id)),
                     )
                 else:
-                    epoch = old_epoch + 1
+                    epoch = int(conn.execute(
+                        "SELECT nextval('telegram.binding_epoch_seq') AS epoch"
+                    ).fetchone()["epoch"])
+                    conn.execute(
+                        "DELETE FROM telegram.binding_codes WHERE consumed_chat_id = %s "
+                        "AND code_hash <> %s", (int(chat_id), digest),
+                    )
                     # Cancel old-owner work before the new owner can see this
                     # chat. Rows stay as history; run rows are never deleted.
                     conn.execute(
@@ -345,7 +410,9 @@ class TelegramRepository:
                         (int(chat_id), now, now),
                     )
             bound = conn.execute(
-                "SELECT * FROM telegram.bindings WHERE chat_id = %s",
+                "SELECT b.* FROM telegram.bindings b JOIN account.users u "
+                "ON u.user_id = b.user_id AND u.workspace_id = b.workspace_id "
+                "AND u.disabled_at IS NULL WHERE b.chat_id = %s",
                 (int(chat_id),),
             ).fetchone()
         return _binding(bound) if bound else None
@@ -353,7 +420,9 @@ class TelegramRepository:
     def get_binding(self, chat_id: int) -> Optional[Binding]:
         with get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT * FROM telegram.bindings WHERE chat_id = %s",
+                "SELECT b.* FROM telegram.bindings b JOIN account.users u "
+                "ON u.user_id = b.user_id AND u.workspace_id = b.workspace_id "
+                "AND u.disabled_at IS NULL WHERE b.chat_id = %s",
                 (int(chat_id),),
             ).fetchone()
         return _binding(row) if row else None
@@ -362,13 +431,21 @@ class TelegramRepository:
         user = _uuid(user_id, "userId")
         with get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT * FROM telegram.bindings WHERE user_id = %s",
+                "SELECT b.* FROM telegram.bindings b JOIN account.users u "
+                "ON u.user_id = b.user_id AND u.workspace_id = b.workspace_id "
+                "AND u.disabled_at IS NULL WHERE b.user_id = %s",
                 (user,),
             ).fetchone()
         return _binding(row) if row else None
 
     def delete_binding(self, chat_id: int) -> bool:
         with get_pool().connection() as conn:
+            self._lock_binding_changes(conn)
+            conn.execute(
+                "DELETE FROM telegram.binding_codes WHERE consumed_chat_id = %s "
+                "OR user_id IN (SELECT user_id FROM telegram.bindings WHERE chat_id = %s)",
+                (int(chat_id), int(chat_id)),
+            )
             row = conn.execute(
                 "DELETE FROM telegram.bindings WHERE chat_id = %s RETURNING chat_id",
                 (int(chat_id),),
@@ -378,17 +455,35 @@ class TelegramRepository:
     def delete_binding_for_user(self, user_id: str) -> bool:
         user = _uuid(user_id, "userId")
         with get_pool().connection() as conn:
+            self._lock_binding_changes(conn)
+            conn.execute("DELETE FROM telegram.binding_codes WHERE user_id = %s", (user,))
             row = conn.execute(
                 "DELETE FROM telegram.bindings WHERE user_id = %s RETURNING chat_id",
                 (user,),
             ).fetchone()
         return row is not None
 
-    def get_settings(self, chat_id: int) -> Settings:
+    def get_settings(self, chat_id: int, *, user_id: Optional[str] = None,
+                     workspace_id: Optional[str] = None,
+                     binding_epoch: Optional[int] = None) -> Settings:
+        if any(value is not None for value in (user_id, workspace_id, binding_epoch)):
+            if user_id is None or workspace_id is None or binding_epoch is None:
+                raise ValueError("Нужна полная идентичность привязки")
         with get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT * FROM telegram.settings WHERE chat_id = %s",
-                (int(chat_id),),
+                "SELECT s.* FROM telegram.settings s "
+                "JOIN telegram.bindings b ON b.chat_id = s.chat_id "
+                "JOIN account.users u ON u.user_id = b.user_id "
+                "AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL "
+                "WHERE s.chat_id = %s "
+                "AND (%s::uuid IS NULL OR b.user_id = %s) "
+                "AND (%s::uuid IS NULL OR b.workspace_id = %s) "
+                "AND (%s::bigint IS NULL OR b.binding_epoch = %s)",
+                (int(chat_id), _uuid(user_id, "userId") if user_id else None,
+                 _uuid(user_id, "userId") if user_id else None,
+                 _uuid(workspace_id, "workspaceId") if workspace_id else None,
+                 _uuid(workspace_id, "workspaceId") if workspace_id else None,
+                 binding_epoch, binding_epoch),
             ).fetchone()
         return _settings(row, int(chat_id))
 
@@ -409,6 +504,9 @@ class TelegramRepository:
             if len(scenario) > 128:
                 raise ValueError("scenario слишком длинный")
         with get_pool().connection() as conn:
+            if not self._lock_owner(conn, chat_id, _uuid(user_id, "userId"),
+                                    _uuid(workspace_id, "workspaceId"), binding_epoch):
+                raise SettingsOwnershipLost("Привязка chat изменилась")
             row = conn.execute(
                 """
                 UPDATE telegram.settings s
@@ -416,6 +514,8 @@ class TelegramRepository:
                        scenario = COALESCE(%s, s.scenario),
                        updated_at = now()
                   FROM telegram.bindings b
+                      JOIN account.users u ON u.user_id = b.user_id
+                        AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
                  WHERE s.chat_id = %s
                    AND b.chat_id = s.chat_id
                    AND b.user_id = %s
@@ -445,6 +545,8 @@ class TelegramRepository:
         user = _uuid(user_id, "userId")
         workspace = _uuid(workspace_id, "workspaceId")
         with get_pool().connection() as conn:
+            if not self._lock_owner(conn, chat_id, user, workspace, binding_epoch):
+                raise JobOwnershipLost("Привязка chat изменилась")
             row = conn.execute(
                 """
                 INSERT INTO telegram.jobs (
@@ -454,6 +556,8 @@ class TelegramRepository:
                 SELECT %s, %s, %s, %s, %s, %s, %s, %s, 'queued', now(), now()
                  WHERE EXISTS (
                      SELECT 1 FROM telegram.bindings b
+                      JOIN account.users u ON u.user_id = b.user_id
+                        AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
                       WHERE b.chat_id = %s AND b.user_id = %s
                         AND b.workspace_id = %s AND b.binding_epoch = %s
                  )
@@ -498,6 +602,8 @@ class TelegramRepository:
             return None
         token = secrets.token_urlsafe(18)
         with get_pool().connection() as conn:
+            if not self._lock_job_owner(conn, parsed):
+                return None
             row = conn.execute(
                 """
                 UPDATE telegram.jobs j
@@ -509,6 +615,8 @@ class TelegramRepository:
                            + CASE WHEN j.status = 'importing' THEN 1 ELSE 0 END,
                        updated_at = now()
                   FROM telegram.bindings b
+                      JOIN account.users u ON u.user_id = b.user_id
+                        AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
                  WHERE j.job_id = %s
                    AND j.status IN ('queued', 'importing')
                    AND (j.status = 'queued'
@@ -531,6 +639,9 @@ class TelegramRepository:
         if not job.lease_token:
             return False
         with get_pool().connection() as conn:
+            if not self._lock_owner(conn, job.chat_id, _uuid(job.user_id, "userId"),
+                                    _uuid(job.workspace_id, "workspaceId"), job.binding_epoch):
+                return False
             row = conn.execute(
                 """
                 UPDATE telegram.jobs j
@@ -538,6 +649,8 @@ class TelegramRepository:
                        heartbeat_at = now(),
                        updated_at = now()
                   FROM telegram.bindings b
+                      JOIN account.users u ON u.user_id = b.user_id
+                        AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
                  WHERE j.job_id = %s
                    AND j.lease_token = %s
                    AND j.status IN ('importing', 'running')
@@ -565,6 +678,8 @@ class TelegramRepository:
                    AND b.user_id = j.user_id
                    AND b.workspace_id = j.workspace_id
                    AND b.binding_epoch = j.binding_epoch
+                   AND EXISTS (SELECT 1 FROM account.users u WHERE u.user_id = b.user_id
+                       AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL)
                  WHERE j.job_id = %s
                    AND j.lease_token = %s
                    AND j.status IN ('importing', 'running')
@@ -579,9 +694,11 @@ class TelegramRepository:
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
-                SELECT 1 AS ok FROM telegram.bindings
-                 WHERE chat_id = %s AND user_id = %s AND workspace_id = %s
-                   AND binding_epoch = %s
+                SELECT 1 AS ok FROM telegram.bindings b
+                 JOIN account.users u ON u.user_id = b.user_id
+                   AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
+                 WHERE b.chat_id = %s AND b.user_id = %s AND b.workspace_id = %s
+                   AND b.binding_epoch = %s
                 """,
                 (int(job.chat_id), _uuid(job.user_id, "userId"),
                  _uuid(job.workspace_id, "workspaceId"),
@@ -623,6 +740,8 @@ class TelegramRepository:
                    AND b.user_id = j.user_id
                    AND b.workspace_id = j.workspace_id
                    AND b.binding_epoch = j.binding_epoch
+                   AND EXISTS (SELECT 1 FROM account.users u WHERE u.user_id = b.user_id
+                       AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL)
                   LEFT JOIN runtime.runs r
                     ON r.workspace_id = j.workspace_id AND r.id = j.run_id
                  WHERE (
@@ -705,9 +824,11 @@ class TelegramRepository:
         parsed = uuid.UUID(str(job_id))
         terminal = status in ("succeeded", "failed", "cancelled", "interrupted")
         with get_pool().connection() as conn:
+            if not terminal and not self._lock_job_owner(conn, parsed):
+                return None
             row = conn.execute(
                 """
-                UPDATE telegram.jobs
+                UPDATE telegram.jobs j
                    SET status = %s,
                        run_id = COALESCE(%s, run_id),
                        error = %s,
@@ -715,6 +836,13 @@ class TelegramRepository:
                        lease_until = CASE WHEN %s THEN NULL ELSE lease_until END,
                        updated_at = now()
                  WHERE job_id = %s
+                   AND (%s OR EXISTS (
+                       SELECT 1 FROM telegram.bindings b
+                       JOIN account.users u ON u.user_id = b.user_id
+                         AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
+                       WHERE b.chat_id = j.chat_id AND b.user_id = j.user_id
+                         AND b.workspace_id = j.workspace_id AND b.binding_epoch = j.binding_epoch
+                   ))
                    AND (%s::text IS NULL OR lease_token = %s)
                    AND (%s::bigint IS NULL OR binding_epoch = %s)
                    AND (
@@ -723,7 +851,7 @@ class TelegramRepository:
                    )
                 RETURNING *
                 """,
-                (status, run_id, error, terminal, terminal, parsed,
+                (status, run_id, error, terminal, terminal, parsed, terminal,
                  lease_token, lease_token,
                  binding_epoch, binding_epoch,
                  bool(allow_cancelled), bool(allow_cancelled)),
@@ -741,6 +869,8 @@ class TelegramRepository:
                    AND b.user_id = j.user_id
                    AND b.workspace_id = j.workspace_id
                    AND b.binding_epoch = j.binding_epoch
+                   AND EXISTS (SELECT 1 FROM account.users u WHERE u.user_id = b.user_id
+                       AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL)
                  WHERE j.chat_id = %s AND j.user_id = %s
                    AND j.workspace_id = %s AND j.binding_epoch = %s
                  ORDER BY j.created_at DESC LIMIT %s
@@ -759,6 +889,8 @@ class TelegramRepository:
         with get_pool().connection() as conn:
             user = _uuid(user_id, "userId")
             workspace = _uuid(workspace_id, "workspaceId")
+            if not self._lock_owner(conn, chat_id, user, workspace, binding_epoch):
+                return False
             row = conn.execute(
                 """
                 INSERT INTO telegram.outbox (
@@ -768,6 +900,8 @@ class TelegramRepository:
                 SELECT %s, %s, %s, 'pending', %s, %s, %s, now(), now()
                  WHERE EXISTS (
                      SELECT 1 FROM telegram.bindings b
+                      JOIN account.users u ON u.user_id = b.user_id
+                        AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
                       WHERE b.chat_id = %s AND b.user_id = %s
                         AND b.workspace_id = %s AND b.binding_epoch = %s
                  )
@@ -782,7 +916,8 @@ class TelegramRepository:
     def acquire_delivery_guard(self, item: OutboxItem):
         """Open a transaction and lock the binding row; caller must release.
 
-        This is deliberately sync: the async runtime calls it in
+        The account row is locked too, fencing account disable and workspace
+        changes until delivery ends. This is sync: the async runtime calls it in
         ``asyncio.to_thread`` so waiting for a concurrent re-bind never blocks
         the event loop. The returned connection must be released in a worker
         thread via ``release_delivery_guard``.
@@ -790,12 +925,16 @@ class TelegramRepository:
         pool = get_pool()
         conn = pool.getconn()
         try:
+            conn.execute("SET LOCAL lock_timeout = '5s'")
+            conn.execute("SET LOCAL statement_timeout = '10s'")
             row = conn.execute(
                 """
-                SELECT 1 AS ok FROM telegram.bindings
-                 WHERE chat_id = %s AND user_id = %s AND workspace_id = %s
-                   AND binding_epoch = %s
-                 FOR UPDATE
+                SELECT 1 AS ok FROM telegram.bindings b
+                 JOIN account.users u ON u.user_id = b.user_id
+                   AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
+                 WHERE b.chat_id = %s AND b.user_id = %s AND b.workspace_id = %s
+                   AND b.binding_epoch = %s
+                 FOR SHARE OF b, u
                 """,
                 (int(item.chat_id), _uuid(item.user_id, "userId"),
                  _uuid(item.workspace_id, "workspaceId"),
@@ -819,9 +958,11 @@ class TelegramRepository:
         with get_pool().connection() as conn:
             row = conn.execute(
                 """
-                SELECT 1 AS ok FROM telegram.bindings
-                 WHERE chat_id = %s AND user_id = %s AND workspace_id = %s
-                   AND binding_epoch = %s
+                SELECT 1 AS ok FROM telegram.bindings b
+                 JOIN account.users u ON u.user_id = b.user_id
+                   AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL
+                 WHERE b.chat_id = %s AND b.user_id = %s AND b.workspace_id = %s
+                   AND b.binding_epoch = %s
                 """,
                 (int(item.chat_id), _uuid(item.user_id, "userId"),
                  _uuid(item.workspace_id, "workspaceId"),
@@ -846,6 +987,8 @@ class TelegramRepository:
                           AND b.user_id = o.user_id
                           AND b.workspace_id = o.workspace_id
                           AND b.binding_epoch = o.binding_epoch
+                          AND EXISTS (SELECT 1 FROM account.users u WHERE u.user_id = b.user_id
+                              AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL)
                    )
                 """
             )
@@ -862,6 +1005,8 @@ class TelegramRepository:
                           AND b.user_id = o.user_id
                           AND b.workspace_id = o.workspace_id
                           AND b.binding_epoch = o.binding_epoch
+                          AND EXISTS (SELECT 1 FROM account.users u WHERE u.user_id = b.user_id
+                              AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL)
                    )
                 """
             )
@@ -875,10 +1020,12 @@ class TelegramRepository:
                        AND b.user_id = o.user_id
                        AND b.workspace_id = o.workspace_id
                        AND b.binding_epoch = o.binding_epoch
+                       AND EXISTS (SELECT 1 FROM account.users u WHERE u.user_id = b.user_id
+                           AND u.workspace_id = b.workspace_id AND u.disabled_at IS NULL)
                      WHERE o.status = 'pending' AND o.next_attempt_at <= now()
                      ORDER BY o.id
                      LIMIT %s
-                     FOR UPDATE SKIP LOCKED
+                     FOR UPDATE OF o SKIP LOCKED
                 )
                 UPDATE telegram.outbox o
                    SET status = 'sending', attempts = o.attempts + 1, updated_at = now()

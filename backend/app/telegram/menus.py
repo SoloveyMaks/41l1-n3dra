@@ -26,7 +26,7 @@ DEFAULT_CABINET_URL = "https://nedra.soloveyka.bond/"
 MINI_APP_ENV = "TELEGRAM_MINI_APP_URL"
 CABINET_ENV = "TELEGRAM_WEB_CABINET_URL"
 
-CALLBACK_VERSION = "n1"
+CALLBACK_VERSION = "n2"
 CALLBACK_MAX_BYTES = 64
 CALLBACK_SIGNATURE_HEX = 12
 CALLBACK_ACTIONS = frozenset(
@@ -163,7 +163,7 @@ def encode_callback(
     if not isinstance(secret, str) or not secret:
         raise ValueError("callback secret is not configured")
     safe_epoch = int(epoch)
-    if safe_epoch < 0:
+    if safe_epoch < 0 or safe_epoch > 2**63 - 1:
         raise ValueError("callback epoch is invalid")
     body = f"{CALLBACK_VERSION}.{action}"
     if arg:
@@ -210,7 +210,9 @@ def decode_callback(
         return None
     if not CALLBACK_ARG_RE.fullmatch(arg):
         return None
-    if not epoch_text.isdigit() or len(epoch_text) > 10:
+    if not epoch_text.isdigit() or len(epoch_text) > 19:
+        return None
+    if int(epoch_text) > 2**63 - 1:
         return None
     if len(signature) != CALLBACK_SIGNATURE_HEX:
         return None
