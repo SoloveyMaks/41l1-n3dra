@@ -39,7 +39,7 @@ from backend.app.api.session import (
 from backend.app.artifacts.intake import SafeArtifactIntake, SafeIntakeError
 from backend.app.artifacts.repository import RepositoryImportError, import_repository
 from backend.app.artifacts.sample_source import build_zip_from_directory
-from backend.app.codefacts.identity import run_uuid
+from backend.app.codefacts.identity import configured_workspace_id, run_uuid
 from backend.app.codefacts.map_builder import ensure_artifact_meta
 from backend.app.codefacts.publish import PublishedHashMissing, get_published_envelope, map_from_analysis_bundle
 from backend.app.codefacts.source import REDACTION_VERSION, mask_text
@@ -248,7 +248,8 @@ def create_session(request: Request, response: Response,
             detail="Неверный код доступа",
             headers={"WWW-Authenticate": "AccessCode"},
         )
-    token = issue_session(request_workspace(request), role)
+    workspace = configured_workspace_id()
+    token = issue_session(workspace, role)
     set_session_cookie(response, token, request)
     return {
         "authenticated": True,
@@ -258,7 +259,7 @@ def create_session(request: Request, response: Response,
         "user": None,
         "role": role,
         "adminAvailable": admin_available(),
-        "workspaceId": request_workspace(request),
+        "workspaceId": workspace,
         "expiresInSec": SESSION_TTL_SECONDS,
     }
 
@@ -980,9 +981,14 @@ def update_schedule(schedule_id: str, payload: Dict[str, Any], request: Request)
 # --- Webhook Test Receiver ---
 @api_router.post("/webhook-test")
 async def webhook_test_receiver(request: Request):
-    raw = await request.body()
-    if len(raw) > MAX_WEBHOOK_BYTES:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_WEBHOOK_BYTES:
         raise HTTPException(status_code=413, detail="Слишком большой webhook payload")
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > MAX_WEBHOOK_BYTES:
+            raise HTTPException(status_code=413, detail="Слишком большой webhook payload")
     try:
         body = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
@@ -993,9 +999,10 @@ async def webhook_test_receiver(request: Request):
         if request.headers.get(key)
     }
     entry = {
+        "workspace_id": request_workspace(request),
         "received_at": datetime.now(timezone.utc).isoformat(),
         "headers": allowed_headers,
-        "payload": body,
+        "payload": mask_value_tree(body, mask_sensitive_text),
     }
     received_webhooks.append(entry)
     if len(received_webhooks) > MAX_WEBHOOK_LOG:
@@ -1007,7 +1014,11 @@ async def webhook_test_receiver(request: Request):
 @api_router.get("/webhook-test/logs")
 def get_webhook_logs(request: Request):
     require_admin(request)
-    return received_webhooks
+    workspace = request_workspace(request)
+    return [
+        {key: value for key, value in entry.items() if key != "workspace_id"}
+        for entry in received_webhooks if entry.get("workspace_id") == workspace
+    ]
 
 
 # --- AI Synthetic Test for Jury Demo ---
