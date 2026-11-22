@@ -111,6 +111,25 @@ OPTIONAL_MARKERS: Dict[str, str] = {
     "003_exact_vector.up.sql": "to_regclass('data_contract.example_embeddings') IS NOT NULL",
 }
 
+POSTCONDITIONS: Dict[str, str] = {
+    "016_telegram_binding_generation.up.sql": (
+        "to_regprocedure('telegram.binding_epoch_sequence_v1()') IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM pg_sequence "
+        "WHERE seqrelid = to_regclass('telegram.binding_epoch_seq') "
+        "AND seqtypid = 'bigint'::regtype AND seqincrement = 1 "
+        "AND seqmin = 1 AND seqmax = 9223372036854775807 "
+        "AND seqcache = 1 AND NOT seqcycle)"
+    ),
+}
+
+
+def _check_postcondition(conn: Any, filename: str) -> None:
+    condition = POSTCONDITIONS.get(filename)
+    if condition is not None:
+        row = conn.execute(f"SELECT {condition} AS ready").fetchone()
+        if not row or not row["ready"]:
+            raise MigrationError(f"Схема {filename} неполна; startup остановлен")
+
 
 class MigrationError(RuntimeError):
     pass
@@ -172,6 +191,7 @@ def _apply_with_ledger(dsn: str, files: List[Path], markers: Dict[str, str],
             known = recorded.get(path.name)
             if known is not None:
                 if known == checksum:
+                    _check_postcondition(conn, path.name)
                     continue
                 alias = CHECKSUM_ALIASES.get(path.name, {}).get(known)
                 if alias is not None:
@@ -209,6 +229,7 @@ def _apply_with_ledger(dsn: str, files: List[Path], markers: Dict[str, str],
                 _apply_file(conn, path)
                 applied_now.append(path.name)
 
+            _check_postcondition(conn, path.name)
             conn.execute(
                 f"INSERT INTO {LEDGER_TABLE} (filename, checksum) VALUES (%s, %s)",
                 (path.name, checksum),

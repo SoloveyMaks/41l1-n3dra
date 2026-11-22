@@ -77,8 +77,8 @@ def _matches(pattern: str, path: str) -> bool:
         return False
     # 2D DP from the end. Each state is O(1), including *, ** and **/.
     width = len(path)
-    previous = [False] * (width + 1)
-    previous[width] = True
+    # A matching directory owns its descendants even without a trailing slash.
+    previous = [char == "/" for char in path] + [True]
     for token in reversed(tokens):
         current = [False] * (width + 1)
         for index in range(width, -1, -1):
