@@ -105,7 +105,9 @@ class WorkflowExecutor:
                 return "inconclusive"
             official = json.loads(report["official_json"])
             official.setdefault("metadata", {})["executionStatus"] = status
-            label = "прерван" if status == "interrupted" else "завершился с ошибкой"
+            label = {"interrupted": "прерван", "cancelled": "отменён"}.get(
+                status, "завершился с ошибкой"
+            )
             readable = re.sub(
                 r"(?m)^\*\*Статус:\*\*[^\n]*", f"**Статус:** {label}  ",
                 report["readable_markdown"],
@@ -148,20 +150,24 @@ class WorkflowExecutor:
                 )
             except asyncio.CancelledError:
                 current = self.db.get_run(run_id) or {}
-                if current.get("execution_status") in {
-                    "succeeded", "failed", "interrupted", "cancelled",
-                }:
+                status = current.get("execution_status")
+                terminal = {"succeeded", "failed", "interrupted", "cancelled"}
+                if status in terminal and current.get("finished_at"):
                     # A terminal outcome is already durable; never rewrite it
                     # as interrupted because the caller was cancelled late.
                     raise
-                verdict = self._finish_saved_report(run_id, "interrupted")
+                # A Custom Check cancellation can mark the run terminal before
+                # finished_at, report and event are settled. Finish that
+                # settlement here instead of leaving a half-terminal row.
+                settle_status = status if status in {"interrupted", "cancelled", "failed"} else "interrupted"
+                verdict = self._finish_saved_report(run_id, settle_status)
                 self.db.update_run_status(
-                    run_id, execution_status="interrupted", security_verdict=verdict,
+                    run_id, execution_status=settle_status, security_verdict=verdict,
                     finished_at=datetime.now(timezone.utc).isoformat(),
                 )
                 try:
                     await self._await_operation(self.sse.emit_event(
-                        run_id, "run_status", {"status": "interrupted", "verdict": verdict},
+                        run_id, "run_status", {"status": settle_status, "verdict": verdict},
                     ), propagate_cancel=False)
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to emit interruption event for %s", run_id)

@@ -8,6 +8,9 @@ const MINI_API_BASE = `${API_BASE}/telegram/mini`
 type MiniRunPayload = Omit<RunSummary, 'critical_count' | 'high_count' | 'medium_count' | 'low_count' | 'info_count'> & {
   critical_findings: number
   high_findings: number
+  medium_count?: number
+  low_count?: number
+  info_count?: number
 }
 
 function normalizeRun(run: MiniRunPayload): RunSummary {
@@ -15,9 +18,9 @@ function normalizeRun(run: MiniRunPayload): RunSummary {
     ...run,
     critical_count: run.critical_findings,
     high_count: run.high_findings,
-    medium_count: 0,
-    low_count: 0,
-    info_count: 0,
+    medium_count: run.medium_count ?? 0,
+    low_count: run.low_count ?? 0,
+    info_count: run.info_count ?? 0,
   }
 }
 
