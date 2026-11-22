@@ -48,9 +48,9 @@ class AiService:
         )
         self.vector_runtime = VectorRuntime()
         try:
-            self.batch_size = max(1, min(8, int(os.getenv("AI_BATCH_SIZE", "4"))))
+            self.batch_size = max(1, min(8, int(os.getenv("AI_BATCH_SIZE", "2"))))
         except ValueError:
-            self.batch_size = 4
+            self.batch_size = 2
 
     @staticmethod
     def _strip_project_prefix(path: str, prefix: Optional[str]) -> str:

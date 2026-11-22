@@ -377,7 +377,7 @@ def resolve_provider_config() -> Optional[ProviderConfig]:
         base_url=base_url,
         api_key=key,
         model=model,
-        timeout_seconds=_env_float("AI_TIMEOUT_SECONDS", 30.0, 5.0, 120.0),
+        timeout_seconds=_env_float("AI_TIMEOUT_SECONDS", 90.0, 5.0, 180.0),
         max_tokens=_env_int("AI_MAX_TOKENS", 4096, 256, 8192),
         temperature=_env_float("AI_TEMPERATURE", 0.0, 0.0, 1.0),
     )
