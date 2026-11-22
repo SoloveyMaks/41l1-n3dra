@@ -127,7 +127,7 @@ export type CoverageScope = {
   path: SourcePath;
   ruleId: string;
   category: Category;
-  status: "checked" | "partial" | "skipped" | "error" | "unsupported";
+  status: "checked" | "not_applicable" | "partial" | "skipped" | "error" | "unsupported";
   reason: string;
 };
 

@@ -113,6 +113,30 @@ RULE_DEFINITIONS = [
         "family": "runtime-guards",
         "title": "Проверка метода объявлена, но не включена",
     },
+    {
+        "id": "CF-ARCHIVE-STATIC",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Статическое чтение архива без исполнения",
+    },
+    {
+        "id": "CF-ARCHIVE-SECRET",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Секрет в текстовом entry архива",
+    },
+    {
+        "id": "CF-BINARY-STATIC",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Бинарный файл: правила неприменимы",
+    },
+    {
+        "id": "CF-FILE-STATIC",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Файл вне проверяемых областей",
+    },
 ]
 RULE_BY_ID = {rule["id"]: rule for rule in RULE_DEFINITIONS}
 
@@ -276,6 +300,9 @@ class ExtractionResult:
     config_skipped: List[str] = field(default_factory=list)
     # Scope-записи method security (CF-GUARD-STATIC) по файлам.
     guard_scopes: List[Dict[str, Any]] = field(default_factory=list)
+    # Scope архивов/бинарников и причины, по которым архив не прочитан.
+    archive_scopes: List[Dict[str, Any]] = field(default_factory=list)
+    archive_skipped: List[str] = field(default_factory=list)
 
     def node(self, symbol: str, kind: str, label: str, evidence: List[Dict[str, Any]]) -> None:
         existing = self.nodes.get(symbol)
@@ -1286,7 +1313,25 @@ class SpringFactExtractor:
                     ]
 
 
-def extract_facts(sources: Dict[str, SourceFile], files_total: int) -> ExtractionResult:
+def extract_facts(sources: Dict[str, SourceFile], files_total: int,
+                  root: Optional[Path] = None,
+                  manifest_paths: Optional[List[str]] = None) -> ExtractionResult:
     extractor = SpringFactExtractor(sources, files_total)
     extractor.parse_security()
-    return extractor.run()
+    result = extractor.run()
+    if root is not None and manifest_paths:
+        # Архивы/бинарники лежат вне sources (не текст), поэтому их читаем
+        # отдельно, строго по манифесту snapshot.
+        from backend.app.codefacts.archives_static import scan_archives_and_binaries
+
+        findings, scopes, skipped = scan_archives_and_binaries(
+            root, manifest_paths, result.files_read,
+        )
+        result.archive_scopes.extend(scopes)
+        result.archive_skipped.extend(skipped)
+        result.findings.extend(findings)
+        for scope in scopes:
+            path = scope.get("path")
+            if path and path not in result.files_read:
+                result.files_read.append(str(path))
+    return result

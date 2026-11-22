@@ -80,7 +80,11 @@ def build_side(side: str) -> Dict[str, Any]:
         extract_zip(archive_path, root)
         snapshot = build_snapshot_from_directory(root, WORKSPACE_ID)
         sources, _ = load_snapshot_sources(root, snapshot)
-        facts = extract_facts(sources, len(snapshot["files"]))
+        facts = extract_facts(
+            sources, len(snapshot["files"]),
+            root=root,
+            manifest_paths=[item["path"] for item in snapshot["files"]],
+        )
 
         sast_result = SastAnalyzer().analyze(str(root))
         secret_result = SecretAnalyzer().analyze(str(root))

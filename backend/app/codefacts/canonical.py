@@ -91,6 +91,10 @@ RULE_FAMILY = {
     "CF-CONFIG-CORS-WILDCARD": "runtime-configuration",
     "CF-GUARD-STATIC": "runtime-guards",
     "CF-GUARD-NOT-ENABLED": "runtime-guards",
+    "CF-ARCHIVE-STATIC": "binaries-and-archives",
+    "CF-ARCHIVE-SECRET": "binaries-and-archives",
+    "CF-BINARY-STATIC": "binaries-and-archives",
+    "CF-FILE-STATIC": "binaries-and-archives",
 }
 
 
@@ -373,6 +377,18 @@ class CanonicalMapBuilder:
     def _location_for_finding(self, finding: BackendFinding, loc: Any) -> Optional[Dict[str, Any]]:
         source = self.sources.get(loc.path)
         if source is None:
+            # Архив/бинарник есть в манифесте, но как текст не читается:
+            # finding якорится на самом файле (byte 0..0), entry и строка
+            # внутри entry остаются в описании находки.
+            if (
+                loc.path in self.file_hash
+                and int(loc.startLine) == 1 and int(loc.endLine) == 1
+                and list(loc.byteRange or []) == [0, 0]
+            ):
+                return {
+                    "path": loc.path, "line": 1, "column": 1,
+                    "endLine": 1, "endColumn": 1, "byteStart": 0, "byteEnd": 0,
+                }
             return None
         try:
             return make_location(
@@ -640,11 +656,35 @@ class CanonicalMapBuilder:
         files_total = len(self.snapshot_files)
         visited = sorted(set(self.facts.files_read))
         config_paths = set(getattr(self.facts, "config_paths", []))
+        # Явные scope (архивы, бинарники, method security) имеют приоритет:
+        # они называют реально применённую проверку для этого файла.
+        explicit: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for source in ("archive_scopes", "guard_scopes"):
+            for item in getattr(self.facts, source, []):
+                path = str(item.get("path", ""))
+                rule_id = str(item.get("ruleId", ""))
+                if not path or not rule_id or not is_safe_source_path(path):
+                    continue
+                explicit[(path, rule_id)] = {
+                    "path": path,
+                    "ruleId": rule_id,
+                    "category": str(item.get("category", "SAST")),
+                    "status": str(item.get("status", "checked")),
+                    "reason": str(item.get("reason") or "Проверено статически."),
+                }
+        # Scope уровня файла (архив/бинарник/вне областей) заменяет собой
+        # общий CF-SPRING-STATIC; guard-scope дополняет его другим ruleId.
+        file_class_rules = {"CF-ARCHIVE-STATIC", "CF-BINARY-STATIC", "CF-FILE-STATIC"}
+        file_class_paths = {
+            path for path, rule in explicit if rule in file_class_rules
+        }
         scopes: List[Dict[str, Any]] = []
         for path in visited:
             if not is_safe_source_path(path):
                 continue
             decode_error = self.sources.get(path).decode_error if path in self.sources else None
+            if path in file_class_paths:
+                continue
             if path in config_paths:
                 # Конфиги читает config_static: scope называет реально
                 # применённую проверку, а не общий CF-SPRING-STATIC.
@@ -668,30 +708,20 @@ class CanonicalMapBuilder:
                 "reason": "Файл прочитан статически; runtime-поведение не проверялось." if not decode_error
                           else f"Частичное чтение: {decode_error}",
             })
+        scopes.extend(explicit[(path, rule)] for path, rule in sorted(explicit))
         parser_errors = [
             diag["id"] for diag in self.diagnostics
             if diag["code"] in {"CF-DECODE-ERROR", "CF-NODE-WITHOUT-EVIDENCE"}
         ]
-        # Scope method security: применяется только к файлам, где аннотации
-        # есть; без enablement остаётся finding, а scope называет причину.
-        for item in getattr(self.facts, "guard_scopes", []):
-            path = str(item.get("path", ""))
-            if not path or not is_safe_source_path(path):
-                continue
-            if any(s["path"] == path and s["ruleId"] == item["ruleId"] for s in scopes):
-                continue
-            scopes.append({
-                "path": path,
-                "ruleId": str(item["ruleId"]),
-                "category": str(item.get("category", "SAST")),
-                "status": str(item.get("status", "checked")),
-                "reason": str(item.get("reason") or "Проверено статически."),
-            })
         # skippedScopes считается только по фактическим причинам: что-то
         # непроверенное появляется здесь с конкретным путём и причиной.
         skipped: List[str] = list(dict.fromkeys(getattr(self.facts, "config_skipped", [])))
+        skipped.extend(dict.fromkeys(getattr(self.facts, "archive_skipped", [])))
+        skipped = list(dict.fromkeys(skipped))
         unresolved = list(dict.fromkeys(self.facts.unresolved_symbols))
         limits = list(self.facts.limits)
+        # not_applicable — не пробел: файл отнесён к неприменимой области
+        # с указанной причиной, а не оставлен непроверенным.
         complete = (
             files_total > 0
             and len(visited) == files_total
@@ -699,7 +729,7 @@ class CanonicalMapBuilder:
             and not unresolved
             and not limits
             and not skipped
-            and all(scope["status"] == "checked" for scope in scopes)
+            and all(scope["status"] in {"checked", "not_applicable"} for scope in scopes)
         )
         coverage = {
             "status": "complete" if complete else "partial",

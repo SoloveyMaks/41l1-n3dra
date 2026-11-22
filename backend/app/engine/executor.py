@@ -1330,7 +1330,11 @@ class WorkflowExecutor:
             if not snapshot:
                 return findings, None, "snapshot missing"
             sources, source_diags = load_snapshot_sources(Path(artifact_path), snapshot)
-            facts = extract_facts(sources, len(snapshot.get("files", [])))
+            facts = extract_facts(
+                sources, len(snapshot.get("files", [])),
+                root=Path(artifact_path),
+                manifest_paths=[str(item.get("path", "")) for item in snapshot.get("files", [])],
+            )
             for diag in source_diags:
                 facts.diagnostics.append(diag)
             merged = merge_extra_findings(merged, facts.findings, "SAST")

@@ -87,7 +87,11 @@ def build_run_map(*, workspace: str, internal_run_id: str, run_id: str,
         except SnapshotIntegrityError as exc:
             raise MapBuildError("SNAPSHOT_INTEGRITY", str(exc)) from exc
         sources = loaded_sources
-        facts = extract_facts(sources, len(snapshot.get("files", [])))
+        facts = extract_facts(
+            sources, len(snapshot.get("files", [])),
+            root=root,
+            manifest_paths=[str(item.get("path", "")) for item in snapshot.get("files", [])],
+        )
         for diag in source_diags:
             facts.diagnostics.append(diag)
 
@@ -207,7 +211,8 @@ def self_check(map_dto: Dict[str, Any], findings: List[Dict[str, Any]]) -> None:
     if coverage["status"] == "complete" and (
         coverage["skippedScopes"] or coverage["parserErrors"]
         or coverage["unresolvedSymbols"] or coverage["limitsReached"]
-        or any(scope_item["status"] != "checked" for scope_item in coverage["scopes"])
+        or any(scope_item["status"] not in {"checked", "not_applicable"}
+               for scope_item in coverage["scopes"])
     ):
         _fail("COMPLETE_COVERAGE_WITH_GAPS")
     recomputed = sha256_hex(canonical_json({key: value for key, value in map_dto.items() if key != "bundleHash"}).encode("utf-8"))

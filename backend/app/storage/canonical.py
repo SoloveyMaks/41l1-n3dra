@@ -41,7 +41,7 @@ CONFIDENCES = ("high", "medium", "low")
 FINDING_STATUSES = ("confirmed", "potential", "inconclusive")
 SCAN_STATUSES = ("complete", "partial", "failed", "timeout", "unsupported")
 COVERAGE_STATUSES = ("complete", "partial", "unavailable")
-SCOPE_STATUSES = ("checked", "partial", "skipped", "error", "unsupported")
+SCOPE_STATUSES = ("checked", "not_applicable", "partial", "skipped", "error", "unsupported")
 EVIDENCE_KINDS = ("source", "ast", "dsl", "sql", "manifest")
 NODE_KINDS = ("actor", "route", "security_chain", "matcher", "guard",
               "function", "source", "sink", "data", "config")
@@ -313,7 +313,7 @@ def _validate_coverage(
         scopes.append(row)
     gaps = []
     if status == "complete":
-        if not all(scope["status"] == "checked" for scope in scopes):
+        if not all(scope["status"] in {"checked", "not_applicable"} for scope in scopes):
             gaps.append("non-checked scopes")
         if skipped:
             gaps.append("skipped scopes")

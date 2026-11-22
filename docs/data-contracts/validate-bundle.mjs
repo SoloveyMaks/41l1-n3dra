@@ -84,7 +84,7 @@ export function validateBundle(bundle, files) {
     check(c.filesVisited<=c.filesTotal,'coverage visited exceeds total');
     const keys=new Set();
     for(const s of c.scopes){const k=JSON.stringify([s.category,s.path,s.ruleId]);check(!keys.has(k),'duplicate coverage scope');keys.add(k);}
-    if(c.status==='complete')check(c.scopes.every(x=>x.status==='checked')&&!c.skippedScopes.length&&!c.parserErrors.length&&!c.unresolvedSymbols.length&&!c.limitsReached.length,'complete coverage contains gaps');
+    if(c.status==='complete')check(c.scopes.every(x=>x.status==='checked'||x.status==='not_applicable')&&!c.skippedScopes.length&&!c.parserErrors.length&&!c.unresolvedSymbols.length&&!c.limitsReached.length,'complete coverage contains gaps');
     if ('category' in part) {
       check(part.coverage.scopes.every(x=>x.category===part.category),'coverage category mismatch');
       check(part.diagnostics.every(d=>d.category===part.category),'scanner diagnostic category mismatch');

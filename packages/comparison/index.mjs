@@ -169,7 +169,7 @@ function completeOutcome(bundle, category) {
   const c = scan.coverage;
   return c.skippedScopes.length === 0 && c.parserErrors.length === 0 &&
     c.unresolvedSymbols.length === 0 && c.limitsReached.length === 0 &&
-    c.scopes.every(scope => scope.status === 'checked');
+    c.scopes.every(scope => scope.status === 'checked' || scope.status === 'not_applicable');
 }
 
 function checkedScope(bundle, finding) {
@@ -183,7 +183,7 @@ function graphComplete(bundle) {
   const c = bundle.codeFacts?.coverage;
   return Boolean(c && c.status === 'complete' && c.skippedScopes.length === 0 &&
     c.parserErrors.length === 0 && c.unresolvedSymbols.length === 0 && c.limitsReached.length === 0 &&
-    c.scopes.every(scope => scope.status === 'checked') &&
+    c.scopes.every(scope => scope.status === 'checked' || scope.status === 'not_applicable') &&
     bundle.codeFacts.edges.every(edge => edge.resolution === 'resolved'));
 }
 

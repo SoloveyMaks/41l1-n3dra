@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.codefacts.source import SourceFile, make_evidence, mask_text
 from backend.app.contracts.schemas import (
@@ -71,7 +71,10 @@ def is_config_path(path: str) -> bool:
     if lowered.endswith((".xml", ".conf", ".cfg", ".ini", ".toml")):
         # Обычные XML/ini в корне (pom.xml, logback.xml) тоже конфигурация.
         return True
-    if lowered.endswith((".yml", ".yaml", ".properties")):
+    if lowered.endswith(".properties"):
+        # Properties-файл сам по себе конфигурация, где бы он ни лежал.
+        return True
+    if lowered.endswith((".yml", ".yaml")):
         # Прочие yaml/properties — конфигурация, только если лежат в
         # resources/config/etc либо названы как конфиг приложения.
         parts = [part.lower() for part in path.split("/")[:-1]]
@@ -159,8 +162,14 @@ def _finding(rule_id: str, severity: Severity, basis: str, confidence_basis: str
     )
 
 
-def scan_config_file(source: SourceFile) -> Tuple[List[Finding], List[str]]:
-    """Проверяет один конфиг: находки + причины, которые нельзя разрешить."""
+def scan_config_file(source: SourceFile,
+                     *, key_style: Optional[str] = None) -> Tuple[List[Finding], List[str]]:
+    """Проверяет один конфиг: находки + причины, которые нельзя разрешить.
+
+    ``key_style`` — как читать ключи: ``"yaml"`` (по отступам) или
+    ``"dotted"`` (готовый dotted-ключ). По умолчанию выводится из имени
+    файла; для текста внутри архива имя файла — это имя entry.
+    """
     findings: List[Finding] = []
     skipped: List[str] = []
     if source.decode_error:
@@ -171,7 +180,12 @@ def scan_config_file(source: SourceFile) -> Tuple[List[Finding], List[str]]:
 
     allow_credentials = False
     lines = source.text.split("\n")
-    dotted = not source.path.lower().endswith((".yml", ".yaml"))
+    if key_style == "yaml":
+        dotted = False
+    elif key_style == "dotted":
+        dotted = True
+    else:
+        dotted = not source.path.lower().endswith((".yml", ".yaml"))
     paths = _KeyPaths(dotted=dotted)
     for number, raw in enumerate(lines, start=1):
         if _COMMENT_RE.match(raw):
