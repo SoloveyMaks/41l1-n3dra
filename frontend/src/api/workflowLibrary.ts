@@ -21,7 +21,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(payload?.detail || 'Библиотека шаблонов недоступна')
+    const detail = payload?.detail
+    const message = typeof detail === 'string'
+      ? detail
+      : detail && typeof detail.message === 'string'
+        ? detail.message
+        : 'Библиотека шаблонов недоступна'
+    throw new Error(message)
   }
   return payload as T
 }
