@@ -40,6 +40,7 @@ import { FindingNode, type FindingNodeData } from "./FindingNode";
 import { SecurityEdge } from "./SecurityEdge";
 import { buildEdgeRoutes } from "./edgeRouting";
 import { buildExplorationTree, type TreeRow } from "./tree";
+import { AccessOverview } from "./AccessOverview";
 import {
   basisText,
   confidenceText,
@@ -1248,6 +1249,11 @@ export function MapView(props: MapViewProps) {
           </span>
         )}
       </div>
+
+      <AccessOverview
+        model={model}
+        onSelectRoute={(id) => choose({ kind: "node", id })}
+      />
 
       {unresolvedEdges.length > 0 && (
         <button
