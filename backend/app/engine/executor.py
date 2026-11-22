@@ -1054,6 +1054,20 @@ class WorkflowExecutor:
                         "high": pol.high_count if pol else 0,
                         "findingsTotal": pol.findings_count if pol else 0,
                     }
+                    # Итоговый webhook несёт ссылку на отчёт и ограниченный
+                    # digest находок; полный отчёт в payload не вкладывается.
+                    findings_digest = None
+                    if current_bundle is not None:
+                        findings_digest = [
+                            {
+                                "id": f.id,
+                                "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                                "rule": f.ruleId,
+                                "path": f.primaryLocation.path,
+                                "line": f.primaryLocation.startLine,
+                            }
+                            for f in current_bundle.findings
+                        ]
                     del_res = await asyncio.to_thread(
                         self.notifier.send,
                         webhook_url,
@@ -1062,6 +1076,7 @@ class WorkflowExecutor:
                         summary_data,
                         secret_token,
                         decision.addresses,
+                        findings_digest,
                     )
 
             # URL query/fragment могут содержать токены; в UI/SSE их не отдаём.
