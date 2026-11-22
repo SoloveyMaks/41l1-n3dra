@@ -33,6 +33,7 @@ from backend.app.codefacts.identity import (
     configured_workspace_id,
     workspace_id as identity_workspace_id,
 )
+from backend.app.security.secrets import decrypt_secrets, encrypt_secrets
 from backend.app.storage.migrate import ensure_contract_schema, ensure_optional_schema
 
 logger = logging.getLogger("RuntimeSchema")
@@ -521,7 +522,7 @@ class DatabaseRepository:
                     workspace_id, id, workflow_id, revision_num, draft_json, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (ws, rev_id, workflow_id, new_rev_num, _jsonb(draft), now),
+                (ws, rev_id, workflow_id, new_rev_num, _jsonb(encrypt_secrets(draft)), now),
             )
             conn.execute(
                 "UPDATE runtime.workflows SET latest_revision_id = %s "
@@ -580,7 +581,7 @@ class DatabaseRepository:
                         (ws, latest),
                     ).fetchone()
                     if revision:
-                        current_draft = revision["draft_json"]
+                        current_draft = decrypt_secrets(revision["draft_json"])
                 return {
                     "revision_id": None,
                     "latest_revision_id": latest,
@@ -600,7 +601,7 @@ class DatabaseRepository:
                     workspace_id, id, workflow_id, revision_num, draft_json, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (ws, rev_id, workflow_id, new_rev_num, _jsonb(draft), now),
+                (ws, rev_id, workflow_id, new_rev_num, _jsonb(encrypt_secrets(draft)), now),
             )
             conn.execute(
                 """
@@ -633,7 +634,7 @@ class DatabaseRepository:
                     (ws, res["latest_revision_id"]),
                 ).fetchone()
                 if rev:
-                    res["draft"] = rev["draft_json"]
+                    res["draft"] = decrypt_secrets(rev["draft_json"])
             return res
 
     def list_workflows(self) -> List[Dict[str, Any]]:
@@ -655,6 +656,8 @@ class DatabaseRepository:
                 item = _row(dict(row))
                 if item.get("draft") is None:
                     item.pop("draft", None)
+                else:
+                    item["draft"] = decrypt_secrets(item["draft"])
                 results.append(item)
             return results
 
@@ -668,8 +671,9 @@ class DatabaseRepository:
             if not row:
                 return None
             res = _row(row)
-            res["draft"] = res.get("draft_json")
-            res["draft_json"] = _json_text(res.get("draft_json"))
+            draft = decrypt_secrets(res.get("draft_json"))
+            res["draft"] = draft
+            res["draft_json"] = _json_text(draft)
             return res
 
     # Artifact operations
