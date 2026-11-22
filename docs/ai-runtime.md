@@ -15,29 +15,42 @@ AI-скан, scenario builder и другие серверные AI-вызовы
 
 | Env | Значение |
 | --- | --- |
-| `AI_PROVIDER` | `opencode-go` (default), `reformboss` (legacy), `openai-compatible` (local) |
+| `AI_PROVIDER` | `opencode-go` (default), `reformboss` (legacy), `openai-compatible` или любое другое имя объявленного шлюза (`ollama`, `vllm`, …) |
 | `OPENCODE_API_KEY` | ключ OpenCode Go |
-| `AI_API_KEY` | общий override ключа; для Go/legacy имеет приоритет |
+| `AI_API_KEY` | общий override ключа; для Go/legacy имеет приоритет, для local-шлюза опционален |
 | `REFORMBOSS_API_KEY` | legacy-ключ ReformBoss |
-| `AI_BASE_URL` | override base URL; для Go default `https://opencode.ai/inference/go/v1`, для legacy `https://api.reformboss.com/v1` |
-| `AI_MODEL` / `LLM_MODEL` | override модели; Go default `deepseek-v4.1-flash`, legacy `deepseek-v4.1-flash-1017` |
+| `AI_BASE_URL` | override base URL; для Go default `https://opencode.ai/inference/go/v1`, для legacy `https://api.reformboss.com/v1`; для local-шлюза обязателен |
+| `AI_MODEL` / `LLM_MODEL` | override модели; Go default `deepseek-v4.1-flash`, legacy default `deepseek-v4.1-flash-1017`; для local-шлюза обязателен |
 | `AI_TIMEOUT_SECONDS` | таймаут запроса, default 30 |
 | `AI_MAX_TOKENS` | верхний предел на батч, default 4096 |
 | `AI_BATCH_SIZE` | findings на запрос, default 4 (допустимо 1..8) |
 | `AI_TEMPERATURE` | default 0 |
 | `AI_JSON_MODE` | `1` только если шлюз реально поддерживает `response_format=json_object` |
 
-Правила выбора: явный `AI_PROVIDER=opencode-go` берёт только
-`AI_API_KEY`/`OPENCODE_API_KEY` и Go-endpoint; legacy-ключ и legacy-endpoint
-при этом не используются. Если `AI_BASE_URL` указывает на
+Правила выбора: явный `AI_PROVIDER` побеждает. `AI_PROVIDER=opencode-go`
+берёт только `AI_API_KEY`/`OPENCODE_API_KEY` и Go-endpoint; legacy-ключ и
+legacy-endpoint при этом не используются. Если `AI_BASE_URL` указывает на
 `api.reformboss.com`, Go-провайдер заменяет его на Go endpoint; другие
-local/proxy override сохраняются. Явный `AI_PROVIDER=reformboss` берёт
+local/proxy override сохраняются. `AI_PROVIDER=reformboss` берёт
 `AI_API_KEY`/`REFORMBOSS_API_KEY` и legacy-endpoint; Go-ключ сам по себе его
-не включает. Без `AI_PROVIDER` сначала выбирается Go при наличии
-`OPENCODE_API_KEY`, затем generic `AI_API_KEY` (Go, либо local при заданном
-`AI_BASE_URL`), затем legacy. Для `openai-compatible` нужны `AI_API_KEY`,
-`AI_BASE_URL` и явный `AI_MODEL`/`LLM_MODEL`; без модели конфиг не считается
-настроенным, чтобы не угадывать чужую модель.
+не включает. Любое другое имя `AI_PROVIDER` (`openai-compatible`, `ollama`,
+`vllm`, …) — описанный оператором шлюз: только `AI_BASE_URL` + явный
+`AI_MODEL`/`LLM_MODEL`, ключ опционален, чужой default endpoint, модель и
+секрет не подмешиваются. Без `AI_PROVIDER` сначала выбирается Go при наличии
+`OPENCODE_API_KEY`, затем generic `AI_API_KEY` (local при заданном
+`AI_BASE_URL`, иначе Go), затем legacy; если ключей нет вовсе, но заданы и
+`AI_BASE_URL`, и `AI_MODEL`/`LLM_MODEL`, это keyless local-шлюз (Ollama/vLLM).
+Для local-шлюза всегда нужен явный `AI_MODEL`/`LLM_MODEL`: без модели конфиг
+не считается настроенным, чтобы не угадывать чужую модель и не подставлять
+legacy-имя модели в generic-путь.
+
+Remote-провайдеры (Go, legacy) без ключа не резолвятся:
+`resolve_provider_config()` возвращает `None` (fail-closed), а не берёт
+чужой секрет. Пустой ключ у local-шлюза валиден: заголовок `Authorization`
+тогда не отправляется. `provenance.provider` всегда называет реально
+использованный провайдер — `openai-compatible` для generic-шлюза, объявленное
+имя для `AI_PROVIDER=ollama`, `reformboss` только когда действительно выбран
+legacy.
 
 Legacy-совместимость: если `REFORMBOSS_API_KEY` нет в процессе, старое
 значение всё ещё читается из `~/.omp/agent/.env`; Go и local ключи читаются
@@ -48,10 +61,15 @@ Go-запросы используют собственный `User-Agent` пр�
 `NEDRA/0.1 (+https://nedra.soloveyka.bond)` и штатный
 `x-opencode-session` — непрозрачный стабильный id логической AI-операции
 (одинаковый для батчей/повторных попыток, без user identity и секретов).
-Legacy и local запросы получают только продуктовый `User-Agent`.
+Legacy и local запросы получают только продуктовый `User-Agent` и не несут
+Go-заголовка; при пустом ключе `Authorization` не отправляется вовсе.
 
-Нет выбранного ключа → `status=fallback`,
-`provenance.fallback_reason=provider_not_configured`.
+Провайдер не настроен (remote без ключа, либо неполный конфиг шлюза: нет
+`AI_BASE_URL` или нет `AI_MODEL`/`LLM_MODEL`) → `resolve_provider_config()`
+возвращает `None`, и запрос не выполняется: `status=fallback`,
+`provenance.fallback_reason=provider_not_configured`. Ошибка уже
+выполненного запроса — типизированный `AiProviderError` с замаскированным
+текстом (bounded, без утечки ключа и без скрытия HTTP-статуса).
 
 ## Что проверяется
 
@@ -65,6 +83,9 @@ Legacy и local запросы получают только продуктов�
    `findingId` не дают статус `succeeded`.
 4. `ExplainResult.provenance` фиксирует provider/model/endpoint/request id,
    latency, usage, `finish_reason`, SHA-256 контента и причину fallback.
+   Метаданные из ответа провайдера (request id, model, finish_reason) перед
+   публикацией маскируются и режутся по длине (`safe_metadata`), как и всё,
+   что покидает процесс.
 5. Запрос собирается из `redactedEvidence` и дополнительно маскируется
    (`sk-...`, Bearer, private keys, `password=...`). Ответ тоже маскируется.
 
@@ -99,6 +120,29 @@ SQL-контракт: `db/optional/003_exact_vector.up.sql` (базовые та
 `VECTOR_EMBEDDING_REDACTION_VERSION`, `VECTOR_EMBEDDING_BASE_URL`,
 `VECTOR_EMBEDDING_API_KEY`; `VECTOR_RETRIEVAL_STATUS` по умолчанию `vetted`.
 Драйвер PostgreSQL (`psycopg` или `psycopg2`) — optional dependency.
+
+Единственная сетевая точка этого пути — `EmbeddingsAdapter` в
+`backend/app/ai/vector_runtime.py` (`POST {VECTOR_EMBEDDING_BASE_URL}/embeddings`).
+Конфиг спеки — `VECTOR_EMBEDDING_PROVIDER/MODEL/VERSION/DIMENSION/METRIC`;
+adapter возвращает вектор только если ответ ей соответствует: модель в
+ответе обязательна, непустая и ровно `VECTOR_EMBEDDING_MODEL` (пустой или
+отсутствующий `model` → отказ до создания provenance), размерность ровно
+`VECTOR_EMBEDDING_DIMENSION`, все значения конечны. Расхождение —
+типизированная ошибка → `unavailable`, а не «похожий»
+вектор и не «успех». Ключ обязателен для включённого пути (попадает в
+`missing`); при пустом значении (прямая сборка конфига) заголовок
+`Authorization` не отправляется. Каждый успешный запрос даёт
+`EmbeddingProvenance` (provider, model, dimension, metric, нормализованный
+endpoint-роут без секретов, latency, request id) — она дописывается в
+`retrieval.reason`; `embeddingSpecId` строки и поля
+`retrieval.embedding*` — тот же спек. Внешние метаданные ответа (request id,
+model, finish_reason) проходят через `safe_metadata` (маска + ограничение
+длины) до provenance, `reason` и официального JSON.
+
+При выключенном runtime статус остаётся `disabled` с исходной причиной:
+adapter не вызывается, сетевых запросов нет и никакие embedding-факты не
+выдумываются — `embeddingModel`/`dimension`/`metric` в `disabled`-ответе это
+отражение конфигурации, а не результат измерения.
 
 `VECTOR_WORKSPACE_ID` — только конфигурация корпуса. Retrieval запускается
 внутри `current_workspace_scope()` и требует точного совпадения UUID с этим
@@ -153,3 +197,39 @@ Id элемента выводится из содержания (`category|fing
 тот же `SimilarFixesResult`; статусы примеров — те же `draft`/`vetted`/`retired`,
 и `vetted` по-прежнему требует реального scanner provenance. Подробности и
 ограничения — в [rag/README.md](../rag/README.md).
+
+## Тесты
+
+`backend/tests/test_ai_fake_server.py` — loopback fake OpenAI-сервер
+(`/chat/completions` + `/embeddings`; записывает Authorization, User-Agent и
+`x-opencode-session`, ответы программируются).
+
+`backend/tests/test_ai_provider.py`:
+
+1. generic-провайдер (`AI_BASE_URL`+`AI_MODEL`+`AI_API_KEY`) работает без
+   каких-либо `REFORMBOSS_*`/`OPENCODE_*` настроек, provenance —
+   `openai-compatible`, ключ не попадает в provenance;
+2. keyless local-шлюз (Ollama/vLLM) резолвится и выполняет запрос без
+   `Authorization`;
+3. remote без ключа, неполный конфиг шлюза, чужой `AI_PROVIDER` без
+   `AI_BASE_URL` → `None` (bounded, ничего не угадывается);
+4. HTTP 401 с телом, содержащим `sk-...`, и недоступный endpoint →
+   типизированный `AiProviderError` с замаскированным текстом;
+5. внешние метаданные ответа (request id, model) с секретом маскируются и
+   не попадают в provenance/официальный JSON.
+
+`backend/tests/test_vector_runtime.py`:
+
+1. выключенный runtime — `disabled` с исходной причиной, ни одного запроса и
+   ни одного выдуманного embedding-факта;
+2. неполный/некорректный спек (`METRIC`, `DIMENSION`, `STATUS`) →
+   `unavailable`, не `ready`;
+3. adapter возвращает вектор+`EmbeddingProvenance` только при совпадении
+   непустой модели из ответа и размерности; пустая/отсутствующая модель и
+   расхождение — отказ, не `ok`;
+4. embeddings без БД, без scope и при ошибке спека — всегда `unavailable`,
+   никогда не `ok`;
+5. request id с секретом маскируется до `retrieval.reason` и официального
+   JSON.
+
+Запуск: `PYTHONPATH=. python -m pytest backend/tests -q`.
