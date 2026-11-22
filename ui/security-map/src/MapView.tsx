@@ -4,7 +4,6 @@ import {
   BackgroundVariant,
   Controls,
   MarkerType,
-  MiniMap,
   ReactFlow,
   ViewportPortal,
   applyNodeChanges,
@@ -22,7 +21,7 @@ import type {
   Selection,
   SourceState,
 } from "./types";
-import { sameScope } from "./model";
+import { sameScope, scopeKey as makeScopeKey } from "./model";
 import {
   MAP_LANES,
   NODE_WIDTH,
@@ -40,7 +39,6 @@ import { FindingNode, type FindingNodeData } from "./FindingNode";
 import { SecurityEdge } from "./SecurityEdge";
 import { buildEdgeRoutes } from "./edgeRouting";
 import { buildExplorationTree, type TreeRow } from "./tree";
-import { AccessOverview } from "./AccessOverview";
 import {
   basisText,
   confidenceText,
@@ -197,6 +195,39 @@ export function Failure({
   );
 }
 
+const TREE_LAYOUT_PREFIX = "nedra.map.tree.";
+
+function readTreePositions(key: string): Record<string, { x: number; y: number }> {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as
+      | { nodePositions?: Record<string, { x: number; y: number }> }
+      | null;
+    return parsed?.nodePositions ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function writeTreePositions(
+  key: string,
+  scope: MapViewModel["scope"],
+  nodePositions: Record<string, { x: number; y: number }>,
+  viewport?: { x: number; y: number; zoom: number },
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify({
+      scope,
+      viewId: "security-map",
+      nodePositions,
+      viewport,
+    }));
+  } catch {
+    // Storage may be full or disabled; the in-memory layout still works.
+  }
+}
+
 export function MapView(props: MapViewProps) {
   const { model, loadState, layout, sourceState, onRetry } = props;
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -205,7 +236,7 @@ export function MapView(props: MapViewProps) {
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
   const [railOpen, setRailOpen] = useState(false);
   const [mobileView, setMobileView] = useState<"map" | "details">("map");
-  const [viewMode, setViewMode] = useState<"overview" | "tree">("overview");
+  const [viewMode] = useState<"overview" | "tree">("tree");
   const [expandedTree, setExpandedTree] = useState<Set<string>>(() => new Set<string>());
   const [searchQuery, setSearchQuery] = useState("");
   const computed = useMemo(
@@ -224,22 +255,6 @@ export function MapView(props: MapViewProps) {
   const [findingNodes, setFindingNodes] = useState<Node[]>([]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState(layout?.viewport ?? DEFAULT_VIEWPORT);
-  const [miniMapOpen, setMiniMapOpen] = useState(
-    () => typeof window !== "undefined" && window.innerWidth >= 900,
-  );
-  const miniMapTouched = useRef(false);
-  useEffect(() => {
-    const media = window.matchMedia("(max-width: 900px)");
-    const sync = () => {
-      if (!miniMapTouched.current) setMiniMapOpen(!media.matches);
-    };
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
-  const toggleMiniMap = () => {
-    miniMapTouched.current = true;
-    setMiniMapOpen((value) => !value);
-  };
   const primaryFinding = useMemo(() => {
     const withRefs = model.findings.filter((finding) => finding.nodeIds.length > 0);
     const pool = withRefs.length ? withRefs : model.findings;
@@ -278,9 +293,20 @@ export function MapView(props: MapViewProps) {
     () => buildExplorationTree(model.nodes, model.edges, expandedTree),
     [model.nodes, model.edges, expandedTree],
   );
+  const treeLayoutKey = `${TREE_LAYOUT_PREFIX}${makeScopeKey(model.scope)}`;
+  const [treeSavedPositions, setTreeSavedPositions] = useState<
+    Record<string, { x: number; y: number }>
+  >(() => readTreePositions(treeLayoutKey));
+  useEffect(() => {
+    setTreeSavedPositions(readTreePositions(treeLayoutKey));
+  }, [treeLayoutKey]);
   const treePositions = useMemo(
-    () => computeTreeLayout(treeModel, model.nodes).positions,
-    [treeModel, model.nodes],
+    () => ({
+      ...computeTreeLayout(treeModel, model.nodes).positions,
+      ...(layout?.nodePositions ?? {}),
+      ...treeSavedPositions,
+    }),
+    [treeModel, model.nodes, layout?.nodePositions, treeSavedPositions],
   );
   const treeVisibleKey = [...treeModel.visibleIds].sort().join("|");
   const searchAll = useMemo(() => {
@@ -450,27 +476,12 @@ export function MapView(props: MapViewProps) {
     });
   };
 
-  const switchMode = (next: "overview" | "tree") => {
-    if (next === viewMode) return;
-    if (viewMode === "overview") {
-      overviewPositions.current = Object.fromEntries(
-        mapNodes.map((item) => [item.id, item.position]),
-      );
-    }
-    setViewMode(next);
-    if (next === "tree") setExpandedTree(allExpanded);
-  };
-
   const selectSearchResult = (id: string) => {
     choose({ kind: "node", id });
     setSearchQuery("");
     setExpandedTree((previous: Set<string>) => new Set(previous).add(id));
     focusViewport([id], 0.7, 1.2);
   };
-
-  useEffect(() => {
-    if (viewMode === "tree") setRailOpen(true);
-  }, [viewMode]);
 
   const clearSelection = () => {
     setLocalSelection(null);
@@ -934,9 +945,12 @@ export function MapView(props: MapViewProps) {
     const next = applyNodeChanges(factChanges, mapNodes);
     setMapNodes(next);
     if (factChanges.some((item) => item.type === "position" && !item.dragging)) {
-      overviewPositions.current = Object.fromEntries(
+      const positions = Object.fromEntries(
         next.map((item) => [item.id, item.position]),
       );
+      overviewPositions.current = positions;
+      setTreeSavedPositions(positions);
+      writeTreePositions(treeLayoutKey, model.scope, positions, viewport);
       commitLayout(next);
     }
   };
@@ -1122,18 +1136,6 @@ export function MapView(props: MapViewProps) {
             <h1>Карта доступа и данных</h1>
           </div>
         </div>
-        <div className="sm-counts" aria-label="Счётчики карты">
-          <span><b>{model.nodes.length}</b> узлов</span>
-          <span><b>{model.edges.length}</b> связей</span>
-          <span>
-            <b>{model.findings.length}</b>{" "}
-            {plural(model.findings.length, "проблема", "проблемы", "проблем")}
-          </span>
-          <span>
-            <b>{model.evidence.length}</b>{" "}
-            {plural(model.evidence.length, "доказательство", "доказательства", "доказательств")}
-          </span>
-        </div>
         <div className="sm-search">
           <input
             type="search"
@@ -1173,22 +1175,6 @@ export function MapView(props: MapViewProps) {
           ) : null}
         </div>
         <div className="sm-actions">
-          <div className="sm-mode-toggle" role="group" aria-label="Режим карты">
-            <button
-              type="button"
-              aria-pressed={viewMode === "overview"}
-              onClick={() => switchMode("overview")}
-            >
-              Обзор
-            </button>
-            <button
-              type="button"
-              aria-pressed={viewMode === "tree"}
-              onClick={() => switchMode("tree")}
-            >
-              Дерево
-            </button>
-          </div>
           <span
             className={`sm-health ${unresolvedEdges.length ? "is-warn" : model.coverage.status === "complete" ? "is-ok" : "is-partial"}`}
           >
@@ -1208,16 +1194,6 @@ export function MapView(props: MapViewProps) {
           <button className="sm-tool" onClick={fitAll} title="Вся карта">
             ⛶ <span>Вся карта</span>
           </button>
-          <button className="sm-tool" onClick={focusSelection} title="Показать путь">
-            ◎ <span>Показать путь</span>
-          </button>
-          <button
-            className={`sm-tool ${miniMapOpen ? "is-active" : ""}`}
-            onClick={toggleMiniMap}
-            title="Мини-карта"
-          >
-            ▣ <span>Мини</span>
-          </button>
           <button className="sm-tool" onClick={reset} title="Сбросить расположение">
             ↺
           </button>
@@ -1229,31 +1205,10 @@ export function MapView(props: MapViewProps) {
 
       <div className="sm-intro">
         <span>
-          {viewMode === "overview"
-            ? "Цепочка: кто обращается → проверка доступа → маршрут → обработчик → операция → данные → проблема."
-            : "Дерево связей доступа — не структура файлов. Оно показывает, кто и через что доходит до данных."}
+          Дерево связей: кто обращается → правило → маршрут → обработчик → данные.
+          Блоки можно перетаскивать; расположение сохраняется для этого запуска.
         </span>
-        <span>
-          {viewMode === "overview"
-            ? "Нажмите на стрелку, чтобы увидеть её основание."
-            : "Корень — кто обращается; ветки — правила, маршруты, обработчики и данные."}
-        </span>
-        {viewMode === "overview" ? (
-          <span className="sm-layer-legend" aria-label="Порядок групп карты">
-            <b>Кто</b><i>→</i><b>Доступ</b><i>→</i><b>Маршрут</b><i>→</i><b>Обработчик</b>
-            <i>→</i><b>Операция</b><i>→</i><b>Данные</b><i>→</i><b>Проблема</b>
-          </span>
-        ) : (
-          <span className="sm-layer-legend" aria-label="О режиме дерева">
-            <b>Дерево связей</b><i>·</i><b>файлы показаны как доказательства, а не как порядок доступа</b>
-          </span>
-        )}
       </div>
-
-      <AccessOverview
-        model={model}
-        onSelectRoute={(id) => choose({ kind: "node", id })}
-      />
 
       {unresolvedEdges.length > 0 && (
         <button
@@ -1553,18 +1508,21 @@ export function MapView(props: MapViewProps) {
                       : candidate,
                   );
                   setMapNodes(next);
-                  overviewPositions.current = Object.fromEntries(
+                  const positions = Object.fromEntries(
                     next.map((candidate) => [candidate.id, candidate.position]),
                   );
+                  overviewPositions.current = positions;
+                  setTreeSavedPositions(positions);
+                  writeTreePositions(treeLayoutKey, model.scope, positions, viewport);
                   commitLayout(next);
                 }}
                 onMoveEnd={(_, nextViewport) => {
                   setViewport(nextViewport);
-                  if (viewMode === "overview") commitLayout(mapNodes, nextViewport);
+                  commitLayout(mapNodes, nextViewport);
                 }}
                 nodesConnectable={false}
                 edgesReconnectable={false}
-                nodesDraggable={viewMode === "overview"}
+                nodesDraggable
                 deleteKeyCode={null}
                 key={canvasKey}
                 fitView={false}
@@ -1572,7 +1530,7 @@ export function MapView(props: MapViewProps) {
                 minZoom={0.18}
                 maxZoom={1.6}
                 panOnScroll
-                selectionOnDrag
+                selectionOnDrag={false}
                 proOptions={{ hideAttribution: false }}
               >
                 <Background
@@ -1606,22 +1564,6 @@ export function MapView(props: MapViewProps) {
                   </ViewportPortal>
                 ) : null}
                 <Controls className="sm-controls" showInteractive={false} />
-                {miniMapOpen && (
-                  <MiniMap
-                    className="sm-minimap"
-                    nodeColor={(item) => {
-                      if (item.type === "findingNode")
-                        return severityColor[
-                          (item.data as unknown as FindingNodeData).severity
-                        ] ?? "#f59e0b";
-                      const data = item.data as unknown as SecurityNodeData;
-                      return toneColor[data.tone] ?? "#64748b";
-                    }}
-                    maskColor="rgba(2, 6, 23, 0.82)"
-                    pannable
-                    zoomable
-                  />
-                )}
               </ReactFlow>
             )}
           </div>
