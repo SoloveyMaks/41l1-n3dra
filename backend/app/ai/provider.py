@@ -2,13 +2,19 @@
 
 The default provider is OpenCode Go. An explicit ``AI_PROVIDER=opencode-go``
 uses ``OPENCODE_API_KEY`` or the generic ``AI_API_KEY`` and the Go endpoint;
-it never falls back to a legacy ReformBoss key or endpoint. Legacy ReformBoss
+it never falls back to a legacy ReformBoss key or endpoint.
+
+A generic OpenAI-compatible gateway is described only by ``AI_BASE_URL``,
+``AI_MODEL`` (or ``LLM_MODEL``) and an optional ``AI_API_KEY``: a local
+Ollama/vLLM needs no external credential, and such a gateway never inherits a
+ReformBoss key, endpoint or model name. Remote providers (Go, legacy) require
+a key; without one resolution fails closed with ``None``. Provenance always
+reports the provider that actually served the request. Legacy ReformBoss
 remains available only when selected or when only its key is configured.
-``AI_BASE_URL``/``AI_MODEL``/``LLM_MODEL`` stay supported for local
-OpenAI-compatible gateways. Keys are never logged, stored in provenance or
-returned to callers. The product never opens an external credential database;
-only process environment is read, plus the existing legacy agent .env fallback
-for ``REFORMBOSS_API_KEY`` alone.
+Keys are never logged, stored in provenance or returned to callers. The
+product never opens an external credential database; only process environment
+is read, plus the existing legacy agent .env fallback for
+``REFORMBOSS_API_KEY`` alone.
 """
 from __future__ import annotations
 
@@ -215,13 +221,19 @@ def _is_reformboss_endpoint(url: str) -> bool:
 
 
 def resolve_provider_config() -> Optional[ProviderConfig]:
-    """Resolve Go, legacy ReformBoss or a local OpenAI-compatible gateway.
+    """Resolve an explicit provider, OpenCode Go, a generic OpenAI-compatible
+    gateway or legacy ReformBoss.
 
-    Explicit ``AI_PROVIDER`` wins. ``AI_PROVIDER=opencode-go`` uses only
-    ``AI_API_KEY``/``OPENCODE_API_KEY`` and never a legacy ReformBoss key or
-    endpoint. With no provider selection, a Go credential wins, then a generic
-    local key, then a legacy key. Missing keys return ``None`` instead of
-    guessing another provider's secret.
+    Explicit ``AI_PROVIDER`` wins. A generic gateway is described only by
+    ``AI_BASE_URL`` + ``AI_MODEL``/``LLM_MODEL`` with an optional
+    ``AI_API_KEY``: a keyless local Ollama/vLLM resolves as
+    ``openai-compatible`` and never borrows a ReformBoss key, endpoint or
+    model name. Remote providers (``opencode-go``, ``reformboss``) require a
+    key; without one this returns ``None`` instead of guessing another
+    provider's secret. With no provider selection, a Go credential wins, then
+    a generic key (with ``AI_BASE_URL`` a generic gateway, otherwise Go), then
+    a legacy key, then a keyless generic gateway when both ``AI_BASE_URL``
+    and ``AI_MODEL``/``LLM_MODEL`` are set.
     """
     generic_key = os.getenv("AI_API_KEY", "").strip()
     opencode_key = os.getenv("OPENCODE_API_KEY", "").strip()
@@ -239,7 +251,7 @@ def resolve_provider_config() -> Optional[ProviderConfig]:
     legacy_aliases = {"reformboss", "reform-boss", "legacy"}
     local_aliases = {"openai-compatible", "openai", "local", "custom", "openai-api"}
 
-    provider: Optional[str] = None
+    provider = ""
     key = ""
     base_url = ""
     default_model = ""
@@ -251,28 +263,39 @@ def resolve_provider_config() -> Optional[ProviderConfig]:
         elif explicit in legacy_aliases:
             provider, key, default_model = REFORMBOSS_PROVIDER, legacy_key, REFORMBOSS_DEFAULT_MODEL
             base_url = base_override or REFORMBOSS_BASE_URL
-        elif explicit in local_aliases or (base_override and generic_key):
-            provider = LOCAL_PROVIDER if explicit in local_aliases else explicit
-            key, base_url, default_model = generic_key, base_override, REFORMBOSS_DEFAULT_MODEL
         else:
-            # Unknown explicit provider without a complete local endpoint is
-            # fail-closed: never silently reuse Go or legacy credentials.
-            return None
+            # Any other declared name (openai-compatible, ollama, vllm, ...)
+            # is an operator-declared gateway: base URL and model must be
+            # given explicitly, the key is optional (local gateways often need
+            # none) and no other provider's endpoint, model or credential is
+            # ever reused.
+            provider = LOCAL_PROVIDER if explicit in local_aliases else explicit
+            key, base_url, default_model = generic_key, base_override, ""
     elif opencode_key:
         provider, key, default_model = OPENCODE_GO_PROVIDER, go_key, OPENCODE_GO_DEFAULT_MODEL
         base_url = base_override or OPENCODE_GO_BASE_URL
     elif generic_key and base_override:
         provider, key, base_url, default_model = (
-            LOCAL_PROVIDER, generic_key, base_override, REFORMBOSS_DEFAULT_MODEL,
+            LOCAL_PROVIDER, generic_key, base_override, "",
         )
     elif generic_key:
         provider, key, default_model = OPENCODE_GO_PROVIDER, generic_key, OPENCODE_GO_DEFAULT_MODEL
         base_url = base_override or OPENCODE_GO_BASE_URL
-    elif reform_key or legacy_key:
+    elif legacy_key:
         provider, key, default_model = REFORMBOSS_PROVIDER, legacy_key, REFORMBOSS_DEFAULT_MODEL
         base_url = base_override or REFORMBOSS_BASE_URL
+    elif base_override and model_override:
+        # Keyless local gateway (Ollama/vLLM): no external credential needed.
+        provider, key, base_url, default_model = (
+            LOCAL_PROVIDER, "", base_override, "",
+        )
 
-    if not provider or not key or not base_url:
+    if not provider or not base_url:
+        return None
+
+    # Remote providers fail closed without a credential: never reuse another
+    # provider's key and never claim success with an unauthenticated guess.
+    if provider in (OPENCODE_GO_PROVIDER, REFORMBOSS_PROVIDER) and not key:
         return None
 
     # Explicit Go must not inherit a legacy ReformBoss endpoint from a stale
@@ -280,7 +303,7 @@ def resolve_provider_config() -> Optional[ProviderConfig]:
     if provider == OPENCODE_GO_PROVIDER and _is_reformboss_endpoint(base_url):
         base_url = OPENCODE_GO_BASE_URL
 
-    # A local/custom OpenAI-compatible gateway has no safe built-in model.
+    # A generic/local OpenAI-compatible gateway has no safe built-in model.
     # Require AI_MODEL/LLM_MODEL there; Go and legacy keep their defaults.
     known_default = provider in {OPENCODE_GO_PROVIDER, REFORMBOSS_PROVIDER}
     model = model_override or (default_model if known_default else "")
@@ -359,11 +382,14 @@ def complete_json(
     body = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
     session = session_id or new_session_id("ai")
     headers = {
-        "Authorization": f"Bearer {config.api_key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": NEDRA_USER_AGENT,
     }
+    if config.api_key:
+        # A keyless local gateway (Ollama/vLLM) is a valid configuration:
+        # no Authorization header is sent instead of an empty Bearer token.
+        headers["Authorization"] = f"Bearer {config.api_key}"
     if config.provider == OPENCODE_GO_PROVIDER:
         headers[OPENCODE_SESSION_HEADER] = session
     request = urllib.request.Request(

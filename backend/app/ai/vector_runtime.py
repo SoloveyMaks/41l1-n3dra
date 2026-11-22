@@ -5,6 +5,14 @@ deliberately fail-open: any missing config, missing driver, provider failure or
 database error becomes a typed `unavailable` result and never raises into the
 main analysis.
 
+The only network hop is ``EmbeddingsAdapter`` (``POST /embeddings``): it
+returns a vector solely when the answer provably belongs to the configured
+spec — same model, configured dimension, finite values — and carries
+request-level provenance (provider, model, dimension, metric, route, latency).
+A mismatch is a typed error, never a close-enough vector and never a silent
+success. With ``VECTOR_RETRIEVAL_ENABLED=0`` nothing is executed and the
+status stays ``disabled`` with no invented embedding facts.
+
 Configuration is env-only (see docs/ai-runtime.md). The code never logs the
 query text, the embedding vector or the API key.
 """
@@ -13,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -20,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.ai import vector_demo
-from backend.app.ai.provider import mask_sensitive_text, open_same_host
+from backend.app.ai.provider import effective_route, mask_sensitive_text, open_same_host
 from backend.app.ai.vector_result import VectorExample
 from backend.app.codefacts.identity import current_workspace_scope
 from backend.app.contracts.schemas import Finding, RetrievalInfo, SimilarFix
@@ -175,11 +184,140 @@ def _sanitize(text: str, limit: int = 300) -> str:
     return mask_sensitive_text(str(text or ""))[:limit]
 
 
+@dataclass(frozen=True)
+class EmbeddingProvenance:
+    """Request-level provenance of a vector that actually came from the endpoint."""
+
+    provider: str
+    model: str
+    dimension: int
+    metric: str
+    endpoint: str
+    latency_ms: float
+    request_id: Optional[str] = None
+
+    def summary(self) -> str:
+        text = (
+            f"embedding {self.provider}/{self.model} dim={self.dimension} "
+            f"metric={self.metric} via {self.endpoint} in {self.latency_ms}ms"
+        )
+        if self.request_id:
+            text += f" request_id={self.request_id}"
+        return text
+
+
+class EmbeddingsAdapter:
+    """OpenAI-compatible ``/embeddings`` client bound to one embedding spec.
+
+    This is the only place the vetted path talks to an embedding endpoint.
+    The configured spec (provider, model, dimension, metric) is the claim; a
+    vector is returned only when the response provably belongs to it: same
+    model, exactly the configured dimension, finite values. A mismatch raises
+    a bounded, masked error that becomes retrieval ``unavailable`` — never a
+    close-enough vector and never a silent success. The API key is optional
+    only in the sense that an empty configured key simply omits the
+    ``Authorization`` header; the caller decides whether a key is required.
+    """
+
+    def __init__(self, config: VectorConfig):
+        self.config = config
+
+    def embed(self, text: str) -> Tuple[List[float], EmbeddingProvenance]:
+        cfg = self.config
+        if not cfg.embedding_base_url:
+            raise RuntimeError("embedding endpoint is not configured")
+        if not cfg.model:
+            raise RuntimeError("embedding model is not configured")
+        if cfg.dimension is None or cfg.dimension <= 0:
+            raise RuntimeError("embedding dimension is not configured")
+
+        body = json.dumps({"model": cfg.model, "input": text}, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if cfg.embedding_api_key:
+            headers["Authorization"] = f"Bearer {cfg.embedding_api_key}"
+        request = urllib.request.Request(
+            f"{cfg.embedding_base_url}/embeddings",
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+
+        started = time.monotonic()
+        try:
+            with open_same_host(request, cfg.embedding_timeout_seconds) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+                request_id = (
+                    response.headers.get("x-request-id")
+                    or response.headers.get("request-id")
+                    or response.headers.get("cf-ray")
+                )
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            raise RuntimeError(f"embedding HTTP {exc.code}: {_sanitize(detail)}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"embedding endpoint unreachable: {_sanitize(exc)}") from exc
+
+        latency_ms = round((time.monotonic() - started) * 1000.0, 1)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("embedding response is not JSON") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("embedding response is not a JSON object")
+
+        data = payload.get("data")
+        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+            raise RuntimeError("embedding response has no data")
+        embedding = data[0].get("embedding")
+        if not isinstance(embedding, list) or not embedding:
+            raise RuntimeError("embedding response has no vector")
+
+        returned_model = payload.get("model")
+        if returned_model and str(returned_model) != cfg.model:
+            raise RuntimeError(
+                f"embedding response model {str(returned_model)!r} does not match "
+                f"configured {cfg.model!r}"
+            )
+        try:
+            vector = [float(value) for value in embedding]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("embedding response contains a non-numeric value") from exc
+        if not all(math.isfinite(value) for value in vector):
+            raise RuntimeError("embedding response contains a non-finite value")
+        if len(vector) != cfg.dimension:
+            raise RuntimeError(
+                f"embedding dimension {len(vector)} does not match configured {cfg.dimension}"
+            )
+
+        provenance = EmbeddingProvenance(
+            provider=cfg.provider,
+            model=cfg.model,
+            dimension=len(vector),
+            metric=cfg.metric,
+            endpoint=effective_route(cfg.embedding_base_url),
+            latency_ms=latency_ms,
+            request_id=request_id,
+        )
+        return vector, provenance
+
+
+def _provenance_text(provenances: List[EmbeddingProvenance]) -> str:
+    return "; ".join(dict.fromkeys(provenance.summary() for provenance in provenances))
+
+
 class VectorRuntime:
     """Thin, fail-open wrapper around exact_similar_fixes()."""
 
     def __init__(self, config: Optional[VectorConfig] = None):
         self.config = config or resolve_vector_config()
+        self._embeddings = EmbeddingsAdapter(self.config)
 
     @property
     def enabled(self) -> bool:
@@ -216,7 +354,7 @@ class VectorRuntime:
             )
             return info
         info.status = "ready"
-        info.reason = "retrieval configured (not executed)"
+        info.reason = f"retrieval configured (not executed); embedding provider {cfg.provider}"
         return info
 
     def _scope_violation(self) -> Optional[str]:
@@ -290,16 +428,23 @@ class VectorRuntime:
         result_limit = limit if limit is not None else self.config.limit
         collected: List[VectorExample] = []
         failures: List[str] = []
+        provenances: List[EmbeddingProvenance] = []
         successes = 0
 
         for finding in findings[: self.config.max_findings]:
             try:
-                status, items, reason = self._retrieve_one(finding, result_limit, workspace)
+                status, items, reason, provenance = self._retrieve_one(
+                    finding, result_limit, workspace
+                )
             except Exception as exc:  # fail-open by design
-                status, items, reason = "unavailable", [], f"retrieval error: {_sanitize(exc)}"
+                status, items, reason, provenance = (
+                    "unavailable", [], f"retrieval error: {_sanitize(exc)}", None,
+                )
             if status == "ok":
                 successes += 1
                 collected.extend(items)
+                if provenance is not None:
+                    provenances.append(provenance)
             else:
                 failures.append(reason or "retrieval unavailable")
 
@@ -339,6 +484,8 @@ class VectorRuntime:
                 info.reason = "draft-only retrieval: " + detail
             else:
                 info.reason = "exact retrieval completed" if collected else "no matching vetted examples"
+        if provenances:
+            info.reason = f"{info.reason}; {_provenance_text(provenances)}"
         return info, collected
 
     def _retrieve_one(
@@ -346,25 +493,27 @@ class VectorRuntime:
         finding: Finding,
         limit: int,
         workspace: str,
-    ) -> Tuple[str, List[VectorExample], str]:
+    ) -> Tuple[str, List[VectorExample], str, Optional[EmbeddingProvenance]]:
         cfg = self.config
         query_text = self._query_text(finding)
         if not query_text:
-            return "unavailable", [], "empty query text"
+            return "unavailable", [], "empty query text", None
 
+        provenance: Optional[EmbeddingProvenance] = None
         try:
             if cfg.demo_fixture:
                 vector = vector_demo.embed_text(query_text)
             else:
-                vector = self._embed_query(query_text)
+                vector, provenance = self._embeddings.embed(query_text)
         except Exception as exc:
-            return "unavailable", [], f"embedding unavailable: {_sanitize(exc)}"
+            return "unavailable", [], f"embedding unavailable: {_sanitize(exc)}", None
 
         if cfg.dimension is None or len(vector) != cfg.dimension:
             return (
                 "unavailable",
                 [],
                 f"query dimension {len(vector)} does not match configured {cfg.dimension}",
+                None,
             )
 
         rule_family = cfg.rule_family_map.get(finding.ruleId, finding.ruleId)
@@ -372,7 +521,7 @@ class VectorRuntime:
         try:
             rows = self._query_db(workspace, vector, rule_family, limit, function)
         except Exception as exc:
-            return "unavailable", [], f"database unavailable: {_sanitize(exc)}"
+            return "unavailable", [], f"database unavailable: {_sanitize(exc)}", None
 
         fixes: List[VectorExample] = []
         for row in rows:
@@ -388,6 +537,7 @@ class VectorRuntime:
                         "unavailable",
                         [],
                         f"unexpected example status {example_status!r}",
+                        None,
                     )
                 fixes.append(
                     VectorExample(
@@ -406,8 +556,8 @@ class VectorRuntime:
                     )
                 )
             except (TypeError, ValueError, IndexError) as exc:
-                return "unavailable", [], f"unexpected retrieval row: {_sanitize(exc)}"
-        return "ok", fixes, ""
+                return "unavailable", [], f"unexpected retrieval row: {_sanitize(exc)}", None
+        return "ok", fixes, "", provenance
 
     @staticmethod
     def _as_similar_fix(example: VectorExample) -> SimilarFix:
@@ -431,48 +581,6 @@ class VectorRuntime:
         evidence = mask_sensitive_text(finding.redactedEvidence or "")
         parts = [finding.ruleId, finding.severity.value, evidence]
         return " ".join(part for part in parts if part).strip()[:2000]
-
-    def _embed_query(self, text: str) -> List[float]:
-        cfg = self.config
-        body = json.dumps({"model": cfg.model, "input": text}, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            f"{cfg.embedding_base_url}/embeddings",
-            data=body,
-            headers={
-                "Authorization": f"Bearer {cfg.embedding_api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with open_same_host(request, cfg.embedding_timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8", errors="replace"))
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            raise RuntimeError(f"embedding HTTP {exc.code}: {_sanitize(detail)}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise RuntimeError(f"embedding endpoint unreachable: {_sanitize(exc)}") from exc
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("embedding response is not JSON") from exc
-
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list) or not data:
-            raise RuntimeError("embedding response has no data")
-        returned_model = payload.get("model") if isinstance(payload, dict) else None
-        if returned_model and str(returned_model) != cfg.model:
-            raise RuntimeError("embedding response model does not match configured model")
-        embedding = data[0].get("embedding") if isinstance(data[0], dict) else None
-        if not isinstance(embedding, list) or not embedding:
-            raise RuntimeError("embedding response has no vector")
-        vector = [float(value) for value in embedding]
-        if not all(math.isfinite(value) for value in vector):
-            raise RuntimeError("embedding response contains a non-finite value")
-        return vector
 
     def _query_db(
         self,
