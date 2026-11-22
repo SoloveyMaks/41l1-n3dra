@@ -1,7 +1,9 @@
 from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from backend.app.security.secrets import reject_reserved_envelope
 
 
 class PortType(str, Enum):
@@ -404,6 +406,13 @@ class WorkflowNode(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
     position: Dict[str, float] = Field(default_factory=lambda: {"x": 100.0, "y": 100.0})
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_reserved_secret_envelopes(cls, value: Any) -> Any:
+        """Секрет с префиксом enc:v1: из пользовательского ввода → 422."""
+        reject_reserved_envelope(value)
+        return value
+
 
 class WorkflowEdge(BaseModel):
     id: str
@@ -419,6 +428,13 @@ class WorkflowDraft(BaseModel):
     description: str = ""
     nodes: List[WorkflowNode] = Field(default_factory=list)
     edges: List[WorkflowEdge] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_reserved_secret_envelopes(cls, value: Any) -> Any:
+        """Зарезервированный формат enc:v1:* не проходит create/update как 422."""
+        reject_reserved_envelope(value)
+        return value
 
 
 class WorkflowValidationIssue(BaseModel):

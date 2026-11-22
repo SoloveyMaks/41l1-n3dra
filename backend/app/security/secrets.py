@@ -18,8 +18,12 @@ AES-256-GCM: nonce 12 байт, ciphertext включает GCM-tag. AAD — и�
 Неверный ключ, подмена ciphertext или AAD — явная ``SecretDecryptionError``:
 тихого plaintext не бывает. Чтение legacy plaintext без ключа проходит без
 потери. Чтение конверта без ключа — явный отказ в обоих режимах: секрета на
-выходе нет, молча отдавать конверт нельзя. Префикс ``enc:v1:`` зарезервирован
-под конверт, plaintext-значение с таким видом не расшифровывается.
+выходе нет, молча отдавать конверт нельзя.
+
+Префикс ``enc:v1:`` целиком зарезервирован за конвертом хранилища: модель
+``WorkflowDraft`` отклоняет такой пользовательский ввод до записи (422), а
+``encrypt_secrets`` не пишет его в БД и в режиме повторного сохранения
+проверяет внутренний конверт расшифровкой, а не перешифровывает вслепую.
 """
 
 from __future__ import annotations
@@ -46,7 +50,7 @@ MODE_REQUIRED = "required"
 KEY_ENV = "NEDRA_SECRET_KEY"
 MODE_ENV = "NEDRA_SECRETS_MODE"
 
-_ENVELOPE_PREFIX = "enc:v1:"
+ENVELOPE_PREFIX = "enc:v1:"
 # base64 standard: допускает padding '=' в конце каждой группы.
 _ENVELOPE_RE = re.compile(r"^enc:v1:([A-Za-z0-9+/]+={0,2}):([A-Za-z0-9+/]+={0,2})$")
 _NONCE_BYTES = 12
@@ -69,6 +73,14 @@ class MissingSecretsKeyError(SecretsError):
 
 class SecretDecryptionError(SecretsError):
     """Неверный ключ или подмена конверта: явная ошибка вместо plaintext."""
+
+
+class ReservedEnvelopeError(SecretsError, ValueError):
+    """Секрет несёт зарезервированный префикс ``enc:v1:`` из пользовательского ввода.
+
+    Наследует ``ValueError``, чтобы pydantic-валидатор превращал отказ в 422, и
+    ``SecretsError``, чтобы storage-слой ловил его общей ошибкой шифрования.
+    """
 
 
 def secrets_mode() -> str:
@@ -109,6 +121,31 @@ def is_encrypted(value: Any) -> bool:
     return isinstance(value, str) and _ENVELOPE_RE.match(value) is not None
 
 
+def is_reserved_envelope(value: Any) -> bool:
+    """True для строки с зарезервированным префиксом ``enc:v1:`` (формат конверта)."""
+    return isinstance(value, str) and value.startswith(ENVELOPE_PREFIX)
+
+
+def reject_reserved_envelope(value: Any) -> None:
+    """Отклонить секретные поля с префиксом ``enc:v1:`` — для model-валидатора.
+
+    Ловит и строгий конверт, и мусор вроде ``enc:v1:AAAA``: любой вид с этим
+    префиксом принадлежит хранилищу и не может прийти из пользовательского
+    ввода. Поднимает ``ReservedEnvelopeError`` (она же ``ValueError``, поэтому
+    pydantic отдаёт 422).
+    """
+    def visitor(field: str, item: str) -> str:
+        if is_reserved_envelope(item):
+            raise ReservedEnvelopeError(
+                f"Секретное поле {field!r} не может начинаться с "
+                f"{ENVELOPE_PREFIX!r}: этот формат зарезервирован за "
+                "шифрованием хранилища."
+            )
+        return item
+
+    _walk(value, visitor)
+
+
 def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
 
@@ -116,7 +153,7 @@ def _b64(raw: bytes) -> str:
 def _encrypt_value(key: bytes, field: str, value: str) -> str:
     nonce = os.urandom(_NONCE_BYTES)
     sealed = AESGCM(key).encrypt(nonce, value.encode("utf-8"), field.encode("utf-8"))
-    return f"{_ENVELOPE_PREFIX}{_b64(nonce)}:{_b64(sealed)}"
+    return f"{ENVELOPE_PREFIX}{_b64(nonce)}:{_b64(sealed)}"
 
 
 def _decrypt_value(key: bytes, field: str, envelope: str) -> str:
@@ -166,11 +203,16 @@ def encrypt_secrets(value: T) -> T:
 
     Без ключа: ``optional`` — возврат как есть с предупреждением в лог (без
     значений), ``required`` — ``MissingSecretsKeyError`` (отказ записи).
-    Уже зашифрованные конверты не шифруются повторно.
+    Внутренний конверт при повторном сохранении проверяется расшифровкой
+    текущим ключом (не перешифровывается вслепую), читается он или нет —
+    запись конверта без подтверждения не проходит. Любой другой секрет с
+    префиксом ``enc:v1:`` — ``ReservedEnvelopeError``: формат из пользовательского
+    ввода в БД не пишется даже в обход модели.
     """
     key = load_key()
+    mode = secrets_mode()
     if key is None:
-        if secrets_mode() == MODE_REQUIRED:
+        if mode == MODE_REQUIRED:
             raise MissingSecretsKeyError(
                 f"{MODE_ENV}={MODE_REQUIRED}, но {KEY_ENV} не задан: "
                 "запись секретов открытым текстом запрещена."
@@ -180,10 +222,24 @@ def encrypt_secrets(value: T) -> T:
             "открытым текстом, как до включения шифрования.",
             KEY_ENV, MODE_ENV, MODE_OPTIONAL,
         )
-        return value
 
     def visitor(field: str, item: str) -> str:
         if is_encrypted(item):
+            if key is None:
+                raise MissingSecretsKeyError(
+                    f"Поле {field!r} несёт конверт {ENVELOPE_PREFIX}, а {KEY_ENV} "
+                    "не задан: проверить значение нельзя, запись отклонена."
+                )
+            # Проверка чтением: конверт должен расшифровываться текущим ключом.
+            _decrypt_value(key, field, item)
+            return item
+        if is_reserved_envelope(item):
+            raise ReservedEnvelopeError(
+                f"Секретное поле {field!r} не может начинаться с "
+                f"{ENVELOPE_PREFIX!r}: этот формат зарезервирован за "
+                "шифрованием хранилища."
+            )
+        if key is None:
             return item
         return _encrypt_value(key, field, item)
 

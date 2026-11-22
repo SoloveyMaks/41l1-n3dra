@@ -15,12 +15,18 @@ import os
 import unittest
 from unittest import mock
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from backend.app.contracts.schemas import WorkflowDraft, WorkflowNode
 from backend.app.security.secrets import (
     KEY_ENV,
     MODE_ENV,
     MODE_OPTIONAL,
     MODE_REQUIRED,
     MissingSecretsKeyError,
+    ReservedEnvelopeError,
     SecretDecryptionError,
     SecretsConfigError,
     decrypt_secrets,
@@ -202,6 +208,86 @@ class EnvelopeTests(unittest.TestCase):
             self.assertIsNone(load_key())
 
 
+class ReservedEnvelopeTests(unittest.TestCase):
+    """enc:v1:* из пользовательского ввода не доходит до БД: 422 на модели."""
+
+    @staticmethod
+    def _payload(secret: str) -> dict:
+        return {
+            "name": "PR gate",
+            "description": "",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "kind": "notify",
+                    "config": {"secretToken": secret, "webhookUrl": "https://hooks.example/t"},
+                },
+            ],
+            "edges": [],
+        }
+
+    def test_model_rejects_reserved_on_create_and_update(self):
+        for secret in ("enc:v1:AAAA:AAAA", "enc:v1:garbage!", "enc:v1:"):
+            with self.subTest(secret=secret):
+                with self.assertRaises(ValidationError) as ctx:
+                    WorkflowDraft(**self._payload(secret))
+                self.assertIn("enc:v1:", str(ctx.exception))
+                # Update — та же модель: прочитанный черновик + подменённый секрет.
+                with self.assertRaises(ValidationError):
+                    WorkflowDraft(**{**self._payload("sk-plain"), **self._payload(secret)})
+        with self.assertRaises(ValidationError):
+            WorkflowNode(id="n1", kind="notify", config={"webhookSecret": "enc:v1:AAAA"})
+
+    def test_fastapi_maps_reserved_secret_to_422(self):
+        app = FastAPI()
+
+        @app.post("/workflows")
+        def create(draft: WorkflowDraft):
+            return {"ok": True}
+
+        @app.put("/workflows/{workflow_id}")
+        def update(workflow_id: str, draft: WorkflowDraft):
+            return {"ok": True}
+
+        client = TestClient(app)
+        reserved = self._payload("enc:v1:AAAA:AAAA")
+        responses = (
+            ("POST", client.post("/workflows", json=reserved)),
+            ("PUT", client.put("/workflows/wf1", json=reserved)),
+        )
+        for method, response in responses:
+            with self.subTest(method=method):
+                self.assertEqual(response.status_code, 422)
+                detail = json.dumps(response.json()["detail"], ensure_ascii=False)
+                self.assertIn("enc:v1:", detail)
+        # Обычный секрет по-прежнему принимается.
+        valid = self._payload("sk-plain-0123456789")
+        self.assertEqual(client.post("/workflows", json=valid).status_code, 200)
+
+    def test_valid_secret_still_accepted_and_encrypted(self):
+        draft = WorkflowDraft(**self._payload("sk-plain-0123456789"))
+        with secret_env(key=KEY_A):
+            sealed = encrypt_secrets(draft.model_dump())
+            self.assertTrue(is_encrypted(sealed["nodes"][0]["config"]["secretToken"]))
+            self.assertEqual(decrypt_secrets(sealed), draft.model_dump())
+
+    def test_storage_refuses_reserved_prefix_with_key(self):
+        with secret_env(key=KEY_A):
+            with self.assertRaises(SecretDecryptionError):
+                encrypt_secrets({"secretToken": "enc:v1:AAAA:AAAA"})
+            with self.assertRaises(ReservedEnvelopeError):
+                encrypt_secrets({"secretToken": "enc:v1:garbage!"})
+            with self.assertRaises(ReservedEnvelopeError):
+                encrypt_secrets({"meta": [{"config": {"webhookSecret": "enc:v1:x"}}]})
+
+    def test_storage_refuses_reserved_prefix_without_key(self):
+        with secret_env(mode=MODE_OPTIONAL):
+            with self.assertRaises(MissingSecretsKeyError):
+                encrypt_secrets({"secretToken": "enc:v1:AAAA:AAAA"})
+            with self.assertRaises(ReservedEnvelopeError):
+                encrypt_secrets({"secretToken": "enc:v1:garbage!"})
+
+
 # --- Проводка в backend.app.storage.database ---------------------------------
 
 class _FakeCursor:
@@ -370,6 +456,15 @@ class StorageWiringTests(unittest.TestCase):
             )
             with self.assertRaises(SecretDecryptionError):
                 self.repo.get_workflow("wf3")
+
+    def test_reserved_envelope_never_reaches_storage(self):
+        # Обход модели (внутренний путь) тоже не кладёт закрафченный конверт.
+        draft = sample_draft()
+        draft["nodes"][0]["config"]["secretToken"] = "enc:v1:AAAA:AAAA"
+        with secret_env(key=KEY_A):
+            with self.assertRaises(SecretDecryptionError):
+                self.repo.save_workflow("wf_bad", "bad", "", draft)
+        self.assertEqual(self.store.revisions, {})
 
 
 if __name__ == "__main__":
