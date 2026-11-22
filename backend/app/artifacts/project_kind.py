@@ -163,9 +163,12 @@ def project_kind_for_artifact(store: Any, workspace: str, artifact: Dict[str, An
             "reasons": ["Не удалось прочитать распакованный артефакт — проверка не блокируется"],
         }
     kind = detect_project_kind(Path(extracted))
-    meta["projectKind"] = kind
-    try:
-        store.save_artifact_meta(workspace, artifact_id, meta)
-    except Exception:  # noqa: BLE001 - cache write must not break the run gate
-        pass
+    # Never create a partial metadata file: ensure_artifact_meta treats any
+    # non-empty dict as initialized and would skip snapshot recovery.
+    if meta.get("snapshotId") and meta.get("snapshotManifestHash"):
+        meta["projectKind"] = kind
+        try:
+            store.save_artifact_meta(workspace, artifact_id, meta)
+        except Exception:  # noqa: BLE001 - cache write must not break the run gate
+            pass
     return kind

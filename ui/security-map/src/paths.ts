@@ -47,9 +47,11 @@ export function enumerateAccessPaths(
   }
   for (const list of outgoing.values()) list.sort((a, b) => a.id.localeCompare(b.id));
 
-  const actorIds = model.nodes.filter((node) => node.kind === "actor").map((node) => node.id);
+  const actorIds = model.nodes
+    .filter((node) => node.kind === "actor")
+    .map((node) => node.id);
   const rootIds = model.nodes
-    .filter((node) => (incoming.get(node.id) ?? 0) === 0)
+    .filter((node) => node.kind !== "file" && (incoming.get(node.id) ?? 0) === 0)
     .map((node) => node.id);
   const starts = [...new Set([...actorIds, ...rootIds])].sort();
 
@@ -96,7 +98,7 @@ export function enumerateAccessPaths(
     path: ReadonlySet<string>,
   ): void => {
     const node = byId.get(id);
-    if (!node || path.has(id) || nodeIds.length > maxDepth) return;
+    if (!node || node.kind === "file" || path.has(id) || nodeIds.length > maxDepth) return;
     const nextPath = new Set(path).add(id);
     const nextNodes = [...nodeIds, id];
     const edges = outgoing.get(id) ?? [];

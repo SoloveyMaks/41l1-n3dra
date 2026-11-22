@@ -232,40 +232,6 @@ export function productionModel(
   findings: readonly Finding[],
 ): MapViewModel {
   const evidencePath = new Map(data.evidence.map((item) => [item.id, item.location.path]));
-  const pathsByNode = new Map(
-    data.nodes.map((node) => [
-      node.id,
-      new Set(node.evidenceRefs.map((id) => evidencePath.get(id)).filter((path): path is string => Boolean(path))),
-    ]),
-  );
-  const preferredKinds: Record<string, true> = {
-    function: true,
-    sink: true,
-    data: true,
-    route: true,
-  };
-  const findingRefs = (finding: Finding): string[] => [
-    ...new Set([
-      finding.primaryEvidenceId,
-      ...finding.relatedEvidenceIds,
-      ...finding.traceEvidenceIds,
-    ]),
-  ];
-  const fallbackNodeIds = (finding: Finding): string[] => {
-    const paths = new Set(
-      findingRefs(finding).map((id) => evidencePath.get(id)).filter((path): path is string => Boolean(path)),
-    );
-    if (!paths.size) return [];
-    return data.nodes
-      .filter((node) => preferredKinds[node.kind] === true)
-      .filter((node) => {
-        const nodePaths = pathsByNode.get(node.id);
-        if (!nodePaths) return false;
-        for (const path of paths) if (nodePaths.has(path)) return true;
-        return false;
-      })
-      .map((node) => node.id);
-  };
   const syntheticNodes: ViewNode[] = [];
   const syntheticByPath = new Map<string, string>();
   const syntheticNodeFor = (finding: Finding): string => {
@@ -284,11 +250,17 @@ export function productionModel(
     });
     return id;
   };
+  const findingRefs = (finding: Finding): string[] => [
+    ...new Set([
+      finding.primaryEvidenceId,
+      ...finding.relatedEvidenceIds,
+      ...finding.traceEvidenceIds,
+    ]),
+  ];
   const viewFindings = findings.map((f) => {
     const explicit = data.findingNodeLinks
       .filter((l) => l.findingId === f.id)
       .map((l) => l.nodeId);
-    const linked = explicit.length ? explicit : fallbackNodeIds(f);
     return {
       id: f.id,
       label: findingTitle(f.ruleId, f.confidence, f.status),
@@ -297,7 +269,7 @@ export function productionModel(
       confidence: f.confidence.toLowerCase(),
       reasons: [f.severityBasis, f.confidenceBasis, ...f.coverageWarnings],
       evidenceRefs: findingRefs(f),
-      nodeIds: linked.length ? linked : [syntheticNodeFor(f)],
+      nodeIds: explicit.length ? explicit : [syntheticNodeFor(f)],
     };
   });
   return {
