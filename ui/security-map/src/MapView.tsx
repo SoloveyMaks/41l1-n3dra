@@ -1073,23 +1073,36 @@ export function MapView(props: MapViewProps) {
   }, [viewMode, flow, nodesMeasured, mapNodes]);
 
   const reset = () => {
+    if (viewMode === "tree") {
+      setTreeSavedPositions({});
+      try {
+        window.localStorage.removeItem(treeLayoutKey);
+      } catch {
+        // Storage is optional; the in-memory reset still applies.
+      }
+      const positions = computeTreeLayout(treeModel, model.nodes).positions;
+      setMapNodes((previous) =>
+        previous.map((item) => ({
+          ...item,
+          position: positions[item.id] ?? item.position,
+        })),
+      );
+      requestAnimationFrame(fitAll);
+      return;
+    }
     const nextPositions = computeMapLayout(model.nodes, model.edges);
     overviewPositions.current = nextPositions;
     setMapNodes((previous) =>
       previous.map((item) => ({
         ...item,
-        position:
-          (viewMode === "tree" ? treePositions : nextPositions)[item.id] ??
-          item.position,
+        position: nextPositions[item.id] ?? item.position,
       })),
     );
-    if (viewMode === "overview") {
-      props.onLayoutChange?.({
-        scope: model.scope,
-        viewId: layout?.viewId ?? "security-map",
-        nodePositions: nextPositions,
-      });
-    }
+    props.onLayoutChange?.({
+      scope: model.scope,
+      viewId: layout?.viewId ?? "security-map",
+      nodePositions: nextPositions,
+    });
     requestAnimationFrame(() => {
       lastFocusedKey.current = modelFocusKey;
       const ids = initialReadableIds();
