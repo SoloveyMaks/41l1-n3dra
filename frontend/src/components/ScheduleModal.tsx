@@ -164,6 +164,21 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   const [rotateConfirmId, setRotateConfirmId] = useState<string | null>(null);
 
   const loadSeq = useRef(0);
+  const contextEpoch = useRef(0);
+  const isCurrentContext = (epoch: number) => epoch === contextEpoch.current;
+
+  useEffect(() => {
+    contextEpoch.current += 1;
+    setSetup(null);
+    setSetupBusyId(null);
+    setTogglingId(null);
+    setCheckingId(null);
+    setIsSaving(false);
+    return () => {
+      contextEpoch.current += 1;
+      loadSeq.current += 1;
+    };
+  }, [isOpen, adminAllowed, workflowId]);
   const workflowRef = useRef(workflowId);
 
   useEffect(() => {
@@ -221,8 +236,10 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   };
 
   const refreshLists = async () => {
+    const epoch = contextEpoch.current;
     const seq = ++loadSeq.current;
     const data = await loadScheduleData();
+    if (!isCurrentContext(epoch)) return;
     if (seq !== loadSeq.current) return;
     if (data.schedules) setSchedules(data.schedules);
     if (data.watches) setWatches(data.watches);
@@ -230,6 +247,11 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   };
 
   const handleCreateSchedule = async () => {
+    const epoch = contextEpoch.current;
+    if (!workflowId) {
+      showError('Сначала выберите сценарий проверки.');
+      return;
+    }
     if (!artifactId) {
       showError('Сначала выберите или загрузите ZIP: расписанию нужен артефакт.');
       return;
@@ -251,18 +273,23 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     setMessageRunId(null);
     try {
       await apiClient.createSchedule(projectAtRequest, artifactId, spec);
+      if (!isCurrentContext(epoch)) return;
       if (workflowRef.current !== projectAtRequest) return;
       await refreshLists();
+      if (!isCurrentContext(epoch)) return;
       showOk('Расписание создано. Оно запускает сохранённый сценарий с выбранным архивом.');
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       if (workflowRef.current !== projectAtRequest) return;
       showError(`Ошибка расписания: ${describeRepositoryError(error)}`);
     } finally {
+      if (!isCurrentContext(epoch)) return;
       if (workflowRef.current === projectAtRequest) setIsSaving(false);
     }
   };
 
   const handleCreateWatch = async (event: React.SyntheticEvent<HTMLFormElement>, kind: RepositoryTriggerMode) => {
+    const epoch = contextEpoch.current;
     event.preventDefault();
     const isWebhook = kind === 'webhook';
     let url = '';
@@ -271,6 +298,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       url = parseRepositoryUrl(watchUrl).url;
       branch = validateBranch(watchBranch);
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       showError(error instanceof Error ? error.message : 'Проверьте ссылку на репозиторий');
       return;
     }
@@ -296,10 +324,12 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
         branch: branch || undefined,
         ...(isWebhook ? { triggerMode: 'webhook' as const } : { cronOrInterval: cadence }),
       });
+      if (!isCurrentContext(epoch)) return;
       if (workflowRef.current !== projectAtRequest) return;
       setWatchUrl('');
       setWatchBranch('');
       await refreshLists();
+      if (!isCurrentContext(epoch)) return;
       if (!isWebhook) {
         showOk(`Наблюдение создано: ветка ${watch.branch}, проверка ${cadenceLabel(watch.cron_or_interval)}.`);
         return;
@@ -308,43 +338,55 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       // после явного создания доставки, но ничего не сохраняем в браузере.
       try {
         const issued = await apiClient.setupRepositoryWebhook(watch.id, false);
+        if (!isCurrentContext(epoch)) return;
         if (workflowRef.current !== projectAtRequest) return;
         setSetup({ ...issued, watchId: watch.id });
         await refreshLists();
+        if (!isCurrentContext(epoch)) return;
         showOk(`Доставка создана для ветки ${watch.branch}. Скопируйте адрес и секрет и включите хук в ${providerLabel(watch.provider)}.`);
       } catch (error: unknown) {
+        if (!isCurrentContext(epoch)) return;
         if (workflowRef.current !== projectAtRequest) return;
         showError(`Доставка создана, но секрет не выпущен. ${setupErrorText(error)}`);
       }
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       if (workflowRef.current !== projectAtRequest) return;
       showError(describeRepositoryError(error));
     } finally {
+      if (!isCurrentContext(epoch)) return;
       if (workflowRef.current === projectAtRequest) setIsSaving(false);
     }
   };
 
   const setupWebhook = async (watch: RepositoryWatch, rotate: boolean) => {
+    const epoch = contextEpoch.current;
     setSetupBusyId(watch.id);
     setMessage(null);
     setMessageRunId(null);
     try {
       const issued = await apiClient.setupRepositoryWebhook(watch.id, rotate);
+      if (!isCurrentContext(epoch)) return;
       setSetup({ ...issued, watchId: watch.id });
       setRotateConfirmId(null);
       await refreshLists();
+      if (!isCurrentContext(epoch)) return;
       showOk(rotate
         ? 'Секрет перевыпущен: старый больше не принимается. Обновите его в настройках хука.'
         : 'Адрес и секрет готовы: скопируйте их в настройки хука репозитория.');
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       showError(setupErrorText(error));
     } finally {
+      if (!isCurrentContext(epoch)) return;
       setSetupBusyId(null);
     }
   };
 
   const copyValue = async (value: string, successText: string) => {
+    const epoch = contextEpoch.current;
     const copied = await copyToClipboard(value);
+    if (!isCurrentContext(epoch)) return;
     if (copied) {
       showOk(successText);
     } else {
@@ -353,29 +395,37 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   };
 
   const toggleSchedule = async (row: ScheduleRow) => {
+    const epoch = contextEpoch.current;
     const nextEnabled = !isEnabled(row);
     setTogglingId(row.id);
     setMessage(null);
     setMessageRunId(null);
     try {
       await apiClient.setScheduleEnabled(row.id, nextEnabled);
+      if (!isCurrentContext(epoch)) return;
       await refreshLists();
+      if (!isCurrentContext(epoch)) return;
       showOk(nextEnabled ? 'Расписание включено; следующий запуск пересчитан.' : 'Расписание поставлено на паузу.');
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       showError(describeRepositoryError(error));
     } finally {
+      if (!isCurrentContext(epoch)) return;
       setTogglingId(null);
     }
   };
 
   const toggleWatch = async (watch: RepositoryWatch) => {
+    const epoch = contextEpoch.current;
     const nextEnabled = !isEnabled(watch);
     setTogglingId(watch.id);
     setMessage(null);
     setMessageRunId(null);
     try {
       await apiClient.setRepositoryWatchEnabled(watch.id, nextEnabled);
+      if (!isCurrentContext(epoch)) return;
       await refreshLists();
+      if (!isCurrentContext(epoch)) return;
       if (triggerMode(watch) === 'webhook') {
         showOk(nextEnabled
           ? 'Доставка включена: подписанные события пуша будут приниматься.'
@@ -386,27 +436,34 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
           : 'Наблюдение на паузе: новые коммиты не проверяются.');
       }
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       showError(describeRepositoryError(error));
     } finally {
+      if (!isCurrentContext(epoch)) return;
       setTogglingId(null);
     }
   };
 
   const checkNow = async (watch: RepositoryWatch) => {
+    const epoch = contextEpoch.current;
     setCheckingId(watch.id);
     setMessage(null);
     setMessageRunId(null);
     try {
       const result = await apiClient.checkRepositoryWatchNow(watch.id);
+      if (!isCurrentContext(epoch)) return;
       if (result.status === 'error') {
         showError(checkResultText(result));
       } else {
         await refreshLists();
+        if (!isCurrentContext(epoch)) return;
         showOk(checkResultText(result), result.runId);
       }
     } catch (error: unknown) {
+      if (!isCurrentContext(epoch)) return;
       showError(describeRepositoryError(error));
     } finally {
+      if (!isCurrentContext(epoch)) return;
       setCheckingId(null);
     }
   };

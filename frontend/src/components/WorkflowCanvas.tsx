@@ -19,7 +19,7 @@ import type { ArtifactManifest, WorkflowDraft, WorkflowEdge } from '../types';
 import type { RunTelemetry } from '../execution/runTelemetry';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
-import { artifactRepository } from '../repository';
+import { artifactChoiceLabel, artifactRepository } from '../repository';
 
 interface WorkflowCanvasProps {
   draft: WorkflowDraft;
@@ -29,6 +29,7 @@ interface WorkflowCanvasProps {
   telemetry: RunTelemetry;
   executionNotice?: string | null;
   validationIssues: Array<{ level: string; message: string }>;
+  validationState: 'checking' | 'ready' | 'unavailable';
   onSaveDraft: () => void;
   onResetToTemplate: () => void;
   isSaving: boolean;
@@ -57,6 +58,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   telemetry,
   executionNotice,
   validationIssues,
+  validationState,
   onSaveDraft,
   onResetToTemplate,
   isSaving,
@@ -75,6 +77,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   const edgeTypes = useMemo(() => ({ executionEdge: ExecutionEdge }), []);
   const selectedArtifact = artifacts.find((artifact) => artifact.id === currentArtifactId);
   const selectedRepository = artifactRepository(selectedArtifact);
+  const workflowName = workflows.find((workflow) => workflow.id === workflowId)?.name || workflowId || 'Сценарий не выбран';
+  const artifactName = selectedArtifact
+    ? artifactChoiceLabel(selectedArtifact)
+    : artifacts.length
+      ? 'Авто-выбор (последний загруженный)'
+      : 'Нет артефактов';
 
   // Graph structure only. Live status is layered on separately so an SSE event
   // never resets positions or re-mounts edges mid-drag.
@@ -205,21 +213,46 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     onSelectNode(null);
   }, [onSelectNode]);
 
-  const hasErrors = validationIssues.some((i) => i.level === 'error');
+  const onBeforeDelete = useCallback(async ({ nodes: removedNodes, edges: removedEdges }: { nodes: Node[]; edges: Edge[] }) => {
+    const nodeIds = new Set(removedNodes.map((node) => node.id));
+    const edgeIds = new Set(removedEdges.map((edge) => edge.id));
+    onDraftChange({
+      ...draft,
+      nodes: draft.nodes.filter((node) => !nodeIds.has(node.id)),
+      edges: draft.edges.filter((edge) => !edgeIds.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)),
+    });
+    if (selectedNodeId && nodeIds.has(selectedNodeId)) onSelectNode(null);
+    return false;
+  }, [draft, onDraftChange, onSelectNode, selectedNodeId]);
+
+  const errorCount = validationIssues.filter((issue) => issue.level === 'error').length;
+  const hasErrors = validationState === 'ready' && errorCount > 0;
+  const validationPending = validationState === 'checking';
+  const validationUnavailable = validationState === 'unavailable';
+  const validationLabel = hasErrors
+    ? `Ошибок: ${errorCount}`
+    : validationPending
+      ? 'Проверяем граф…'
+      : validationUnavailable
+        ? 'Граф не проверен'
+        : 'Граф валиден';
 
   return (
-    <div className="flex-1 h-full relative bg-slate-950">
+    <div className="relative min-h-[420px] w-full min-w-0 bg-slate-950 xl:h-full xl:min-h-0 xl:flex-1">
       {/* Top Bar on Canvas */}
-      <div className="absolute top-2 left-2 right-2 z-10 flex flex-wrap items-start gap-2 pointer-events-none">
-        <div className="pointer-events-auto flex flex-wrap items-center gap-2 min-w-0 rounded-xl border border-slate-800 bg-slate-900/95 px-2.5 py-1.5 shadow-lg backdrop-blur-md text-xs">
-          <label className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[10px] uppercase tracking-wider text-slate-500">Сценарий</span>
+      <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-col gap-2 2xl:flex-row 2xl:items-start">
+        <div className="pointer-events-auto grid w-full min-w-0 gap-2 rounded-xl border border-slate-800 bg-slate-900/95 p-2 shadow-lg backdrop-blur-md 2xl:w-[460px] 2xl:shrink-0">
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Сценарий</span>
             <select
               value={workflowId}
               onChange={(event) => onSelectWorkflow(event.target.value)}
-              className="max-w-[170px] sm:max-w-[230px] bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200"
-              title="Выбрать сохранённый сценарий"
+              disabled={workflows.length === 0}
+              aria-label="Сценарий проверки"
+              title={`Сценарий: ${workflowName}`}
+              className="h-9 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs text-slate-100 outline-none transition focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:text-slate-500"
             >
+              {workflows.length === 0 && <option value="">Нет сценариев</option>}
               {workflows.map((workflow) => (
                 <option key={workflow.id} value={workflow.id}>
                   {workflow.name || workflow.id}
@@ -227,99 +260,124 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               ))}
             </select>
           </label>
-          {onCreateWorkflow && (
-            <button
-              onClick={onCreateWorkflow}
-              className="flex items-center gap-1 rounded border border-indigo-800 bg-indigo-950/60 px-1.5 py-0.5 text-[11px] text-indigo-300 hover:bg-indigo-900"
-              title="Создать новый сценарий на основе текущих блоков"
-            >
-              <Plus size={12} /> Новый
-            </button>
-          )}
-          {onGenerateWorkflow && (
-            <button
-              onClick={onGenerateWorkflow}
-              className="flex items-center gap-1 rounded border border-fuchsia-800 bg-fuchsia-950/60 px-1.5 py-0.5 text-[11px] text-fuchsia-200 hover:bg-fuchsia-900"
-              title="Собрать черновик сценария из текста или голоса"
-            >
-              <Sparkles size={12} /> По описанию
-            </button>
-          )}
-          <label className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[10px] uppercase tracking-wider text-slate-500">Проект</span>
+
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Проект для запуска</span>
             <select
               value={currentArtifactId}
               onChange={(event) => onSelectArtifact(event.target.value)}
-              className="max-w-[170px] sm:max-w-[240px] bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200"
-              title="Артефакт, который попадёт в запуск"
+              disabled={artifacts.length === 0}
+              aria-label="Проект для запуска"
+              title={`Проект: ${artifactName}`}
+              className="h-9 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs text-slate-100 outline-none transition focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:text-slate-500"
             >
-              <option value="">{artifacts.length ? 'Авто-выбор' : 'Нет артефактов'}</option>
+              <option value="">{artifacts.length ? 'Авто-выбор (последний загруженный)' : 'Нет артефактов'}</option>
               {artifacts.map((artifact) => (
                 <option key={artifact.id} value={artifact.id}>
-                  {artifact.filename} · {artifact.kotlin_file_count} kt · {artifact.id.slice(0, 6)}
+                  {artifactChoiceLabel(artifact)}
                 </option>
               ))}
             </select>
           </label>
+
+          {(onCreateWorkflow || onGenerateWorkflow) && (
+            <div className="flex flex-wrap gap-1.5">
+              {onCreateWorkflow && (
+                <button
+                  type="button"
+                  onClick={onCreateWorkflow}
+                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-indigo-800 bg-indigo-950/60 px-2.5 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 sm:flex-none"
+                  title="Создать новый сценарий на основе текущих блоков"
+                >
+                  <Plus size={13} /> Новый сценарий
+                </button>
+              )}
+              {onGenerateWorkflow && (
+                <button
+                  type="button"
+                  onClick={onGenerateWorkflow}
+                  className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-fuchsia-800 bg-fuchsia-950/60 px-2.5 text-[11px] font-medium text-fuchsia-100 transition hover:bg-fuchsia-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400 sm:flex-none"
+                  title="Собрать черновик сценария из текста или голоса"
+                >
+                  <Sparkles size={13} /> По описанию
+                </button>
+              )}
+            </div>
+          )}
+
           {selectedRepository && (
-            <div className="pointer-events-auto min-w-0 rounded-lg border border-indigo-900/70 bg-indigo-950/40 px-2 py-1">
+            <div className="min-w-0 rounded-lg border border-indigo-900/70 bg-indigo-950/40 px-2 py-1">
               <RepositorySourceView repository={selectedRepository} showProvider={false} runId={runId} />
             </div>
           )}
-          <span className="hidden sm:inline text-slate-600">•</span>
-          <span className="hidden sm:inline text-slate-400 font-mono">{draft.nodes.length} блоков</span>
-          <span className="hidden sm:inline text-slate-600">•</span>
-          <span className="hidden sm:inline text-slate-400 font-mono">{draft.edges.length} связей</span>
-        </div>
 
-        <div
-          className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] shadow-lg backdrop-blur-md ${
-            hasErrors
-              ? 'bg-rose-950/90 border-rose-800 text-rose-300'
-              : 'bg-emerald-950/90 border-emerald-800 text-emerald-300'
-          }`}
-        >
-          {hasErrors ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
-          <span>{hasErrors ? `Ошибок: ${validationIssues.filter((issue) => issue.level === 'error').length}` : 'Граф валиден'}</span>
-        </div>
-
-        {executionNotice && (
-          <div
-            className="pointer-events-auto flex max-w-md items-start gap-1.5 rounded-xl border border-amber-800 bg-amber-950/90 px-2.5 py-1.5 text-[11px] text-amber-200 shadow-lg backdrop-blur-md"
-            data-execution-binding="mismatch"
-          >
-            <AlertCircle size={13} className="mt-0.5 shrink-0" />
-            <span>{executionNotice}</span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
+            <span className="font-mono">{draft.nodes.length} блоков</span>
+            <span aria-hidden="true">•</span>
+            <span className="font-mono">{draft.edges.length} связей</span>
           </div>
-        )}
+        </div>
 
-        <div className="pointer-events-auto ml-auto flex items-center gap-2">
-        {onOpenMap && (
-          <button
-            onClick={onOpenMap}
-            className="flex items-center gap-1.5 rounded-xl border border-sky-800 bg-sky-950/90 px-2.5 py-1.5 text-xs font-medium text-sky-200 shadow-lg backdrop-blur-md transition hover:bg-sky-900"
-            title="Открыть карту доступа выбранного запуска"
+        <div className="pointer-events-auto flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <div
+            className={`flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[11px] font-medium shadow-lg backdrop-blur-md ${
+              hasErrors
+                ? 'border-rose-800 bg-rose-950/90 text-rose-200'
+                : validationUnavailable
+                  ? 'border-amber-800 bg-amber-950/90 text-amber-100'
+                  : validationPending
+                    ? 'border-slate-700 bg-slate-900/90 text-slate-300'
+                    : 'border-emerald-800 bg-emerald-950/90 text-emerald-200'
+            }`}
+            role="status"
+            aria-live="polite"
           >
-            Карта доступа →
-          </button>
-        )}
-        <button
-          onClick={onResetToTemplate}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-medium shadow-lg backdrop-blur-md transition cursor-pointer"
-          title="Вернуть сохранённый draft с сервера"
-        >
-          <RotateCcw size={13} />
-          <span className="hidden sm:inline">Сбросить draft</span>
-        </button>
+            {hasErrors || validationUnavailable ? <AlertCircle size={13} /> : <CheckCircle2 size={13} />}
+            <span className="whitespace-nowrap">{validationLabel}</span>
+          </div>
 
-        <button
-          onClick={onSaveDraft}
-          disabled={isSaving}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition cursor-pointer"
-        >
-          <Save size={13} />
-          <span>{isSaving ? 'Сохранение...' : 'Сохранить draft'}</span>
-        </button>
+          {executionNotice && (
+            <div
+              className="flex min-w-0 max-w-xl items-start gap-1.5 rounded-xl border border-amber-800 bg-amber-950/90 px-2.5 py-2 text-[11px] leading-snug text-amber-100 shadow-lg backdrop-blur-md"
+              data-execution-binding="mismatch"
+            >
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>{executionNotice}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="pointer-events-auto grid w-full grid-cols-2 gap-2 2xl:ml-auto 2xl:flex 2xl:w-auto 2xl:flex-wrap 2xl:justify-end">
+          {onOpenMap && (
+            <button
+              type="button"
+              onClick={onOpenMap}
+              className="col-span-2 flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl border border-sky-800 bg-sky-950/90 px-2.5 py-1.5 text-[11px] font-medium text-sky-100 shadow-lg backdrop-blur-md transition hover:bg-sky-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 2xl:col-auto"
+              title="Открыть карту доступа выбранного запуска"
+            >
+              Карта доступа →
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onResetToTemplate}
+            className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 shadow-lg backdrop-blur-md transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            title="Вернуть сохранённый draft с сервера"
+          >
+            <RotateCcw size={13} />
+            <span className="whitespace-nowrap">Сбросить draft</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onSaveDraft}
+            disabled={isSaving}
+            title="Сохранить черновик сценария на сервере"
+            className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          >
+            <Save size={13} />
+            <span className="whitespace-nowrap">{isSaving ? 'Сохранение…' : 'Сохранить draft'}</span>
+          </button>
         </div>
       </div>
 
@@ -350,7 +408,8 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
-        deleteKeyCode={null}
+        onBeforeDelete={onBeforeDelete}
+        deleteKeyCode={['Backspace', 'Delete']}
         fitView
         className="bg-slate-950"
       >

@@ -59,7 +59,7 @@ const NODE_PORTS: Record<NodeKind, NodePortContract> = {
   policy_gate: { inputs: ['findings_bundle'], outputs: ['policy_result'] },
   ai_explain: { inputs: ['findings_bundle'], outputs: ['explain_result'] },
   ai_scan: { inputs: ['artifact', 'findings_bundle'], outputs: ['ai_scan_result'] },
-  build_report: { inputs: ['findings_bundle', 'policy_result', 'explain_result'], outputs: ['report'] },
+  build_report: { inputs: ['findings_bundle', 'policy_result', 'explain_result', 'ai_scan_result'], outputs: ['report'] },
   notify: { inputs: ['report'], outputs: ['delivery_result'] },
 };
 

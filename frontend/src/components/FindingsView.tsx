@@ -265,7 +265,7 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = nu
 
       {/* Right: Evidence Card + responsibility enrichment (separate from analyzer facts) */}
       {selectedFinding && (
-        <div className="w-full lg:w-[450px] max-h-[75vh] lg:max-h-none flex flex-col h-full shrink-0 border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900 overflow-y-auto lg:overflow-hidden">
+        <div className="fixed inset-x-0 bottom-0 z-30 w-full lg:static lg:z-auto lg:w-[450px] max-h-[75vh] lg:max-h-none flex flex-col h-full shrink-0 border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900 overflow-y-auto lg:overflow-hidden">
           <div className="flex-1 min-h-0 overflow-hidden">
             <EvidenceCard
               finding={selectedFinding}

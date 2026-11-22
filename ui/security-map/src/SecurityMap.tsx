@@ -28,8 +28,14 @@ export function SecurityMap(props: SecurityMapProps) {
       />
     );
   if (!data) return <Failure code="MAP_DATA_MISSING" onRetry={onRetry} />;
-  const issue = validateProduction(identity, data, findings, props.sourceState);
-  if (issue) return <Failure code={issue} onRetry={onRetry} />;
+  let model: ReturnType<typeof productionModel>;
+  try {
+    const issue = validateProduction(identity, data, findings, props.sourceState);
+    if (issue) return <Failure code={issue} onRetry={onRetry} />;
+    model = productionModel(data, findings);
+  } catch {
+    return <Failure code="MAP_CONTRACT_MISMATCH" onRetry={onRetry} />;
+  }
   if (props.layout && !sameScope(identity, props.layout.scope))
     return <Failure code="LAYOUT_SCOPE_MISMATCH" onRetry={onRetry} />;
   if (props.selection && !sameScope(identity, props.selection))
@@ -43,7 +49,7 @@ export function SecurityMap(props: SecurityMapProps) {
     <MapView
       key={`${scopeKey(identity)}:${data.bundleHash}`}
       {...props}
-      model={productionModel(data, findings)}
+      model={model}
       onSelect={(selection) => {
         if (selection.kind === "finding") {
           const f = findings.find((f) => f.id === selection.id);
