@@ -202,6 +202,9 @@ export const App: React.FC = () => {
   const [aiScan, setAiScan] = useState<AiScanResult | null>(null);
   const [report, setReport] = useState<ReportData | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  // Run id whose «Стоп» is in flight: both stop buttons read
+  // «Останавливляем…» and stay disabled until the run itself settles.
+  const [stopRequestedRunId, setStopRequestedRunId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -1212,6 +1215,43 @@ export const App: React.FC = () => {
     }
   };
 
+  // «Стоп»: cancel the run server-side without leaving the current tab. The
+  // answer is either a terminal status (apply it at once) or «cancelling» —
+  // then the terminal run_status arrives over SSE and the 2s poll backs it up.
+  const handleStopRun = useCallback(async () => {
+    const runId = currentRun?.id;
+    if (!runId || stopRequestedRunId) return;
+    const status = currentRun.execution_status;
+    if (status !== 'queued' && status !== 'running') return;
+    setStopRequestedRunId(runId);
+    try {
+      const result = await apiClient.cancelRun(runId);
+      if (selectedRunRef.current !== runId) return;
+      const settled = result.status !== 'cancelling';
+      if (settled) {
+        runProgressRef.current = { runId, rank: TERMINAL_RUN_RANK };
+        setIsRunning(false);
+        closeSSE();
+      }
+      void loadRunDetails(runId);
+      if (settled) void refreshRuns();
+    } catch (error) {
+      if (selectedRunRef.current === runId) {
+        setStopRequestedRunId(null);
+        showNotice('error', error instanceof Error ? error.message : 'Не удалось остановить запуск');
+      }
+    }
+  }, [currentRun, stopRequestedRunId, closeSSE, loadRunDetails, refreshRuns, showNotice]);
+
+  // «Останавливляем…» ends with the run itself: a terminal summary or
+  // another selection releases the button state.
+  useEffect(() => {
+    if (!stopRequestedRunId) return;
+    const status = currentRun?.execution_status;
+    const active = status === 'queued' || status === 'running';
+    if (currentRun?.id !== stopRequestedRunId || !active) setStopRequestedRunId(null);
+  }, [stopRequestedRunId, currentRun?.id, currentRun?.execution_status]);
+
   useEffect(() => {
     authRef.current = { ...authRef.current, role: session?.role };
     if (session?.role !== 'admin') {
@@ -1298,6 +1338,13 @@ export const App: React.FC = () => {
     }),
     [draft.nodes, canvasTelemetry, currentRun?.execution_status, isRunning],
   );
+  // «Стоп» is offered only while the selected run is still queued/running;
+  // once a stop request is in flight the buttons read «Останавливаем…».
+  const canStopRun = Boolean(
+    currentRun && (currentRun.execution_status === 'queued' || currentRun.execution_status === 'running'),
+  );
+  const stopRequested = canStopRun && stopRequestedRunId === currentRun?.id;
+  const onStopRun = canStopRun ? () => void handleStopRun() : undefined;
   const runGraphNotice =
     !currentRun || currentRun.id !== currentRunId || runGraphBound
       ? null
@@ -1422,6 +1469,8 @@ export const App: React.FC = () => {
                 progress={editorRunProgress}
                 runVerdict={currentRun?.security_verdict ?? null}
                 onOpenRun={() => setActiveTab('live')}
+                onStopRun={onStopRun}
+                stopRequested={stopRequested}
               />
               {selectedNode && (
                 <div ref={inspectorPanelRef} className="flex min-h-0 w-full shrink-0 scroll-mt-2 flex-col border-t border-slate-800 shadow-2xl xl:w-auto xl:border-t-0">
@@ -1457,6 +1506,8 @@ export const App: React.FC = () => {
               onOpenMap={() => setActiveTab('map')}
               onOpenFindings={() => setActiveTab('findings')}
               onOpenReport={() => setActiveTab('report')}
+              onStopRun={onStopRun}
+              stopRequested={stopRequested}
             />
           )}
 
@@ -1678,6 +1729,8 @@ export const App: React.FC = () => {
                 progress={editorRunProgress}
                 runVerdict={currentRun?.security_verdict ?? null}
                 onOpenRun={() => setAdminSection('live')}
+                onStopRun={onStopRun}
+                stopRequested={stopRequested}
               />
               {selectedNode && (
                 <InspectorPanel
@@ -1732,6 +1785,8 @@ export const App: React.FC = () => {
             onOpenMap={() => setAdminSection('map')}
             onOpenFindings={() => setAdminSection('problems')}
             onOpenReport={() => setAdminSection('report')}
+            onStopRun={onStopRun}
+            stopRequested={stopRequested}
           />
         );
       case 'problems':

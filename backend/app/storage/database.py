@@ -775,10 +775,15 @@ class DatabaseRepository:
                 findings_summary.get("low", 0),
                 findings_summary.get("info", 0),
             ])
-        params.extend([self.workspace_id, run_id])
+        # A cancelled run stays cancelled: no later write may resurrect it as
+        # running/succeeded/failed, while settling cancelled over cancelled
+        # (report verdict, finished_at) remains allowed.
+        params.extend([execution_status, self.workspace_id, run_id])
         with get_pool().connection() as conn:
             conn.execute(
-                f"UPDATE runtime.runs SET {', '.join(sets)} WHERE workspace_id = %s AND id = %s",
+                f"UPDATE runtime.runs SET {', '.join(sets)} "
+                "WHERE (execution_status <> 'cancelled' OR %s = 'cancelled') "
+                "AND workspace_id = %s AND id = %s",
                 params,
             )
 
@@ -801,7 +806,7 @@ class DatabaseRepository:
                 conn.execute(
                     "UPDATE runtime.runs SET execution_status = 'interrupted', "
                     "security_verdict = 'inconclusive', finished_at = %s "
-                    "WHERE workspace_id = %s AND id = %s",
+                    "WHERE workspace_id = %s AND id = %s AND execution_status = 'running'",
                     (now, workspace, run_id),
                 )
                 conn.execute(
@@ -867,6 +872,28 @@ class DatabaseRepository:
                  RETURNING id
                 """,
                 (started_at, self.workspace_id, run_id),
+            ).fetchone()
+            return row is not None
+
+    def cancel_queued_run(self, run_id: str, finished_at: str) -> bool:
+        """Atomically stop a queued run before any dispatcher can claim it.
+
+        Only the caller that wins queued->cancelled settles the run; a
+        dispatcher that promoted the run a moment earlier gets False and must
+        fall back to a cooperative stop of the running run.
+        """
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE runtime.runs
+                   SET execution_status = 'cancelled',
+                       security_verdict = 'inconclusive',
+                       finished_at = NULLIF(%s, '')::timestamptz
+                 WHERE workspace_id = %s AND id = %s
+                   AND execution_status = 'queued'
+                 RETURNING id
+                """,
+                (finished_at, self.workspace_id, run_id),
             ).fetchone()
             return row is not None
 

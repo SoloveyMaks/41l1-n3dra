@@ -3,7 +3,7 @@ import {
   Play, CheckCircle2, AlertCircle, Loader2, MinusCircle, Clock,
   Terminal, Eye, ChevronRight, RefreshCw, FolderArchive, KeyRound,
   PackageSearch, FileCode2, GitMerge, ShieldAlert, GitFork, Sparkles,
-  FileText, Send, Network,
+  FileText, Send, Network, Square,
 } from 'lucide-react';
 import { NodeKind, NodeRunRecord, NodeRunStatus, RepositorySource, RunMapLoadState, RunSummary, WorkflowNode } from '../types';
 import type { NodeTelemetry, RunTelemetry } from '../execution/runTelemetry';
@@ -35,6 +35,10 @@ interface LiveRunViewProps {
   runRepository?: RepositorySource | null;
   onSelectNode: (nodeId: string) => void;
   onRefresh?: () => void;
+  /** Stops the shown run; only passed while it is queued/running. */
+  onStopRun?: () => void;
+  /** True while the stop request is in flight: the button reads «Останавливаем…». */
+  stopRequested?: boolean;
   onOpenMap?: () => void;
   onOpenFindings?: () => void;
   onOpenReport?: () => void;
@@ -879,6 +883,8 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   runRepository = null,
   onSelectNode,
   onRefresh,
+  onStopRun,
+  stopRequested = false,
   onOpenMap,
   onOpenFindings,
   onOpenReport,
@@ -1030,15 +1036,18 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
   const isRunning = currentRun.execution_status === 'running';
   const isActiveRun = isQueued || isRunning;
   const isFailed = currentRun.execution_status === 'failed';
+  const isCancelled = currentRun.execution_status === 'cancelled';
   const statusLabel = isQueued
     ? 'В очереди'
     : isRunning
       ? 'Выполняется'
       : isFailed
         ? 'Ошибка'
-        : currentRun.execution_status === 'succeeded'
-          ? 'Завершён'
-          : currentRun.execution_status;
+        : isCancelled
+          ? 'Отменён'
+          : currentRun.execution_status === 'succeeded'
+            ? 'Завершён'
+            : currentRun.execution_status;
 
   const totalStages = stages.length;
   const finishedStages =
@@ -1112,12 +1121,14 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                     ? 'bg-blue-600 shadow-blue-500/20'
                     : isFailed
                       ? 'bg-rose-600 shadow-rose-500/20'
-                      : 'bg-emerald-600 shadow-emerald-500/20'
+                      : isCancelled
+                        ? 'bg-orange-600 shadow-orange-500/20'
+                        : 'bg-emerald-600 shadow-emerald-500/20'
               }`}
             >
               {isActiveRun ? (
                 <Loader2 size={18} className="animate-spin" />
-              ) : isFailed ? (
+              ) : isFailed || isCancelled ? (
                 <AlertCircle size={18} />
               ) : (
                 <CheckCircle2 size={18} />
@@ -1139,7 +1150,9 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
                         ? 'bg-blue-950 text-blue-300 border-blue-800'
                         : isFailed
                           ? 'bg-rose-950 text-rose-300 border-rose-800'
-                          : 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                          : isCancelled
+                            ? 'bg-orange-950 text-orange-300 border-orange-800'
+                            : 'bg-emerald-950 text-emerald-300 border-emerald-800'
                   }`}
                 >
                   {statusLabel}
@@ -1182,6 +1195,18 @@ export const LiveRunView: React.FC<LiveRunViewProps> = ({
             >
               <RefreshCw size={13} />
               <span>Обновить</span>
+            </button>
+          )}
+          {onStopRun && runIsActive && (
+            <button
+              onClick={onStopRun}
+              disabled={stopRequested}
+              data-run-stop={stopRequested ? 'stopping' : 'ready'}
+              className="flex items-center gap-1.5 rounded-lg border border-rose-700 bg-rose-600/90 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60 shrink-0"
+              title="Остановить запуск"
+            >
+              <Square size={13} />
+              <span>{stopRequested ? 'Останавливаем…' : 'Стоп'}</span>
             </button>
           )}
         </div>

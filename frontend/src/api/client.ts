@@ -16,6 +16,7 @@ import {
   RepositoryWatch,
   RepositoryWebhookSetup,
   RunSummary,
+  RunCancelResponse,
   RunRevisionResponse,
   SessionRole,
   SessionState,
@@ -346,6 +347,10 @@ export const apiClient = {
 
   async getRun(runId: string): Promise<RunSummary> {
     return (await request(`/runs/${runId}`)).json();
+  },
+
+  async cancelRun(runId: string): Promise<RunCancelResponse> {
+    return (await request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })).json();
   },
 
   async getRunNodes(runId: string): Promise<NodeRunRecord[]> {
