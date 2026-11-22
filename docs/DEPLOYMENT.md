@@ -163,6 +163,21 @@ scripts/nedra-down.sh      # stop + rm только своих контейне�
 Volumes и данные не удаляются. `nedra-stop.sh` и `nedra-down.sh` тоже проверяют
 owner label и не используют `podman rm -f`; чужие контейнеры не трогаются.
 
+### Изолированный e2e-прогон
+
+`scripts/nedra-e2e.sh` — самодостаточный smoke/end-to-end прогон на своих
+ресурсах: контейнеры/volume/сеть с префиксом `nedra-rel-e2e-*` и label
+`io.nedra.owner=nedra-rel-e2e`, свободный loopback-порт, свои одноразовые
+секреты (без чтения `runtime.env`). Прогон собирает образ из рабочего дерева,
+поднимает свежую БД, проверяет ledger-миграции, регистрирует аккаунт, импортирует
+ZIP из `examples/demo`, запускает `wf_secure_pr_gate` до `succeeded` и проверяет
+`official.json`, `export.jsonc`, `export.md`, `export.docx` (включая открытие
+файла `python-docx` из образа) и `security-map`. Прод `nedra-app`/`nedra-db`,
+сеть `nedra` и volumes `nedra-*-data` скрипт не упоминает; параллельные
+прогоны исключены `flock`, очистка по `trap` работает только по своим
+owner-label и завершается ненулевым exit при оставшихся ресурсах. Подробности
+и живые результаты — в [release hardening](RELEASE-HARDENING.md).
+
 ## Health и статус
 
 - `/api/health` — строгий публичный health без session-cookie. Fallback на
