@@ -1617,3 +1617,52 @@
 .sm-unlinked-note b {
   color: #fde68a;
 }
+
+.sm-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.sm-path-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--sm-line);
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.45);
+  text-align: left;
+  cursor: pointer;
+}
+.sm-path-row:hover {
+  border-color: var(--sm-line-2);
+  background: rgba(30, 41, 59, 0.55);
+}
+.sm-path-chain {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--sm-text);
+  font-size: 10.5px;
+}
+.sm-path-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.sm-path-badges i {
+  font-style: normal;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  line-height: 16px;
+}
+.sm-path-badges .is-ok { color: #a7f3d0; background: rgba(52, 211, 153, 0.14); }
+.sm-path-badges .is-warn { color: #fde68a; background: rgba(245, 158, 11, 0.16); }
+.sm-path-badges .is-open { color: #fecdd3; background: rgba(251, 113, 133, 0.16); }
+.sm-path-badges .is-risk { color: #fecaca; background: rgba(239, 68, 68, 0.18); }

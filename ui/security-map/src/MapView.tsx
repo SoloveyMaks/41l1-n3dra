@@ -39,6 +39,7 @@ import { FindingNode, type FindingNodeData } from "./FindingNode";
 import { SecurityEdge } from "./SecurityEdge";
 import { buildEdgeRoutes } from "./edgeRouting";
 import { buildExplorationTree, type TreeRow } from "./tree";
+import { enumerateAccessPaths, type AccessPath } from "./paths";
 import {
   basisText,
   confidenceText,
@@ -308,6 +309,7 @@ export function MapView(props: MapViewProps) {
     }),
     [treeModel, model.nodes, layout?.nodePositions, treeSavedPositions],
   );
+  const pathSummary = useMemo(() => enumerateAccessPaths(model), [model]);
   const treeVisibleKey = [...treeModel.visibleIds].sort().join("|");
   const searchAll = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -465,6 +467,13 @@ export function MapView(props: MapViewProps) {
       setRailOpen(false);
       setMobileView("details");
     }
+  };
+
+  const selectPath = (path: AccessPath) => {
+    const terminal = path.nodeIds[path.nodeIds.length - 1];
+    if (terminal) choose({ kind: "node", id: terminal });
+    setExpandedTree((previous) => new Set([...previous, ...path.nodeIds]));
+    focusViewport(path.nodeIds, 0.4, 1.0);
   };
 
   const toggleTree = (id: string) => {
@@ -1290,6 +1299,41 @@ export function MapView(props: MapViewProps) {
             <span>{viewMode === "tree" ? "Дерево связей" : "Путь и проблемы"}</span>
             <button onClick={() => setRailOpen(false)} aria-label="Закрыть список">×</button>
           </div>
+          {pathSummary.total > 0 && (
+            <section className="sm-rail-section sm-paths-section">
+              <h2>
+                Все пути <span>{pathSummary.total}</span>
+              </h2>
+              <p className="sm-rail-empty sm-tree-meta">
+                Простые пути без повторных узлов: цикл останавливается на повторе.
+                {pathSummary.truncated ? " Показаны первые 300." : ""}
+              </p>
+              <div className="sm-path-list">
+                {pathSummary.paths.slice(0, 80).map((path) => (
+                  <button
+                    key={path.id}
+                    type="button"
+                    className="sm-path-row"
+                    onClick={() => selectPath(path)}
+                    title={path.labels.join(" → ")}
+                  >
+                    <span className="sm-path-chain">{path.labels.join(" → ")}</span>
+                    <span className="sm-path-badges">
+                      {path.guarded ? (
+                        <i className="is-ok">guard</i>
+                      ) : (
+                        <i className="is-warn">без guard</i>
+                      )}
+                      {path.permitted ? <i className="is-open">permitAll</i> : null}
+                      {path.findings.length ? (
+                        <i className="is-risk">{path.findings.length} проблем</i>
+                      ) : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           {viewMode === "tree" && (
             <section className="sm-rail-section sm-tree-section">
               <h2>
