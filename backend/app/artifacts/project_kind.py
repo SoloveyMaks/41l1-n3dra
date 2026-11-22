@@ -86,19 +86,18 @@ def detect_project_kind(root: Path) -> Dict[str, Any]:
             break
 
     has_build = gradle_files > 0 or pom_files > 0
-    supported = kotlin_files > 0 and has_build
-    if supported and spring_boot:
+    # The demo/training artifact can be a minimal Kotlin snippet tree without
+    # build files; Kotlin sources are the real support signal. Gradle only
+    # raises confidence and enables SCA.
+    supported = kotlin_files > 0
+    if supported and spring_boot and has_build:
         language = "kotlin"
         framework = "spring-boot"
         confidence = "high"
     elif supported:
         language = "kotlin"
-        framework = "none"
-        confidence = "medium" if kotlin_build else "low"
-    elif kotlin_files > 0:
-        language = "kotlin"
-        framework = "none"
-        confidence = "low"
+        framework = "spring-boot" if spring_boot else "none"
+        confidence = "medium" if (kotlin_build or spring_boot) else "low"
     elif java_files > 0:
         language = "java"
         framework = "none"
@@ -112,6 +111,8 @@ def detect_project_kind(root: Path) -> Dict[str, Any]:
         reasons.append("Kotlin-файлов не найдено")
     if not has_build:
         reasons.append("Gradle/Maven сборка не найдена")
+    if kotlin_files and not has_build:
+        reasons.append("Gradle/Maven сборка не найдена — SCA и часть контекста Spring недоступны")
     if kotlin_files and not spring_boot:
         reasons.append("Spring Boot не найден — проверка ограничится общими правилами Kotlin")
     return {

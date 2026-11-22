@@ -43,11 +43,11 @@ def test_empty_or_random_archive_is_unsupported(tmp_path):
     assert kind["language"] == "other"
 
 
-def test_kotlin_without_build_file_is_unsupported(tmp_path):
+def test_kotlin_without_build_file_is_still_supported(tmp_path):
     root = make_tree(tmp_path, {"src/Main.kt": "fun main() {}"})
     kind = detect_project_kind(root)
-    assert kind["supported"] is False
-    assert "Gradle/Maven сборка не найдена" in unsupported_project_message(kind)
+    assert kind["supported"] is True
+    assert "Gradle/Maven сборка не найдена" in " ".join(kind["reasons"])
 
 
 def test_nested_kotlin_module_is_found(tmp_path):
