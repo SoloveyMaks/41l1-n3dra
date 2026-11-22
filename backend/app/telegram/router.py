@@ -26,16 +26,63 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.app.storage.database import DatabaseRepository
-from backend.app.storage.telegram import SettingsOwnershipLost, TelegramRepository
+from backend.app.storage.telegram import (
+    BRANCH_FILTER_LIMIT,
+    PROJECT_FILTER_LIMIT,
+    Settings,
+    SettingsOwnershipLost,
+    TelegramRepository,
+)
+from backend.app.telegram.delivery_policy import (
+    format_hhmm,
+    normalize_filter,
+    normalize_severity,
+    normalize_timezone,
+    parse_hhmm,
+)
 from backend.app.telegram.runtime import TelegramRuntime
 from backend.app.telegram.workspace import telegram_workspace_scope
 
 PrincipalResolver = Callable[[Request], Optional[Dict[str, Any]]]
 
 
+class QuietHoursRequest(BaseModel):
+    """Wall-clock window in ``timezone``; ``clear=True`` switches quiet hours off."""
+
+    start: Optional[str] = None
+    end: Optional[str] = None
+    timezone: Optional[str] = None
+    clear: bool = False
+
+
 class SettingsRequest(BaseModel):
     deliveryMode: Optional[str] = None
     scenario: Optional[str] = None
+    minSeverity: Optional[str] = None
+    quietHours: Optional[QuietHoursRequest] = None
+    projectFilter: Optional[str] = None
+    branchFilter: Optional[str] = None
+
+
+def _quiet_hours_payload(settings: Settings) -> Optional[Dict[str, str]]:
+    if settings.quiet_start is None or settings.quiet_end is None:
+        return None
+    return {
+        "start": format_hhmm(settings.quiet_start),
+        "end": format_hhmm(settings.quiet_end),
+        "timezone": settings.quiet_timezone,
+    }
+
+
+def _public_settings(settings: Settings) -> Dict[str, Any]:
+    return {
+        "deliveryMode": settings.delivery_mode,
+        "scenario": settings.scenario,
+        "minSeverity": settings.min_severity,
+        "quietHours": _quiet_hours_payload(settings),
+        "projectFilter": settings.project_filter,
+        "branchFilter": settings.branch_filter,
+    }
 
 
 def _require_principal(
@@ -135,10 +182,7 @@ def create_telegram_router(
             "chatId": binding.chat_id,
             "telegramUsername": binding.telegram_username,
             "createdAt": binding.created_at,
-            "settings": {
-                "deliveryMode": settings.delivery_mode,
-                "scenario": settings.scenario,
-            },
+            "settings": _public_settings(settings),
             "botUsername": _bot_username(),
             "externalStatus": runtime.status().get("externalStatus"),
             "proxyConfigured": bool(runtime.status().get("proxyConfigured")),
@@ -182,6 +226,41 @@ def create_telegram_router(
                     detail={"code": "SCENARIO_NOT_FOUND", "message": "Сценарий не найден в workspace"},
                 )
         try:
+            filter_kwargs: Dict[str, Any] = {}
+            if payload.minSeverity is not None:
+                filter_kwargs["min_severity"] = normalize_severity(payload.minSeverity)
+            if payload.quietHours is not None:
+                quiet = payload.quietHours
+                if quiet.clear:
+                    filter_kwargs["clear_quiet_hours"] = True
+                else:
+                    if not quiet.start or not quiet.end:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "code": "INVALID_TELEGRAM_SETTINGS",
+                                "message": "quietHours: нужны start и end (HH:MM), либо clear=true",
+                            },
+                        )
+                    filter_kwargs["quiet_start"] = parse_hhmm(
+                        quiet.start, field="quietHours.start"
+                    )
+                    filter_kwargs["quiet_end"] = parse_hhmm(
+                        quiet.end, field="quietHours.end"
+                    )
+                    filter_kwargs["quiet_timezone"] = (
+                        normalize_timezone(quiet.timezone) if quiet.timezone else "UTC"
+                    )
+            if payload.projectFilter is not None:
+                filter_kwargs["project_filter"] = normalize_filter(
+                    payload.projectFilter, field="projectFilter",
+                    limit=PROJECT_FILTER_LIMIT,
+                )
+            if payload.branchFilter is not None:
+                filter_kwargs["branch_filter"] = normalize_filter(
+                    payload.branchFilter, field="branchFilter",
+                    limit=BRANCH_FILTER_LIMIT,
+                )
             settings = await asyncio.to_thread(
                 repo.set_settings,
                 binding.chat_id,
@@ -190,6 +269,7 @@ def create_telegram_router(
                 binding_epoch=binding.binding_epoch,
                 delivery_mode=payload.deliveryMode,
                 scenario=scenario,
+                **filter_kwargs,
             )
         except SettingsOwnershipLost as exc:
             raise HTTPException(
@@ -201,9 +281,6 @@ def create_telegram_router(
                 status_code=400,
                 detail={"code": "INVALID_TELEGRAM_SETTINGS", "message": str(exc)},
             ) from None
-        return {
-            "deliveryMode": settings.delivery_mode,
-            "scenario": settings.scenario,
-        }
+        return _public_settings(settings)
 
     return router

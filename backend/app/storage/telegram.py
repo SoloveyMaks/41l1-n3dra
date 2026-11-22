@@ -12,8 +12,9 @@ import hashlib
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.app.storage.database import get_pool
 
@@ -21,6 +22,10 @@ DEFAULT_BINDING_TTL_SECONDS = 600
 MAX_CODE_LENGTH = 128
 DELIVERY_MODES = ("alerts", "jsonc", "both")
 OUTBOX_KINDS = ("alert", "jsonc")
+SEVERITIES = ("info", "low", "medium", "high", "critical")
+DEFAULT_SEVERITY = "info"
+PROJECT_FILTER_LIMIT = 200
+BRANCH_FILTER_LIMIT = 200
 JOB_STATUSES = ("queued", "importing", "running", "succeeded", "failed", "cancelled", "interrupted")
 JOB_LEASE_SECONDS = 120
 MAX_JOB_RECOVERY_ATTEMPTS = 3
@@ -50,6 +55,12 @@ class Settings:
     chat_id: int
     delivery_mode: str = "both"
     scenario: str = ""
+    min_severity: str = DEFAULT_SEVERITY
+    quiet_start: Optional[time] = None
+    quiet_end: Optional[time] = None
+    quiet_timezone: str = "UTC"
+    project_filter: str = ""
+    branch_filter: str = ""
     updated_at: Any = None
 
 
@@ -101,6 +112,18 @@ def _code_hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
+def _clean_filter(value: Optional[str], field: str, limit: int) -> Optional[str]:
+    """None keeps the stored value; '' clears the filter."""
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if len(cleaned) > limit:
+        raise ValueError(f"{field}: не длиннее {limit} символов")
+    if any(ord(ch) < 0x20 for ch in cleaned):
+        raise ValueError(f"{field}: управляющие символы запрещены")
+    return cleaned
+
+
 def _binding(row: Dict[str, Any]) -> Binding:
     return Binding(
         chat_id=int(row["chat_id"]),
@@ -120,6 +143,12 @@ def _settings(row: Optional[Dict[str, Any]], chat_id: int) -> Settings:
         chat_id=int(row["chat_id"]),
         delivery_mode=str(row["delivery_mode"]),
         scenario=str(row.get("scenario") or ""),
+        min_severity=str(row.get("min_severity") or DEFAULT_SEVERITY),
+        quiet_start=row.get("quiet_start"),
+        quiet_end=row.get("quiet_end"),
+        quiet_timezone=str(row.get("quiet_timezone") or "UTC"),
+        project_filter=str(row.get("project_filter") or ""),
+        branch_filter=str(row.get("branch_filter") or ""),
         updated_at=row.get("updated_at"),
     )
 
@@ -438,6 +467,19 @@ class TelegramRepository:
             ).fetchone()
         return _binding(row) if row else None
 
+    def list_workspace_bindings(self, workspace_id: str) -> List[Binding]:
+        """Every live binding that receives run deliveries for this workspace."""
+        workspace = _uuid(workspace_id, "workspaceId")
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT b.* FROM telegram.bindings b JOIN account.users u "
+                "ON u.user_id = b.user_id AND u.workspace_id = b.workspace_id "
+                "AND u.disabled_at IS NULL WHERE b.workspace_id = %s "
+                "ORDER BY b.created_at, b.chat_id",
+                (workspace,),
+            ).fetchall()
+        return [_binding(row) for row in rows]
+
     def delete_binding(self, chat_id: int) -> bool:
         with get_pool().connection() as conn:
             self._lock_binding_changes(conn)
@@ -496,6 +538,13 @@ class TelegramRepository:
         binding_epoch: int,
         delivery_mode: Optional[str] = None,
         scenario: Optional[str] = None,
+        min_severity: Optional[str] = None,
+        quiet_start: Optional[time] = None,
+        quiet_end: Optional[time] = None,
+        quiet_timezone: Optional[str] = None,
+        clear_quiet_hours: bool = False,
+        project_filter: Optional[str] = None,
+        branch_filter: Optional[str] = None,
     ) -> Settings:
         if delivery_mode is not None and delivery_mode not in DELIVERY_MODES:
             raise ValueError("delivery_mode должен быть alerts, jsonc или both")
@@ -503,6 +552,32 @@ class TelegramRepository:
             scenario = scenario.strip()
             if len(scenario) > 128:
                 raise ValueError("scenario слишком длинный")
+        if min_severity is not None:
+            min_severity = str(min_severity).strip().lower()
+            if min_severity not in SEVERITIES:
+                raise ValueError("min_severity должен быть info, low, medium, high или critical")
+        if quiet_start is not None and quiet_end is not None and clear_quiet_hours:
+            raise ValueError("тихие часы: нельзя задать окно и одновременно выключить его")
+        if not clear_quiet_hours and (quiet_start is None) != (quiet_end is None):
+            raise ValueError("тихие часы: нужны и начало, и конец")
+        if quiet_start is not None and not isinstance(quiet_start, time):
+            raise ValueError("quiet_start должен быть временем HH:MM")
+        if quiet_end is not None and not isinstance(quiet_end, time):
+            raise ValueError("quiet_end должен быть временем HH:MM")
+        if quiet_timezone is not None:
+            quiet_timezone = str(quiet_timezone).strip()
+            if not quiet_timezone or len(quiet_timezone) > 64:
+                raise ValueError("quiet_timezone пуст или слишком длинный")
+            try:
+                ZoneInfo(quiet_timezone)
+            except (ZoneInfoNotFoundError, ValueError, OSError):
+                raise ValueError(f"Неизвестный timezone: {quiet_timezone}") from None
+        project_filter = _clean_filter(
+            project_filter, "project_filter", PROJECT_FILTER_LIMIT
+        )
+        branch_filter = _clean_filter(
+            branch_filter, "branch_filter", BRANCH_FILTER_LIMIT
+        )
         with get_pool().connection() as conn:
             if not self._lock_owner(conn, chat_id, _uuid(user_id, "userId"),
                                     _uuid(workspace_id, "workspaceId"), binding_epoch):
@@ -512,6 +587,14 @@ class TelegramRepository:
                 UPDATE telegram.settings s
                    SET delivery_mode = COALESCE(%s, s.delivery_mode),
                        scenario = COALESCE(%s, s.scenario),
+                       min_severity = COALESCE(%s, s.min_severity),
+                       quiet_start = CASE WHEN %s THEN NULL
+                                          ELSE COALESCE(%s, s.quiet_start) END,
+                       quiet_end = CASE WHEN %s THEN NULL
+                                        ELSE COALESCE(%s, s.quiet_end) END,
+                       quiet_timezone = COALESCE(%s, s.quiet_timezone),
+                       project_filter = COALESCE(%s, s.project_filter),
+                       branch_filter = COALESCE(%s, s.branch_filter),
                        updated_at = now()
                   FROM telegram.bindings b
                       JOIN account.users u ON u.user_id = b.user_id
@@ -523,7 +606,10 @@ class TelegramRepository:
                    AND b.binding_epoch = %s
                 RETURNING s.*
                 """,
-                (delivery_mode, scenario, int(chat_id), _uuid(user_id, "userId"),
+                (delivery_mode, scenario, min_severity,
+                 clear_quiet_hours, quiet_start, clear_quiet_hours, quiet_end,
+                 quiet_timezone, project_filter, branch_filter,
+                 int(chat_id), _uuid(user_id, "userId"),
                  _uuid(workspace_id, "workspaceId"), int(binding_epoch)),
             ).fetchone()
         if row is None:
@@ -1074,6 +1160,51 @@ class TelegramRepository:
                  _uuid(workspace_id, "workspaceId") if workspace_id else None,
                  _uuid(workspace_id, "workspaceId") if workspace_id else None,
                  binding_epoch, binding_epoch),
+            ).fetchone()
+        return row is not None
+
+    def defer_outbox(
+        self,
+        outbox_id: int,
+        next_attempt_at: datetime,
+        *,
+        reason: str,
+        user_id: str,
+        workspace_id: str,
+        binding_epoch: int,
+    ) -> bool:
+        """Move a claimed row back to pending at an absolute moment.
+
+        Quiet hours are not a delivery failure: ``attempts`` stays untouched
+        so a deferred delivery can never exhaust the retry budget, while
+        ``next_attempt_at`` points past the window instead of a bounded delay.
+        """
+        target = next_attempt_at
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if target <= now:
+            target = now + timedelta(seconds=1)
+        if target > now + timedelta(days=2):
+            target = now + timedelta(days=2)
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE telegram.outbox
+                   SET status = 'pending',
+                       last_error = %s,
+                       next_attempt_at = %s,
+                       updated_at = now()
+                 WHERE id = %s
+                   AND status IN ('sending', 'pending')
+                   AND user_id = %s
+                   AND workspace_id = %s
+                   AND binding_epoch = %s
+                RETURNING id
+                """,
+                (reason[:500], target, int(outbox_id),
+                 _uuid(user_id, "userId"), _uuid(workspace_id, "workspaceId"),
+                 int(binding_epoch)),
             ).fetchone()
         return row is not None
 
