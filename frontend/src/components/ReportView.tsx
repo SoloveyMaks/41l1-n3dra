@@ -409,25 +409,43 @@ export const ReportView: React.FC<ReportViewProps> = ({
                 Поэлементные объяснения и исправления ({report.ai_items.length})
               </h4>
               {report.ai_items.map((item, idx) => (
-                <div key={idx} className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs font-bold text-indigo-400">
-                      ID: {item.findingId}
-                    </span>
-                    {item.suggestedFixedVersion && (
-                      <span className="text-[10px] font-mono font-semibold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800">
-                        Фикс-версия: {item.suggestedFixedVersion}
+                <details key={idx} className="group p-4 rounded-xl bg-slate-900 border border-slate-800">
+                  <summary className="cursor-pointer space-y-2 marker:text-indigo-400">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-bold text-indigo-400">
+                        ID: {item.findingId}
                       </span>
+                      {item.suggestedFixedVersion && (
+                        <span className="text-[10px] font-mono font-semibold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-800">
+                          Фикс-версия: {item.suggestedFixedVersion}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      {item.problem || item.explanation}
+                    </p>
+                    <span className="text-[10px] text-fuchsia-300 group-open:hidden">Подробнее</span>
+                    <span className="hidden text-[10px] text-fuchsia-300 group-open:inline">Свернуть</span>
+                  </summary>
+                  <div className="mt-3 space-y-2 text-[11px] leading-relaxed text-slate-300">
+                    {item.attackScenario && (
+                      <div><div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Как используют</div><p>{item.attackScenario}</p></div>
                     )}
+                    {item.impact && (
+                      <div><div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Что будет</div><p>{item.impact}</p></div>
+                    )}
+                    {item.preconditions && (
+                      <div><div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Условия</div><p>{item.preconditions}</p></div>
+                    )}
+                    {item.verification && (
+                      <div><div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Как проверить</div><p>{item.verification}</p></div>
+                    )}
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-fuchsia-300">
+                      <strong className="text-slate-400 font-sans text-[11px]">Рекомендация: </strong>
+                      {item.remediation}
+                    </div>
                   </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    {item.explanation}
-                  </p>
-                  <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-fuchsia-300">
-                    <strong className="text-slate-400 font-sans text-[11px]">Рекомендация: </strong>
-                    {item.remediation}
-                  </div>
-                </div>
+                </details>
               ))}
             </div>
           </div>

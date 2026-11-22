@@ -7,7 +7,16 @@ import { Finding } from '../types';
 
 interface EvidenceCardProps {
   finding: Finding | null;
-  aiEnrichment?: { explanation: string; remediation: string; suggestedFixedVersion?: string };
+  aiEnrichment?: {
+    explanation: string;
+    remediation: string;
+    suggestedFixedVersion?: string;
+    problem?: string;
+    attackScenario?: string;
+    impact?: string;
+    preconditions?: string;
+    verification?: string;
+  };
   aiStatus?: string;
   onOpenReport?: () => void;
   onClose: () => void;
@@ -166,19 +175,47 @@ export const EvidenceCard: React.FC<EvidenceCardProps> = ({ finding, aiEnrichmen
             <span>Рекомендация AI-ассистента</span>
           </div>
           {aiEnrichment ? (
-            <>
-              <div className="text-[11px] text-slate-300 leading-relaxed">
-                {aiEnrichment.explanation}
-              </div>
-              <div className="mt-2 text-[11px] font-mono p-2 rounded bg-slate-900 border border-fuchsia-800/40 text-fuchsia-200">
-                {aiEnrichment.remediation}
-              </div>
-              {aiEnrichment.suggestedFixedVersion && (
-                <div className="text-[10px] text-emerald-400 font-semibold">
-                  Исправленная версия: {aiEnrichment.suggestedFixedVersion}
+            <details className="group">
+              <summary className="cursor-pointer text-[11px] leading-relaxed text-slate-300 marker:text-fuchsia-400">
+                {aiEnrichment.problem || aiEnrichment.explanation}
+                <span className="ml-1 text-[10px] text-fuchsia-300 group-open:hidden">· подробнее</span>
+                <span className="ml-1 hidden text-[10px] text-fuchsia-300 group-open:inline">· свернуть</span>
+              </summary>
+              <div className="mt-2 space-y-2 text-[11px] leading-relaxed text-slate-300">
+                {aiEnrichment.attackScenario && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Как используют</div>
+                    <p>{aiEnrichment.attackScenario}</p>
+                  </div>
+                )}
+                {aiEnrichment.impact && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Что будет</div>
+                    <p>{aiEnrichment.impact}</p>
+                  </div>
+                )}
+                {aiEnrichment.preconditions && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Условия</div>
+                    <p>{aiEnrichment.preconditions}</p>
+                  </div>
+                )}
+                {aiEnrichment.verification && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-300">Как проверить</div>
+                    <p>{aiEnrichment.verification}</p>
+                  </div>
+                )}
+                <div className="font-mono p-2 rounded bg-slate-900 border border-fuchsia-800/40 text-fuchsia-200">
+                  {aiEnrichment.remediation}
                 </div>
-              )}
-            </>
+                {aiEnrichment.suggestedFixedVersion && (
+                  <div className="text-[10px] text-emerald-400 font-semibold">
+                    Исправленная версия: {aiEnrichment.suggestedFixedVersion}
+                  </div>
+                )}
+              </div>
+            </details>
           ) : (
             <div className="space-y-2 text-[11px] text-slate-400">
               <p>

@@ -29,7 +29,10 @@ def _safe_finding_data(finding: Finding) -> Dict[str, Any]:
 
 def _safe_ai_item(item: Any) -> Dict[str, Any]:
     data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
-    for key in ("explanation", "remediation"):
+    for key in (
+        "explanation", "remediation", "problem", "attackScenario",
+        "impact", "preconditions", "verification",
+    ):
         if isinstance(data.get(key), str):
             data[key] = mask_sensitive_text(data[key])
     return data
@@ -357,6 +360,17 @@ class ReportBuilder:
                     md.append("")
                     md.append("**Пояснение:**")
                     md.append(mask_sensitive_text(item.explanation))
+                    for label, value in (
+                        ("Что это", item.problem),
+                        ("Как используют", item.attackScenario),
+                        ("Что будет", item.impact),
+                        ("Условия", item.preconditions),
+                        ("Как проверить", item.verification),
+                    ):
+                        if value:
+                            md.append("")
+                            md.append(f"**{label}:**")
+                            md.append(mask_sensitive_text(value))
                     md.append("")
                     md.append("**Рекомендация:**")
                     md.append(f"`{mask_sensitive_text(item.remediation)}`")
