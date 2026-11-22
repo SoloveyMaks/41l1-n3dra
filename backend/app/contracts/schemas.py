@@ -179,10 +179,18 @@ class PolicyResult(BaseModel):
 
 
 class AiItem(BaseModel):
+    """One human-facing explanation. New structured fields are optional so
+    previously stored items (explanation/remediation only) still parse."""
+
     findingId: str
     explanation: str
     remediation: str
     suggestedFixedVersion: Optional[str] = None
+    problem: Optional[str] = None
+    attackScenario: Optional[str] = None
+    impact: Optional[str] = None
+    preconditions: Optional[str] = None
+    verification: Optional[str] = None
 
 
 class AiProvenance(BaseModel):

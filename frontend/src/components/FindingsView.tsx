@@ -16,7 +16,17 @@ interface FindingsViewProps {
   runId?: string | null;
   runStatus?: string;
   aiScan?: AiScanResult | null;
-  aiItems?: Array<{ findingId: string; explanation: string; remediation: string; suggestedFixedVersion?: string }>;
+  aiItems?: Array<{
+    findingId: string;
+    explanation: string;
+    remediation: string;
+    suggestedFixedVersion?: string;
+    problem?: string;
+    attackScenario?: string;
+    impact?: string;
+    preconditions?: string;
+    verification?: string;
+  }>;
   aiStatus?: string;
   statusSurface?: {
     publicationStatus?: string;

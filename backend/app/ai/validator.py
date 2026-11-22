@@ -11,6 +11,8 @@ LOCATION_REF_RE = re.compile(
     r"([A-Za-z0-9_./\\-]+\.(?:kt|kts|java|xml|ya?ml|properties|gradle|toml|json))"
     r"(?::(\d+)(?:\s*[-–]\s*\d+)?)?"
 )
+STRUCTURED_FIELDS = ("problem", "attackScenario", "impact", "preconditions", "verification")
+ALL_TEXT_FIELDS = ("explanation", "remediation") + STRUCTURED_FIELDS
 UPDATE_TARGET_RE = re.compile(
     r"(?i)(?:обнов\w*|upgrade\w*|перейдите\s+на|используйте\s+версию|"
     r"fixed\s+in|fix(?:ed)?\s+(?:to|in)|version)\s*(?:до|to|на)?\s*[:—-]?\s*"
@@ -74,6 +76,19 @@ class AiResponseValidator:
                 errors.append(f"Элемент #{idx}: findingId должен быть непустой строкой")
             for field_name in ("explanation", "remediation"):
                 value = item.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"Элемент #{idx}: {field_name} должен быть непустой строкой")
+            present_structured = [name for name in STRUCTURED_FIELDS if item.get(name) is not None]
+            if present_structured and len(present_structured) != len(STRUCTURED_FIELDS):
+                missing = [name for name in STRUCTURED_FIELDS if name not in present_structured]
+                errors.append(
+                    f"Элемент #{idx}: новый формат требует все поля "
+                    f"{', '.join(STRUCTURED_FIELDS)}; отсутствуют: {', '.join(missing)}"
+                )
+            for field_name in STRUCTURED_FIELDS:
+                value = item.get(field_name)
+                if value is None:
+                    continue
                 if not isinstance(value, str) or not value.strip():
                     errors.append(f"Элемент #{idx}: {field_name} должен быть непустой строкой")
             fixed_version = item.get("suggestedFixedVersion")
@@ -210,8 +225,31 @@ class AiResponseValidator:
             explanation = explanation.strip()
             remediation = remediation.strip()
 
+            structured: Dict[str, Optional[str]] = {name: None for name in STRUCTURED_FIELDS}
+            present_structured = [name for name in STRUCTURED_FIELDS if item.get(name) is not None]
+            if present_structured and len(present_structured) != len(STRUCTURED_FIELDS):
+                missing = [name for name in STRUCTURED_FIELDS if name not in present_structured]
+                errors.append(
+                    f"ОТКЛОНЕНО ВАЛИДАТОРОМ: находка {f_id}: новый формат требует все поля "
+                    f"{', '.join(STRUCTURED_FIELDS)}; отсутствуют: {', '.join(missing)}"
+                )
+                continue
+            structured_ok = True
+            for name in present_structured:
+                value = item.get(name)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"Находка {f_id}: {name} должен быть непустой строкой")
+                    structured_ok = False
+                    continue
+                structured[name] = value.strip()
+            if not structured_ok:
+                continue
+
+            combined_text = "\n".join(
+                text for text in [explanation, remediation, *structured.values()] if text
+            )
             allowed_cves = {identifier.upper() for identifier in target_finding.advisoryIds}
-            foreign_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", f"{explanation} {remediation}".upper())) - allowed_cves
+            foreign_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", combined_text.upper())) - allowed_cves
             if foreign_cves:
                 errors.append(
                     f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {f_id} модель указала CVE вне её advisoryIds: "
@@ -242,7 +280,7 @@ class AiResponseValidator:
                     continue
 
             grounding_errors = self._free_text_grounding_errors(
-                target_finding, f"{explanation}\n{remediation}", suggested_fixed_version
+                target_finding, combined_text, suggested_fixed_version
             )
             if grounding_errors:
                 errors.extend(grounding_errors)
@@ -252,7 +290,12 @@ class AiResponseValidator:
                 findingId=f_id,
                 explanation=explanation,
                 remediation=remediation,
-                suggestedFixedVersion=suggested_fixed_version
+                suggestedFixedVersion=suggested_fixed_version,
+                problem=structured["problem"],
+                attackScenario=structured["attackScenario"],
+                impact=structured["impact"],
+                preconditions=structured["preconditions"],
+                verification=structured["verification"],
             ))
 
         returned_ids = {item.findingId for item in valid_items}

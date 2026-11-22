@@ -69,6 +69,11 @@ export interface Finding {
     explanation: string;
     remediation: string;
     suggestedFixedVersion?: string;
+    problem?: string;
+    attackScenario?: string;
+    impact?: string;
+    preconditions?: string;
+    verification?: string;
   };
 }
 
@@ -637,6 +642,11 @@ export interface ReportData {
     explanation: string;
     remediation: string;
     suggestedFixedVersion?: string;
+    problem?: string;
+    attackScenario?: string;
+    impact?: string;
+    preconditions?: string;
+    verification?: string;
   }>;
   ai_status: string;
   readable_markdown: string;
