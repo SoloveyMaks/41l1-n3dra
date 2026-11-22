@@ -17,6 +17,7 @@ import { CustomNode } from './CustomNode';
 import { ExecutionEdge, ExecutionEdgeData } from './ExecutionEdge';
 import type { ArtifactManifest, WorkflowDraft, WorkflowEdge } from '../types';
 import type { RunTelemetry } from '../execution/runTelemetry';
+import { IDLE_EDGE_STATE, selectActiveEdges } from '../execution/activeEdges';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
 import { artifactChoiceLabel, artifactRepository } from '../repository';
@@ -154,23 +155,25 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     );
   }, [selectedNodeId, telemetry, baseNodes, setNodes]);
 
-  // Overlay edge flow. Pulse is true only for edge_data received in this live
-  // subscription, so replaying history restores highlights without motion.
+  // Overlay edge flow from recorded edge_data only. A branch the run skipped
+  // never received data, so it stays idle instead of animating by port type;
+  // replayed history restores highlights without motion.
   useEffect(() => {
+    const active = selectActiveEdges(draft.edges, telemetry);
     setEdges((current) =>
       current.map((edge) => {
-        const live = telemetry.edges[edge.id];
+        const state = active[edge.id] || IDLE_EDGE_STATE;
         return {
           ...edge,
           data: {
             ...edge.data,
-            flow: live?.state || 'idle',
-            pulse: Boolean(live?.pulse),
+            flow: state.flow,
+            pulse: state.pulse,
           },
         };
       }),
     );
-  }, [telemetry, baseEdges, setEdges]);
+  }, [draft.edges, telemetry, setEdges]);
 
   // Handle new connections
   const onConnect = useCallback(
