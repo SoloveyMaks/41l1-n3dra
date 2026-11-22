@@ -1746,3 +1746,8 @@
   .sm-access-table th:nth-child(3),
   .sm-access-table td:nth-child(3) { display: none; }
 }
+.sm-access-badge.is-open {
+  color: #fecdd3;
+  background: rgba(251, 113, 133, 0.14);
+  border: 1px solid rgba(251, 113, 133, 0.45);
+}

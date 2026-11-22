@@ -12,12 +12,15 @@ export type AccessRow = {
   findings: ViewFinding[];
   highestSeverity: string | null;
   unchecked: boolean;
+  access: "public" | "guarded" | "unknown";
+  permitLabels: string[];
 };
 
 export type AccessSummary = {
   rows: AccessRow[];
   routeCount: number;
-  uncheckedCount: number;
+  publicCount: number;
+  unknownCount: number;
   withFindingsCount: number;
 };
 
@@ -35,6 +38,7 @@ type RouteContext = {
   route: ViewNode;
   handler: ViewNode | null;
   guards: ViewNode[];
+  permits: ViewNode[];
   paths: Set<string>;
   findings: ViewFinding[];
 };
@@ -68,13 +72,19 @@ function buildContexts(model: MapViewModel): RouteContext[] {
         (edge) => edge.kind === "routes_to" && edge.fromId === route.id,
       );
       const handler = nodeById(model, routeEdge?.toId ?? null) ?? null;
+      const linked = new Set([route.id, ...(handler ? [handler.id] : [])]);
       const requires = model.edges.filter(
         (edge) =>
           edge.kind === "requires" &&
-          (edge.fromId === route.id || (handler !== null && edge.fromId === handler.id)),
+          (linked.has(edge.fromId) || linked.has(edge.toId)),
       );
-      const guards = requires
-        .map((edge) => nodeById(model, edge.toId))
+      const guards = requires.flatMap((edge) => {
+        const node = nodeById(model, linked.has(edge.fromId) ? edge.toId : edge.fromId);
+        return node !== undefined && !linked.has(node.id) ? [node] : [];
+      });
+      const permits = model.edges
+        .filter((edge) => edge.kind === "permits" && edge.toId === route.id)
+        .map((edge) => nodeById(model, edge.fromId))
         .filter((node): node is ViewNode => Boolean(node));
       const paths = new Set([
         ...evidencePaths(model, route.evidenceRefs),
@@ -84,7 +94,7 @@ function buildContexts(model: MapViewModel): RouteContext[] {
       const findings = model.findings.filter((finding) =>
         finding.nodeIds.some((id) => linkedIds.has(id)),
       );
-      return { route, handler, guards, paths, findings };
+      return { route, handler, guards, permits, paths, findings };
     });
 }
 
@@ -115,8 +125,9 @@ function highestSeverity(findings: readonly ViewFinding[]): string | null {
 export function buildAccessSummary(model: MapViewModel): AccessSummary {
   const contexts = buildContexts(model);
   attachUnlinkedFindings(model, contexts);
-  const rows: AccessRow[] = contexts.map(({ route, handler, guards, findings }) => {
+  const rows: AccessRow[] = contexts.map(({ route, handler, guards, permits, findings }) => {
     const match = methodPattern.exec(route.label.trim());
+    const permitLabels = permits.map((node) => node.label);
     return {
       routeId: route.id,
       method: match ? match[1] : "ANY",
@@ -129,10 +140,18 @@ export function buildAccessSummary(model: MapViewModel): AccessSummary {
       findings,
       highestSeverity: highestSeverity(findings),
       unchecked: guards.length === 0,
+      access: permits.length ? "public" : guards.length ? "guarded" : "unknown",
+      permitLabels,
     };
   });
+  const accessRank: Record<AccessRow["access"], number> = {
+    public: 0,
+    unknown: 1,
+    guarded: 2,
+  };
   rows.sort((a, b) => {
-    if (a.unchecked !== b.unchecked) return a.unchecked ? -1 : 1;
+    const accessDelta = accessRank[a.access] - accessRank[b.access];
+    if (accessDelta !== 0) return accessDelta;
     const aSeverity = a.highestSeverity ? severityRank[a.highestSeverity] ?? 9 : 9;
     const bSeverity = b.highestSeverity ? severityRank[b.highestSeverity] ?? 9 : 9;
     if (aSeverity !== bSeverity) return aSeverity - bSeverity;
@@ -141,7 +160,8 @@ export function buildAccessSummary(model: MapViewModel): AccessSummary {
   return {
     rows,
     routeCount: rows.length,
-    uncheckedCount: rows.filter((row) => row.unchecked).length,
+    publicCount: rows.filter((row) => row.access === "public").length,
+    unknownCount: rows.filter((row) => row.access === "unknown").length,
     withFindingsCount: rows.filter((row) => row.findings.length > 0).length,
   };
 }

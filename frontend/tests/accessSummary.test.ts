@@ -57,7 +57,7 @@ test('unchecked routes sort first and file-linked finding is attached', () => {
 
   const summary = buildAccessSummary(model);
   assert.equal(summary.routeCount, 2);
-  assert.equal(summary.uncheckedCount, 1);
+  assert.equal(summary.unknownCount, 1);
   assert.equal(summary.withFindingsCount, 1);
   assert.equal(summary.rows[0].routeId, 'open');
   assert.equal(summary.rows[0].method, 'GET');
