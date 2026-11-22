@@ -128,6 +128,21 @@ def _wall_clock_instant(day: date, value: time, tz: ZoneInfo, fold: int) -> date
     return datetime.combine(day, value).replace(tzinfo=tz, fold=fold).astimezone(timezone.utc)
 
 
+def _window_start_instant(day: date, value: time, tz: ZoneInfo, fold: int) -> Optional[datetime]:
+    """Start instant only when it maps back to the requested local wall time.
+
+    Round-trip check UTC -> local: a spring-forward gap has no such wall
+    time, and neither projection may stand in for it — the earlier projection
+    would mark the window as already started while the local clock still
+    shows a time *before* the requested boundary. Repeated (fall-back)
+    times round-trip for both folds and keep both real starts.
+    """
+    instant = _wall_clock_instant(day, value, tz, fold)
+    if instant.astimezone(tz).time() != value:
+        return None
+    return instant
+
+
 def quiet_deferral(
     now_utc: datetime,
     start: Optional[time],
@@ -164,13 +179,18 @@ def quiet_deferral(
     for offset in (-1, 0, 1):
         day = date.fromordinal(local_day.toordinal() + offset)
         for start_fold in (0, 1):
-            window_start = _wall_clock_instant(day, start, tz, start_fold)
-            if window_start > now_utc:
+            window_start = _window_start_instant(day, start, tz, start_fold)
+            if window_start is None or window_start > now_utc:
                 continue
             end_instants = set()
             for end_offset in end_offsets:
                 end_day = date.fromordinal(day.toordinal() + end_offset)
                 for end_fold in (0, 1):
+                    # Ends keep both projections: a repeated end (fall-back)
+                    # has two real instants, and a missing end (spring-forward)
+                    # still resolves to real instants bracketing the gap —
+                    # "nearest real end strictly after now" never lands in the
+                    # past either way.
                     instant = _wall_clock_instant(end_day, end, tz, end_fold)
                     if instant > window_start:
                         end_instants.add(instant)

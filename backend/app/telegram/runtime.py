@@ -90,6 +90,16 @@ DELIVERY_TRIGGER_STATUSES = ("succeeded", "failed", "interrupted")
 DELIVERY_INTENT_RECORD_ATTEMPTS = 3
 DELIVERY_INTENT_RECORD_DELAY_SECONDS = 1.0
 DELIVERY_INTENT_SWEEP_LIMIT = 20
+# Startup safety net: a completion whose marker write was refused lived only
+# in memory; the first recovery pass re-adopts terminal runs without an intent
+# inside this bounded window (and only while a transport is configured).
+DELIVERY_BOOTSTRAP_WINDOW_HOURS = 24
+DELIVERY_BOOTSTRAP_LIMIT = 50
+
+
+class DeliveryFactsUnavailable(RuntimeError):
+    """Filter metadata cannot be evaluated yet; retried, never a mismatch."""
+
 
 HELP_TEXT = """NEDRA Telegram
 
@@ -182,7 +192,10 @@ class TelegramRuntime:
         self._recovery_task: Optional[asyncio.Task] = None
         # run_id -> workspace for completions whose durable marker write was
         # refused by the database; the recovery sweep replays them in-process.
+        # A restart loses this list — the first recovery pass re-adopts such
+        # runs from the database (see _bootstrap_delivery_intents).
         self._pending_delivery_intents: Dict[str, str] = {}
+        self._delivery_bootstrapped = False
         self._external_status = "not_started"
         self._last_error: Optional[str] = None
         self._config_error = config_error
@@ -384,6 +397,19 @@ class TelegramRuntime:
 
     async def _recovery_loop(self) -> None:
         while not self._stop.is_set():
+            if not self._delivery_bootstrapped:
+                try:
+                    # Durable safety net for a completion whose marker write
+                    # was refused before a restart (runs live only in
+                    # runtime.runs then, without an intent row).
+                    await self._bootstrap_delivery_intents()
+                    self._delivery_bootstrapped = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - retried next cycle
+                    logger.warning(
+                        "telegram delivery bootstrap failed: %s", self._safe_error(exc)
+                    )
             try:
                 await self.recover_jobs_once()
             except asyncio.CancelledError:
@@ -400,6 +426,31 @@ class TelegramRuntime:
             except Exception as exc:  # noqa: BLE001 - sweep is retried next cycle
                 logger.warning("telegram delivery sweep failed: %s", self._safe_error(exc))
             await self._wait(JOB_RECOVERY_INTERVAL_SECONDS)
+
+    async def _bootstrap_delivery_intents(self) -> int:
+        """Adopt recent terminal runs that have no delivery marker yet.
+
+        Called once per process (retried on failure) while a transport is
+        configured. The window bounds both the replay: a restart re-adopts a
+        completion whose marker write was refused, while runs finished long
+        before delivery existed are never picked up.
+        """
+        if self.api is None:
+            return 0
+        candidates = await self._repo(
+            "recent_runs_without_intent",
+            DELIVERY_BOOTSTRAP_WINDOW_HOURS, DELIVERY_BOOTSTRAP_LIMIT,
+        )
+        adopted = 0
+        for intent in candidates:
+            await self._repo(
+                "record_delivery_intent", intent.run_id, intent.workspace_id
+            )
+            if await self._process_delivery_intent(intent.run_id, intent.workspace_id):
+                adopted += 1
+        if adopted:
+            logger.info("telegram delivery adopted %d run(s) without marker", adopted)
+        return adopted
 
     async def recover_jobs_once(self) -> int:
         """Bounded pass: settle orphaned runs and spawn claimable jobs."""
@@ -1506,8 +1557,8 @@ class TelegramRuntime:
                 if attempt < DELIVERY_INTENT_RECORD_ATTEMPTS:
                     await asyncio.sleep(DELIVERY_INTENT_RECORD_DELAY_SECONDS)
         # No durable marker possible right now: keep it in memory for the
-        # sweep. Losing it now requires a second failure (process crash)
-        # before the replay.
+        # sweep. Should the process die before the replay, the next start's
+        # _bootstrap_delivery_intents re-adopts the run from runtime.runs.
         self._pending_delivery_intents[run_id] = workspace or workspace_id()
         logger.error("telegram delivery intent not durable for %s: %s", run_id, last_error)
         return None
@@ -1793,23 +1844,30 @@ class TelegramRuntime:
     ) -> DeliveryFacts:
         """Repository URL/branch for the filters; read only when a filter is set.
 
-        A filter that cannot be matched (no artifact, no metadata) delivers
-        nothing: an unlocatable run must not bypass the user's scope.
+        Unavailable metadata (missing artifact, refused/failed read) is raised
+        into the caller's bounded retry path — it must never collapse into an
+        empty facts object that a filter would score as a successful
+        non-match and cancel the delivery for good.
         """
         if not settings.project_filter and not settings.branch_filter:
             return DeliveryFacts()
         artifact_id = str(run.get("artifact_id") or "")
         if not artifact_id:
-            return DeliveryFacts()
+            raise DeliveryFactsUnavailable(
+                "у run нет артефакта — фильтр проекта/ветки не оценивается"
+            )
         try:
             meta = await asyncio.to_thread(
                 self._artifact_meta_loader, workspace, artifact_id
             )
-        except Exception as exc:  # noqa: BLE001 - filters fail closed
-            logger.warning("telegram delivery facts failed: %s", self._safe_error(exc))
-            return DeliveryFacts()
+        except Exception as exc:  # noqa: BLE001 - transient read failure
+            raise DeliveryFactsUnavailable(
+                f"метаданные артефакта недоступны: {self._safe_error(exc)}"
+            ) from exc
         if not isinstance(meta, dict):
-            return DeliveryFacts()
+            raise DeliveryFactsUnavailable(
+                "метаданные артефакта не найдены — повтор чтения запланирован"
+            )
         repository = meta.get("repository")
         repository = repository if isinstance(repository, dict) else {}
         parts = [str(repository.get("url") or ""), str(meta.get("filename") or "")]

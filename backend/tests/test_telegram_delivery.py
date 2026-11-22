@@ -80,6 +80,8 @@ class FakeDeliveryRepo:
         # Transient-failure switches the tests flip to simulate a DB outage.
         self.fail_bindings = False
         self.fail_record_times = 0
+        # Optional FakeDB for the startup adoption scan (set by make_runtime).
+        self.runs_source: Optional[Any] = None
         self._next_id = 1
 
     # --- delivery intents (durable retry marker) -----------------------
@@ -134,6 +136,24 @@ class FakeDeliveryRepo:
         for run_id in stale:
             del self.intents[run_id]
         return len(stale)
+
+    def recent_runs_without_intent(
+        self, since_hours: int = 24, limit: int = 50,
+    ) -> List[DeliveryIntent]:
+        # The real SQL bounds by finished_at window and terminal status; the
+        # fake treats every stored run as recent and relies on the marker set.
+        if self.runs_source is None:
+            return []
+        out: List[DeliveryIntent] = []
+        for run in getattr(self.runs_source, "runs", {}).values():
+            if run.get("execution_status") not in ("succeeded", "failed", "interrupted"):
+                continue
+            if run.get("id") in self.intents:
+                continue
+            out.append(DeliveryIntent(
+                run_id=str(run["id"]), workspace_id=str(run["workspace_id"]),
+            ))
+        return out[: max(1, min(int(limit), 200))]
 
     # --- enqueue -------------------------------------------------------
     def list_workspace_bindings(self, workspace_id: str) -> List[Binding]:
@@ -386,6 +406,7 @@ def make_runtime(
     repo = FakeDeliveryRepo(binding(), settings or Settings(chat_id=CHAT_ID))
     api = FakeAPI()
     db = FakeDB()
+    repo.runs_source = db
     runtime = TelegramRuntime(
         db, None, None,
         repository=repo,
@@ -668,14 +689,18 @@ def test_project_and_branch_filters() -> None:
     asyncio.run(scenario(_settings(branch_filter="main"), False))
 
 
-def test_filter_without_artifact_fails_closed() -> None:
+def test_filter_without_artifact_retries_instead_of_cancel() -> None:
     async def scenario() -> None:
         runtime, repo, api, db = make_runtime(settings=_settings(project_filter="acme"))
         db.add_run(RUN_ID, status="failed", artifact_id=None, counts={"total": 1})
         await runtime.on_run_completed(RUN_ID)
         await runtime.process_outbox_once()
+        # Unevaluable metadata is never scored as a successful non-match:
+        # the row goes into the bounded retry path, not 'cancelled'.
         assert api.messages == [] and api.documents == []
-        assert repo.statuses() == ["cancelled", "cancelled"]
+        for row in repo.rows_for(RUN_ID):
+            assert row["status"] == "pending"
+            assert "артефакта" in (row["last_error"] or "")
 
     asyncio.run(scenario())
 
@@ -830,3 +855,116 @@ def test_quiet_deferral_dst_fallback_end() -> None:
     assert quiet_deferral(
         datetime(2026, 11, 1, 3, 30, tzinfo=timezone.utc), *window, tz
     ) is None
+
+
+# --- 10. restart safety net for a refused marker write ------------------
+
+def test_restart_recovers_unrecorded_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_module, "DELIVERY_INTENT_RECORD_DELAY_SECONDS", 0.0)
+
+    async def scenario() -> None:
+        repo = FakeDeliveryRepo(binding(), _settings())
+        db = FakeDB()
+        repo.runs_source = db
+        db.add_run(
+            RUN_ID, status="failed", verdict="fail", counts={"total": 1, "medium": 1},
+        )
+        runtime1 = TelegramRuntime(
+            db, None, None, repository=repo, api=FakeAPI(),
+            artifact_meta_loader=lambda workspace, artifact_id: None,
+        )
+        # Every marker write attempt is refused: the run lives only in memory.
+        repo.fail_record_times = runtime_module.DELIVERY_INTENT_RECORD_ATTEMPTS
+        await runtime1.on_run_completed(RUN_ID)
+        assert repo.intents == {}
+        assert repo.rows_for(RUN_ID) == []
+        assert RUN_ID in runtime1._pending_delivery_intents
+
+        # Process restart: a fresh runtime has an empty memory list, but the
+        # startup adoption scan re-adopts the terminal run from runtime.runs.
+        api2 = FakeAPI()
+        runtime2 = TelegramRuntime(
+            db, None, None, repository=repo, api=api2,
+            artifact_meta_loader=lambda workspace, artifact_id: None,
+        )
+        assert await runtime2._bootstrap_delivery_intents() == 1
+        rows = repo.rows_for(RUN_ID)
+        assert sorted(row["kind"] for row in rows) == ["alert", "jsonc"]
+        assert repo.intents[RUN_ID]["status"] == "done"
+
+        assert await runtime2.process_outbox_once() == 2
+        assert len(api2.messages) == 1 and len(api2.documents) == 1
+
+        # Runs that already have a marker are never adopted twice.
+        assert await runtime2._bootstrap_delivery_intents() == 0
+        assert len(repo.rows_for(RUN_ID)) == 2
+
+    asyncio.run(scenario())
+
+
+# --- 11. unavailable filter metadata goes to retry, not to cancel --------
+
+def test_filter_metadata_oserror_retries_then_delivers() -> None:
+    async def scenario() -> None:
+        repo = FakeDeliveryRepo(binding(), _settings(project_filter="github.com/acme"))
+        api = FakeAPI()
+        db = FakeDB()
+        repo.runs_source = db
+        state = {"fail": True}
+
+        def loader(workspace: str, artifact_id: str) -> Optional[Dict[str, Any]]:
+            if state["fail"]:
+                raise OSError("disk glitch")
+            return META
+
+        runtime = TelegramRuntime(
+            db, None, None, repository=repo, api=api,
+            artifact_meta_loader=loader,
+        )
+        db.add_run(
+            RUN_ID, status="failed", verdict="fail", artifact_id="art-1",
+            counts={"total": 1, "medium": 1},
+        )
+        await runtime.on_run_completed(RUN_ID)
+        assert len(repo.rows_for(RUN_ID)) == 2
+
+        # The read failure must not become a 'mismatch' cancellation.
+        await runtime.process_outbox_once()
+        assert api.messages == [] and api.documents == []
+        for row in repo.rows_for(RUN_ID):
+            assert row["status"] == "pending"
+            assert row["attempts"] == 1
+            assert "метаданные" in (row["last_error"] or "")
+
+        # Metadata readable again: the same rows deliver exactly once.
+        state["fail"] = False
+        _force_rows_due(repo)
+        await runtime.process_outbox_once()
+        assert repo.statuses() == ["sent", "sent"]
+        assert len(api.messages) == 1 and len(api.documents) == 1
+
+    asyncio.run(scenario())
+
+
+# --- 12. DST: a nonexistent window start may not start in the past -------
+
+def test_quiet_deferral_rejects_nonexistent_start() -> None:
+    tz = "America/New_York"
+    # 2026-03-08 02:00 EST jumps to 03:00 EDT: 02:30 never exists locally.
+    now = datetime(2026, 3, 8, 6, 45, tzinfo=timezone.utc)  # 01:45 EST
+    # Neither projection of 02:30 maps back to 02:30 local, so the window has
+    # not started: no deferral to 04:00 EDT (which would fire 2h15m early).
+    assert quiet_deferral(now, time(2, 30), time(4, 0), tz) is None
+    # The earlier projection would have been 06:30 UTC (local 01:30 EST) —
+    # a boundary before the requested start; it must not be accepted either.
+    assert quiet_deferral(
+        datetime(2026, 3, 8, 7, 15, tzinfo=timezone.utc),  # 03:15 EDT
+        time(2, 30), time(4, 0), tz,
+    ) is None
+    # The same window still works on a normal day (start 02:30 EST, end 04:00).
+    normal = datetime(2026, 3, 7, 7, 45, tzinfo=timezone.utc)  # 02:45 EST
+    assert quiet_deferral(
+        normal, time(2, 30), time(4, 0), tz
+    ) == datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc)

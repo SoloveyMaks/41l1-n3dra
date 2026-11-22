@@ -26,7 +26,7 @@ Bot API is blocked in this environment; an existing HTTP proxy on
 | `backend/app/telegram/router.py` | DI router factory for binding/settings endpoints |
 | `backend/app/telegram/workspace.py` | delegates to auth-owner `workspace_scope`; no copied auth/context |
 | `backend/tests/test_telegram_buttons.py` | disposable-DB/fake-transport regression checks for buttons, callbacks, URLs and epoch guards |
-| `backend/tests/test_telegram_delivery.py` | fake Bot API/outbox checks: completion delivery, severity threshold, quiet-hours deferral (incl. DST), idempotency, JSONC findings, transient-DB recovery, deferral budget |
+| `backend/tests/test_telegram_delivery.py` | fake Bot API/outbox checks: completion delivery, severity threshold, quiet-hours deferral (incl. both DST edges), idempotency, JSONC findings, transient-DB recovery, restart adoption, deferral budget |
 
 Not touched: frontend, `main.py`, `session.py`, auth storage, `database.py`,
 reports, AI engine/contracts, `backend/app/notifications/**`. `api/router.py`,
@@ -292,12 +292,17 @@ Delivery decision per claim (`telegram/delivery_policy.py`, evaluated in
   (`critical..info`) must be `>= min_severity`; otherwise `cancelled` with the
   reason in `last_error`;
 - project/branch filters match against the artifact's repository URL, filename
-  and branch; unresolvable metadata fails closed (no delivery);
+  and branch; metadata that cannot be read or evaluated raises into the
+  bounded outbox retry path (`DeliveryFactsUnavailable`) — unavailable ≠
+  non-match, only a *resolved* mismatch cancels;
 - quiet hours defer the claim to the window end in `quiet_timezone`; both DST
   fold variants of the window are evaluated in UTC, so the deferral is always
-  the nearest real end strictly after now. A deferral compensates its claim
-  increment (`GREATEST(attempts - 1, 0)`), so any number of deferrals can
-  never exhaust the retry budget, and it is re-evaluated on every claim.
+  the nearest real end strictly after now, and a window start is only accepted
+  when it maps back to the requested local wall time (a spring-forward gap
+  start may never mark the window as already started). A deferral compensates
+  its claim increment (`GREATEST(attempts - 1, 0)`), so any number of
+  deferrals can never exhaust the retry budget, and it is re-evaluated on
+  every claim.
 
 Delivery durability (no completion can silently lose its delivery):
 
@@ -307,6 +312,11 @@ Delivery durability (no completion can silently lose its delivery):
   recovery loop sweeps it every 5 s and replays the idempotent enqueue; if
   even the marker write is refused, the run is kept in an in-memory list the
   same sweep replays while the process lives;
+- restart safety net: the first recovery pass runs
+  `_bootstrap_delivery_intents`, adopting terminal runs finished within the
+  last 24 h that have no marker at all (bounded by window and by a configured
+  transport), so a crash of the in-memory list cannot lose the delivery
+  forever; runs with an existing marker are never re-adopted;
 - writing is independent of transport state: a run finishing while the bot is
   stopping still records intent + rows, and the next started transport drains
   them; pending intents survive restarts, done intents are purged after a week.

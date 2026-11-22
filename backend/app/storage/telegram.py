@@ -1315,6 +1315,37 @@ class TelegramRepository:
             ).fetchall()
         return len(row)
 
+    def recent_runs_without_intent(
+        self, since_hours: int = 24, limit: int = 50,
+    ) -> List[DeliveryIntent]:
+        """Bounded safety net for completions whose marker write was refused.
+
+        A crash between a failed marker write and process recovery leaves a
+        terminal run with no intent row; this scan adopts it again — only
+        within ``since_hours`` of ``finished_at`` and only runs that reached a
+        deliverable terminal status, so a long-stopped instance never replays
+        ancient history.
+        """
+        hours = max(1, min(int(since_hours), 168))
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id AS run_id, r.workspace_id
+                  FROM runtime.runs r
+                 WHERE r.execution_status IN ('succeeded', 'failed', 'interrupted')
+                   AND r.finished_at IS NOT NULL
+                   AND r.finished_at >= now() - make_interval(hours => %s)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM telegram.run_delivery_intents i
+                        WHERE i.run_id = r.id
+                   )
+                 ORDER BY r.finished_at DESC
+                 LIMIT %s
+                """,
+                (hours, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [_delivery_intent(row) for row in rows]
+
     def get_cursor(self, key: str, default: int = 0) -> int:
         with get_pool().connection() as conn:
             row = conn.execute(
