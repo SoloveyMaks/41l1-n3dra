@@ -65,35 +65,39 @@ test('no edge_data at all: every edge stays idle', () => {
   assert.deepEqual(active.e_false, IDLE_EDGE_STATE);
 });
 
-test('recorded id mismatch falls back to a unique source/target pair', () => {
-  const telemetry = {
-    edges: {
-      renamed: {
-        id: 'renamed',
-        source: 'cond',
-        target: 'ok',
-        state: 'traversed' as const,
-        pulse: false,
-        dataSeq: 3,
-      },
-    },
-  };
+// Regression: both condition branches feed different inputs of ONE Branch
+// Merge, so they share the source/target pair while only e_true carried data.
+// A pair-based match would light up the skipped branch too — matching is by
+// edge id only.
+test('condition branches into one Branch Merge: shared endpoints do not leak motion', () => {
+  const mergeEdges = [
+    { id: 'e_true', source: 'cond', target: 'merge', sourcePort: 'true_branch', targetPort: 'branch_a' },
+    { id: 'e_false', source: 'cond', target: 'merge', sourcePort: 'false_branch', targetPort: 'branch_b' },
+  ];
+  const telemetry = buildRunTelemetry({
+    events: [edgeDataEvent(2, 'e_true', 'cond', 'merge')],
+    nodeRuns: [],
+    runStatus: 'running',
+    baselineSeq: 0,
+    isRunning: true,
+  });
 
-  const active = selectActiveEdges(edgeRefs, telemetry);
-  assert.equal(active.e_true.flow, 'traversed');
+  const active = selectActiveEdges(mergeEdges, telemetry);
+  assert.equal(active.e_true.flow, 'flowing');
   assert.deepEqual(active.e_false, IDLE_EDGE_STATE);
 });
 
-test('parallel edges sharing endpoints stay idle instead of guessing', () => {
-  const telemetry = {
-    edges: {
-      a: { id: 'a', source: 'cond', target: 'ok', state: 'traversed' as const, pulse: false, dataSeq: 1 },
-      b: { id: 'b', source: 'cond', target: 'ok', state: 'traversed' as const, pulse: false, dataSeq: 2 },
-    },
-  };
+test('unknown edge id stays idle even when recorded edges exist', () => {
+  const telemetry = buildRunTelemetry({
+    events: [edgeDataEvent(2, 'e_true', 'cond', 'ok')],
+    nodeRuns: [],
+    runStatus: 'running',
+    baselineSeq: 0,
+    isRunning: true,
+  });
 
-  const active = selectActiveEdges([{ id: 'e_parallel', source: 'cond', target: 'ok' }], telemetry);
-  assert.deepEqual(active.e_parallel, IDLE_EDGE_STATE);
+  const active = selectActiveEdges([{ id: 'e_renamed' }], telemetry);
+  assert.deepEqual(active.e_renamed, IDLE_EDGE_STATE);
 });
 
 test('a recorded pulse is dropped unless the edge is flowing now', () => {
