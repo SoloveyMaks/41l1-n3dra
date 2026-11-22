@@ -40,8 +40,8 @@ workspace через узкие server-only методы, а каждое исп
 
 Каждый запрос scoped по workspace сессии; чужой id даёт `404`, а не данные.
 `webhook/setup` отдаёт секрет один раз только владельцу watch; чужой id — `404`.
-Админские `/api/admin/*`, `/api/webhook-test/logs`, training и прочие
-operator-only поверхности остаются на `require_admin`. Same-origin middleware и
+Админские `/api/admin/*`, `POST /api/webhook-test`, `/api/webhook-test/logs`,
+training и прочие operator-only поверхности остаются на `require_admin`. Same-origin middleware и
 существующие rate-limit buckets не менялись.
 
 ## Server-only выборка

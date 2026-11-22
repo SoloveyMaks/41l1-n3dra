@@ -96,6 +96,7 @@ local-сессия на GET остаётся `user`.
 | список / создание / PATCH schedules | **403** | да |
 | AI synthetic-test (`POST /ai/synthetic-test`) | **403** | да |
 | webhook-test logs (`GET /webhook-test/logs`) | **403** | да |
+| запись тестового вебхука (`POST /webhook-test`) | **403** | да |
 | training artifact (`POST /artifacts/sample/training`) | **403** | да |
 | `GET /api/admin/overview` | **403** | да |
 
