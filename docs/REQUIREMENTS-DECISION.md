@@ -167,3 +167,38 @@
 `backend/app/notifications/webhook.py`, `backend/app/api/{router,profile,repository_hooks,repository_watches,report_exports,scenario_builder}.py`,
 `backend/app/storage/runtime_schema.sql`, `db/migrations` (001–013, 016),
 `frontend/src/components/*`, `analyzers/*`, `examples/demo/*`.
+
+## 9. Итог волны 22.11.2026 (dev `1c19bd8`)
+
+Таблицы выше — снимок плана на `fc34a52`. По итогам волны фактически влито в
+`dev` и проверено:
+
+| Закрыто | Доказательство |
+| --- | --- |
+| Отчёт в webhook: `reportUrl` + digest находок, честный `null` без origin | `notifications/webhook.py`, `test_notify_webhook_payload.py` |
+| AI grounding: пути/строки только из evidence, выдуманные версии отклоняются; YAML block scalars маскируются | `ai/validator.py`, `ai/provider.py`, `test_ai_validator_grounding.py`, `test_mask_yaml.py` |
+| Telegram: доставка после закрытия вкладки, порог, тихие часы (включая DST), проект/ветка, durable intents | `telegram/*`, миграции 017/018, `test_telegram_delivery.py` |
+| Шифрование секретов черновиков at rest (AES-GCM, optional/required) | `security/secrets.py`, `test_security_secrets.py` |
+| Лимит тела запроса до multipart-разбора | `security/body_limit.py`, `test_body_limit.py` |
+| `allowLocal` только через серверный allowlist (webhook и NOTIFY) | `engine/notify_policy.py`, `test_notify_policy.py` |
+| Честная comparable-пара: `expectedScopesVerified` по фактическому покрытию | `codefacts/coverage.py`, `test_expected_scopes.py` |
+| Публикация/покрытие/scopes рядом с вердиктом | `api/router.py`, `FindingsView.tsx`, `types` |
+| JSONC с пояснительной шапкой; official JSON не меняется | `reports/exports.py`, `test_jsonc_export.py` |
+| Библиотека workflow-шаблонов: publish/list/copy, секреты вычищены | миграция 019, `api/workflow_library.py`, UI-модалка |
+| PR/MR автостарт + шаблон CI | `api/repository_hooks.py`, `test_repository_hook_events.py` |
+| Редиректы истории, фильтры `/auth/history` | `api/auth.py`, `test_history_api.py` |
+| Фикс чужого графа при переключении сценария; live-рёбра только по факту | `App.tsx`/`runDraftSource.ts`, `execution/activeEdges.ts` + тесты |
+| Graceful shutdown SSE и восстановление осиротевших run | `engine/sse.py`, `storage/database.py`, live-проверка StabilityRound2 |
+| Изолированный e2e-скрипт 16 миграций, DOCX, JSONC, карта | `scripts/nedra-e2e.sh` — зелёный на `07a5e5a` |
+| Энтропийное заявление гайдов убрано | `guide-08-defense.md`, `creator-demo-faq.md` |
+
+**Осталось границей (честно, не выдаём за сделано):**
+
+- `MapFiles`: отдельный этап построения карты и режим «проводник» не влиты;
+  текущая карта строится из `merge_findings` с явной подписью.
+- Возврат commit status в GitHub pipeline и UI «ветка против ветки» — не
+  реализованы; PR/MR-автостарт и генератор CI-конфига есть.
+- Реальный embedding-провайдер и vetted-путь: адаптер и честный `disabled`
+  готовы, живого провайдера/БД с pgvector в волне нет.
+- Миграция старого общего workspace, запись демо, выкладка на публичный стенд
+  и включение Telegram-рели в production — отдельные ops/ручные шаги.
