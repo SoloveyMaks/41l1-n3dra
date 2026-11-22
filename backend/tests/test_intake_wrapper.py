@@ -62,3 +62,17 @@ def test_training_bundle_selects_project_subtree(tmp_path):
     assert (root / "build.gradle.kts").is_file()
     assert not (root / "ground-truth").exists()
     assert not (root / "README.md").exists()
+
+
+def test_root_project_marker_prevents_submodule_collapse(tmp_path):
+    paths = [
+        "settings.gradle.kts",
+        "build.gradle.kts",
+        "app/src/main/kotlin/X.kt",
+    ]
+    assert _detect_wrapper_root(paths) is None
+    manifest = SafeArtifactIntake(storage_root=tmp_path).ingest_zip_bytes(
+        "multi-module.zip", make_zip(paths)
+    )
+    assert manifest["source_root_prefix"] == ""
+    assert (Path(manifest["extracted_path"]) / "app/src/main/kotlin/X.kt").is_file()

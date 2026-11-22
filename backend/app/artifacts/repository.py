@@ -533,6 +533,7 @@ def _attach_repository_meta(manifest: Dict[str, Any], repository: Dict[str, str]
         "filename": manifest["filename"],
         "createdAt": manifest["created_at"],
         "expiresAt": manifest.get("expires_at"),
+        "sourceRootPrefix": manifest.get("source_root_prefix", ""),
         "sourceRef": source_ref,
         "repository": dict(repository),
     })
@@ -596,7 +597,7 @@ head. Без `commit_sha` ветка резолвится в её текущий
                 )
             filename = _artifact_filename(target.repo_name, artifact_sha)
             manifest = await asyncio.to_thread(
-                _INTAKE.ingest_zip_file, filename, filtered_path, strip_wrapper_root=False
+                _INTAKE.ingest_zip_file, filename, filtered_path, strip_wrapper_root=True
             )
     except SafeIntakeError as exc:
         raise _reject(str(exc)) from exc

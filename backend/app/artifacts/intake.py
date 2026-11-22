@@ -199,11 +199,17 @@ def _detect_wrapper_root(paths: Iterable[str]) -> Optional[str]:
     Multiple candidate subtrees are ambiguous and are kept as-is.
     """
     groups: Dict[str, List[str]] = {}
+    root_names: set[str] = set()
     for path in paths:
         head, sep, tail = path.partition("/")
         if not sep:
+            root_names.add(Path(path).name)
             continue
         groups.setdefault(head, []).append(tail)
+    # The archive root itself is already the project: never collapse a
+    # submodule just because it is the only one with a build marker.
+    if root_names & _ROOT_BUILD_MARKERS:
+        return None
     if not groups:
         return None
 
