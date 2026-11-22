@@ -358,8 +358,8 @@ class AiService:
         """Bounded per-batch output budget, never unlimited."""
         if not self.provider_config:
             return 2048
-        budget = 1024 + 640 * max(1, count)
-        return max(2048, min(self.provider_config.max_tokens, budget))
+        budget = 1024 + 1600 * max(1, count)
+        return max(3072, min(self.provider_config.max_tokens, budget))
 
     def _fallback_items(self, findings: List[Finding]) -> List[AiItem]:
         items = []
