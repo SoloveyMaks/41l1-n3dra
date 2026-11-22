@@ -36,6 +36,7 @@ class SSEBroker:
                 "seq": seq,
                 "runId": run_id,
                 "type": event_type,
+                "node_id": node_id,
                 "nodeId": node_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "payload": payload,
