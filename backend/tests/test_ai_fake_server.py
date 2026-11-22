@@ -57,8 +57,10 @@ class FakeOpenAIServer:
         self.request_id = "req-fake-1"
         self.chat_content: str = DEFAULT_CHAT_CONTENT
         self.chat_status: int = 200
+        self.chat_model: Optional[str] = None  # None -> echo requested model
         self.error_message: str = "fake provider error"
         self.embedding_model: Optional[str] = None  # None -> echo requested model
+        self.embedding_include_model: bool = True
         self.embedding_dimension: int = 4
         self.embedding_vector: Optional[List[float]] = None
         self.embedding_status: int = 200
@@ -83,8 +85,9 @@ class FakeOpenAIServer:
         if path.endswith("/chat/completions"):
             if self.chat_status != 200:
                 return self.chat_status, {"error": {"message": self.error_message}}
+            model = self.chat_model if self.chat_model is not None else body.get("model")
             return 200, {
-                "model": body.get("model"),
+                "model": model,
                 "choices": [
                     {
                         "index": 0,
@@ -101,16 +104,18 @@ class FakeOpenAIServer:
         if path.endswith("/embeddings"):
             if self.embedding_status != 200:
                 return self.embedding_status, {"error": {"message": self.error_message}}
-            model = self.embedding_model if self.embedding_model is not None else body.get("model")
             if self.embedding_vector is not None:
                 vector = list(self.embedding_vector)
             else:
                 vector = [0.5] * self.embedding_dimension
-            return 200, {
-                "model": model,
+            payload: Dict[str, Any] = {
                 "data": [{"index": 0, "embedding": vector}],
                 "usage": {"prompt_tokens": 3, "total_tokens": 3},
             }
+            if self.embedding_include_model:
+                model = self.embedding_model if self.embedding_model is not None else body.get("model")
+                payload = {"model": model, **payload}
+            return 200, payload
         return 404, {"error": {"message": f"unknown path {path}"}}
 
     def __enter__(self) -> "FakeOpenAIServer":

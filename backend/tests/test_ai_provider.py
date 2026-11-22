@@ -212,6 +212,24 @@ class CompleteJsonTests(unittest.TestCase):
                 provider_module.complete_json(config, "system", {})
             self.assertIn("provider unreachable", str(caught.exception))
 
+    def test_external_metadata_is_masked_and_bounded_in_provenance(self) -> None:
+        with FakeOpenAIServer() as server, ai_env(
+            AI_BASE_URL=server.base_url,
+            AI_MODEL="test-model",
+            AI_API_KEY="test-key",
+        ):
+            server.request_id = "req sk-chatsecret12345"
+            server.chat_model = "sk-modelsecret9999"
+            config = provider_module.resolve_provider_config()
+            assert config is not None
+            _, provenance = provider_module.complete_json(config, "system", {})
+            dump = provenance.model_dump_json()
+            self.assertNotIn("sk-chatsecret12345", dump)
+            self.assertNotIn("sk-modelsecret9999", dump)
+            self.assertIn("***", provenance.request_id or "")
+            self.assertLessEqual(len(provenance.request_id or ""), 128)
+            self.assertEqual(provenance.model, "***")
+
 
 if __name__ == "__main__":
     unittest.main()

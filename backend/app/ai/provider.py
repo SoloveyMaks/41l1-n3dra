@@ -90,6 +90,18 @@ def mask_sensitive_text(text: str) -> str:
     return masked
 
 
+def safe_metadata(value: Any, limit: int = 128) -> str:
+    """Mask and bound external response metadata before it is published.
+
+    Request ids, model names and finish reasons come from the remote answer,
+    so they are masked like everything else that leaves the process and cut
+    to a sane length: a hostile endpoint must not be able to smuggle data
+    into provenance, reasons or the official JSON.
+    """
+    masked = mask_sensitive_text(str(value) if value is not None else "")
+    return masked.strip()[:limit]
+
+
 class AiProviderError(RuntimeError):
     """Raised when the remote provider is unreachable or returned bad data."""
 
@@ -403,11 +415,11 @@ def complete_json(
     try:
         with open_same_host(request, config.timeout_seconds) as response:
             raw = response.read().decode("utf-8", errors="replace")
-            request_id = (
+            request_id = safe_metadata(
                 response.headers.get("x-request-id")
                 or response.headers.get("request-id")
                 or response.headers.get("cf-ray")
-            )
+            ) or None
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -415,9 +427,9 @@ def complete_json(
         except Exception:
             pass
         latency_ms = round((time.monotonic() - started) * 1000.0, 1)
-        error_request_id = (
+        error_request_id = safe_metadata(
             exc.headers.get("x-request-id") if exc.headers else None
-        )
+        ) or None
         raise AiProviderError(
             f"provider HTTP {exc.code}: {_sanitize_error(detail)}",
             request_id=error_request_id,
@@ -448,7 +460,7 @@ def complete_json(
             latency_ms=latency_ms,
         )
     choice = choices[0]
-    finish_reason = choice.get("finish_reason")
+    finish_reason = safe_metadata(choice.get("finish_reason"), 64) or None
     if finish_reason == "length":
         raise AiProviderError(
             f"provider output truncated (finish_reason=length, request_id={request_id})",
@@ -476,7 +488,7 @@ def complete_json(
     usage = payload.get("usage") or {}
     provenance = AiProvenance(
         provider=config.provider,
-        model=str(payload.get("model") or config.model),
+        model=safe_metadata(payload.get("model") or config.model),
         endpoint=config.endpoint,
         request_id=request_id,
         latency_ms=latency_ms,

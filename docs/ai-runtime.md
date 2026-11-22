@@ -83,6 +83,9 @@ Go-заголовка; при пустом ключе `Authorization` не от�
    `findingId` не дают статус `succeeded`.
 4. `ExplainResult.provenance` фиксирует provider/model/endpoint/request id,
    latency, usage, `finish_reason`, SHA-256 контента и причину fallback.
+   Метаданные из ответа провайдера (request id, model, finish_reason) перед
+   публикацией маскируются и режутся по длине (`safe_metadata`), как и всё,
+   что покидает процесс.
 5. Запрос собирается из `redactedEvidence` и дополнительно маскируется
    (`sk-...`, Bearer, private keys, `password=...`). Ответ тоже маскируется.
 
@@ -121,16 +124,20 @@ SQL-контракт: `db/optional/003_exact_vector.up.sql` (базовые та
 Единственная сетевая точка этого пути — `EmbeddingsAdapter` в
 `backend/app/ai/vector_runtime.py` (`POST {VECTOR_EMBEDDING_BASE_URL}/embeddings`).
 Конфиг спеки — `VECTOR_EMBEDDING_PROVIDER/MODEL/VERSION/DIMENSION/METRIC`;
-adapter возвращает вектор только если ответ ей соответствует: модель
-совпала, размерность ровно `VECTOR_EMBEDDING_DIMENSION`, все значения
-конечны. Расхождение — типизированная ошибка → `unavailable`, а не «похожий»
+adapter возвращает вектор только если ответ ей соответствует: модель в
+ответе обязательна, непустая и ровно `VECTOR_EMBEDDING_MODEL` (пустой или
+отсутствующий `model` → отказ до создания provenance), размерность ровно
+`VECTOR_EMBEDDING_DIMENSION`, все значения конечны. Расхождение —
+типизированная ошибка → `unavailable`, а не «похожий»
 вектор и не «успех». Ключ обязателен для включённого пути (попадает в
 `missing`); при пустом значении (прямая сборка конфига) заголовок
 `Authorization` не отправляется. Каждый успешный запрос даёт
 `EmbeddingProvenance` (provider, model, dimension, metric, нормализованный
 endpoint-роут без секретов, latency, request id) — она дописывается в
 `retrieval.reason`; `embeddingSpecId` строки и поля
-`retrieval.embedding*` — тот же спек.
+`retrieval.embedding*` — тот же спек. Внешние метаданные ответа (request id,
+model, finish_reason) проходят через `safe_metadata` (маска + ограничение
+длины) до provenance, `reason` и официального JSON.
 
 При выключенном runtime статус остаётся `disabled` с исходной причиной:
 adapter не вызывается, сетевых запросов нет и никакие embedding-факты не
@@ -207,7 +214,9 @@ Id элемента выводится из содержания (`category|fing
 3. remote без ключа, неполный конфиг шлюза, чужой `AI_PROVIDER` без
    `AI_BASE_URL` → `None` (bounded, ничего не угадывается);
 4. HTTP 401 с телом, содержащим `sk-...`, и недоступный endpoint →
-   типизированный `AiProviderError` с замаскированным текстом.
+   типизированный `AiProviderError` с замаскированным текстом;
+5. внешние метаданные ответа (request id, model) с секретом маскируются и
+   не попадают в provenance/официальный JSON.
 
 `backend/tests/test_vector_runtime.py`:
 
@@ -216,8 +225,11 @@ Id элемента выводится из содержания (`category|fing
 2. неполный/некорректный спек (`METRIC`, `DIMENSION`, `STATUS`) →
    `unavailable`, не `ready`;
 3. adapter возвращает вектор+`EmbeddingProvenance` только при совпадении
-   модели и размерности; расхождение → отказ;
+   непустой модели из ответа и размерности; пустая/отсутствующая модель и
+   расхождение — отказ, не `ok`;
 4. embeddings без БД, без scope и при ошибке спека — всегда `unavailable`,
-   никогда не `ok`.
+   никогда не `ok`;
+5. request id с секретом маскируется до `retrieval.reason` и официального
+   JSON.
 
 Запуск: `PYTHONPATH=. python -m pytest backend/tests -q`.

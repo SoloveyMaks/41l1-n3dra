@@ -24,6 +24,7 @@ from backend.app.ai.vector_runtime import (
     EmbeddingsAdapter,
     VectorConfig,
     VectorRuntime,
+    _provenance_text,
     resolve_vector_config,
 )
 from backend.app.codefacts.identity import reset_workspace_scope, set_workspace_scope
@@ -240,6 +241,34 @@ class EmbeddingsAdapterTests(unittest.TestCase):
                 EmbeddingsAdapter(config).embed("query")
             self.assertIn("does not match configured", str(caught.exception))
 
+    def test_missing_or_empty_model_is_refused(self) -> None:
+        for override in ({"embedding_include_model": False}, {"embedding_model": ""}):
+            with self.subTest(override=override), FakeOpenAIServer() as server, vector_env(
+                **configured_env(VECTOR_EMBEDDING_BASE_URL=server.base_url)
+            ):
+                for name, value in override.items():
+                    setattr(server, name, value)
+                config = resolve_vector_config()
+                with self.assertRaises(RuntimeError) as caught:
+                    EmbeddingsAdapter(config).embed("query")
+                self.assertIn("has no model", str(caught.exception))
+
+    def test_request_id_with_secret_is_masked_before_publication(self) -> None:
+        with FakeOpenAIServer() as server, vector_env(
+            **configured_env(VECTOR_EMBEDDING_BASE_URL=server.base_url)
+        ):
+            server.request_id = "req sk-leakedtoken12345"
+            config = resolve_vector_config()
+            _, provenance = EmbeddingsAdapter(config).embed("query")
+            self.assertNotIn("sk-leakedtoken12345", provenance.request_id or "")
+            self.assertIn("***", provenance.request_id or "")
+            self.assertLessEqual(len(provenance.request_id or ""), 128)
+            # provenance.summary()/_provenance_text() is exactly what is
+            # appended to retrieval.reason and published as official JSON.
+            for published in (provenance.summary(), _provenance_text([provenance])):
+                self.assertNotIn("sk-leakedtoken12345", published)
+                self.assertLessEqual(len(published), 300)
+
     def test_unreachable_endpoint_is_a_bounded_error(self) -> None:
         with vector_env(**configured_env()):
             config = resolve_vector_config()
@@ -271,6 +300,17 @@ class ExactRetrievalRefusalTests(unittest.TestCase):
             info, examples = runtime.retrieve_examples_for_findings([make_finding()])
             self.assertEqual(info.status, "unavailable")
             self.assertIn("does not match configured", info.reason)
+            self.assertEqual(examples, [])
+
+    def test_missing_model_in_response_is_unavailable_not_success(self) -> None:
+        with FakeOpenAIServer() as server, vector_env(
+            **configured_env(VECTOR_EMBEDDING_BASE_URL=server.base_url)
+        ), scoped_workspace():
+            server.embedding_include_model = False
+            runtime = VectorRuntime()
+            info, examples = runtime.retrieve_examples_for_findings([make_finding()])
+            self.assertEqual(info.status, "unavailable")
+            self.assertIn("has no model", info.reason)
             self.assertEqual(examples, [])
 
     def test_missing_workspace_scope_is_unavailable_before_any_request(self) -> None:

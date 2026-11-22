@@ -29,7 +29,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.ai import vector_demo
-from backend.app.ai.provider import effective_route, mask_sensitive_text, open_same_host
+from backend.app.ai.provider import (
+    effective_route,
+    mask_sensitive_text,
+    open_same_host,
+    safe_metadata,
+)
 from backend.app.ai.vector_result import VectorExample
 from backend.app.codefacts.identity import current_workspace_scope
 from backend.app.contracts.schemas import Finding, RetrievalInfo, SimilarFix
@@ -249,11 +254,11 @@ class EmbeddingsAdapter:
         try:
             with open_same_host(request, cfg.embedding_timeout_seconds) as response:
                 raw = response.read().decode("utf-8", errors="replace")
-                request_id = (
+                request_id = safe_metadata(
                     response.headers.get("x-request-id")
                     or response.headers.get("request-id")
                     or response.headers.get("cf-ray")
-                )
+                ) or None
         except urllib.error.HTTPError as exc:
             detail = ""
             try:
@@ -280,10 +285,14 @@ class EmbeddingsAdapter:
             raise RuntimeError("embedding response has no vector")
 
         returned_model = payload.get("model")
-        if returned_model and str(returned_model) != cfg.model:
+        if not isinstance(returned_model, str) or not returned_model.strip():
+            # No model in the answer means the vector cannot be attributed to
+            # the configured spec; provenance must stay unconfirmed.
+            raise RuntimeError("embedding response has no model")
+        if returned_model != cfg.model:
             raise RuntimeError(
-                f"embedding response model {str(returned_model)!r} does not match "
-                f"configured {cfg.model!r}"
+                f"embedding response model {safe_metadata(returned_model, 80)!r} does not "
+                f"match configured {safe_metadata(cfg.model, 80)!r}"
             )
         try:
             vector = [float(value) for value in embedding]
