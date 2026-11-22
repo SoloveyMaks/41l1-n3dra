@@ -210,10 +210,38 @@
 - Нет доступной integration-БД/pgvector: SQL/hash/publish/retrieval проверки
   остаются статическими. `podman start nedra-mini-integration-pg` повторять
   запрещено.
-- Эталонный reference bundle нужно пересобрать под актуальный parser/rules
-  hash; в текущем worktree это сделать нечем без pinned reference snapshot.
+- Reference suite: pinned снимок найден и эталон пересобран (см. follow-up
+  ниже); server-mode target по-прежнему требует опубликованный bundle из БД.
 - Custom-check sandbox и миграция `013` есть только на `main 98c276e`;
   интеграция — координатором, не этим worktree.
+
+## Follow-up: reference suite пересобран
+
+- Pinned snapshot существует: `docs/reference-checks/fixtures/project-reference`
+  на коммите `ae1fd4805c3ce8cfc533be99a601b0e2d3aa95a1`; его
+  `snapshotManifestHash=6be987bf…5772` и `artifactHash=fd93a4cb…3608`
+  совпадают с манифестом.
+- Причина старого mismatch: манифест был подписан деревом `ae1fd48`
+  (`parserHash 45a0c139…`, `rulesHash 8731ddbc…`), актуальный код
+  `49f4025` даёт `fc9747f7…`/`25598be9…`; raw CLI честно возвращал
+  `incompatible`, `0/3`.
+- Эталонный bundle пересобран `analyzers.contract_export` на снапшоте
+  `project-reference` актуальным анализатором (`49f4025`): файл
+  `docs/reference-checks/reference-bundle.json` sha256
+  `72bb792cef15bd37dafaaa968277f43b1eac1b3a4834b22f59a688747d2b13ed`,
+  канонический content sha256
+  `a5868546ba086c95815c7927760b5376d74c410689c9a3b4f537e43cfbc3fd7c`.
+  Манифест и `reference-suite.reference.json` обновлены этими значениями;
+  expected findings/fingerprints не менялись — они совпали с пересборкой.
+- Проверка reference side без БД:
+  `ReferenceSuiteRegistry.load_reference_snapshot` +
+  `verify_reference_snapshot` → `verified=true`,
+  `expectedFindingsPresent=true`, все checks `true`.
+  `validate_bundle.mjs` на эталонном bundle — exit 0.
+- Отчёты пересобраны: `compatible` — `inconclusive`, 3/3 находки, 2/2
+  контроля (SCA coverage `unavailable`, не pass); `failure` — `fail`, 0/3;
+  `incompatible`/`coverage-loss` сохранили прежние негативные сценарии.
+  Server-mode target всё ещё не проверен без published envelope/БД.
 
 ## Итоговые коммиты области
 
