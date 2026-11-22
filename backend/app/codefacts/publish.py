@@ -14,6 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.codefacts.extractor import EXTRACTOR_VERSION
+from backend.app.codefacts.coverage import expected_scopes_verified
 from backend.app.codefacts.identity import (
     artifact_scope_uuid,
     canonical_json,
@@ -93,7 +94,7 @@ def build_publish_kwargs(*, workspace: str, run_artifact: Dict[str, Any],
             "normalizationVersion": str(
                 (envelope.get("signature") or {}).get("parserVersion") or EXTRACTOR_VERSION
             ),
-            "expectedScopesVerified": False,
+            "expectedScopesVerified": expected_scopes_verified(envelope, workflow),
             "domainPolicyApplicability": (
                 "unknown"
                 if (envelope.get("signature") or {}).get("domainPolicyRevisionId")

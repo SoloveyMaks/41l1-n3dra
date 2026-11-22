@@ -35,6 +35,7 @@ from backend.app.api.session import (
     public_config_error,
 )
 from backend.app.codefacts.identity import reset_workspace_scope, set_workspace_scope
+from backend.app.security.body_limit import BodyLimitMiddleware, configured_max_bytes
 
 logger = logging.getLogger("App")
 
@@ -152,6 +153,10 @@ if _origins:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-Run-ID"],
     )
+
+# Count the body before multipart parsing spools it to disk; the handler's
+# 50 MiB ZIP check runs only after Starlette has already written the upload.
+app.add_middleware(BodyLimitMiddleware, max_bytes=configured_max_bytes())
 
 
 @app.middleware("http")
