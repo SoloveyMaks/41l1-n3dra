@@ -61,6 +61,26 @@ _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _CONTROL_RE = re.compile(r"[\u0000-\u001f\u007f]")
 _SKIP_DIR_NAMES = {".git", ".hg", ".svn", "node_modules", "__macosx", "build", "target", ".gradle"}
 
+
+def _zstd_zip_supported() -> bool:
+    """ZIP_ZSTANDARD читается только вместе с compression.zstd (Python 3.14+)."""
+    if getattr(zipfile, "ZIP_ZSTANDARD", None) is None:
+        return False
+    try:
+        from compression import zstd  # noqa: F401 - проверка наличия кодека
+    except ImportError:
+        return False
+    return True
+
+
+# Методы, которые этот runtime действительно умеет распаковывать. Неизвестный
+# или недоступный кодек остаётся SafeIntakeError, а не попыткой распаковки.
+_SUPPORTED_COMPRESSION_METHODS = {
+    zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA,
+}
+if _zstd_zip_supported():
+    _SUPPORTED_COMPRESSION_METHODS.add(zipfile.ZIP_ZSTANDARD)
+
 # Маркеры корня сборки, которые сами по себе доказывают, что верхняя папка —
 # это корень проекта, а не просто каталог с исходниками.
 _ROOT_BUILD_MARKERS = {
@@ -348,9 +368,7 @@ class SafeArtifactIntake:
                 if info.is_dir():
                     directories.add(_normalize_entry_name(info.filename).casefold())
                     continue
-                if info.compress_type not in {
-                    zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA,
-                }:
+                if info.compress_type not in _SUPPORTED_COMPRESSION_METHODS:
                     raise SafeIntakeError("Неподдерживаемый метод сжатия ZIP")
                 rel = _normalize_entry_name(info.filename)
                 key = rel.casefold()
