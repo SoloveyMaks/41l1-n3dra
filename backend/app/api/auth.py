@@ -35,7 +35,7 @@ from backend.app.storage import accounts
 from backend.app.storage.profile import (
     DEFAULT_HISTORY_LIMIT,
     MAX_HISTORY_LIMIT,
-    run_history,
+    history_page,
 )
 
 AUTH_PREFIX = "/auth"
@@ -177,16 +177,26 @@ def create_auth_router() -> APIRouter:
     def history(
         request: Request,
         limit: int = Query(default=DEFAULT_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT),
+        offset: int = Query(default=0, ge=0),
+        project: Optional[str] = Query(default=None, max_length=256),
+        workflow: Optional[str] = Query(default=None, max_length=256),
+        status: Optional[str] = Query(default=None, max_length=64),
     ) -> Dict[str, Any]:
         session = _require_session(request)
-        items = run_history(session["workspaceId"], limit)
+        page = history_page(
+            session["workspaceId"],
+            limit=limit,
+            offset=offset,
+            project=project,
+            workflow=workflow,
+            status=status,
+        )
         return {
+            **page,
             "mode": session.get("mode", MODE_DEMO),
             "userId": session.get("userId"),
             "workspaceId": session["workspaceId"],
             "sharedDemoWorkspace": session.get("mode") == MODE_DEMO,
-            "limit": limit,
-            "items": items,
         }
 
     return router
