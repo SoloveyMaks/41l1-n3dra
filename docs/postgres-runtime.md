@@ -10,6 +10,8 @@
 | `DATABASE_URL` | да | `postgresql://user:password@host:5432/db` |
 | `CG_WORKSPACE_ID` | нет | UUID или seed (`uuid5(NAMESPACE_URL, "cg-workspace:<seed>")`); раньше использовался слоем codefacts |
 | `RUNTIME_WORKSPACE_ID` | нет | только UUID, совместимость storage-контракта |
+| `NEDRA_SECRET_KEY` | нет | AES-256-GCM ключ секретов сценариев: standard base64, ровно 32 байта; без него режим `optional` хранит секреты открыто |
+| `NEDRA_SECRETS_MODE` | нет | `optional` (по умолчанию) или `required`: в `required` запись ревизий без `NEDRA_SECRET_KEY` отказывает |
 
 API пока не принимает workspace в запросах: процесс работает в одном workspace,
 и чтение по id из чужого workspace возвращает `None`/404, а не чужие данные.
@@ -20,6 +22,27 @@ API пока не принимает workspace в запросах: процес
 `RUNTIME_WORKSPACE_ID` заданы и разрешаются в разные UUID, старт падает с
 понятной ошибкой вместо silent split; задайте один источник или одинаковое
 значение. Секреты — только в локальном окружении, не в репозитории.
+
+## Секреты сценариев в draft_json
+
+`secretToken`/`webhookSecret` (и snake_case варианты) в
+`runtime.workflow_revisions.draft_json` шифруются на записи
+(`backend/app/security/secrets.py`): AES-256-GCM, nonce 12 байт, AAD — имя
+поля, версионный конверт `enc:v1:<nonce_b64>:<ciphertext_b64>`. Ключ —
+`NEDRA_SECRET_KEY` (base64, 32 байта), режим — `NEDRA_SECRETS_MODE`.
+
+- `optional` (по умолчанию): без ключа запись и чтение работают как раньше,
+  в лог пишется предупреждение без значений.
+- `required`: без ключа `save_workflow`/`save_workflow_if_latest` отказывают
+  (`MissingSecretsKeyError`), секреты открытым текстом не пишутся.
+- Чтение прозрачное: `get_workflow`/`list_workflows`/`get_workflow_revision`
+  отдают тот же plaintext-черновик, что и до шифрования; legacy-строки без
+  конверта читаются без потери. Неверный ключ, подмена ciphertext или AAD —
+  явная `SecretDecryptionError`, тихого plaintext не бывает; конверт без ключа
+  не отдаётся наружу (явный отказ в обоих режимах).
+
+Контракт чтения не меняется: форма черновика, `draft_json` строкой и DTO — как
+прежде, шифрование живёт только внутри `storage/database.py`.
 
 ## Что делает старт
 
