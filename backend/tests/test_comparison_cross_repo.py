@@ -1,41 +1,20 @@
-from backend.app.api.comparison import CROSS_REPOSITORY_REASON, apply_cross_repository
+import pytest
+
+from backend.app.api.comparison import ComparisonError, ensure_same_repository
 
 
-def sample_result():
-    return {
-        "comparable": True,
-        "reasons": [],
-        "deletedFiles": [{"path": "src/A.kt"}],
-        "items": [
-            {"status": "resolved", "reason": "anchor missing"},
-            {"status": "introduced", "reason": ""},
-            {"status": "persistent", "reason": "same"},
-            {"status": "inconclusive", "reason": "unknown"},
-        ],
-    }
+def test_two_known_different_repositories_are_rejected():
+    with pytest.raises(ComparisonError) as error:
+        ensure_same_repository("https://github.com/acme/one", "https://github.com/acme/two")
+    assert error.value.status_code == 409
+    assert error.value.code == "DIFFERENT_REPOSITORIES"
 
 
-def test_different_artifacts_are_not_a_fix():
-    result = apply_cross_repository(sample_result(), "https://github.com/acme/one", "https://github.com/acme/two")
-    assert result["comparable"] is False
-    assert result["reasons"][0] == CROSS_REPOSITORY_REASON
-    assert result["deletedFiles"] == []
-    statuses = [item["status"] for item in result["items"]]
-    assert statuses == ["inconclusive", "inconclusive", "persistent", "inconclusive"]
-    assert result["items"][0]["reason"].startswith(CROSS_REPOSITORY_REASON)
+def test_same_repository_is_allowed():
+    ensure_same_repository("https://github.com/acme/one", "https://github.com/acme/one")
 
 
-def test_same_artifact_keeps_normal_comparison():
-    result = sample_result()
-    unchanged = apply_cross_repository(result, "https://github.com/acme/one", "https://github.com/acme/one")
-    assert unchanged["comparable"] is True
-    assert unchanged["reasons"] == []
-    assert unchanged["deletedFiles"] == [{"path": "src/A.kt"}]
-    assert [item["status"] for item in unchanged["items"]] == [
-        "resolved", "introduced", "persistent", "inconclusive",
-    ]
-
-
-def test_missing_hashes_do_not_trigger_cross_repository_mode():
-    result = sample_result()
-    assert apply_cross_repository(result, None, "https://github.com/acme/two")["comparable"] is True
+def test_missing_repository_identity_keeps_zip_comparison():
+    ensure_same_repository(None, "https://github.com/acme/two")
+    ensure_same_repository("https://github.com/acme/one", None)
+    ensure_same_repository(None, None)

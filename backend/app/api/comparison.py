@@ -77,11 +77,6 @@ def load_published_envelope(workspace: str, run_id: str, run_row: Dict[str, Any]
     return envelope
 
 
-CROSS_REPOSITORY_REASON = (
-    "Разные репозитории: сравнение показывает различия между проектами, "
-    "а не исправление или появление находки"
-)
-
 
 def _repository_identity(run: Dict[str, Any], store: CodeFactsStore, workspace: str) -> str | None:
     artifact_id = str(run.get("artifact_id") or "")
@@ -95,40 +90,26 @@ def _repository_identity(run: Dict[str, Any], store: CodeFactsStore, workspace: 
     return url.strip().rstrip("/").lower()
 
 
-def apply_cross_repository(
-    result: Dict[str, Any],
+def ensure_same_repository(
     baseline_repository: str | None,
     current_repository: str | None,
-) -> Dict[str, Any]:
-    """Two known, different repositories are a project diff, not a fix.
+) -> None:
+    """A before/after comparison is only valid inside one repository.
 
-    A ZIP upload has no repository identity. Its before/after artifacts differ
-    by hash and must keep normal comparison semantics, so only explicit
-    repository metadata can trigger this mode.
+    ZIP uploads have no repository identity and keep normal before/after
+    semantics. Imported GitHub/GitLab artifacts carry it, so two different
+    projects are rejected instead of being presented as a fix.
     """
     if (
-        not baseline_repository
-        or not current_repository
-        or baseline_repository == current_repository
+        baseline_repository
+        and current_repository
+        and baseline_repository != current_repository
     ):
-        return result
-    result["comparable"] = False
-    result["reasons"] = [CROSS_REPOSITORY_REASON, *result.get("reasons", [])]
-    result["deletedFiles"] = []
-    for item in result.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        if item.get("status") not in {"resolved", "introduced", "file_deleted"}:
-            continue
-        previous = item.get("reason")
-        item["status"] = "inconclusive"
-        item["reason"] = (
-            CROSS_REPOSITORY_REASON
-            if not previous
-            else f"{CROSS_REPOSITORY_REASON}; {previous}"
+        raise ComparisonError(
+            409,
+            "DIFFERENT_REPOSITORIES",
+            "Нельзя сравнивать запуски разных репозиториев; выберите два запуска одного проекта",
         )
-    return result
-
 
 def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_id: str,
                            baseline_run: Dict[str, Any], current_run: Dict[str, Any],
@@ -137,6 +118,10 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     if baseline_run_id == current_run_id:
         raise ComparisonError(400, "SAME_RUN", "Baseline и current run должны различаться")
     store = store or CodeFactsStore()
+    ensure_same_repository(
+        _repository_identity(baseline_run, store, workspace),
+        _repository_identity(current_run, store, workspace),
+    )
     before = load_published_envelope(workspace, baseline_run_id, baseline_run, store)
     after = load_published_envelope(workspace, current_run_id, current_run, store)
     cli = comparison_cli_path()
@@ -189,11 +174,6 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     }
     if not isinstance(result, dict) or not required.issubset(result):
         raise ComparisonError(502, "COMPARISON_BAD_OUTPUT", "compare-cli вернул неполный ComparisonDto")
-    result = apply_cross_repository(
-        result,
-        _repository_identity(baseline_run, store, workspace),
-        _repository_identity(current_run, store, workspace),
-    )
     try:
         from backend.app.storage.comparisons import ComparisonConflictError, ComparisonStore  # type: ignore
     except ModuleNotFoundError:
