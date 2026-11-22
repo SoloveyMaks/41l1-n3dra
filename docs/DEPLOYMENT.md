@@ -157,9 +157,10 @@ owner label и не используют `podman rm -f`; чужие контей
 ZIP из `examples/demo`, запускает `wf_secure_pr_gate` до `succeeded` и проверяет
 `official.json`, `export.jsonc`, `export.md`, `export.docx` (включая открытие
 файла `python-docx` из образа) и `security-map`. Прод `nedra-app`/`nedra-db`,
-сеть `nedra` и volumes `nedra-*-data` скрипт не упоминает; очистка по `trap`
-работает только по своим owner-label. Подробности и живые результаты — в
-[release hardening](RELEASE-HARDENING.md).
+сеть `nedra` и volumes `nedra-*-data` скрипт не упоминает; параллельные
+прогоны исключены `flock`, очистка по `trap` работает только по своим
+owner-label и завершается ненулевым exit при оставшихся ресурсах. Подробности
+и живые результаты — в [release hardening](RELEASE-HARDENING.md).
 
 ## Health и статус
 

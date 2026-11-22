@@ -13,12 +13,29 @@
 #   * порт backend выбирается свободный и публикуется только на 127.0.0.1,
 #     у БД host-портов нет;
 #   * runtime.env и секреты хоста не читаются: пароли и session secret
-#     генерируются на прогон во временном каталоге (режим 600).
+#     генерируются на прогон во временном каталоге (режим 600);
+#   * один активный прогон за раз (flock): параллельный запуск не получает
+#     lock и ничего не удаляет; --help завершается до любых обращений к Podman.
 #
-# Требования: podman, curl, python3, git, сеть для сборки (npm ci / pip wheel).
-# Запуск: scripts/nedra-e2e.sh
+# Требования: podman, curl, python3, git, flock, сеть для сборки (npm ci /
+# pip wheel).
+# Запуск: scripts/nedra-e2e.sh [--help]
 set -euo pipefail
 umask 077
+
+# Разбор аргументов выполняется до trap и до любых обращений к Podman:
+# --help и неверный аргумент не трогают ресурсы и не ставят очистку.
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d;s/^# \{0,1\}//'
+    exit 0
+    ;;
+  "") ;;
+  *)
+    printf '[nedra-e2e] ERROR: неизвестный аргумент: %s\n' "$1" >&2
+    exit 2
+    ;;
+esac
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=nedra-lib.sh
@@ -117,6 +134,7 @@ purge_e2e_state() {
 
 cleanup() {
   local rc=$?
+  local -a leftovers=()
   trap - EXIT
   set +e
   local name
@@ -126,33 +144,59 @@ cleanup() {
         if container_running "$name"; then
           podman stop --time 20 "$name" >/dev/null 2>&1
         fi
-        podman rm "$name" >/dev/null 2>&1
-        say "контейнер $name удалён"
+        if podman rm "$name" >/dev/null 2>&1; then
+          say "контейнер $name удалён"
+        else
+          warn "не удалось удалить контейнер $name"
+          leftovers+=("container $name")
+        fi
       else
         warn "контейнер $name без нашего label — пропущен"
+        leftovers+=("container $name (чужой label)")
       fi
     fi
   done
   for name in "$E2E_APP_VOL" "$E2E_DB_VOL"; do
     if podman volume exists "$name" 2>/dev/null; then
       if [ "$(e2e_volume_owner "$name")" = "$E2E_OWNER" ]; then
-        podman volume rm "$name" >/dev/null 2>&1
-        say "volume $name удалён"
+        if podman volume rm "$name" >/dev/null 2>&1; then
+          say "volume $name удалён"
+        else
+          warn "не удалось удалить volume $name"
+          leftovers+=("volume $name")
+        fi
       else
         warn "volume $name без нашего label — пропущен"
+        leftovers+=("volume $name (чужой label)")
       fi
     fi
   done
   if podman network exists "$E2E_NET" 2>/dev/null; then
     if [ "$(e2e_network_owner "$E2E_NET")" = "$E2E_OWNER" ]; then
-      podman network rm "$E2E_NET" >/dev/null 2>&1
-      say "сеть $E2E_NET удалена"
+      if podman network rm "$E2E_NET" >/dev/null 2>&1; then
+        say "сеть $E2E_NET удалена"
+      else
+        warn "не удалось удалить сеть $E2E_NET"
+        leftovers+=("network $E2E_NET")
+      fi
     else
       warn "сеть $E2E_NET без нашего label — пропущена"
+      leftovers+=("network $E2E_NET (чужой label)")
     fi
   fi
   if [ -n "$E2E_WORKDIR" ] && [ -d "$E2E_WORKDIR" ]; then
-    rm -rf -- "$E2E_WORKDIR"
+    if ! rm -rf -- "$E2E_WORKDIR"; then
+      warn "не удалось удалить временный каталог $E2E_WORKDIR"
+      leftovers+=("workdir $E2E_WORKDIR")
+    fi
+  fi
+  # Остатки — это провал очистки: принудительно ненулевой exit и явный список.
+  if [ ${#leftovers[@]} -gt 0 ]; then
+    warn "остались ресурсы прогона (очистка неполная):"
+    for name in "${leftovers[@]}"; do
+      warn "  - $name"
+    done
+    rc=1
   fi
   if [ "$rc" -eq 0 ]; then
     say "ИТОГ: e2e зелёный; изолированные ресурсы удалены"
@@ -161,10 +205,22 @@ cleanup() {
       [ -n "$line" ] && printf '[nedra-e2e]   %s\n' "$line"
     done
   else
-    warn "ИТОГ: e2e упал (rc=${rc}); изолированные ресурсы удалены"
+    warn "ИТОГ: e2e упал (rc=${rc})"
+    if [ ${#leftovers[@]} -eq 0 ]; then
+      warn "изолированные ресурсы удалены"
+    fi
   fi
   exit "$rc"
 }
+# Один активный прогон за раз: параллельный запуск падает ДО регистрации trap,
+# поэтому не выполняет ни purge, ни cleanup и не трогает чужие ресурсы.
+require_cmd flock
+exec 9>"${TMPDIR:-/tmp}/nedra-rel-e2e.lock"
+if ! flock -n 9; then
+  printf '[nedra-e2e] ERROR: другой прогон nedra-rel-e2e уже идёт; ничего не трогаю\n' >&2
+  exit 1
+fi
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -228,34 +284,38 @@ wait_app_health() { # <timeout>
 }
 
 wait_migrations() { # <timeout>
-  local timeout=$1 start now applied expected
-  expected=$(find "$NEDRA_REPO_ROOT/db/migrations" -maxdepth 1 -name '*.up.sql' | wc -l)
+  local timeout=$1 start now expected_list ledger_tmp missing
+  # Список миграций берётся из каталога: после мержа новых *.up.sql проверка
+  # остаётся динамической (все файлы должны быть в ledger по именам), без
+  # зашитого числа файлов.
+  expected_list="$E2E_WORKDIR/migrations-expected.txt"
+  ledger_tmp="$E2E_WORKDIR/migrations-ledger.txt"
+  find "$NEDRA_REPO_ROOT/db/migrations" -maxdepth 1 -name '*.up.sql' -printf '%f\n' \
+    | LC_ALL=C sort >"$expected_list"
+  [ -s "$expected_list" ] || die "нет файлов db/migrations/*.up.sql"
   start=$(date +%s)
   while :; do
-    applied=$(podman exec "$E2E_DB" psql -U "$E2E_DB_USER" -d "$E2E_DB_NAME" -tAc \
-      "select count(*) from public.schema_migrations" 2>/dev/null || printf 0)
-    if [ "$applied" -ge "$expected" ]; then
-      say "миграции: ${applied}/${expected} применены, ledger public.schema_migrations"
-      return 0
+    if podman exec "$E2E_DB" psql -U "$E2E_DB_USER" -d "$E2E_DB_NAME" -tAc \
+        "select filename from public.schema_migrations order by filename" \
+        >"$ledger_tmp" 2>/dev/null; then
+      missing=$(LC_ALL=C comm -23 "$expected_list" <(LC_ALL=C sort "$ledger_tmp"))
+      if [ -z "$missing" ]; then
+        say "миграции: все $(wc -l <"$expected_list") файлов db/migrations есть в ledger по именам"
+        return 0
+      fi
+    else
+      missing="(ledger пока недоступен)"
     fi
     now=$(date +%s)
     if [ $((now - start)) -ge "$timeout" ]; then
-      die "миграции не применились за ${timeout}s: ${applied}/${expected}"
+      printf '[nedra-e2e] отсутствуют в ledger:\n%s\n' "$missing" >&2
+      die "миграции не сошлись за ${timeout}s (сверка по именам файлов)"
     fi
     sleep 2
   done
 }
 
 # --- Preflight --------------------------------------------------------------
-case "${1:-}" in
-  -h|--help)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-    exit 0
-    ;;
-  "") ;;
-  *) die "неизвестный аргумент: $1" ;;
-esac
-
 require_cmd podman
 require_cmd curl
 require_cmd python3
