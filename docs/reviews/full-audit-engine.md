@@ -243,7 +243,11 @@ lifecycle/task-ownership hunks `backend/app/api/router.py` и этот отчё�
   дала `run=interrupted`, `node=cancelled`, SSE `run_status`/`node_status`,
   registry пуст;
 - реальный `WorkflowScheduler.aclose` в AsyncExitStack отменил циклы и
-  дождался задач.
+  дождался задач;
+- фактический `main.lifespan` с реальным router/scheduler и fake-repo: в
+  момент `db.close()` циклы scheduler уже `None`, registry ручных задач пуст,
+  тестовая run-task отменена. Это доказывает порядок «задачи → pool», а не
+  только наличие callback.
 
 Ограничение: `scheduler.aclose` ждёт задачи, но raw `asyncio.to_thread` в
 watch-DB вызовах после отмены может завершаться в фоне; executor-узлы этот
