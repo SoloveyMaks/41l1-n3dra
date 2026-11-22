@@ -3,17 +3,17 @@ import json
 from backend.app.ai.service import AiService
 from backend.app.ai.validator import AiResponseValidator
 from backend.app.contracts.schemas import (
-    Confidence, Finding, Location, Severity,
+    Confidence, Finding, FindingStatus, Location, Severity,
 )
 
 
-def make_finding(analyzer="sast", path="src/App.kt", advisory_ids=None) -> Finding:
+def make_finding(analyzer="sast", path="src/App.kt", advisory_ids=None, evidence="***") -> Finding:
     return Finding(
         id="f1", fingerprint="fp1", analyzer=analyzer, ruleId="KOTLIN-SQL-INJECTION",
         severity=Severity.HIGH, severityBasis="taint", confidence=Confidence.CONFIRMED,
         confidenceBasis="source-to-sink",
         primaryLocation=Location(path=path, startLine=10, endLine=20, startColumn=1, endColumn=40),
-        redactedEvidence="***", advisoryIds=advisory_ids or [],
+        redactedEvidence=evidence, advisoryIds=advisory_ids or [],
     )
 
 
@@ -71,3 +71,40 @@ def test_fallback_has_all_sections_and_no_secret_value():
     for key in ("problem", "attackScenario", "impact", "preconditions", "verification", "remediation"):
         assert isinstance(sections[key], str) and sections[key]
     assert "application.properties" in sections["problem"]
+
+
+def test_invented_http_route_is_rejected(tmp_path):
+    path = tmp_path / "adv.json"
+    path.write_text("[]", encoding="utf-8")
+    validator = AiResponseValidator(advisories_path=path)
+    finding = make_finding(evidence='@GetMapping("/admin/dump") class C')
+    ok, errors, _ = validator.validate(
+        {"items": [item(attackScenario="Отправить POST /invented-jury-export")]}, [finding]
+    )
+    assert ok is False
+    assert any("invented-jury-export" in error for error in errors)
+
+
+def test_confirmed_http_route_is_accepted(tmp_path):
+    path = tmp_path / "adv.json"
+    path.write_text("[]", encoding="utf-8")
+    validator = AiResponseValidator(advisories_path=path)
+    finding = make_finding(evidence='@GetMapping("/admin/dump") class C')
+    ok, errors, _ = validator.validate(
+        {"items": [item(attackScenario="Отправить GET /admin/dump")]}, [finding]
+    )
+    assert ok is True, errors
+
+
+def test_potential_endpoint_fallback_does_not_claim_proof():
+    service = AiService()
+    finding = make_finding(path="AdminController.kt")
+    finding.ruleId = "KOTLIN-INSECURE-ENDPOINT"
+    finding.confidence = Confidence.POTENTIAL
+    finding.status = FindingStatus.POTENTIAL
+    sections = service._fallback_sections(finding)
+    text = " ".join(value for value in sections.values() if isinstance(value, str)).lower()
+    assert "потенциальная" in text
+    assert "глобальные securityfilterchain" in text
+    assert "не проверялись" in text
+    assert "при подтверждении" in text

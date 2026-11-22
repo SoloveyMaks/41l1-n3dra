@@ -13,6 +13,10 @@ LOCATION_REF_RE = re.compile(
 )
 STRUCTURED_FIELDS = ("problem", "attackScenario", "impact", "preconditions", "verification")
 ALL_TEXT_FIELDS = ("explanation", "remediation") + STRUCTURED_FIELDS
+HTTP_ROUTE_RE = re.compile(
+    r"(?<![A-Za-z])(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(/[A-Za-z0-9_./{}%:-]*)"
+)
+QUOTED_ROUTE_RE = re.compile(r"""["'](/[A-Za-z0-9_./{}%:-]+)["']""")
 UPDATE_TARGET_RE = re.compile(
     r"(?i)(?:обнов\w*|upgrade\w*|перейдите\s+на|используйте\s+версию|"
     r"fixed\s+in|fix(?:ed)?\s+(?:to|in)|version)\s*(?:до|to|на)?\s*[:—-]?\s*"
@@ -145,6 +149,20 @@ class AiResponseValidator:
                 errors.append(
                     f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {finding.id} строка {ref_line} "
                     f"вне evidence {matches[0][0]}:{matches[0][1]}-{matches[0][2]}"
+                )
+        context = " ".join(
+            [
+                finding.redactedEvidence or "",
+                *(step.description or "" for step in finding.trace),
+            ]
+        )
+        allowed_routes = set(QUOTED_ROUTE_RE.findall(context))
+        for _method, route in HTTP_ROUTE_RE.findall(text):
+            clean = route.rstrip(".,;:)")
+            if clean and clean not in allowed_routes:
+                errors.append(
+                    f"ОТКЛОНЕНО ВАЛИДАТОРОМ: для находки {finding.id} указан HTTP-маршрут "
+                    f"{clean} вне её evidence"
                 )
         allowed_versions = set(self.allowed_fixed_versions_for(finding))
         if suggested_fixed_version:
