@@ -3,6 +3,7 @@
 - База задания: `35d27d30ae44fd955824001e18eff895197c933c` (`dev`).
 - HEAD на старте работы: `4cb7c7b0509a5a0028dc261e5faf0a08a374d1e4` (один коммит после базы, получен из `main`-линии; worktree уже содержал незакоммиченные UI-исправления).
 - Коммит с исправлениями: `a7e5549ba77e128222500c191ffde8d8fce3da12`.
+- Финальная полировка toolbar (крупнее подписи, перенос однострочного режима на 1760 px): `4770ae9c82268725a43ce9bfbe5cc40bf02283c2`.
 - Область: `frontend/` кроме `frontend/src/miniapp/`, `ui/security-map/`. Backend API, БД, миграции, конфиги и секреты не менялись.
 
 ## Что проверено
@@ -94,7 +95,7 @@ dist/assets/index-*.js   972.30 kB (gzip 270.49 kB)
 - `verify-validation-badge-current.cjs` — четыре состояния бейджа/панели ошибок.
 - `verify-telemetry-current.cjs` — baseline не анимирует историю; свежий edge pulse только выше baseline; terminal run не live и не пульсирует; out-of-order node event не откатывает статус.
 - `ports-map-probe.cjs` — повреждённая карта и coverage → `MAP_CONTRACT_MISMATCH`; валидная карта → `MapView`; API отклоняет повреждённый ответ.
-- Layout-harness: замеры выше; скриншоты `/tmp/nedra-audit-frontend/accept-*.png`, `/tmp/nedra-audit-frontend/final-*.png`.
+- Layout-harness: замеры выше; после финального toolbar-sizing повторно проверены 390/640/720/768/853/960/1024/1152/1280/1440/1536/1760/1920 px — снова без обрезаний и пересечений; скриншоты `/tmp/nedra-audit-frontend/accept-*.png`, `/tmp/nedra-audit-frontend/final-*.png`.
 
 `git diff --check` — без ошибок. Коммит содержит 12 файлов; backend, миграции, конфиги и секреты не затронуты.
 
