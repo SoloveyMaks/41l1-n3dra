@@ -3,7 +3,7 @@ import { Handle, Position, NodeProps } from '@xyflow/react';
 import {
   Play, Clock, FolderArchive, KeyRound, PackageSearch, FileCode2,
   GitMerge, ShieldAlert, GitFork, Sparkles, FileText, Send, CheckCircle2,
-  AlertCircle, Loader2, MinusCircle
+  AlertCircle, Loader2, MinusCircle, Ban
 } from 'lucide-react';
 import { NodeKind, NodeRunStatus } from '../types';
 import './execution-motion.css';
@@ -123,6 +123,11 @@ export const CustomNode = memo(({ data, selected }: NodeProps) => {
             {status === 'failed' && (
               <span className="text-rose-400 flex items-center">
                 <AlertCircle size={13} />
+              </span>
+            )}
+            {status === 'cancelled' && (
+              <span className="text-rose-400 flex items-center" title="Проверка отменена">
+                <Ban size={13} />
               </span>
             )}
             {status === 'skipped' && (
