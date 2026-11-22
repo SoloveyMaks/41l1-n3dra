@@ -16,6 +16,36 @@ from backend.app.storage.database import ArtifactImmutableError, DatabaseReposit
 logger = logging.getLogger("WorkflowScheduler")
 
 
+async def _await_thread(function: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run one blocking call in a worker thread and survive cancellation.
+
+    Unlike a bare ``to_thread`` await, cancelling the caller does not abandon
+    the thread: the task waits for the real operation to finish, then raises
+    ``CancelledError``. Repeated cancellation during that wait is ignored so it
+    cannot interrupt the wait. The ContextVar workspace is captured by
+    ``to_thread`` at call time.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if task.cancelled():
+            raise
+        error = task.exception()
+        if error is not None:
+            # The operation failed while shutdown was waiting for it. Keep the
+            # failure as context, but cancellation remains the caller's result.
+            raise asyncio.CancelledError() from error
+        raise
+
+
 def _discard_and_log(task: asyncio.Task, tasks: set[asyncio.Task], label: str) -> None:
     """Drop a finished task and surface an exception nobody awaited."""
     tasks.discard(task)
@@ -216,7 +246,7 @@ class RepositoryWatchService:
         self._hook_tasks: set[asyncio.Task] = set()
 
     async def _db(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(getattr(self.db, name), *args, **kwargs)
+        return await _await_thread(getattr(self.db, name), *args, **kwargs)
 
     # --- admin operations -------------------------------------------------
     async def create_watch(self, workflow_id: Any, url: Any, branch: Any,
@@ -922,7 +952,7 @@ class WorkflowScheduler:
                 free = MAX_ACTIVE_WATCH_CHECKS - len(self._active_watch_checks)
                 if free > 0:
                     token = f"wtick_{uuid.uuid4().hex}"
-                    due = await asyncio.to_thread(
+                    due = await _await_thread(
                         self.db.claim_due_repository_watches_server,
                         free, token, WATCH_CLAIM_SECONDS,
                     )
@@ -945,7 +975,7 @@ class WorkflowScheduler:
     async def _check_and_trigger_schedules(self) -> None:
         """Claim due schedules from every tenant; one scope per schedule."""
         try:
-            claimed = await asyncio.to_thread(
+            claimed = await _await_thread(
                 self.db.claim_due_schedules_server,
                 SCHEDULE_BATCH, SCHEDULE_CLAIM_SECONDS,
             )
@@ -985,7 +1015,7 @@ class WorkflowScheduler:
     async def _trigger_claimed_schedule(self, sched: Dict[str, Any]) -> None:
         now = datetime.now(timezone.utc)
         try:
-            workflow = await asyncio.to_thread(
+            workflow = await _await_thread(
                 self.db.get_workflow, sched["workflow_id"]
             )
         except Exception as exc:  # noqa: BLE001
@@ -1006,12 +1036,12 @@ class WorkflowScheduler:
         except Exception as exc:  # noqa: BLE001 - битое выражение не сеть
             logger.warning("Schedule expression rejected for %s: %s",
                            sched.get("id"), type(exc).__name__)
-            await asyncio.to_thread(
+            await _await_thread(
                 self.db.set_schedule_enabled, sched["id"], False
             )
             return
         run_id = str(uuid.uuid4())
-        created = await asyncio.to_thread(
+        created = await _await_thread(
             self.db.create_scheduled_run,
             run_id,
             sched["id"],
@@ -1040,7 +1070,7 @@ class WorkflowScheduler:
                 next_dt = next_fire_at(
                     sched.get("cron_or_interval", "interval:60"), now
                 )
-                await asyncio.to_thread(
+                await _await_thread(
                     self.db.update_schedule_run_time,
                     sched["id"],
                     sched.get("last_run_at") or "",
@@ -1050,7 +1080,7 @@ class WorkflowScheduler:
             logger.warning("Schedule advance failed: %s", type(exc).__name__)
             try:
                 with workspace_scope(sched["workspace_id"]):
-                    await asyncio.to_thread(
+                    await _await_thread(
                         self.db.set_schedule_enabled, sched["id"], False
                     )
             except Exception:
@@ -1086,7 +1116,7 @@ class WorkflowScheduler:
     async def _recover_schedule_runs(self) -> None:
         """Re-dispatch queued schedule runs after a crash; claim is in executor."""
         try:
-            rows = await asyncio.to_thread(
+            rows = await _await_thread(
                 self.db.list_queued_schedule_runs_server, 20, 5
             )
         except Exception as exc:  # noqa: BLE001
@@ -1109,14 +1139,14 @@ class WorkflowScheduler:
     async def _recover_schedule_run(self, run_id: str, workspace_id: str) -> None:
         try:
             with workspace_scope(workspace_id):
-                run = await asyncio.to_thread(self.db.get_run, run_id)
+                run = await _await_thread(self.db.get_run, run_id)
                 if not run or run.get("execution_status") != "queued":
                     return
-                revision = await asyncio.to_thread(
+                revision = await _await_thread(
                     self.db.get_workflow_revision, run["revision_id"]
                 )
                 if not revision or not revision.get("draft"):
-                    await asyncio.to_thread(
+                    await _await_thread(
                         self.db.update_run_status, run_id, "failed",
                         "inconclusive", None,
                         datetime.now(timezone.utc).isoformat(),
