@@ -279,3 +279,22 @@ TG LIMIT SMOKE OK
    уровни; `acquire_delivery_guard`/`release_delivery_guard` сериализуют
    отправку и rebind по строке binding.
 3. `binding_epoch` не отдаётся в публичный DTO; это внутренний fencing token.
+
+## Поправка от 22.11.2026: durable generation вместо `old+1`
+
+Ранняя модель «`binding_epoch = старый + 1`» заменена миграцией
+`db/migrations/016_telegram_binding_generation.up.sql`:
+
+- эпоха выдаётся durable sequence `telegram.binding_epoch_seq`
+  (`bigint`, `increment 1`, `cache 1`, `NO CYCLE`);
+- seed — `greatest(persisted_max + 1, last_value + is_called)` по
+  `bindings`/`jobs`/`outbox`, под теми же advisory/table locks, что берут
+  issue/consume/unbind/move; исчерпание bigint останавливает миграцию;
+- sentinel `telegram.binding_epoch_sequence_v1()` возвращает `016`; runner
+  проверяет sentinel и параметры sequence даже при совпавшем ledger checksum;
+- `setval` не используется, уже выданные эпохи не переписываются, откат назад
+  невозможен.
+
+Практический вывод для rebind: новая эпоха — это `nextval` под transaction
+lock, а не арифметика над прошлой строкой. Старые процессы без нового
+lock/sequence-контракта после cutover должны быть остановлены.
