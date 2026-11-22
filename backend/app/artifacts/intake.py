@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional
 
+from backend.app.artifacts.project_kind import detect_project_kind
+
 from backend.app.codefacts.identity import (
     data_root,
     manifest_hash,
