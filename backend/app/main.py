@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import re
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -87,35 +87,34 @@ def _rate_bucket(method: str, path: str) -> str | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config_error = public_config_error()
-    if config_error:
-        raise RuntimeError(config_error)
-    if secret_is_ephemeral():
-        logger.warning(
-            "CG_SESSION_SECRET не задан: используется эфемерный секрет процесса. "
-            "Это допустимо только для локального режима; для CG_PUBLIC_DEMO=1 секрет обязателен."
-        )
-    scheduler.start()
-    notifications_runtime = NotificationRuntime()
-    telegram_task = None
-    try:
-        # Inside try: a failed initialization must still stop the scheduler and
-        # close the DB pool instead of leaking tasks from a half-started app.
+    async with AsyncExitStack() as cleanup:
+        close = getattr(db_repo, "close", None)
+        if callable(close):
+            cleanup.callback(close)
+        config_error = public_config_error()
+        if config_error:
+            raise RuntimeError(config_error)
+        if secret_is_ephemeral():
+            logger.warning(
+                "CG_SESSION_SECRET не задан: используется эфемерный секрет процесса. "
+                "Это допустимо только для локального режима; для CG_PUBLIC_DEMO=1 секрет обязателен."
+            )
+        cleanup.callback(scheduler.stop)
+        scheduler.start()
+        notifications_runtime = NotificationRuntime()
+        cleanup.push_async_callback(notifications_runtime.stop)
+        cleanup.push_async_callback(telegram_runtime.stop)
         await notifications_runtime.start()
         if os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
             telegram_task = asyncio.create_task(telegram_runtime.start(), name="telegram-start")
+
+            async def stop_telegram_start():
+                if not telegram_task.done():
+                    telegram_task.cancel()
+                await asyncio.gather(telegram_task, return_exceptions=True)
+
+            cleanup.push_async_callback(stop_telegram_start)
         yield
-    finally:
-        if telegram_task is not None and not telegram_task.done():
-            telegram_task.cancel()
-        if telegram_task is not None:
-            await asyncio.gather(telegram_task, return_exceptions=True)
-        await telegram_runtime.stop()
-        await notifications_runtime.stop()
-        scheduler.stop()
-        close = getattr(db_repo, "close", None)
-        if callable(close):
-            close()
 
 
 app = FastAPI(

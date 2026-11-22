@@ -28,7 +28,7 @@ backend.
 2. `python-wheels`: закреплённый Python 3.12 image, wheel-кэш по
    `deploy/requirements.txt`.
 3. `runtime`: установка только из локальных wheel, копирование `backend`,
-   `analyzers` (пакет B, без внешних Python-зависимостей), `db` (миграции
+   `analyzers`, `rag` (локальные Python-пакеты), `db` (миграции
    ledger), `docs` (canonical `contracts.schema.json`), `packages/comparison`,
    healthcheck, `frontend/dist`; non-root `nedra` (uid 10001), read-only rootfs,
    writable `/app/data` и tmpfs `/tmp`. Пакет `analyzers` копируется рядом с
@@ -58,7 +58,7 @@ manifest и SQLite fallback лежат на volume `nedra-app-data`, а не в 
 осознанная правка `deploy/requirements.txt` и digest'ов, а не `latest`.
 
 `deploy/requirements.txt` — deployment lock по смыслу
-`backend/requirements.txt` из `task/postgres-runtime`. Когда backend requirements
+`backend/requirements.txt`. Когда backend requirements
 меняются, lock нужно сверить.
 
 ## Секреты и окружение
@@ -107,7 +107,7 @@ sed -n 's/^\([A-Z_]*\)=.*/\1/p' ~/.config/nedra/runtime.env
 
 Ротация access code: удалить строку `CG_ACCESS_CODE` из файла и запустить
 `--write` (остальные секреты сохранятся), затем пересоздать backend.
-Ротация ключа: `--write --refresh-key`, затем `nedra-down.sh && nedra-up.sh`;
+Ротация ключа: `--write --refresh-key`, затем согласованное пересоздание только app;
 `podman restart` не перечитывает `--env-file`.
 
 ## Команды
@@ -161,94 +161,107 @@ volume. Порт 5432 не публикуется: backend ходит по `nedr
 `nedra`.
 
 `backend` при старте применяет `db/migrations/*.up.sql` через ledger
-`public.schema_migrations` (для этого `db/` теперь есть в образе). Проверено:
-001, 002 и 004 применились, `vector 0.8.7` доступен.
+`public.schema_migrations`; затем инициализирует runtime schema (в текущем
+исходнике v5). Это запись в БД уже при импорте `backend.app.main`: проверять
+импорт против production нельзя. История и checksum должны совпадать с каждым
+применённым SQL-файлом; старые миграции не переписываются.
 
 Optional `db/optional/003_exact_vector.up.sql` — зона PG worker, не backend и не
 deploy. Deploy не выполняет ручной SQL и не создаёт `example_embeddings` сам;
-`CREATE EXTENSION vector` уже идемпотентен, а 003 применится из ledger после
-изменения storage-владельцем.
+`CREATE EXTENSION vector` идемпотентен. `DB_ENABLE_VECTOR=1` включает
+optional 003/014/015; 015 содержит synthetic draft fixture, а не production
+выдачу. Режим и миграции проверяются отдельно на изолированной БД.
 
 ## Systemd user units (rootless)
 
 `scripts/nedra-systemd-install.sh` рендерит
-`~/.config/systemd/user/nedra-{db,app,tunnel}.service` из `deploy/systemd/*.in`,
+`~/.config/systemd/user/nedra-{db,app,telegram-proxy,tunnel}.service` из `deploy/systemd/*.in`,
 делает `daemon-reload`. Юниты вызывают те же скрипты; owner labels и volumes
 соблюдаются.
 
 ```bash
 scripts/nedra-systemd-install.sh            # установить, не включать
-scripts/nedra-systemd-install.sh --enable   # включить db/app на login/boot
+scripts/nedra-systemd-install.sh --enable   # включить db/app/proxy на login/boot
 scripts/nedra-systemd-install.sh --enable --start
 ```
 
-`nedra-tunnel.service` **не включается и не запускается** установщиком. Для
-старта без интерактивного логина нужен `loginctl enable-linger $USER`; это
+App unit имеет `Wants/After` для db и telegram-proxy. Установленные юниты могут
+отличаться от шаблонов: перед выкладкой нужно проверить `systemctl --user cat`
+для app. Установщик включает db/app/proxy, tunnel **не включает и не запускает**.
+`ExecStopPost` app вызывает безопасный stop и после неудачного `ExecStart`: иначе
+oneshot unit мог остаться failed при всё ещё работающем poller. Остановка
+контейнера ждёт 45 секунд (Telegram job grace — 15), затем Podman может послать
+SIGKILL; завершение всех прогонов этим не гарантируется.
+
+Для старта без интерактивного логина нужен `loginctl enable-linger $USER`; это
 глобальная настройка пользователя, поэтому она не включается автоматически.
 `podman-restart.service` сам по себе не поднимает rootless-контейнеры без
 user-manager/linger.
 
-## Cloudflare: опубликовано
+## Публичный вход и текущий релиз
 
-Публичный вход: **https://nedra.soloveyka.bond** (ingress только на
-`http://127.0.0.1:18080`, остальное — 404). Используется отдельный туннель
-`nedra` `7e72751b-bc39-4e7d-b0fc-6ef1e67e7a2b`; credentials
-`~/.cloudflared/7e72751b-....json` и config
-`~/.config/nedra/cloudflared-nedra.yml` имеют mode `600`.
+Конфигурация tunnel направляет `nedra.soloveyka.bond` целиком на
+`http://127.0.0.1:18080`; отдельный маршрут для `/miniapp` не требуется.
+Credentials и runtime.env не входят в git. Команды tunnel и systemd меняют
+окружение пользователя и выполняются только как отдельно разрешённая выкладка.
 
-Системный unit `nedra-tunnel.service` установлен из `integration-dev`, включён и
-active. DNS опубликован только для `nedra.soloveyka.bond`. Существующий туннель
-`brigada` (`e5999ace-...`), его config и root DNS не изменялись. `route` теперь
-вызывает `cloudflared tunnel route dns <tunnel-id> <hostname>` без
-`--overwrite-dns`, чтобы чужой route не перезаписывался.
+Записанные в старых handoff SHA, image ID и HTTP 200 — исторические наблюдения.
+Они не устанавливают, что запущено сейчас. Текущий релиз сверяют по полному
+`org.opencontainers.image.revision`, immutable image ID, manifest и фактическому
+состоянию DB; актуальные границы проверки — в
+[release handoff](RELEASE-HANDOFF.md).
 
-Фактическая доступность: туннель поднят по `http2` (precheck: QUIC PASS, TCP
-HTTP/2 PASS; в config выбран `http2` как primary). Внешние проверки:
-`GET /api/health` 200; `GET /api/runs` без cookie 401; `GET /api/session` без
-`Set-Cookie`; неверный код 401; верный код 200 с
-`Secure; HttpOnly; SameSite=Lax`; авторизованные runs/map/evidence и SQL proof
-200. Cloudflare может отдавать 403 на дефолтный `Python-urllib` User-Agent;
-браузерный/curl UA проходит, это не app-auth.
+## Воспроизводимый состав сборки
 
-PC-хост должен быть включён. `Linger=no`: после reboot db/app/tunnel поднимутся
-после входа пользователя (units enabled), либо нужно один раз выполнить
-`loginctl enable-linger $USER`. Туннель без PC/интернета недоступен.
+`scripts/nedra-build.sh` отказывается собирать изменённые tracked-файлы,
+извлекает `git archive` полного HEAD во временный каталог и использует только
+этот snapshot. Untracked/ignored файлы, локальные secrets и node_modules не
+попадают в контекст. Revision label содержит все 40 символов SHA. Сборка
+по-прежнему требует доступные base images и пакеты для `npm ci`/`pip wheel`;
+успешный frontend build отдельно не доказывает сборку образа.
 
-## Проверено реальной сборкой
+`/app/release-manifest.json` содержит SHA исходного коммита и SHA-256 файлов
+backend/analyzers/rag/db/docs/comparison, compiled frontend и deployment
+requirements/healthcheck. В Dockerfile проверка manifest выполняется также от
+uid 10001: приложение должно читать исходники даже при приватных host modes.
+Manifest фиксирует состав, но не заменяет проверку поведения. Прямой
+`podman build` требует `--build-arg NEDRA_REVISION=<полный SHA>`; предпочтителен
+проектный build script. После сборки зафиксируйте полный image ID из вывода;
+`nedra-up.sh` разрешает tag в ID один раз и запускает этот ID.
 
-Финальный релиз собран из `integration-dev` HEAD
-`9862e190dca20589d1e43ee9d42012a32c658929` (worktree только читался):
+## Смена релиза и восстановление
 
-- `localhost/nedra-app:local` = `9ad49c9d3749bb35b6da316eeba1cbe47c4074a36ff7bb7bfa2c8ea907c87cc2`,
-  revision label `9862e19`; Node `v22.23.5`, `db/`, `docs/`,
-  `analyzers/`, `packages/comparison`, healthcheck и `frontend/dist`.
-- Пересоздан только `nedra-app` (`--app-only --recreate-app`); volumes
-  `nedra-db-data` и `nedra-app-data` сохранены. Контейнер healthy,
-  `/api/health` 200.
-- Публичный HTTPS `https://nedra.soloveyka.bond`: неверный код 401, верный
-  код 200, logout возвращает gate; cookie Secure/HttpOnly.
-- История запусков и SSE: выбор `c8b41afe-...` показывает 39 событий именно
-  этого run; initial load тоже подключает историю.
-- Карта: default `3aadba14-...` — 33 узла/32 связи/39 evidence/6 находок;
-  Team B `cc781c1b-...` — 43 узла/32 связи/67 evidence/15 находок.
-- Node/edge detail открывает «МАСКИРОВАННЫЙ ИСХОДНИК» (`READY`,
-  `cg-redaction/1`); переключение run очищает выбранный evidence.
-- Comparison `c8b41afe` / `52efd83f`: SQL `pattern_disappeared`, общий
-  результат «Недостаточно доказательств» (`comparable=false`).
-- Report downloads 200: `official.json` 7805 B, `readable.md` 4906 B.
-- Schedule pause/resume на отдельном workflow `wf_29522fd3`: pause → `enabled=0`,
-  UI «На паузе», запись оставлена в истории; default `interval:60` возвращён в
-  active, default draft не менялся.
-- Failed run на отдельном workflow `wf_2b138ff0` (run
-  `cc0d556c-...`): `failed/inconclusive`, `/report` 404, UI показывает
-  «Отчёт не сформирован» без вечного loading.
-- CORS: `OPTIONS /api/schedules/{id}` 200, PATCH 200 и
-  `Access-Control-Allow-Origin: https://nedra.soloveyka.bond`, response
-  `enabled=0/1`. Missing run: `/nodes` и `/events` — 404 «Запуск не найден».
-- 1440×900 и 390×844: `scrollWidth` равен viewport, карта видна.
-  Fresh public console: только заблокированный Cloudflare beacon
-  (`ERR_BLOCKED_BY_CLIENT`), app errors 0.
-- Optional Team B: map 43/32/67, 15 findings; default engine остался `backend`.
+1. Подготовить чистый SHA и собрать полный образ; проверить revision, manifest,
+   Mini App assets и Python/Node зависимости в образе.
+2. На отдельной БД и app-data проверить startup, миграции свежей и исторической
+   схемы и restore защищённой резервной копии. Отклонённый запуск
+   `nedra-mini-integration-pg` не повторять и не обходить: эта часть требует
+   отдельного решения координатора.
+3. До остановки writer/poller проверить все token-enabled процессы и стенды.
+   Up отказывается запускать Telegram при другом работающем labelled NEDRA app
+   с `TELEGRAM_ENABLED=1/true/yes`; это локальная защита от ошибки, не общий lock.
+   Не запускайте второй `getUpdates` для проверки бота. Время между проверкой и
+   запуском не защищено distributed lock; cutover выполняет один оператор.
+4. Остановить все writers, записать старый SHA/image ID и metadata схемы,
+   сохранить согласованные DB custom dump + globals + app-data archive в
+   защищённое долговременное хранилище. `/tmp` не является таким хранилищем.
+   Проверить restore в изоляции до опоры на backup; один `pg_restore --list`
+   подтверждает читаемость TOC, но не восстановление.
+5. Сохранить старый контейнер/образ до cutover. `--recreate-app` удаляет старый
+   app container, а `down` ещё и DB container: это не безопасная release/rollback
+   процедура. Volumes остаются, но этого недостаточно для восстановления.
+6. Запустить единственный app/poller с reviewed image ID; проверить local
+   health, `/miniapp`, API/auth, schema version/checksum и доступность снаружи.
+   Health 200 не подтверждает команды/menu Telegram: startup публикует их
+   best-effort, это отдельное внешнее изменение.
+7. Image rollback допустим только при совместимых schema и форматах данных.
+   Старый runtime v3/v4 отвергает v5. При несовместимости нужен отдельный план
+   restore DB+app-data с учётом всех записей после cutover; backup перед restore
+   сохраняет и новое состояние. Автоматический downgrade схемы не обещается.
+
+В этом репозитории нет общей проверенной backup/restore/cutover автоматики.
+Подготовленные вне репозитория скрипты нельзя считать исполненными по факту
+чтения или Python compile. Любая выкладка остаётся отдельным действием.
 
 ## Cache после redeploy
 
@@ -261,13 +274,14 @@ SPA, `public, max-age=31536000, immutable` на существующие `/asset
 
 ## Ограничения
 
-- Локальный хост должен быть включён; после reboot db/app поднимутся через
-  systemd user manager (при linger) или после логина.
-- Сборка требует сеть для первого `podman build` (digest pull) и `npm ci`.
-- `CG_PUBLIC_DEMO=1` требует access code; без него backend не стартует. Код
-  хранится только в `runtime.env` и никогда не печатается.
-- Optional 003 — зона PG worker; deploy не выполняет его SQL.
-- Публичный образ `29b62158aed5` (HEAD dd6e541) содержит Node, comparison и
-  `analyzers`; optional `config.engine=team_b` проверен на отдельном workflow,
-  default engine остаётся `backend`.
-- Volumes удаляются только вручную и осознанно; скрипты этого не делают.
+- Хост должен быть включён; старт без входа пользователя требует отдельно
+  настроенного linger. Установщик сам linger не меняет.
+- Первый build требует загрузки base images/npm/wheels; lock без package hashes
+  фиксирует версии, но не удостоверяет байты артефактов из реестра.
+- `CG_PUBLIC_DEMO=1` требует session secret и access code. Секреты передаются
+  через env-file; существующий container не перечитывает его при restart.
+- Запуск использует read-only rootfs, volume `/app/data` и tmpfs `/tmp`.
+  Владение уже существующим volume uid 10001 требует отдельной проверки;
+  source chmod не исправляет чужие volume permissions.
+- Новый build, restore, запуск с PostgreSQL и реальная доставка Telegram в
+  аудите 2026-11-22 не выполнялись; подробности в отчёте release-аудита.

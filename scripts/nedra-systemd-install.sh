@@ -15,8 +15,8 @@ for arg in "$@"; do
       cat <<'USAGE'
 Usage: scripts/nedra-systemd-install.sh [--enable] [--start]
 
-Installs ~/.config/systemd/user/nedra-{db,app,tunnel}.service and runs daemon-reload.
-  --enable  enable nedra-db/app for login/boot (tunnel is never enabled here)
+Installs ~/.config/systemd/user/nedra-{db,app,telegram-proxy,tunnel}.service and runs daemon-reload.
+  --enable  enable db/app/telegram-proxy for login/boot (never the tunnel)
   --start   with --enable, start db and app units now
 Rootless boot persistence also needs: loginctl enable-linger $USER
 USAGE

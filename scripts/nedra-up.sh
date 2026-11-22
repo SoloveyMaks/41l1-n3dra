@@ -105,6 +105,24 @@ ensure_app() {
   desired_image=$(podman image inspect -f '{{.Id}}' "$NEDRA_IMAGE")
   config_hash=$(sha256sum "$NEDRA_RUNTIME_ENV" | awk '{print $1}')
 
+  local telegram_enabled
+  telegram_enabled=$(python3 -c 'import os; print(os.getenv("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"})')
+  if [ "$telegram_enabled" = True ]; then
+    local other_container other_enabled app_names
+    local -a app_containers
+    app_names=$(podman ps --filter label=io.nedra.component=app --format '{{.Names}}')
+    mapfile -t app_containers <<<"$app_names"
+    for other_container in "${app_containers[@]}"; do
+      [ -n "$other_container" ] || continue
+      [ "$other_container" = "$NEDRA_APP_CONTAINER" ] && continue
+      other_enabled=$(podman inspect --format '{{json .Config.Env}}' "$other_container" | python3 -c '
+import json, sys
+values = dict(item.split("=", 1) for item in json.load(sys.stdin) if "=" in item)
+print(values.get("TELEGRAM_ENABLED", "0").strip().lower() in {"1", "true", "yes"})')
+      [ "$other_enabled" != True ] || die "другой NEDRA app с включённым Telegram уже работает; сначала остановите его poller"
+    done
+  fi
+
   if container_exists "$NEDRA_APP_CONTAINER"; then
     require_owned_container "$NEDRA_APP_CONTAINER"
     current_image=$(podman inspect -f '{{.Image}}' "$NEDRA_APP_CONTAINER" 2>/dev/null || true)
@@ -114,12 +132,16 @@ ensure_app() {
     fi
   fi
 
+  if [ "$recreate" = "1" ] && container_running "$NEDRA_APP_CONTAINER" && [ "$RECREATE_APP" != "1" ]; then
+    die "env/config или образ изменились, но backend запущен; повторите с --recreate-app"
+  fi
+  if [ "$recreate" = "1" ] || ! container_exists "$NEDRA_APP_CONTAINER"; then
+    telegram_app_mount_args
+  fi
+
   if [ "$recreate" = "1" ]; then
     if container_running "$NEDRA_APP_CONTAINER"; then
-      if [ "$RECREATE_APP" != "1" ]; then
-        die "env/config или образ изменились, но backend запущен; выполните scripts/nedra-down.sh или повторите с --recreate-app"
-      fi
-      podman stop "$NEDRA_APP_CONTAINER" >/dev/null
+      podman stop --time 45 "$NEDRA_APP_CONTAINER" >/dev/null
       say "backend остановлен перед пересозданием"
     fi
     podman rm "$NEDRA_APP_CONTAINER" >/dev/null
@@ -132,13 +154,13 @@ ensure_app() {
     podman start "$NEDRA_APP_CONTAINER" >/dev/null
     say "backend перезапущен"
   else
-    telegram_app_mount_args
     podman run -d \
       --name "$NEDRA_APP_CONTAINER" \
       --hostname nedra-app \
       --network "$NEDRA_NETWORK" \
       --network-alias nedra-app \
       --restart=unless-stopped \
+      --stop-timeout 45 \
       --label io.nedra.owner=nedra \
       --label io.nedra.component=app \
       --label "io.nedra.config-sha256=${config_hash}" \
@@ -152,7 +174,7 @@ ensure_app() {
       --cap-drop=ALL \
       --security-opt no-new-privileges \
       --pids-limit 512 \
-      "$NEDRA_IMAGE" >/dev/null
+      "$desired_image" >/dev/null
     say "backend запущен на ${NEDRA_BACKEND_BIND}:${NEDRA_BACKEND_PORT} (только loopback)"
   fi
   wait_for_app_health 120

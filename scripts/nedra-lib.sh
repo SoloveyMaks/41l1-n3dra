@@ -94,7 +94,7 @@ load_runtime_env() {
   # No source/eval: the Python parser emits validated KEY NUL VALUE NUL pairs.
   pairs_tmp=$(mktemp "${TMPDIR:-/tmp}/nedra-pairs.XXXXXX")
   chmod 600 "$pairs_tmp"
-  if ! python3 "$NEDRA_REPO_ROOT/scripts/nedra_env.py" --source "$NEDRA_RUNTIME_ENV" --pairs >"$pairs_tmp"; then
+  if ! python3 "$NEDRA_REPO_ROOT/scripts/nedra_env.py" --source "$NEDRA_RUNTIME_ENV" --canonical --pairs >"$pairs_tmp"; then
     rm -- "$pairs_tmp" 2>/dev/null || true
     die "runtime.env не разобран"
   fi
@@ -145,7 +145,7 @@ wait_for_app_health() {
     fi
     if (( $(date +%s) - start >= timeout )); then
       podman logs --tail 50 "$NEDRA_APP_CONTAINER" >&2 || true
-      die "backend не ответил на /api/runs за ${timeout}s"
+      die "backend не ответил на /api/health за ${timeout}s"
     fi
     sleep 2
   done

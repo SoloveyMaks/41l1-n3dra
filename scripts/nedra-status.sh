@@ -24,6 +24,7 @@ if container_running "$NEDRA_APP_CONTAINER"; then
   done
   health=$(podman inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NEDRA_APP_CONTAINER" 2>/dev/null || printf missing)
   say "backend healthcheck: $health"
+  [ "$health" = "healthy" ] || fail=1
 else
   warn "backend $NEDRA_APP_CONTAINER не запущен"
   fail=1
@@ -32,6 +33,7 @@ fi
 if container_running "$NEDRA_DB_CONTAINER"; then
   health=$(podman inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NEDRA_DB_CONTAINER" 2>/dev/null || printf missing)
   say "БД healthcheck: $health"
+  [ "$health" = "healthy" ] || fail=1
   if podman exec "$NEDRA_DB_CONTAINER" pg_isready -U "$NEDRA_DB_USER" -d "$NEDRA_DB_NAME" >/dev/null 2>&1; then
     say "pg_isready: OK"
   else

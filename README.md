@@ -7,17 +7,20 @@
 
 ## Статус
 
-- Публичный стенд: https://nedra.soloveyka.bond. Опубликован код `bde900c`,
-  образ `dd25e853d469`, frontend `index-DabRgDEM.js`.
-- Восстановлена прежняя панель пользователя: вкладки, история, редактор,
-  палитра и инспектор. Свои сценарии создаются, сохраняются и запускаются.
-- Импорт публичного репозитория фиксирует точный коммит. Администратор
-  настраивает периодический опрос ветки и запуск при новом коммите.
-- Runtime PostgreSQL обновлён с v3 до v4 без сброса данных. Контрактные
-  миграции и persistent volumes сохранены; перед выкладкой сделан backup.
-- Независимые PostgreSQL/ASGI и UI-проверки закрыли найденные блокеры;
-  публичный API-путь импорт → свой сценарий → запуск → отчёт пройден.
-- Это проверенный прототип с ограничениями покрытия, не полный аудит.
+- Исходники включают пользовательский редактор, аккаунты/workspace,
+  GitHub/GitLab import/watch/hooks, Telegram и Mini App. Наличие кода не означает,
+  что весь путь проверен в текущем публичном образе.
+- Публичный адрес: https://nedra.soloveyka.bond. Текущие production SHA/image ID
+  нужно сверять на хосте; старые идентификаторы из handoff не являются текущим
+  статусом. Этот аудит ничего не выкладывает.
+- Runtime schema в исходнике — v5. Применённые исторические миграции сохраняют
+  checksum; запуск backend может обновить БД уже при импорте модуля.
+- Custom-check/sandbox runtime в этой базе отсутствует. Reference checks —
+  отдельный имеющийся модуль; наличие такого названия не означает изолированное
+  выполнение пользовательского кода.
+- [Release handoff](docs/RELEASE-HANDOFF.md) описывает оставшиеся проверки,
+  [release-аудит](docs/reviews/full-audit-release.md) — фактический охват.
+- Это прототип с ограничениями покрытия; production readiness не заявляется.
 
 ## Проверить проект
 
@@ -75,7 +78,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r backend/requirements.txt
 cp .env.example .env
 export DATABASE_URL=postgresql://user:password@127.0.0.1:5432/41l1_n3dra
-python -m backend.app.storage.migrate        # 001/002/004/005/006 (+003/014/015 при DB_ENABLE_VECTOR=1)
+python -m backend.app.storage.migrate        # ledger db/migrations; optional при DB_ENABLE_VECTOR=1
 uvicorn backend.app.main:app --env-file .env --port 8000
 ```
 
@@ -87,8 +90,8 @@ synthetic-векторами для проверки exact-механики; о�
 старт падает с понятной ошибкой, без DSN в тексте.
 
 ```bash
-python -X utf8 -m analyzers.selftest                      # 74 проверки
-python -X utf8 -m analyzers.compare <snapshot>             # 15/15, controls 6/6
+python -X utf8 -m analyzers.selftest
+python -X utf8 -m analyzers.compare <snapshot>
 python -X utf8 -m analyzers.contract_export <snapshot>/training-project \
     --db <snapshot>/vulnerability-database/vulnerabilities.json \
     --out analyzers/examples/bundle.json --rag-store .rag/store
@@ -96,8 +99,8 @@ node analyzers/validate_bundle.mjs analyzers/examples/bundle.json <snapshot>/tra
 ```
 
 `--rag-store` дополнительно индексирует выгрузку в файловое `rag/`: элементы
-получают id из содержания, поэтому второй прогон того же кода даёт
-`new: 0, reused: 148`. Это отдельный слой переиспользования, а не замена
+получают id из содержания и повторно используются при повторном импорте
+тех же данных. Это отдельный слой переиспользования, а не замена
 PostgreSQL-таблиц канонических фактов; ограничения — в
 [rag/README.md](rag/README.md).
 
@@ -111,7 +114,10 @@ cd frontend && npm ci && npm run build       # production build
 Локальная сессия: `POST /api/session` с `role: "user"` или `role: "admin"`.
 Админский вход требует отдельный `CG_ADMIN_ACCESS_CODE`; если он не задан или
 совпадает с пользовательским, `adminAvailable: false`. Публичный режим
-`CG_PUBLIC_DEMO=1` не выдаёт cookie сам.
+`CG_PUBLIC_DEMO=1` не выдаёт cookie сам. Для запуска установите стабильный
+`CG_SESSION_SECRET`; секреты не помещайте в команды или историю shell.
+`backend/requirements.txt` включает python-docx для DOCX-отчётов; в deployment
+версии всех зависимостей закреплены отдельно в `deploy/requirements.txt`.
 
 ## Инварианты
 
@@ -127,20 +133,21 @@ cd frontend && npm ci && npm run build       # production build
 - Общее сравнение остаётся `inconclusive`; SQL-проверка узкая
   (`source_pattern`). Синтетический источник никогда не даёт `comparable=true`.
 - AI-объяснения — отдельный слой и не меняют проблемы, покрытие и вердикт.
-  Векторные представления текста необязательны, retrieval выключен; сейчас недоступны (403),
-  проверенных примеров 0. Политика предметной области не подключена к
+  Векторные представления текста необязательны, retrieval по deployment
+  умолчанию выключен. Доступность провайдера проверяется отдельно для окружения.
+  Политика предметной области не подключена к
   канонической подписи; допущения не являются работающим ограничением.
-- Workspace общий: аккаунтов, списков доступа и приватных кабинетов нет.
-  Роль `user`/`admin` ограничивает операторские действия, а не изолирует данные.
+- Аккаунты получают отдельные workspace; demo-сессия использует общий env
+  workspace. Изоляция всех API требует отдельной живой проверки, наличие
+  ContextVar само по себе её не доказывает.
 
 ## Ограничения
 
-Shared workspace: аккаунтов и приватных кабинетов нет; роли `user`/`admin`
-ограничивают операторские действия. Хост — локальный ПК; `Linger=no`, после
-reboot нужен login. Покрытие частичное; embeddings 403/disabled, retrieval
-выключен; vetted-примеров 0. Общее сравнение `inconclusive`, SQL-проверка узкая.
-Неблокирующие visual-остатки — короткие edge labels, часть comparison-текста на
-390; конструктор на 390 не перепроверялся.
+Demo-сессии работают в общем env workspace; обычные аккаунты имеют отдельный
+workspace. Хост — локальный ПК; запуск после reboot зависит от user systemd
+manager и linger. Покрытие частичное; retrieval и embedding-провайдер зависят
+от окружения. Общее сравнение может оставаться `inconclusive`; SQL-проверка
+узкая. Исторические UI-ревью не заменяют проверку текущей версии.
 
 Полный security-аудит, «все функции проверены» и production readiness не
 заявляются. Полная сводка — в [release handoff](docs/RELEASE-HANDOFF.md).

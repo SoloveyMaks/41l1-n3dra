@@ -11,6 +11,7 @@ WorkingDirectory=@REPO@
 Environment=HOME=%h
 ExecStart=/bin/bash @REPO@/scripts/nedra-up.sh --app-only
 ExecStop=/bin/bash @REPO@/scripts/nedra-stop.sh --app
+ExecStopPost=/bin/bash @REPO@/scripts/nedra-stop.sh --app
 TimeoutStartSec=180
 TimeoutStopSec=60
 

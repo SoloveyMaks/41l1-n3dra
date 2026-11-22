@@ -299,6 +299,8 @@ run_write() {
     printf 'CG26_ADVISORY_DB=%s\n' "$team_b_db"
   } >>"$tmp"
 
+  python3 "$ENV_PY" --source "$tmp" --canonical --pairs >/dev/null \
+    || die "не удалось создать канонический runtime.env"
   chmod 600 "$tmp"
   mv -f "$tmp" "$NEDRA_RUNTIME_ENV"
   trap - EXIT
