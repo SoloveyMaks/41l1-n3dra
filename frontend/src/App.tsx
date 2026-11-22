@@ -1449,6 +1449,12 @@ export const App: React.FC = () => {
               aiScan={aiScan}
               aiItems={report?.run_id === currentRunId ? report.ai_items : []}
               aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
+              statusSurface={currentRun ? {
+                publicationStatus: currentRun.publicationStatus,
+                coverageStatus: currentRun.coverageStatus,
+                expectedScopesVerified: currentRun.expectedScopesVerified,
+                statusReasons: currentRun.statusReasons,
+              } : undefined}
               onOpenReport={() => setActiveTab('report')}
             />
           )}
@@ -1709,6 +1715,12 @@ export const App: React.FC = () => {
             aiScan={aiScan}
             aiItems={report?.run_id === currentRunId ? report.ai_items : []}
             aiStatus={report?.run_id === currentRunId ? report.ai_status : undefined}
+            statusSurface={currentRun ? {
+              publicationStatus: currentRun.publicationStatus,
+              coverageStatus: currentRun.coverageStatus,
+              expectedScopesVerified: currentRun.expectedScopesVerified,
+              statusReasons: currentRun.statusReasons,
+            } : undefined}
             onOpenReport={() => setAdminSection('report')}
           />
         );

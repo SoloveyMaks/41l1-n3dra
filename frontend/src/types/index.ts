@@ -589,6 +589,10 @@ export interface RunSummary {
   low_count: number;
   info_count: number;
   last_event_seq: number;
+  publicationStatus?: 'published' | 'unpublished' | 'unavailable';
+  coverageStatus?: 'complete' | 'partial' | 'unavailable';
+  expectedScopesVerified?: boolean;
+  statusReasons?: string[];
 }
 
 export interface RunRevisionResponse {

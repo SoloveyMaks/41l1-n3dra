@@ -18,8 +18,26 @@ interface FindingsViewProps {
   aiScan?: AiScanResult | null;
   aiItems?: Array<{ findingId: string; explanation: string; remediation: string; suggestedFixedVersion?: string }>;
   aiStatus?: string;
+  statusSurface?: {
+    publicationStatus?: string;
+    coverageStatus?: string;
+    expectedScopesVerified?: boolean;
+    statusReasons?: string[];
+  };
   onOpenReport?: () => void;
 }
+
+const PUBLICATION_LABEL: Record<string, string> = {
+  published: 'опубликован',
+  unpublished: 'не опубликован',
+  unavailable: 'неизвестна',
+};
+
+const COVERAGE_LABEL: Record<string, string> = {
+  complete: 'полное',
+  partial: 'частичное',
+  unavailable: 'недоступно',
+};
 
 const CONFIDENCE_LABEL: Record<string, string> = {
   confirmed: 'подтверждено',
@@ -27,7 +45,7 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   inconclusive: 'не подтверждено',
 };
 
-export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = null, runStatus, aiScan = null, aiItems = [], aiStatus, onOpenReport }) => {
+export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = null, runStatus, aiScan = null, aiItems = [], aiStatus, statusSurface, onOpenReport }) => {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [analyzerFilter, setAnalyzerFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -88,6 +106,15 @@ export const FindingsView: React.FC<FindingsViewProps> = ({ findings, runId = nu
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
               />
           </div>
+
+          {statusSurface && (
+            <p className="break-words text-[11px] text-slate-400" data-testid="run-status-surface">
+              Публикация: {PUBLICATION_LABEL[statusSurface.publicationStatus || 'unavailable'] || 'неизвестна'}
+              {' · '}Покрытие: {COVERAGE_LABEL[statusSurface.coverageStatus || 'unavailable'] || 'недоступно'}
+              {' · '}scopes {statusSurface.expectedScopesVerified ? 'подтверждены' : 'не подтверждены'}
+              {statusSurface.statusReasons?.length ? ` — ${statusSurface.statusReasons.join('; ')}` : ''}
+            </p>
+          )}
 
           <div className="flex flex-wrap items-center gap-2">
             {/* Analyzer filter buttons */}

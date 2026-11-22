@@ -557,7 +557,29 @@ def get_run(run_id: str):
     run = db_repo.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Запуск не найден")
-    return _strip_private_paths(run)
+    result = _strip_private_paths(run)
+    try:
+        facts = executor._canonical_coverage_facts(run_id)
+    except Exception:  # noqa: BLE001 - status surface must not break the run view
+        facts = None
+    if facts is not None:
+        details = facts.get("details") or {}
+        reasons: list[str] = []
+        if facts.get("reason"):
+            reasons.append(str(facts["reason"]))
+        skipped = list(details.get("skippedScopes") or [])
+        if skipped:
+            reasons.append("пропущены: " + ", ".join(str(item) for item in skipped))
+        result["publicationStatus"] = "published" if details.get("bundleHash") else "unpublished"
+        result["coverageStatus"] = details.get("coverageStatus") or "unavailable"
+        result["expectedScopesVerified"] = bool(details.get("expectedScopesVerified"))
+        result["statusReasons"] = reasons
+    else:
+        result["publicationStatus"] = "unavailable"
+        result["coverageStatus"] = "unavailable"
+        result["expectedScopesVerified"] = False
+        result["statusReasons"] = ["данные публикации и покрытия недоступны"]
+    return result
 
 
 @api_router.get("/runs/{run_id}/revision")
