@@ -1,6 +1,8 @@
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 from backend.app.api.session import require_workspace_actor, request_workspace
@@ -21,18 +23,36 @@ class NotificationSettings(BaseModel):
     allow_external: StrictBool = False
 
 
+class NotificationRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def secret_safe_handler(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                raise _invalid('Некорректные данные уведомления') from exc
+
+        return secret_safe_handler
+
+
 def _invalid(message: str) -> HTTPException:
     return HTTPException(422, message)
 
 
 def _check_structure(url: str) -> None:
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise _invalid('Некорректный URL приёмника')
     try:
         parts = urlsplit(url)
         host = (parts.hostname or '').strip()
+        port = parts.port
     except ValueError as exc:
         raise _invalid('Некорректный URL приёмника') from exc
     if parts.scheme not in {'http', 'https'} or not host:
         raise _invalid('Некорректный URL приёмника')
+    if port is not None and not 1 <= port <= 65535:
+        raise _invalid('Некорректный порт приёмника')
     if parts.query or parts.fragment:
         raise _invalid('Некорректный URL: query и fragment не поддерживаются')
     if parts.username or parts.password:
@@ -95,7 +115,7 @@ def _public_settings(row: dict) -> dict:
 
 
 def create_notification_router():
-    router = APIRouter(prefix='/notifications', tags=['notifications'])
+    router = APIRouter(prefix='/notifications', tags=['notifications'], route_class=NotificationRoute)
 
     @router.get('')
     def get_notifications(request: Request):

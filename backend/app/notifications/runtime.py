@@ -115,12 +115,31 @@ def deliver(row):
         )
 
 
+async def _run_in_thread(function, *args):
+    # A cancelled asyncio task cannot stop its thread. Keep ownership until the
+    # thread records its result, before the application closes the DB pool.
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()
+        raise
+
+
 class NotificationRuntime:
     def __init__(self):
         self.task = None
 
     async def start(self):
-        await asyncio.to_thread(store.initialize)
+        await _run_in_thread(store.initialize)
         self.task = asyncio.create_task(self._loop(), name='completion-notifications')
 
     async def stop(self):
@@ -133,9 +152,9 @@ class NotificationRuntime:
         while True:
             delay = 1
             try:
-                row = await asyncio.to_thread(store.claim)
+                row = await _run_in_thread(store.claim)
                 if row:
-                    await asyncio.to_thread(deliver, row)
+                    await _run_in_thread(deliver, row)
                     continue
             except asyncio.CancelledError:
                 raise

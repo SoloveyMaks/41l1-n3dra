@@ -1,7 +1,6 @@
 import hashlib
 import hmac
 import json
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
@@ -63,16 +62,17 @@ class WebhookNotifier:
                 extensions = {'sni_hostname': parts.hostname}
             with httpx.Client(timeout=self.timeout_sec, follow_redirects=False,
                               trust_env=False) as client:
-                resp = client.post(request_url, content=body_bytes, headers=headers,
-                                   extensions=extensions)
-                status_ok = resp.status_code in (200, 201, 202, 204)
+                with client.stream('POST', request_url, content=body_bytes, headers=headers,
+                                   extensions=extensions) as resp:
+                    code = resp.status_code
+                status_ok = 200 <= code < 300
                 return DeliveryResult(
                     channel="webhook",
                     status="succeeded" if status_ok else "failed",
                     target=target,
-                    status_code=resp.status_code,
+                    status_code=code,
                     message=("Уведомление успешно доставлено" if status_ok
-                             else f"Приёмник вернул HTTP {resp.status_code}"),
+                             else f"Приёмник вернул HTTP {code}"),
                     timestamp=datetime.now(timezone.utc).isoformat()
                 )
         except Exception as exc:  # noqa: BLE001 - delivery failure is a result

@@ -24,10 +24,9 @@ Only :func:`finish` (with ``authorized_at IS NOT NULL``) can record a send
 result; :func:`abort` handles policy/settings refusals before a request starts.
 """
 
-from pathlib import Path
 from uuid import UUID, uuid4
 
-from backend.app.storage.database import get_pool
+from backend.app.storage.database import get_pool, initialize_notification_schema
 
 MAX_DELIVERY_ATTEMPTS = 3
 DISPATCH_LOCK_NAMESPACE = 'nedra-completion-notifications-dispatch'
@@ -67,9 +66,7 @@ def _settings_row(conn, workspace) -> dict:
 
 
 def initialize():
-    with get_pool().connection() as conn:
-        conn.execute("SELECT pg_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))")
-        conn.execute(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
+    initialize_notification_schema()
 
 
 def settings(workspace):
@@ -138,6 +135,12 @@ def save_settings(workspace, value, *, webhook_url=None, expected_url=None):
                    WHERE workspace_id=%s AND authorized_at IS NULL
                      AND delivery_status IN ('pending','sending')""",
                 (reason, ws),
+            )
+            conn.execute(
+                """UPDATE runtime.completion_notifications SET retry_cancelled=true
+                   WHERE workspace_id=%s AND delivery_status='sending'
+                     AND authorized_at IS NOT NULL""",
+                (ws,),
             )
         return _settings_row(conn, ws)
 
@@ -216,8 +219,8 @@ def authorize(row, *, expected_url, allow_local, allow_external):
     with get_pool().connection() as conn:
         _lock_workspace(conn, ws)
         current = conn.execute(
-            """SELECT delivery_status,lease_token,attempts,
-                      (lease_until > now()) AS lease_valid
+            """SELECT delivery_status,lease_token,attempts,authorized_at,retry_cancelled,
+                      (lease_until > clock_timestamp()) AS lease_valid
                FROM runtime.completion_notifications
                WHERE workspace_id=%s AND run_id=%s FOR UPDATE""",
             (ws, row['run_id']),
@@ -227,8 +230,12 @@ def authorize(row, *, expected_url, allow_local, allow_external):
             or current['lease_token'] != row['lease_token']
             or current['delivery_status'] != 'sending'
             or not current['lease_valid']
+            or current['authorized_at'] is not None
         ):
             return {'action': 'lost'}
+        if current['retry_cancelled']:
+            _skip_locked(conn, row, 'Повтор отменён изменением настроек')
+            return {'action': 'skip', 'detail': 'Повтор отменён изменением настроек'}
         stored = _settings_row(conn, ws)
         if not stored['enabled']:
             _skip_locked(conn, row, 'Доставка выключена пользователем до отправки')
@@ -250,14 +257,17 @@ def authorize(row, *, expected_url, allow_local, allow_external):
                 (ws, row['run_id'], row['lease_token']),
             )
             return {'action': 'exhausted'}
-        conn.execute(
+        authorized = conn.execute(
             """UPDATE runtime.completion_notifications
                SET authorized_at=now(),attempts=attempts+1,detail='Отправка начата'
                WHERE workspace_id=%s AND run_id=%s AND lease_token=%s
-                 AND delivery_status='sending' AND authorized_at IS NULL""",
+                 AND delivery_status='sending' AND authorized_at IS NULL
+               RETURNING attempts""",
             (ws, row['run_id'], row['lease_token']),
-        )
-        return {'action': 'send', 'attempts': current['attempts'] + 1}
+        ).fetchone()
+        if authorized is None:
+            return {'action': 'lost'}
+        return {'action': 'send', 'attempts': authorized['attempts']}
 
 
 def _skip_locked(conn, row, detail):
@@ -289,6 +299,19 @@ def finish(row, status, detail, code=None, retry=False):
     can never turn a skipped/revoked row into ``delivered``.
     """
     with get_pool().connection() as conn:
+        _lock_workspace(conn, row['workspace_id'])
+        current = conn.execute(
+            """SELECT retry_cancelled FROM runtime.completion_notifications
+               WHERE workspace_id=%s AND run_id=%s AND lease_token=%s
+                 AND delivery_status='sending' AND authorized_at IS NOT NULL
+               FOR UPDATE""",
+            (row['workspace_id'], row['run_id'], row['lease_token']),
+        ).fetchone()
+        if current is None:
+            return
+        if retry and current['retry_cancelled']:
+            retry = False
+            detail = 'Отправка не подтверждена; повтор отменён изменением настроек'
         conn.execute(
             """UPDATE runtime.completion_notifications SET delivery_status=%s,detail=%s,
                status_code=%s,
