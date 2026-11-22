@@ -45,7 +45,7 @@ F2/F4/F6 исправлены в коде; F3/F8 readiness-контракт ре
 - Data `cbfc878` (`database.py`): `_notification_contract_ready` — catalog-only проверка marker row, `retry_cancelled boolean NOT NULL DEFAULT false` (через `pg_get_expr`), обоих триггеров; `_apply_notification_schema` при ready возвращается без DDL и без advisory wait.
 - Если не ready: `_wait_notification_ddl_lock` — `pg_try_advisory_xact_lock(hashtext('nedra-completion-notifications-v1'))`, 50 попыток по 0.1 s (5 s), затем `DatabaseUnavailable`; после lock — повторный readiness check, `SET LOCAL lock_timeout='5s'`, scripts один раз, verify, иначе fail-closed.
 - `store.initialize()` только вызывает helper; своего DDL/installer в notifications нет. `init_db` + `store.initialize` на готовой схеме не делают DDL.
-- Согласовано с актуальным data owner `ctx_b9e273e2ca13` (прежний `ctx_95b2bdfd615c` завершён) через orchestration; подтверждение `msg_2696833173a2`; точные константы — в `cbfc878`.
+- Контракт заморожен data owner (актуальный `ctx_22bb99599480`; сообщение `msg_3f94b3209a82`): marker row, default false и оба триггера проверяются до DDL; ready -> без DDL/advisory, not ready -> bounded trylock 50×0.1 s, base+guard один раз, `lock_timeout=5s`, verify. Точные константы — в `cbfc878`/HEAD `9efe14e`.
 - Доказательство: **по исходникам/коммиту**; PostgreSQL не запускался. Residual: первый install при работающем старом инстансе всё ещё может дать deadlock victim/abort; `lock_timeout=5s` и trylock ограничивают ожидание, но конкурентный сценарий требует PG-теста. Нормальный ready startup DDL не выполняет.
 
 ### F4 — FIXED FAIL-CLOSED (source-only)
