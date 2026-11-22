@@ -11,6 +11,7 @@ import { FindingsView } from './components/FindingsView';
 import { ReportView } from './components/ReportView';
 import { SecurityMapScreen } from './components/SecurityMapScreen';
 import { UploadModal } from './components/UploadModal';
+import { WorkflowLibraryModal } from './components/WorkflowLibraryModal';
 import { ScheduleModal } from './components/ScheduleModal';
 import { AiTrustModal } from './components/AiTrustModal';
 import { AccessGate } from './components/AccessGate';
@@ -155,6 +156,7 @@ export const App: React.FC = () => {
 
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [isAiTestOpen, setIsAiTestOpen] = useState(false);
   const [isScenarioOpen, setIsScenarioOpen] = useState(false);
   const [isCustomCheckOpen, setIsCustomCheckOpen] = useState(false);
@@ -1362,6 +1364,7 @@ export const App: React.FC = () => {
           onOpenUpload={() => setIsUploadOpen(true)}
           onTriggerRun={() => void handleTriggerRun(false, true)}
           onOpenAiTest={() => setIsAiTestOpen(true)}
+          onOpenLibrary={() => setIsLibraryOpen(true)}
           isRunning={isRunning}
           latestVerdict={currentRun?.security_verdict}
           findingsCount={findings.length}
@@ -1520,6 +1523,12 @@ export const App: React.FC = () => {
           onClose={() => setIsUploadOpen(false)}
           onArtifactLoaded={handleArtifactLoaded}
           showTraining={false}
+        />
+        <WorkflowLibraryModal
+          open={isLibraryOpen}
+          workflowId={workflowId}
+          onClose={() => setIsLibraryOpen(false)}
+          onCopied={(copiedId) => void handleSelectWorkflow(copiedId)}
         />
         <CustomCheckModal
           key={`${session?.workspaceId}-${workflowId}`}
@@ -1792,6 +1801,12 @@ export const App: React.FC = () => {
         onClose={() => setIsUploadOpen(false)}
         onArtifactLoaded={handleArtifactLoaded}
         showTraining
+      />
+      <WorkflowLibraryModal
+        open={isLibraryOpen}
+        workflowId={workflowId}
+        onClose={() => setIsLibraryOpen(false)}
+        onCopied={(copiedId) => void handleSelectWorkflow(copiedId)}
       />
       <CustomCheckModal
         key={`${session?.workspaceId}-${workflowId}`}

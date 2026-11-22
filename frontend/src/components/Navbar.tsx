@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   Play, Upload, Clock, FileText, Bug,
-  Sparkles, Layers, Network, GitCompare, LogOut, User, Settings
+  Sparkles, Layers, Network, GitCompare, LogOut, User, Settings, Library
 } from 'lucide-react';
 import { AppTab, SecurityVerdict, SessionMode, SessionUser } from '../types';
 
@@ -11,6 +11,7 @@ interface NavbarProps {
   onOpenUpload: () => void;
   onTriggerRun: () => void;
   onOpenAiTest: () => void;
+  onOpenLibrary?: () => void;
   isRunning: boolean;
   latestVerdict?: SecurityVerdict;
   findingsCount?: number;
@@ -38,6 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenUpload,
   onTriggerRun,
   onOpenAiTest,
+  onOpenLibrary,
   isRunning,
   latestVerdict,
   findingsCount,
@@ -126,6 +128,19 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         <div className="order-2 ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2 min-[1920px]:order-none min-[1920px]:flex-nowrap">
+          {onOpenLibrary && (
+            <button
+              type="button"
+              onClick={onOpenLibrary}
+              className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-indigo-800/80 bg-indigo-950/50 px-2.5 text-xs font-medium text-indigo-200 transition hover:bg-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 sm:px-3"
+              title="Библиотека опубликованных шаблонов"
+              aria-label="Библиотека шаблонов"
+            >
+              <Library size={14} />
+              <span className="hidden lg:inline">Шаблоны</span>
+            </button>
+          )}
+
           {isAdmin && (
             <button
               type="button"
