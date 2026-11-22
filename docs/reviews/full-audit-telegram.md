@@ -15,6 +15,12 @@
   - `b46823b` — чтение `telegram.settings` только в поколении владельца;
   - `12457fc` — тесты: ожидаемый n2, подписанный legacy n1, scoped
     `get_settings` в in-memory фикстуре.
+  - `a6ed0de` — основной отчёт и контракт.
+- Cross-contract follow-up (read-only, без правок чужого кода):
+  - MiniAPI `4371b7116ab9c25585d819c5478bc3f2865806b4` — token v2 и scoped
+    `get_settings` (проверенный код `0c4488afc3307bca1035e20bb6861bc4fb39fa5a`);
+  - data `9efe14e09ff56af694f468f2e765e72ce934b866` — migration 016 durable
+    binding generation и postcondition в migration runner.
 - Владею: `backend/app/telegram/` кроме `miniapp.py`, `miniapp_auth.py`,
   `report.py`; `backend/app/storage/telegram.py`; разрешённая правка
   `backend/tests/test_telegram_buttons.py`.
@@ -179,6 +185,23 @@ COMPILE_OK
 размеры `42/52/43/42` байта для максимального epoch, отказ подписанного n1 и
 `ValueError` для `2^63`/`-1`.
 
+Read-only cross-contract проба (файлы целевых коммитов через `git show`,
+локальная сигнатура storage, без БД):
+
+```text
+$ /tmp/nedra-venv/bin/python /tmp/nedra-audit-telegram/cross-contract.py
+26/26 cross-contract checks passed
+local HEAD a6ed0de; MiniAPI 4371b71; data 9efe14e
+```
+
+Проверено: MiniAPI `TOKEN_PREFIX="v2"`, payload `v=2`, отказ не-v2 до
+payload, `ep = binding_epoch`, сравнение user/workspace/epoch в
+`authorize`/`assert_live`, оба `get_settings` через AST передают полную
+тройку; 016 создаёт `telegram.binding_epoch_seq` с bigint/MAXVALUE/NO CYCLE,
+берёт advisory `741205917` и seed выше persisted max; runner содержит
+postcondition 016; обе ветки не меняют мои Telegram-файлы. Тесты 95/95 в этом
+follow-up не перезапускались: production-код не менялся, проверка статическая.
+
 Доступного PostgreSQL в окружении нет: `initdb`, `pg_ctl`, `postgres`, `psql`
 и `/usr/lib/postgresql` отсутствуют. Запуск `podman start
 nedra-mini-integration-pg` ранее был отклонён approval-слоем; эта команда не
@@ -187,26 +210,29 @@ disabled/unbind сценарий остаются непроверенными.
 
 ## Контракт с miniapi (`miniapp_auth.py`, владелец miniapi)
 
-Требуемый интерфейс, уже реализованный в storage:
+Проверено read-only на `4371b71`; контракт совпадает с моим storage.
 
 1. Источник поколения — `telegram.binding_epoch_seq` (`bigint`, increment 1,
    NO CYCLE, seed выше максимума `bindings/jobs/outbox`). `delete/recreate`
    получает новое значение; sequence не удаляется вместе с binding.
-2. Токен v2 должен нести это поколение как `ep`; `authorize`/`assert_live`
-   обязаны заново читать активный binding и `account.users` и сверять
-   `chat_id/user_id/workspace_id/binding_epoch`. Кэшировать identity между
-   запросами нельзя — иначе unbind снова не отзовёт bearer.
-3. `get_settings` вызывать только с полной тройкой
-   `user_id/workspace_id/binding_epoch`; `set_settings` уже требует её и
-   бросает `SettingsOwnershipLost`. В `miniapp.py:390` и `:460` пока остались
-   чтения `get_settings(identity.chat_id)` без идентичности — это остаточная
-   гонка чтения настроек при rebind, её должен закрыть владелец miniapi.
-4. v1-токены отклоняются вместе с n1-кнопками; старые клиенты должны получить
-   свежий auth и обновлённое меню.
-5. Фактическое состояние ветки miniapi на момент аудита (`69beddd`): токен всё
-   ещё `v1`, оба `get_settings` без идентичности. До cutover владельцу miniapi
-   нужно выпустить v2 и scoped-чтения; иначе отзыв старых bearer после
-   delete/recreate не гарантирован.
+2. Токен v2: `TOKEN_PREFIX="v2"`, payload `v=2`, домен секрета
+   `nedra-miniapp-token-v2`. Не-v2 префикс отклоняется до чтения payload,
+   поэтому v1 не проходит и при том же bot token. `ep` — это
+   `binding_epoch`; `authorize`/`assert_live` заново читают активный binding и
+   `account.users` и сверяют `chat_id/user_id/workspace_id/binding_epoch`.
+3. `get_settings` вызывается только с полной тройкой
+   `user_id/workspace_id/binding_epoch` (bootstrap и `/runs`), `set_settings`
+   — тоже. Это точно соответствует сигнатуре
+   `TelegramRepository.get_settings/set_settings`.
+4. `n2` callbacks и `v2` bearer — независимые форматы, но оба используют одно
+   поколение: старые n1-кнопки и v1-токены отклоняются по версии, а старые
+   n2/v2 с прошлым epoch — по несовпадению с текущим binding.
+5. **Обязательная зависимость merge.** Ветка MiniAPI основана на
+   `dev 35d27d3`, где `get_settings(self, chat_id)` не принимает kwargs. Без
+   моих storage-коммитов `31ef9cb`/`b46823b` scoped-вызовы MiniAPI падают с
+   `TypeError`; файлы не пересекаются, поэтому мержить нужно обе стороны.
+   После merge scoped-чтение при rebind возвращает дефолты, а финальный
+   `assert_live`/401 закрывает запрос.
 
 Callback-контракт: `n2.<action>[.<arg>].<epoch>.<12 hex>`,
 HMAC-SHA256 по `<body>|<user_id>|<chat_id>` с ключом из bot token, только
@@ -214,26 +240,47 @@ HMAC-SHA256 по `<body>|<user_id>|<chat_id>` с ключом из bot token, т
 
 ## Зависимость от данных и открытые блокеры
 
-- **013 отсутствует в этой ветке.** Код storage использует
-  `telegram.binding_epoch_seq`, но forward-миграция
-  `013_telegram_binding_generation.up.sql` создана владельцем данных
-  (`5c3ca78`, ветка `SoloveyMaks/audit-all-data-1122`). Без неё привязка
-  останавливается (`nextval` падает), fallback на 1 намеренно нет. Интеграция
-  обязана включить 013 с seed выше persisted max, `NO CYCLE`, advisory lock
-  `741205917`; в этом checkout миграция не добавлялась, чтобы не дублировать
-  чужой файл.
-- **Реальный PostgreSQL acceptance pending.** Не проверены: sequence на
-  legacy/fresh БД, delete/recreate старого token/callback, `disabled_at` через
-  реальные handlers, конкурентный bind/unbind. Это блокер окружения, не
-  зелёный статус.
+- **016 отсутствует в этой ветке; 013 занят.** Код storage использует
+  `telegram.binding_epoch_seq`, но forward-миграция —
+  `016_telegram_binding_generation.up.sql` владельца данных `9efe14e`
+  (ветка `SoloveyMaks/audit-all-data-1122`). `013` закреплён за
+  `013_custom_checks.up.sql` в более новой `main 98c276e`, поэтому
+  интеграция обязана взять 016, а не 013. Без 016 привязка останавливается
+  (`nextval` падает); fallback на 1 намеренно нет.
+- **Точный контракт 016 (совпадает с storage).** Sequence
+  `telegram.binding_epoch_seq`: `bigint`, increment 1, min 1, max
+  `9223372036854775807`, cache 1, `NO CYCLE`. Seed:
+  `greatest(persisted_max+1, last_value+is_called)` по
+  `bindings/jobs/outbox`, затем transactional `RESTART`; исчерпание bigint
+  останавливает миграцию. Advisory lock `741205917` тот же, что берут
+  issue/consume/unbind/move в `storage/telegram.py`. Sentinel
+  `telegram.binding_epoch_sequence_v1()` возвращает `016`.
+- **Нужен не только SQL-файл.** Data-ветка меняет
+  `backend/app/storage/migrate.py`: `POSTCONDITIONS["016..."]` и
+  `_check_postcondition`, которые проверяют sentinel и параметры sequence
+  даже при совпавшем ledger checksum. Интеграция без этого runner-кода
+  принимает неполную схему.
+- **Порядок/состав merge.** `main 98c276e` (013 custom checks) + мой Telegram
+  `a6ed0de` + data `9efe14e` (016/runner) + MiniAPI `4371b71` (v2/scoped).
+  Read-only проба подтвердила, что MiniAPI и data не меняют мои Telegram-файлы;
+  обе ветки основаны на `dev 35d27d3`, поэтому их scoped/sequence-код без
+  моего storage не работает.
+- **Тест MiniAPI устарел (вне моей области).**
+  `backend/tests/test_telegram_miniapp.py` на `4371b71` всё ещё подписывает
+  `_sign_claims` как `v1` и ставит `TELEGRAM_ENABLED="0"` в HTTP-классе. После
+  merge v2 и обязательной проверки enabled эти кейсы получат
+  `401 INVALID_TOKEN`/`503 TELEGRAM_MINIAPP_UNAVAILABLE`; файл должен обновить
+  владелец MiniAPI. В моём scope тест не менялся.
+- **Реальный PostgreSQL acceptance pending.** Не проверены: применение 016 на
+  fresh/legacy БД, seed/NO CYCLE, delete/recreate старого v2-token и n2-callback,
+  `disabled_at` через реальные handlers, конкурентный bind/unbind. Это блокер
+  окружения, не зелёный статус.
 - **Реальный Telegram transport не запускался** (нет credentials и запрещены
   внешние side effects); проверены только recording transport и чистые
   payload-функции.
-- **Остаточная гонка в `miniapp.py`**: unscoped `get_settings` (см. контракт);
-  вне моих файлов.
 - **FK `ON DELETE CASCADE`**: unbind удаляет binding, а с ним jobs/outbox
   history этого chat; run/report в `runtime` не удаляются. Это модель «одного
   активного chat», не регрессия текущей задачи.
-- `docs/telegram-rebind.md` и `docs/telegram-miniapp.md` описывают старую
-  модель (`epoch = old+1`, token `v1`); их должен обновить владелец
-  документации/miniapi.
+- `docs/telegram-rebind.md` описывает старую модель (`epoch = old+1`);
+  `docs/telegram-miniapp.md` уже обновлён MiniAPI до v2/scoped в `4371b71`.
+  Старую документ-модель должен обновить владелец документации.
