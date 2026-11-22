@@ -77,6 +77,59 @@ def load_published_envelope(workspace: str, run_id: str, run_row: Dict[str, Any]
     return envelope
 
 
+CROSS_REPOSITORY_REASON = (
+    "Разные репозитории: сравнение показывает различия между проектами, "
+    "а не исправление или появление находки"
+)
+
+
+def _repository_identity(run: Dict[str, Any], store: CodeFactsStore, workspace: str) -> str | None:
+    artifact_id = str(run.get("artifact_id") or "")
+    if not artifact_id:
+        return None
+    meta = store.load_artifact_meta(workspace, artifact_id) or {}
+    repository = meta.get("repository") or {}
+    url = repository.get("url") if isinstance(repository, dict) else None
+    if not isinstance(url, str) or not url.strip():
+        return None
+    return url.strip().rstrip("/").lower()
+
+
+def apply_cross_repository(
+    result: Dict[str, Any],
+    baseline_repository: str | None,
+    current_repository: str | None,
+) -> Dict[str, Any]:
+    """Two known, different repositories are a project diff, not a fix.
+
+    A ZIP upload has no repository identity. Its before/after artifacts differ
+    by hash and must keep normal comparison semantics, so only explicit
+    repository metadata can trigger this mode.
+    """
+    if (
+        not baseline_repository
+        or not current_repository
+        or baseline_repository == current_repository
+    ):
+        return result
+    result["comparable"] = False
+    result["reasons"] = [CROSS_REPOSITORY_REASON, *result.get("reasons", [])]
+    result["deletedFiles"] = []
+    for item in result.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") not in {"resolved", "introduced", "file_deleted"}:
+            continue
+        previous = item.get("reason")
+        item["status"] = "inconclusive"
+        item["reason"] = (
+            CROSS_REPOSITORY_REASON
+            if not previous
+            else f"{CROSS_REPOSITORY_REASON}; {previous}"
+        )
+    return result
+
+
 def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_id: str,
                            baseline_run: Dict[str, Any], current_run: Dict[str, Any],
                            store: Optional[CodeFactsStore] = None) -> Dict[str, Any]:
@@ -136,6 +189,11 @@ def compare_published_runs(*, workspace: str, baseline_run_id: str, current_run_
     }
     if not isinstance(result, dict) or not required.issubset(result):
         raise ComparisonError(502, "COMPARISON_BAD_OUTPUT", "compare-cli вернул неполный ComparisonDto")
+    result = apply_cross_repository(
+        result,
+        _repository_identity(baseline_run, store, workspace),
+        _repository_identity(current_run, store, workspace),
+    )
     try:
         from backend.app.storage.comparisons import ComparisonConflictError, ComparisonStore  # type: ignore
     except ModuleNotFoundError:

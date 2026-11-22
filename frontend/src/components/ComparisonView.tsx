@@ -149,6 +149,7 @@ const missingContextNote = (
 };
 
 const humanReason = (reason: string): string => {
+  if (/Разные репозитории/i.test(reason)) return 'Сравниваются разные репозитории: это различия между проектами, а не исправление.';
   if (/Различаются статические версии\/hashes/i.test(reason)) return 'Разные версии проверок или их настроек.';
   if (/Нужны published envelopes/i.test(reason)) return 'Снимки опубликованы не полностью — сопоставимость не подтверждена.';
   if (/Различаются версии нормализации/i.test(reason)) return 'Разные версии нормализации находок.';
