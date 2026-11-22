@@ -17,6 +17,7 @@ from backend.app.ai.provider import (
     effective_route,
     json_mode_enabled,
     mask_sensitive_text,
+    new_session_id,
     resolve_provider_config,
 )
 from backend.app.ai.scan_prompt import PROMPT_VERSION, SYSTEM_PROMPT
@@ -157,6 +158,8 @@ class AiScanService:
         workspace: Optional[str] = None,
     ) -> AiScanResult:
         limits = resolve_limits(config)
+        # Stable for this run/artifact logical scan, including repeated attempts.
+        ai_session = new_session_id("ai-scan", str(run_id), str(artifact_id))
         # Resolve per execution (ContextVar-compatible); never cache workspace on self.
         workspace = workspace or workspace_id()
         coverage = AiScanCoverage(
@@ -239,6 +242,7 @@ class AiScanService:
                 SYSTEM_PROMPT,
                 payload,
                 max_tokens=min(4096, self.provider_config.max_tokens),
+                session_id=ai_session,
             )
         except AiProviderError as exc:
             reason = mask_sensitive_text(str(exc))[:300]

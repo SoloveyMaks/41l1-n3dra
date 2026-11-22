@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import time
 import urllib.error
 import urllib.parse
@@ -54,6 +55,8 @@ REFORMBOSS_PROVIDER = "reformboss"
 REFORMBOSS_BASE_URL = "https://api.reformboss.com/v1"
 REFORMBOSS_DEFAULT_MODEL = "deepseek-v4.1-flash-1017"
 LOCAL_PROVIDER = "openai-compatible"
+NEDRA_USER_AGENT = "NEDRA/0.1 (+https://nedra.soloveyka.bond)"
+OPENCODE_SESSION_HEADER = "x-opencode-session"
 AGENT_ENV_FILE = Path.home() / ".omp" / "agent" / ".env"
 
 _SECRET_PATTERNS = (
@@ -179,6 +182,20 @@ def _read_agent_env_value(name: str) -> str:
 
 def _provider_alias(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+
+
+def new_session_id(scope: str = "ai", *parts: str) -> str:
+    """Return an opaque stable session id for one logical AI operation.
+
+    Callers create it once and pass it to every batch/retry of that operation.
+    Stable parts (for example a run UUID) are hashed; no user identity or
+    credential is put into the header. With no parts the id is random.
+    """
+    safe_scope = _provider_alias(scope) or "ai"
+    if parts:
+        digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
+        return f"nedra-{safe_scope}-{digest}"
+    return f"nedra-{safe_scope}-{secrets.token_hex(12)}"
 
 
 def _model_override() -> str:
@@ -315,10 +332,14 @@ def complete_json(
     system_prompt: str,
     user_payload: Dict[str, Any],
     max_tokens: Optional[int] = None,
+    *,
+    session_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], AiProvenance]:
     """Call /chat/completions and return parsed JSON plus provenance.
 
-    Raises AiProviderError with a sanitized message on any failure.
+    Go requests carry NEDRA's own User-Agent and a stable opaque
+    x-opencode-session header. Callers should create one session_id per
+    logical operation and reuse it for all batches/retries.
     """
     request_body = {
         "model": config.model,
@@ -336,14 +357,19 @@ def complete_json(
         request_body["response_format"] = {"type": "json_object"}
 
     body = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
+    session = session_id or new_session_id("ai")
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": NEDRA_USER_AGENT,
+    }
+    if config.provider == OPENCODE_GO_PROVIDER:
+        headers[OPENCODE_SESSION_HEADER] = session
     request = urllib.request.Request(
         f"{config.base_url}/chat/completions",
         data=body,
-        headers={
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
 

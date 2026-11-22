@@ -5,6 +5,7 @@ from backend.app.ai.provider import (
     AiProviderError,
     complete_json,
     mask_sensitive_text,
+    new_session_id,
     resolve_provider_config,
 )
 from backend.app.ai.validator import AiResponseValidator
@@ -45,7 +46,8 @@ class AiService:
         except ValueError:
             self.batch_size = 4
 
-    def explain_findings(self, findings: List[Finding], force_fallback: bool = False) -> ExplainResult:
+    def explain_findings(self, findings: List[Finding], force_fallback: bool = False,
+                         *, session_id: Optional[str] = None) -> ExplainResult:
         """
         Main AI entry point:
         1. Formats masked findings context (no full repo, no raw secrets).
@@ -80,9 +82,11 @@ class AiService:
             )
             return self._attach_retrieval(result, findings, execute=True)
 
-        return self._explain_with_batches(findings)
+        return self._explain_with_batches(
+            findings, session_id or new_session_id("explain"),
+        )
 
-    def _explain_with_batches(self, findings: List[Finding]) -> ExplainResult:
+    def _explain_with_batches(self, findings: List[Finding], session_id: str) -> ExplainResult:
         """Explain findings in bounded batches; a failed batch becomes explicit fallback."""
         batches = [
             findings[index:index + self.batch_size]
@@ -101,6 +105,7 @@ class AiService:
                 generated_data, provenance = self._generate_ai_json(
                     batch,
                     max_tokens=self._batch_max_tokens(len(batch)),
+                    session_id=session_id,
                 )
                 structural_errors = self.validator.validate_json_shape(generated_data)
                 if structural_errors:
@@ -268,12 +273,17 @@ class AiService:
         self,
         findings: List[Finding],
         max_tokens: Optional[int] = None,
+        *,
+        session_id: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], AiProvenance]:
         """Call the configured OpenAI-compatible provider with masked context."""
         if not self.provider_config:
             raise AiProviderError("provider is not configured")
         payload = self._build_masked_payload(findings)
-        return complete_json(self.provider_config, SYSTEM_PROMPT, payload, max_tokens=max_tokens)
+        return complete_json(
+            self.provider_config, SYSTEM_PROMPT, payload,
+            max_tokens=max_tokens, session_id=session_id,
+        )
 
     def _batch_max_tokens(self, count: int) -> int:
         """Bounded per-batch output budget, never unlimited."""

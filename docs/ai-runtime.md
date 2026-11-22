@@ -42,8 +42,16 @@ local/proxy override сохраняются. Явный `AI_PROVIDER=reformboss`
 Legacy-совместимость: если `REFORMBOSS_API_KEY` нет в процессе, старое
 значение всё ещё читается из `~/.omp/agent/.env`; Go и local ключи читаются
 только из окружения. Продукт не открывает внешнюю credential DB. Ключ не
-попадает в argv, логи, provenance или отчёт. Нет выбранного ключа →
-`status=fallback`, `provenance.fallback_reason=provider_not_configured`.
+попадает в argv, логи, provenance или отчёт.
+
+Go-запросы используют собственный `User-Agent` продукта
+`NEDRA/0.1 (+https://nedra.soloveyka.bond)` и штатный
+`x-opencode-session` — непрозрачный стабильный id логической AI-операции
+(одинаковый для батчей/повторных попыток, без user identity и секретов).
+Legacy и local запросы получают только продуктовый `User-Agent`.
+
+Нет выбранного ключа → `status=fallback`,
+`provenance.fallback_reason=provider_not_configured`.
 
 ## Что проверяется
 

@@ -15,6 +15,7 @@ from backend.app.ai.provider import (
     ProviderConfig,
     complete_json,
     mask_sensitive_text,
+    new_session_id,
     resolve_provider_config,
 )
 from backend.app.contracts.node_registry import NODE_REGISTRY
@@ -342,6 +343,7 @@ class ScenarioBuilderService:
                 SYSTEM_PROMPT,
                 {"task": "plan_workflow", "prompt": masked},
                 max_tokens=512,
+                session_id=new_session_id("scenario", masked),
             )
         except AiProviderError as exc:
             # Provider text is already sanitized by the AI layer; never expose it
