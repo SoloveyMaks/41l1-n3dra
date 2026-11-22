@@ -720,7 +720,21 @@ def build_jsonc(bundle: ExportBundle) -> bytes:
         "technicalProvenance": bundle.technical,
         "limitations": limitations,
     }
-    return json.dumps(document, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    status_label = _STATUS_LABELS.get(str(run.get("execution_status")), str(run.get("execution_status") or ""))
+    verdict_label = _VERDICT_LABELS.get(str(run.get("security_verdict")), str(run.get("security_verdict") or ""))
+    header = [
+        "// NEDRA — человекочитаемый экспорт проверки (JSONC).",
+        f"// Запуск: {run.get('id')} · сценарий: {bundle.workflow_name} · ревизия: {run.get('revision_id')}",
+        f"// Статус: {status_label} · вердикт: {verdict_label} · находок: {len(bundle.findings)}.",
+        "// Проверено собственными SECRET/SCA/SAST по сохранённому снимку; AI-гипотезы в счётчики не входят.",
+        *[
+            "// Ограничение: " + " ".join(_sanitize_text(str(item)).split())
+            for item in limitations
+        ],
+        "// Ниже — те же данные, что в official.json; комментарии не являются находками.",
+    ]
+    body = json.dumps(document, ensure_ascii=False, indent=2, default=str)
+    return ("\n".join(header) + "\n" + body + "\n").encode("utf-8")
 
 
 def build_markdown(bundle: ExportBundle) -> str:
