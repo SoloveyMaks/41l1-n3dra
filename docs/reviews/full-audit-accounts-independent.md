@@ -1,8 +1,11 @@
 # Независимое ревью: accounts / API / artifacts (второй пакет)
 
 Дата: 2026-11-22. Worktree: `audit-review-accounts-1122`, ветка
-`SoloveyMaks/audit-review-accounts-1122` (HEAD `9550ebe240c2e2fe2227430754e353d08431bf2d`).
-Код не менялся: этот отчёт — единственный добавленный файл.
+`SoloveyMaks/audit-review-accounts-1122`. Ревью начато на
+`9550ebe240c2e2fe2227430754e353d08431bf2d`; после приёмки отчёта по
+разрешению координатора исправлена только регрессия R1 —
+`backend/app/artifacts/intake.py`, коммит `a0412aa078f407bb09b45dc8cad0c923f7132c49`
+(см. «Ремедиация R1»). Другие файлы кода не менялись.
 
 Проверенный точный финал: `2ec64ff3071ab4f1099f949dcc7f91c47f93804d`
 (ветка `SoloveyMaks/audit-all-accounts-1122`), проверенный SHA кода:
@@ -31,10 +34,10 @@ PostgreSQL lifecycle, middleware, tenant SQL, durable webhook и scheduler
 
 Найдена **одна реальная регрессия** исправления ZIP-кодеков (R1, ниже):
 на Python 3.14 валидный ZIP с `ZIP_ZSTANDARD` начал отклоняться, хотя точная
-база его принимала. Остальное — наблюдения о соседних границах, не
-регрессии.
+база его принимала. Регрессия исправлена в этой ветке (коммит `a0412aa`);
+остальное — наблюдения о соседних границах, не регрессии.
 
-## R1. ZIP с Zstandard ошибочно отклоняется (регрессия, Low/Medium)
+## R1. ZIP с Zstandard ошибочно отклонялся (регрессия, Low/Medium; исправлено)
 
 Точное место: `backend/app/artifacts/intake.py:351-354` (коммит `4580db1`):
 
@@ -83,6 +86,59 @@ runtime, например `{ZIP_STORED, ZIP_DEFLATED}` плюс `ZIP_BZIP2`/`ZIP
 лимиты (`file_size`, `written_total`, ratio) уже ограничивают decompression
 bomb и для zstd, поэтому расширять allowlist безопасно. Проверка: реальный
 zstd ZIP в наборе проб.
+
+### Ремедиация R1 (коммит `a0412aa078f407bb09b45dc8cad0c923f7132c49`)
+
+`backend/app/artifacts/intake.py` взят точным содержимым
+`git show 2ec64ff...:backend/app/artifacts/intake.py`; все upstream guards,
+лимиты и cleanup сохранены. `git diff 2ec64ff -- backend/app/artifacts/intake.py`
+показывает только один участок — allowlist:
+
+```python
+def _zstd_zip_supported() -> bool:
+    """ZIP_ZSTANDARD читается только вместе с compression.zstd (Python 3.14+)."""
+    if getattr(zipfile, "ZIP_ZSTANDARD", None) is None:
+        return False
+    try:
+        from compression import zstd  # noqa: F401 - проверка наличия кодека
+    except ImportError:
+        return False
+    return True
+
+
+_SUPPORTED_COMPRESSION_METHODS = {
+    zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA,
+}
+if _zstd_zip_supported():
+    _SUPPORTED_COMPRESSION_METHODS.add(zipfile.ZIP_ZSTANDARD)
+# ...
+if info.compress_type not in _SUPPORTED_COMPRESSION_METHODS:
+    raise SafeIntakeError("Неподдерживаемый метод сжатия ZIP")
+```
+
+Гейт по фактической поддержке, а не по наличию одной константы: на Python
+3.12 константы `ZIP_ZSTANDARD` нет, на урезанной 3.14 без `compression.zstd`
+модуль не импортируется — в обоих случаях кодек остаётся вне allowlist и
+архив получает `SafeIntakeError` («Неподдерживаемый метод сжатия ZIP»), без
+500 и без каталога распаковки. Если zstd исчезнет уже после импорта
+(`zipfile` бросает `RuntimeError` из `_check_compression`), срабатывает
+существующий маппинг ошибок чтения: `SafeIntakeError` + `shutil.rmtree`.
+
+Пробы после фикса (те же одноразовые каталоги
+`/tmp/nedra-audit-review-accounts`, вывод в `probes/*-after-fix.out` и
+`probes/r1-fixed*.out`):
+
+- `probe_r1_fixed.py main`: **16 PASS / 0 FAIL** — реальный zstd ZIP принят
+  (`mobile/src/A.kt`, 7 байт), unknown codec 20 → `SafeIntakeError` без
+  мусора, bad CRC → `SafeIntakeError` без мусора, stored/deflate/bzip2/lzma
+  по-прежнему приняты, недоступный на чтении zstd → `SafeIntakeError` без
+  мусора, гейт `True` на этом runtime и `False` при заблокированном
+  `compression.zstd`.
+- `probe_r1_fixed.py limits` (`CG_MAX_FILE_COUNT=3`,
+  `CG_MAX_UNCOMPRESSED_BYTES=6`): **2 PASS** — count/total лимиты действуют.
+- `probe_zip_after_fix.py` (полный ZIP-набор из ревью): **28 PASS / 0 FAIL**,
+  zstd-строка теперь «accepted»; остальные guards/пути/cleanup без изменений.
+- `py_compile` и `git diff --check` чисты.
 
 ## Наблюдения (не регрессии)
 
@@ -138,13 +194,15 @@ secret-маркерами только если это `str`. Для тесто�
 Все пробы — одноразовые, под `/tmp/nedra-audit-review-accounts`, реальные
 crypto/filesystem/Starlette `Request`; БД не подменялась, сеть не
 использовалась. Выводы сохранены в `probes/*.out` (PASS/FAIL, 140 проверок,
-0 FAIL; R1 отмечен как `FINDING`).
+0 FAIL; R1 отмечен как `FINDING` — это поведение точного `2ec64ff`).
+После ремедиации R1 отдельно прогнаны `probes/r1-fixed*.out` и
+`probes/*-after-fix.out`: ещё 61 проверка, 0 FAIL.
 
 | # | Заявленное исправление | Собственное доказательство | Итог |
 |---|---|---|---|
 | 1 | cookie bytes | `Request` с сырым байтом cookie `0xE9`: база — `TypeError`, финал — `None`; валидный токен проходит | подтверждено, достижимо через latin-1 заголовок |
 | 2 | account → demo | точное тело `POST /api/session` (финал и база) с подписанной v3-cookie и без DSN: база ушла в БД (`DatabaseUnavailable`), финал БД не трогал, выдал проверяемый v2-токен; workspace ответа == workspace подписи == configured | подтверждено |
-| 3 | ZIP 500 → безопасный отказ | реальный bad CRC → `SafeIntakeError`, каталог распаковки удалён; encrypted, declared oversize, parent/file-dir collision, `.`-сегмент, двойной слэш, traversal, absolute/drive, backslash, case-дубликат, `__MACOSX`, центральный NUL — отклонены; bzip2/lzma приняты; лимит файлов 3+1 в отдельном процессе | подтверждено (кроме R1) |
+| 3 | ZIP 500 → безопасный отказ | реальный bad CRC → `SafeIntakeError`, каталог распаковки удалён; encrypted, declared oversize, parent/file-dir collision, `.`-сегмент, двойной слэш, traversal, absolute/drive, backslash, case-дубликат, `__MACOSX`, центральный NUL — отклонены; bzip2/lzma приняты; лимит файлов 3+1 в отдельном процессе | подтверждено; R1 исправлен в `a0412aa` |
 | 4 | normalizer: central/orig, `__MACOSX` | центральный NUL → отказ; локальный NUL ловится собственным name-mismatch `zipfile` (`BadZipFile`) → `SafeIntakeError`; база принимала `src/./A.kt` и `__MACOSX/...` | подтверждено |
 | 5 | repository paths | sanitizer убирает provider-wrapper и `__MACOSX`; `strip_wrapper_root=False` сохраняет `mobile/build.gradle.kts`; default intake на том же архиве срезает `mobile/` (старый баг воспроизведён) | подтверждено |
 | 6 | hook URL/signature | 8 классов URL (credentials, port, query, fragment, лишний путь, `%`, http, чужой host) дают `None` там, где база канонизировала; нормальный URL/`.git`/регистр совпадают; HMAC принимает верное тело, отвергает изменённое и non-ASCII заголовок | подтверждено |
@@ -173,8 +231,10 @@ crypto/filesystem/Starlette `Request`; БД не подменялась, сет�
    `db_repo.save_artifact`); проверены прямые вызовы intake на реальных
    ZIP/файловых деревьях, а не HTTP-маршрут.
 4. Удалённые GitHub/GitLab и provider API не вызывались.
-5. R1 проверен на Python 3.14.7; на 3.12 (production image) zstd недоступен
-   и регрессии нет.
+5. R1 проверен на Python 3.14.7 (zstd принимается). На 3.12
+   (`deploy/Dockerfile:5`) `ZIP_ZSTANDARD` отсутствует, поэтому гейт
+   выключает кодек и архив получает `SafeIntakeError`; отдельного прогона на
+   3.12 не было — вывод следует из кода и симуляции заблокированного импорта.
 
 ## Сверка с отчётом владельца
 
@@ -187,7 +247,7 @@ crypto/filesystem/Starlette `Request`; БД не подменялась, сет�
   имён central/local: `BadZipFile` теперь мапится в `SafeIntakeError` (400).
   Результат совпадает с заявленным, механизм другой.
 - Отчёт не отмечает сужение списка поддерживаемых кодеков (R1): до фикса
-  zstd-архив на 3.14 принимался.
+  zstd-архив на 3.14 принимался. Устранено в этой ветке коммитом `a0412aa`.
 
 Временные скрипты владельца (`/tmp/nedra-audit-accounts/task-032c129a/`) как
 доказательство не использовались; мои пробы независимы.
@@ -212,10 +272,23 @@ $E CG_MAX_SAMPLE_FILES=2 CG_MAX_SAMPLE_BYTES=6 /tmp/nedra-venv/bin/python probes
 $E /tmp/nedra-venv/bin/python probes/probe_limits.py sparse
 ```
 
+Проверки после ремедиации R1 (рабочее дерево ветки, а не архив `2ec64ff`):
+
+```bash
+cd /tmp/nedra-audit-review-accounts
+E="env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/home/rodion/orca/workspaces/41l1-n3dra/audit-review-accounts-1122 CG_DATA_DIR=/tmp/nedra-audit-review-accounts/data NEDRA_SRC=/home/rodion/orca/workspaces/41l1-n3dra/audit-review-accounts-1122"
+$E /tmp/nedra-venv/bin/python probes/probe_r1_fixed.py main
+$E CG_MAX_FILE_COUNT=3 CG_MAX_UNCOMPRESSED_BYTES=6 \
+   /tmp/nedra-venv/bin/python probes/probe_r1_fixed.py limits
+$E /tmp/nedra-venv/bin/python probes/probe_zip_after_fix.py
+```
+
 ## Вердикт
 
-Точечные исправления второго пакета корректны в проверенной области; найдена
-одна ограниченная регрессия — отклонение валидного Zstandard ZIP на runtime,
-который его читает (R1), с однострочной рекомендацией. Полная интеграционная
+Точечные исправления второго пакета корректны в проверенной области. Найденная
+регрессия R1 (отклонение валидного Zstandard ZIP на runtime, который его
+читает) исправлена в этой ветке коммитом `a0412aa`: точный `2ec64ff` intake
+сохранён, allowlist строится из фактической поддержки runtime, недоступный
+кодек остаётся `SafeIntakeError` без 500 и мусора. Полная интеграционная
 приёмка accounts/tenant/webhook/upload остаётся за разрешённым PG-прогоном;
 этот отчёт не подтверждает её.
