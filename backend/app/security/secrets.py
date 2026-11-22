@@ -24,6 +24,8 @@ AES-256-GCM: nonce 12 байт, ciphertext включает GCM-tag. AAD — и�
 ``WorkflowDraft`` отклоняет такой пользовательский ввод до записи (422), а
 ``encrypt_secrets`` не пишет его в БД и в режиме повторного сохранения
 проверяет внутренний конверт расшифровкой, а не перешифровывает вслепую.
+При чтении любой ``enc:v1:`` идёт в расшифровку: повреждённый или обрезанный
+конверт даёт явную ошибку, а не читается как открытый секрет.
 """
 
 from __future__ import annotations
@@ -159,7 +161,10 @@ def _encrypt_value(key: bytes, field: str, value: str) -> str:
 def _decrypt_value(key: bytes, field: str, envelope: str) -> str:
     match = _ENVELOPE_RE.match(envelope)
     if match is None:
-        raise SecretDecryptionError(f"Поле {field!r}: значение не является конвертом enc:v1.")
+        raise SecretDecryptionError(
+            f"Поле {field!r}: значение с префиксом {ENVELOPE_PREFIX} не является "
+            "валидным конвертом (повреждено или обрезано)."
+        )
     try:
         nonce = base64.b64decode(match.group(1), validate=True)
         sealed = base64.b64decode(match.group(2), validate=True)
@@ -249,14 +254,16 @@ def encrypt_secrets(value: T) -> T:
 def decrypt_secrets(value: T) -> T:
     """Расшифровать секретные поля при чтении; legacy plaintext проходит как есть.
 
-    Конверт без ключа, неверный ключ или подмена — явная ошибка
-    (``MissingSecretsKeyError``/``SecretDecryptionError``), никогда не
-    подделанный plaintext.
+    Любой ``enc:v1:`` (включая повреждённый или обрезанный) идёт в расшифровку:
+    без ключа — ``MissingSecretsKeyError``, с ключом строгий формат не совпал —
+    ``SecretDecryptionError``. Повреждённый конверт никогда не отдаётся как
+    открытый секрет; legacy plaintext без зарезервированного префикса проходит
+    без потери.
     """
     key = load_key()
 
     def visitor(field: str, item: str) -> str:
-        if not is_encrypted(item):
+        if not is_reserved_envelope(item):
             return item
         if key is None:
             raise MissingSecretsKeyError(

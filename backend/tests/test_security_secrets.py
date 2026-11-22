@@ -191,6 +191,25 @@ class EnvelopeTests(unittest.TestCase):
                 with self.assertRaises(MissingSecretsKeyError):
                     decrypt_secrets(sealed)
 
+    def test_corrupted_envelope_read_fails_in_both_modes(self):
+        """Повреждённый/обрезанный enc:v1:* — ошибка, а не открытый секрет."""
+        damaged = (
+            "enc:v1:",                      # обрезан до префикса
+            "enc:v1:AAAA!",                 # '!' вне base64
+            "enc:v1:AAAA:AAAA",             # base64 валиден, nonce битый
+            "enc:v1:not-b64!!:not-b64!!",   # мусор в группах
+        )
+        for bad in damaged:
+            for mode in (MODE_OPTIONAL, MODE_REQUIRED):
+                with self.subTest(value=bad, mode=mode):
+                    draft = {"nodes": [{"config": {"secretToken": bad}}]}
+                    with secret_env(key=KEY_A, mode=mode):
+                        with self.assertRaises(SecretDecryptionError):
+                            decrypt_secrets(draft)
+                    with secret_env(mode=mode):
+                        with self.assertRaises(MissingSecretsKeyError):
+                            decrypt_secrets(draft)
+
     def test_broken_config_is_explicit_error(self):
         with secret_env(key=base64.b64encode(b"short").decode("ascii")):
             with self.assertRaises(SecretsConfigError):
@@ -456,6 +475,16 @@ class StorageWiringTests(unittest.TestCase):
             )
             with self.assertRaises(SecretDecryptionError):
                 self.repo.get_workflow("wf3")
+
+    def test_corrupted_envelope_row_fails_read_explicitly(self):
+        # Повреждённая строка в БД: чтение сценария падает явно, не отдаёт её
+        # как открытый секрет (WorkflowDraft ниже по стеку не получит мусор).
+        draft = sample_draft()
+        with secret_env(key=KEY_A):
+            rev_id = self.repo.save_workflow("wf_dmg", "PR gate", "", draft)
+            self.store.revisions[rev_id]["draft"]["nodes"][0]["config"]["secretToken"] = "enc:v1:"
+            with self.assertRaises(SecretDecryptionError):
+                self.repo.get_workflow("wf_dmg")
 
     def test_reserved_envelope_never_reaches_storage(self):
         # Обход модели (внутренний путь) тоже не кладёт закрафченный конверт.
