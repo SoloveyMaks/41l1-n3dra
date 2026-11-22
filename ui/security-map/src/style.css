@@ -1666,3 +1666,37 @@
 .sm-path-badges .is-warn { color: #fde68a; background: rgba(245, 158, 11, 0.16); }
 .sm-path-badges .is-open { color: #fecdd3; background: rgba(251, 113, 133, 0.16); }
 .sm-path-badges .is-risk { color: #fecaca; background: rgba(239, 68, 68, 0.18); }
+
+/* React Flow controls: same dark treatment inside the security map. */
+.security-map .react-flow__controls {
+  background: var(--sm-panel);
+  border: 1px solid var(--sm-line-2);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.35);
+}
+.security-map .react-flow__controls-button {
+  width: 32px;
+  height: 32px;
+  background: var(--sm-panel-2);
+  border: 0;
+  border-bottom: 1px solid var(--sm-line);
+  color: var(--sm-text);
+}
+.security-map .react-flow__controls-button:hover {
+  background: var(--sm-line);
+  color: #f8fafc;
+}
+.security-map .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 14px;
+  max-height: 14px;
+}
+.security-map .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+.security-map .react-flow__controls-button:disabled {
+  color: var(--sm-faint);
+  background: var(--sm-panel);
+  opacity: 1;
+}
