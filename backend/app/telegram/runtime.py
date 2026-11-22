@@ -11,14 +11,20 @@ import asyncio
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import urlsplit
 
+from backend.app.codefacts.identity import workspace_id
+from backend.app.codefacts.store import CodeFactsStore
 from backend.app.contracts.schemas import WorkflowDraft
 from backend.app.storage.database import DatabaseRepository
 from backend.app.storage.telegram import (
+    BRANCH_FILTER_LIMIT,
+    DeliveryIntent,
     JOB_LEASE_SECONDS,
     MAX_JOB_RECOVERY_ATTEMPTS,
+    PROJECT_FILTER_LIMIT,
     JobOwnershipLost,
     OutboxItem,
     SettingsOwnershipLost,
@@ -30,6 +36,17 @@ from backend.app.telegram.bot_api import (
     TelegramConfigError,
     TelegramUnavailable,
     redact_telegram_text,
+)
+from backend.app.telegram.delivery_policy import (
+    DeliveryDecision,
+    DeliveryFacts,
+    DeliverySettingsError,
+    evaluate_delivery,
+    format_hhmm,
+    normalize_filter,
+    normalize_severity,
+    normalize_timezone,
+    parse_quiet_window,
 )
 from backend.app.telegram.menus import (
     BOT_COMMANDS,
@@ -65,6 +82,24 @@ JOB_RECOVERY_INTERVAL_SECONDS = 5
 JOB_RECOVERY_BATCH = 20
 MAX_ACTIVE_JOB_TASKS = 20
 DELIVERY_TIMEOUT_SECONDS = 75
+# A user-cancelled run is deliberate silence; every honest terminal outcome of
+# a manual/scheduled/repository run still produces one delivery per binding.
+DELIVERY_TRIGGER_STATUSES = ("succeeded", "failed", "interrupted")
+# The completion marker is written first and retried briefly; anything the
+# database still refuses goes to the in-memory list the sweep replays next.
+DELIVERY_INTENT_RECORD_ATTEMPTS = 3
+DELIVERY_INTENT_RECORD_DELAY_SECONDS = 1.0
+DELIVERY_INTENT_SWEEP_LIMIT = 20
+# Startup safety net: a completion whose marker write was refused lived only
+# in memory; the first recovery pass re-adopts terminal runs without an intent
+# inside this bounded window (and only while a transport is configured).
+DELIVERY_BOOTSTRAP_WINDOW_HOURS = 24
+DELIVERY_BOOTSTRAP_LIMIT = 50
+
+
+class DeliveryFactsUnavailable(RuntimeError):
+    """Filter metadata cannot be evaluated yet; retried, never a mismatch."""
+
 
 HELP_TEXT = """NEDRA Telegram
 
@@ -75,6 +110,7 @@ HELP_TEXT = """NEDRA Telegram
 
 Привязка: пришлите код из кабинета обычным сообщением — команда не нужна.
 Режим и сценарий меняются кнопками в /settings.
+Фильтры доставки: /settings severity|quiet|project|branch — текстом.
 Пришлите HTTPS-ссылку GitHub/GitLab — бот импортирует репозиторий и запустит выбранный сценарий."""
 
 BINDING_SUCCESS_TEXT = (
@@ -96,6 +132,18 @@ UNSUPPORTED_FILE_TEXT = (
 STALE_CALLBACK_TEXT = "Кнопка устарела — откройте меню заново."
 CALLBACK_FAILED_TEXT = "Не удалось выполнить действие. Откройте меню и попробуйте ещё раз."
 BARE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{6,128}$")
+SEVERITY_USAGE = "/settings severity <info|low|medium|high|critical>"
+QUIET_USAGE = (
+    "/settings quiet <HH:MM-HH:MM> <IANA-timezone> — например "
+    "quiet 22:00-07:00 Europe/Moscow; quiet off — выключить"
+)
+PROJECT_USAGE = "/settings project <подстрока URL/имени файла> или project off"
+BRANCH_USAGE = "/settings branch <имя ветки> (можно main*) или branch off"
+
+
+def _load_artifact_meta(workspace: str, artifact_id: str) -> Optional[Dict[str, Any]]:
+    meta = CodeFactsStore().load_artifact_meta(workspace, artifact_id)
+    return meta if isinstance(meta, dict) else None
 
 
 class TelegramRuntime:
@@ -112,12 +160,16 @@ class TelegramRuntime:
         config_error: Optional[str] = None,
         menu_config: Optional[MenuConfig] = None,
         menu_secret: Optional[str] = None,
+        artifact_meta_loader: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
     ):
         self.db = db
         self.executor = executor
         self.importer = importer
         self.repo = repository or TelegramRepository()
         self.api = api
+        # Project/branch filters read artifact metadata (repository URL, branch)
+        # through this explicit seam; production uses CodeFactsStore, tests inject.
+        self._artifact_meta_loader = artifact_meta_loader or _load_artifact_meta
         self.poll_timeout = max(1, min(int(poll_timeout), 50))
         self.outbox_interval = max(0.5, min(float(outbox_interval), 30.0))
         self.menu_config = menu_config if menu_config is not None else load_menu_config()
@@ -138,6 +190,12 @@ class TelegramRuntime:
         self._job_tasks: Set[asyncio.Task] = set()
         self._active_job_ids: Set[str] = set()
         self._recovery_task: Optional[asyncio.Task] = None
+        # run_id -> workspace for completions whose durable marker write was
+        # refused by the database; the recovery sweep replays them in-process.
+        # A restart loses this list — the first recovery pass re-adopts such
+        # runs from the database (see _bootstrap_delivery_intents).
+        self._pending_delivery_intents: Dict[str, str] = {}
+        self._delivery_bootstrapped = False
         self._external_status = "not_started"
         self._last_error: Optional[str] = None
         self._config_error = config_error
@@ -339,13 +397,60 @@ class TelegramRuntime:
 
     async def _recovery_loop(self) -> None:
         while not self._stop.is_set():
+            if not self._delivery_bootstrapped:
+                try:
+                    # Durable safety net for a completion whose marker write
+                    # was refused before a restart (runs live only in
+                    # runtime.runs then, without an intent row).
+                    await self._bootstrap_delivery_intents()
+                    self._delivery_bootstrapped = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - retried next cycle
+                    logger.warning(
+                        "telegram delivery bootstrap failed: %s", self._safe_error(exc)
+                    )
             try:
                 await self.recover_jobs_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - recovery must not kill runtime
                 logger.warning("telegram job recovery failed: %s", self._safe_error(exc))
+            try:
+                # Replay delivery intents whose outbox rows are still missing
+                # (transient DB failure at completion, crash between marker
+                # and enqueue).
+                await self._sweep_delivery_intents()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - sweep is retried next cycle
+                logger.warning("telegram delivery sweep failed: %s", self._safe_error(exc))
             await self._wait(JOB_RECOVERY_INTERVAL_SECONDS)
+
+    async def _bootstrap_delivery_intents(self) -> int:
+        """Adopt recent terminal runs that have no delivery marker yet.
+
+        Called once per process (retried on failure) while a transport is
+        configured. The window bounds both the replay: a restart re-adopts a
+        completion whose marker write was refused, while runs finished long
+        before delivery existed are never picked up.
+        """
+        if self.api is None:
+            return 0
+        candidates = await self._repo(
+            "recent_runs_without_intent",
+            DELIVERY_BOOTSTRAP_WINDOW_HOURS, DELIVERY_BOOTSTRAP_LIMIT,
+        )
+        adopted = 0
+        for intent in candidates:
+            await self._repo(
+                "record_delivery_intent", intent.run_id, intent.workspace_id
+            )
+            if await self._process_delivery_intent(intent.run_id, intent.workspace_id):
+                adopted += 1
+        if adopted:
+            logger.info("telegram delivery adopted %d run(s) without marker", adopted)
+        return adopted
 
     async def recover_jobs_once(self) -> int:
         """Bounded pass: settle orphaned runs and spawn claimable jobs."""
@@ -654,8 +759,13 @@ class TelegramRuntime:
             "",
             f"Доставка: {MODE_LABELS.get(settings.delivery_mode, settings.delivery_mode)}",
             f"Сценарий: {label}",
+            f"Порог: {settings.min_severity}",
+            f"Тихие часы: {self._quiet_label(settings)}",
+            f"Проект: {settings.project_filter or '—'}",
+            f"Ветка: {settings.branch_filter or '—'}",
             "",
             "Режим — кнопками «Кратко», «JSON», «Оба». Сценарий — из списка ниже.",
+            "Фильтры: /settings severity, quiet, project, branch.",
         ])
         if scenarios:
             lines.append(f"Сценарии: {len(scenarios)} · стр. {safe_page + 1}/{pages}")
@@ -669,6 +779,15 @@ class TelegramRuntime:
             page=safe_page,
         ) if ctx else None
         return await self._current_view(binding, "\n".join(lines), markup)
+
+    @staticmethod
+    def _quiet_label(settings: Any) -> str:
+        if settings.quiet_start is None or settings.quiet_end is None:
+            return "—"
+        return (
+            f"{format_hhmm(settings.quiet_start)}–{format_hhmm(settings.quiet_end)} "
+            f"{settings.quiet_timezone}"
+        )
 
     async def _status_view(self, binding: Any, sender_id: int) -> tuple:
         settings = await self._binding_settings(binding)
@@ -1081,11 +1200,116 @@ class TelegramRuntime:
             )
             await self._reply(chat_id, text, reply_markup=markup)
             return
+        if await self._apply_delivery_filter(chat_id, sender_id, binding, argument):
+            return
         text, markup = await self._settings_view(
             binding, sender_id,
-            notice="Неизвестная команда. Выберите режим или сценарий кнопками.",
+            notice=(
+                "Неизвестная команда. Выберите режим или сценарий кнопками, "
+                "фильтры — /settings severity, quiet, project, branch."
+            ),
         )
         await self._reply(chat_id, text, reply_markup=markup)
+
+    async def _apply_delivery_filter(
+        self, chat_id: int, sender_id: int, binding: Any, argument: str,
+    ) -> bool:
+        """Handle ``/settings severity|quiet|project|branch ...`` text filters."""
+        head, _, value = argument.strip().partition(" ")
+        name = head.strip().lower()
+        value = value.strip()
+        if name == "severity":
+            usage = SEVERITY_USAGE
+        elif name == "quiet":
+            usage = QUIET_USAGE
+        elif name == "project":
+            usage = PROJECT_USAGE
+        elif name == "branch":
+            usage = BRANCH_USAGE
+        else:
+            return False
+
+        kwargs: Dict[str, Any] = {}
+        if name == "severity":
+            try:
+                kwargs = {"min_severity": normalize_severity(value)}
+            except DeliverySettingsError as exc:
+                await self._reply(chat_id, f"{exc}\n{usage}")
+                return True
+            notice = f"Порог доставки: {kwargs['min_severity']}."
+        elif name == "quiet":
+            if value.lower() in {"off", "clear", "выкл"}:
+                kwargs = {"clear_quiet_hours": True}
+                notice = "Тихие часы выключены."
+            else:
+                tokens = value.split()
+                if not tokens or len(tokens) > 2:
+                    await self._reply(chat_id, usage)
+                    return True
+                try:
+                    start, end = parse_quiet_window(tokens[0])
+                    tz = normalize_timezone(tokens[1]) if len(tokens) == 2 else "UTC"
+                except DeliverySettingsError as exc:
+                    await self._reply(chat_id, f"{exc}\n{usage}")
+                    return True
+                kwargs = {"quiet_start": start, "quiet_end": end, "quiet_timezone": tz}
+                notice = f"Тихие часы: {format_hhmm(start)}–{format_hhmm(end)} {tz}."
+        elif name == "project":
+            if value.lower() in {"off", "clear"}:
+                kwargs = {"project_filter": ""}
+                notice = "Фильтр проекта выключен."
+            else:
+                try:
+                    cleaned = normalize_filter(
+                        value, field="project", limit=PROJECT_FILTER_LIMIT,
+                    )
+                except DeliverySettingsError as exc:
+                    await self._reply(chat_id, f"{exc}\n{usage}")
+                    return True
+                if not cleaned:
+                    await self._reply(chat_id, usage)
+                    return True
+                kwargs = {"project_filter": cleaned}
+                notice = f"Фильтр проекта: {cleaned}."
+        else:  # branch
+            if value.lower() in {"off", "clear"}:
+                kwargs = {"branch_filter": ""}
+                notice = "Фильтр ветки выключен."
+            else:
+                try:
+                    cleaned = normalize_filter(
+                        value, field="branch", limit=BRANCH_FILTER_LIMIT,
+                    )
+                except DeliverySettingsError as exc:
+                    await self._reply(chat_id, f"{exc}\n{usage}")
+                    return True
+                if not cleaned:
+                    await self._reply(chat_id, usage)
+                    return True
+                kwargs = {"branch_filter": cleaned}
+                notice = f"Фильтр ветки: {cleaned}."
+
+        try:
+            await self._repo(
+                "set_settings", chat_id,
+                user_id=binding.user_id,
+                workspace_id=binding.workspace_id,
+                binding_epoch=binding.binding_epoch,
+                **kwargs,
+            )
+        except SettingsOwnershipLost:
+            logger.info("telegram filter write ignored after rebind")
+            await self._render_binding(
+                chat_id, sender_id, None,
+                notice="Привязка обновилась — настройки не изменены.",
+            )
+            return True
+        except ValueError as exc:
+            await self._reply(chat_id, f"{exc}\n{usage}")
+            return True
+        text, markup = await self._settings_view(binding, sender_id, notice=notice)
+        await self._reply(chat_id, text, reply_markup=markup)
+        return True
 
     async def _handle_status(self, chat_id: int, sender_id: int) -> None:
         binding = await self._repo("get_binding", chat_id)
@@ -1245,7 +1469,10 @@ class TelegramRuntime:
                     lease_token=job.lease_token,
                 )
                 if finished is not None:
-                    await self._enqueue_notifications(job, run_id)
+                    # Delivery is enqueued by the executor completion hook
+                    # (see on_run_completed): one path for bot, manual and
+                    # scheduled runs, idempotent on the outbox unique key.
+                    logger.info("telegram job %s finished for run %s", job_id, run_id)
         except asyncio.CancelledError:
             try:
                 await self._repo("set_job_status",
@@ -1278,22 +1505,137 @@ class TelegramRuntime:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 
-    async def _enqueue_notifications(self, job: Any, run_id: str) -> None:
-        if not await self._repo("job_is_current", job):
+    async def on_run_completed(self, run_id: str) -> None:
+        """Executor completion hook: durable intent first, then outbox rows.
+
+        Manual, scheduled and repository-triggered runs all end inside
+        ``WorkflowExecutor.execute_run``, so this single hook closes the gap
+        where only bot jobs produced a delivery. The completion fact is
+        persisted as a ``telegram.run_delivery_intents`` row *before* the
+        outbox is touched; if settings/enqueue fail (transient DB error) or
+        the process dies in between, the recovery sweep replays the intent and
+        the outbox unique key ``(chat_id, run_id, kind)`` creates exactly the
+        missing rows. Writing is independent of transport state: a completion
+        that lands while the bot is stopping still produces its rows.
+        """
+        if self.api is None:
             return
-        settings = await self._binding_settings(job)
-        if settings.delivery_mode in ("alerts", "both"):
-            await self._repo("enqueue_outbox",
-                job.chat_id, run_id, "alert",
-                user_id=job.user_id, workspace_id=job.workspace_id,
-                binding_epoch=job.binding_epoch,
+        workspace = await self._record_delivery_intent(run_id)
+        if not workspace:
+            return
+        if await self._process_delivery_intent(run_id, workspace):
+            self._pending_delivery_intents.pop(run_id, None)
+
+    async def _record_delivery_intent(self, run_id: str) -> Optional[str]:
+        """Persist the completion fact (bounded retries); return its workspace.
+
+        None means "nothing to deliver" (run not terminal) or "kept for the
+        sweep in memory after the marker write kept failing".
+        """
+        workspace = ""
+        status_checked = False
+        last_error = ""
+        for attempt in range(1, DELIVERY_INTENT_RECORD_ATTEMPTS + 1):
+            try:
+                if not status_checked:
+                    run = await self._db("get_run", run_id)
+                    if (
+                        not run
+                        or str(run.get("execution_status") or "") not in DELIVERY_TRIGGER_STATUSES
+                    ):
+                        return None
+                    status_checked = True
+                    workspace = str(run.get("workspace_id") or "") or workspace_id()
+                await self._repo("record_delivery_intent", run_id, workspace)
+                return workspace
+            except Exception as exc:  # noqa: BLE001 - transient DB failure
+                last_error = self._safe_error(exc)
+                logger.warning(
+                    "telegram delivery intent write failed for %s (try %d/%d): %s",
+                    run_id, attempt, DELIVERY_INTENT_RECORD_ATTEMPTS, last_error,
+                )
+                if attempt < DELIVERY_INTENT_RECORD_ATTEMPTS:
+                    await asyncio.sleep(DELIVERY_INTENT_RECORD_DELAY_SECONDS)
+        # No durable marker possible right now: keep it in memory for the
+        # sweep. Should the process die before the replay, the next start's
+        # _bootstrap_delivery_intents re-adopts the run from runtime.runs.
+        self._pending_delivery_intents[run_id] = workspace or workspace_id()
+        logger.error("telegram delivery intent not durable for %s: %s", run_id, last_error)
+        return None
+
+    async def _process_delivery_intent(self, run_id: str, workspace: str) -> bool:
+        """Idempotently create the missing outbox rows and close the marker."""
+        try:
+            with telegram_workspace_scope(workspace):
+                run = await self._db("get_run", run_id)
+                if run and str(run.get("execution_status") or "") in DELIVERY_TRIGGER_STATUSES:
+                    bindings = await self._repo("list_workspace_bindings", workspace)
+                    for binding in bindings:
+                        settings = await self._repo(
+                            "get_settings", binding.chat_id,
+                            user_id=binding.user_id,
+                            workspace_id=binding.workspace_id,
+                            binding_epoch=binding.binding_epoch,
+                        )
+                        kinds = [
+                            kind for kind, modes in (
+                                ("alert", ("alerts", "both")),
+                                ("jsonc", ("jsonc", "both")),
+                            )
+                            if settings.delivery_mode in modes
+                        ]
+                        for kind in kinds:
+                            await self._repo(
+                                "enqueue_outbox", binding.chat_id, run_id, kind,
+                                user_id=binding.user_id,
+                                workspace_id=binding.workspace_id,
+                                binding_epoch=binding.binding_epoch,
+                            )
+                    if bindings:
+                        logger.info(
+                            "telegram delivery enqueued for run %s (%d binding(s))",
+                            run_id, len(bindings),
+                        )
+                # A run that is no longer terminal (or vanished) has nothing to
+                # deliver: closing the marker must not loop forever.
+                await self._repo("finish_delivery_intent", run_id)
+            return True
+        except Exception as exc:  # noqa: BLE001 - delivery never breaks the run
+            safe = self._safe_error(exc)
+            logger.warning("telegram delivery enqueue failed for %s: %s", run_id, safe)
+            try:
+                await self._repo("touch_delivery_intent", run_id, error=safe)
+            except Exception:  # noqa: BLE001 - marker write failing again is fine
+                logger.warning(
+                    "telegram delivery intent touch failed for %s", run_id
+                )
+            return False
+
+    async def _sweep_delivery_intents(self) -> int:
+        """Replay unfinished intents: durable rows plus the in-memory list."""
+        if self.api is None:
+            return 0
+        intents: List[DeliveryIntent] = []
+        try:
+            intents = await self._repo(
+                "pending_delivery_intents", DELIVERY_INTENT_SWEEP_LIMIT
             )
-        if settings.delivery_mode in ("jsonc", "both"):
-            await self._repo("enqueue_outbox",
-                job.chat_id, run_id, "jsonc",
-                user_id=job.user_id, workspace_id=job.workspace_id,
-                binding_epoch=job.binding_epoch,
-            )
+        except Exception as exc:  # noqa: BLE001 - sweep is retried next cycle
+            logger.warning("telegram delivery intent sweep failed: %s", self._safe_error(exc))
+        handled = 0
+        for run_id, workspace in list(self._pending_delivery_intents.items()):
+            if await self._process_delivery_intent(run_id, workspace):
+                self._pending_delivery_intents.pop(run_id, None)
+                handled += 1
+        for intent in intents:
+            if await self._process_delivery_intent(intent.run_id, intent.workspace_id):
+                handled += 1
+        if not intents and not self._pending_delivery_intents:
+            try:
+                await self._repo("purge_delivery_intents")
+            except Exception as exc:  # noqa: BLE001 - retention is optional
+                logger.warning("telegram delivery intent purge failed: %s", self._safe_error(exc))
+        return handled
 
     # --- delivery ------------------------------------------------------
     async def process_outbox_once(self, limit: int = 5) -> int:
@@ -1384,6 +1726,26 @@ class TelegramRuntime:
             # Payload is built from the delivery's own owner/workspace, never
             # from the chat's current binding.
             with telegram_workspace_scope(item.workspace_id):
+                # One decision point per claim: delivery mode, severity
+                # threshold, project/branch scope, then quiet hours.
+                decision = await self._delivery_decision(item)
+                if not decision.deliver:
+                    logger.info("telegram outbox %s filtered: %s", item.id, decision.reason)
+                    await complete("cancelled", error=f"отфильтровано: {decision.reason}")
+                    return
+                if decision.defer_until is not None:
+                    deferred = await self._repo(
+                        "defer_outbox", item.id, decision.defer_until,
+                        reason=f"тихие часы до {decision.defer_until.isoformat()}",
+                        user_id=item.user_id,
+                        workspace_id=item.workspace_id,
+                        binding_epoch=item.binding_epoch,
+                    )
+                    if not deferred:
+                        logger.warning(
+                            "telegram outbox %s could not defer after cancel", item.id
+                        )
+                    return
                 if item.kind == "alert":
                     text = await self._alert_text(item.run_id)
                     caption = None
@@ -1450,6 +1812,70 @@ class TelegramRuntime:
         finally:
             if guard_conn is not None:
                 await self._release_delivery_guard_safe(guard_conn)
+
+    async def _delivery_decision(self, item: OutboxItem) -> DeliveryDecision:
+        """Evaluate delivery policy for one claimed row inside its workspace."""
+        settings = await self._repo(
+            "get_settings", item.chat_id,
+            user_id=item.user_id,
+            workspace_id=item.workspace_id,
+            binding_epoch=item.binding_epoch,
+        )
+        run = await self._db("get_run", item.run_id)
+        if not run:
+            return DeliveryDecision(False, reason="run не найден")
+        facts = await self._delivery_facts(item.workspace_id, run, settings)
+        return evaluate_delivery(
+            kind=item.kind,
+            delivery_mode=settings.delivery_mode,
+            run=run,
+            min_severity=settings.min_severity,
+            project_filter=settings.project_filter,
+            branch_filter=settings.branch_filter,
+            quiet_start=settings.quiet_start,
+            quiet_end=settings.quiet_end,
+            quiet_timezone=settings.quiet_timezone,
+            facts=facts,
+            now_utc=datetime.now(timezone.utc),
+        )
+
+    async def _delivery_facts(
+        self, workspace: str, run: Dict[str, Any], settings: Any,
+    ) -> DeliveryFacts:
+        """Repository URL/branch for the filters; read only when a filter is set.
+
+        Unavailable metadata (missing artifact, refused/failed read) is raised
+        into the caller's bounded retry path — it must never collapse into an
+        empty facts object that a filter would score as a successful
+        non-match and cancel the delivery for good.
+        """
+        if not settings.project_filter and not settings.branch_filter:
+            return DeliveryFacts()
+        artifact_id = str(run.get("artifact_id") or "")
+        if not artifact_id:
+            raise DeliveryFactsUnavailable(
+                "у run нет артефакта — фильтр проекта/ветки не оценивается"
+            )
+        try:
+            meta = await asyncio.to_thread(
+                self._artifact_meta_loader, workspace, artifact_id
+            )
+        except Exception as exc:  # noqa: BLE001 - transient read failure
+            raise DeliveryFactsUnavailable(
+                f"метаданные артефакта недоступны: {self._safe_error(exc)}"
+            ) from exc
+        if not isinstance(meta, dict):
+            raise DeliveryFactsUnavailable(
+                "метаданные артефакта не найдены — повтор чтения запланирован"
+            )
+        repository = meta.get("repository")
+        repository = repository if isinstance(repository, dict) else {}
+        parts = [str(repository.get("url") or ""), str(meta.get("filename") or "")]
+        branch = str(repository.get("branch") or "") or None
+        return DeliveryFacts(
+            project_text=" ".join(part for part in parts if part),
+            branch=branch,
+        )
 
     async def _alert_text(self, run_id: str) -> str:
         run = await self._db("get_run", run_id)

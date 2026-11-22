@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from backend.app.ai.scan_service import AiScanService
 from backend.app.ai.service import AiService
@@ -79,6 +79,9 @@ class WorkflowExecutor:
         self.report_builder = ReportBuilder()
         self.notifier = WebhookNotifier()
         self.team_b = TeamBAdapter()
+        # Durable side effects after a run reaches a terminal state (Telegram
+        # delivery, ...). Hooks are idempotent and must never affect the run.
+        self.run_completion_hooks: List[Callable[[str], Awaitable[None]]] = []
         try:
             concurrency = max(1, min(16, int(os.getenv("CG_MAX_CONCURRENT_RUNS", "2"))))
         except ValueError:
@@ -123,10 +126,57 @@ class WorkflowExecutor:
             logger.exception("Failed to settle saved report for %s", run_id)
             return "inconclusive"
 
+    def add_run_completion_hook(self, hook: Callable[[str], Awaitable[None]]) -> None:
+        if hook not in self.run_completion_hooks:
+            self.run_completion_hooks.append(hook)
+
     async def execute_run(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
                           trigger_type: str = "manual", workflow_id: Optional[str] = None,
                           revision_id: Optional[str] = None) -> None:
-        """Single bounded entrypoint for manual and scheduled runs."""
+        """Single bounded entrypoint for manual and scheduled runs.
+
+        Every outcome — success, failure, queue overflow, interruption —
+        afterwards fires the completion hooks exactly once per call: hooks are
+        idempotent (their storage keys make repeats cheap), transport-free and
+        can never change the run itself.
+        """
+        try:
+            await self._run_entry(
+                run_id, draft, artifact_id, trigger_type, workflow_id, revision_id
+            )
+        finally:
+            await self._notify_run_completed(run_id)
+
+    async def _notify_run_completed(self, run_id: str) -> None:
+        if not self.run_completion_hooks:
+            return
+        try:
+            await self._await_operation(
+                self._fire_run_completion(run_id), propagate_cancel=False
+            )
+        except Exception:  # noqa: BLE001 - side effects must not mask the run
+            logger.exception("Run completion hooks failed for %s", run_id)
+
+    async def notify_run_completed(self, run_id: str) -> None:
+        """Fire completion hooks for a run settled outside ``execute_run``.
+
+        Used by scheduler paths that mark a run failed before execution starts;
+        idempotence lives in the hooks' own storage keys.
+        """
+        await self._notify_run_completed(run_id)
+
+    async def _fire_run_completion(self, run_id: str) -> None:
+        for hook in list(self.run_completion_hooks):
+            try:
+                await hook(run_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one hook must not block the rest
+                logger.warning("Run completion hook failed for %s: %s", run_id, exc)
+
+    async def _run_entry(self, run_id: str, draft: WorkflowDraft, artifact_id: Optional[str],
+                         trigger_type: str, workflow_id: Optional[str],
+                         revision_id: Optional[str]) -> None:
         if run_id in self._dispatched_runs:
             return
         if len(self._dispatched_runs) >= self._max_inflight_runs:

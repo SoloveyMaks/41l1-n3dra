@@ -774,6 +774,8 @@ class RepositoryWatchService:
                     None, datetime.now(timezone.utc).isoformat(),
                 )
                 error = "Ревизия сценария недоступна"
+                if self.executor is not None:
+                    await self.executor.notify_run_completed(run_id)
                 return
             if not self.executor:
                 error = "Прогон ещё не запущен"
@@ -1151,6 +1153,8 @@ class WorkflowScheduler:
                         "inconclusive", None,
                         datetime.now(timezone.utc).isoformat(),
                     )
+                    if self.executor is not None:
+                        await self.executor.notify_run_completed(run_id)
                     return
                 if not self.executor:
                     return

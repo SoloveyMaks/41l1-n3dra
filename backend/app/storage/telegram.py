@@ -12,8 +12,9 @@ import hashlib
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.app.storage.database import get_pool
 
@@ -21,6 +22,10 @@ DEFAULT_BINDING_TTL_SECONDS = 600
 MAX_CODE_LENGTH = 128
 DELIVERY_MODES = ("alerts", "jsonc", "both")
 OUTBOX_KINDS = ("alert", "jsonc")
+SEVERITIES = ("info", "low", "medium", "high", "critical")
+DEFAULT_SEVERITY = "info"
+PROJECT_FILTER_LIMIT = 200
+BRANCH_FILTER_LIMIT = 200
 JOB_STATUSES = ("queued", "importing", "running", "succeeded", "failed", "cancelled", "interrupted")
 JOB_LEASE_SECONDS = 120
 MAX_JOB_RECOVERY_ATTEMPTS = 3
@@ -50,6 +55,12 @@ class Settings:
     chat_id: int
     delivery_mode: str = "both"
     scenario: str = ""
+    min_severity: str = DEFAULT_SEVERITY
+    quiet_start: Optional[time] = None
+    quiet_end: Optional[time] = None
+    quiet_timezone: str = "UTC"
+    project_filter: str = ""
+    branch_filter: str = ""
     updated_at: Any = None
 
 
@@ -90,6 +101,18 @@ class OutboxItem:
     updated_at: Any = None
 
 
+@dataclass(frozen=True)
+class DeliveryIntent:
+    """Durable "this completed run still needs its outbox rows" marker."""
+
+    run_id: str
+    workspace_id: str
+    attempts: int = 0
+    last_error: Optional[str] = None
+    created_at: Any = None
+    updated_at: Any = None
+
+
 def _uuid(value: Any, field: str) -> uuid.UUID:
     try:
         return uuid.UUID(str(value))
@@ -99,6 +122,18 @@ def _uuid(value: Any, field: str) -> uuid.UUID:
 
 def _code_hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _clean_filter(value: Optional[str], field: str, limit: int) -> Optional[str]:
+    """None keeps the stored value; '' clears the filter."""
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if len(cleaned) > limit:
+        raise ValueError(f"{field}: не длиннее {limit} символов")
+    if any(ord(ch) < 0x20 for ch in cleaned):
+        raise ValueError(f"{field}: управляющие символы запрещены")
+    return cleaned
 
 
 def _binding(row: Dict[str, Any]) -> Binding:
@@ -120,6 +155,12 @@ def _settings(row: Optional[Dict[str, Any]], chat_id: int) -> Settings:
         chat_id=int(row["chat_id"]),
         delivery_mode=str(row["delivery_mode"]),
         scenario=str(row.get("scenario") or ""),
+        min_severity=str(row.get("min_severity") or DEFAULT_SEVERITY),
+        quiet_start=row.get("quiet_start"),
+        quiet_end=row.get("quiet_end"),
+        quiet_timezone=str(row.get("quiet_timezone") or "UTC"),
+        project_filter=str(row.get("project_filter") or ""),
+        branch_filter=str(row.get("branch_filter") or ""),
         updated_at=row.get("updated_at"),
     )
 
@@ -158,6 +199,17 @@ def _outbox(row: Dict[str, Any]) -> OutboxItem:
         user_id=str(row.get("user_id") or ""),
         workspace_id=str(row.get("workspace_id") or ""),
         binding_epoch=int(row.get("binding_epoch") or 1),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+    )
+
+
+def _delivery_intent(row: Dict[str, Any]) -> DeliveryIntent:
+    return DeliveryIntent(
+        run_id=str(row["run_id"]),
+        workspace_id=str(row["workspace_id"]),
+        attempts=int(row.get("attempts") or 0),
+        last_error=row.get("last_error"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -438,6 +490,19 @@ class TelegramRepository:
             ).fetchone()
         return _binding(row) if row else None
 
+    def list_workspace_bindings(self, workspace_id: str) -> List[Binding]:
+        """Every live binding that receives run deliveries for this workspace."""
+        workspace = _uuid(workspace_id, "workspaceId")
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "SELECT b.* FROM telegram.bindings b JOIN account.users u "
+                "ON u.user_id = b.user_id AND u.workspace_id = b.workspace_id "
+                "AND u.disabled_at IS NULL WHERE b.workspace_id = %s "
+                "ORDER BY b.created_at, b.chat_id",
+                (workspace,),
+            ).fetchall()
+        return [_binding(row) for row in rows]
+
     def delete_binding(self, chat_id: int) -> bool:
         with get_pool().connection() as conn:
             self._lock_binding_changes(conn)
@@ -496,6 +561,13 @@ class TelegramRepository:
         binding_epoch: int,
         delivery_mode: Optional[str] = None,
         scenario: Optional[str] = None,
+        min_severity: Optional[str] = None,
+        quiet_start: Optional[time] = None,
+        quiet_end: Optional[time] = None,
+        quiet_timezone: Optional[str] = None,
+        clear_quiet_hours: bool = False,
+        project_filter: Optional[str] = None,
+        branch_filter: Optional[str] = None,
     ) -> Settings:
         if delivery_mode is not None and delivery_mode not in DELIVERY_MODES:
             raise ValueError("delivery_mode должен быть alerts, jsonc или both")
@@ -503,6 +575,32 @@ class TelegramRepository:
             scenario = scenario.strip()
             if len(scenario) > 128:
                 raise ValueError("scenario слишком длинный")
+        if min_severity is not None:
+            min_severity = str(min_severity).strip().lower()
+            if min_severity not in SEVERITIES:
+                raise ValueError("min_severity должен быть info, low, medium, high или critical")
+        if quiet_start is not None and quiet_end is not None and clear_quiet_hours:
+            raise ValueError("тихие часы: нельзя задать окно и одновременно выключить его")
+        if not clear_quiet_hours and (quiet_start is None) != (quiet_end is None):
+            raise ValueError("тихие часы: нужны и начало, и конец")
+        if quiet_start is not None and not isinstance(quiet_start, time):
+            raise ValueError("quiet_start должен быть временем HH:MM")
+        if quiet_end is not None and not isinstance(quiet_end, time):
+            raise ValueError("quiet_end должен быть временем HH:MM")
+        if quiet_timezone is not None:
+            quiet_timezone = str(quiet_timezone).strip()
+            if not quiet_timezone or len(quiet_timezone) > 64:
+                raise ValueError("quiet_timezone пуст или слишком длинный")
+            try:
+                ZoneInfo(quiet_timezone)
+            except (ZoneInfoNotFoundError, ValueError, OSError):
+                raise ValueError(f"Неизвестный timezone: {quiet_timezone}") from None
+        project_filter = _clean_filter(
+            project_filter, "project_filter", PROJECT_FILTER_LIMIT
+        )
+        branch_filter = _clean_filter(
+            branch_filter, "branch_filter", BRANCH_FILTER_LIMIT
+        )
         with get_pool().connection() as conn:
             if not self._lock_owner(conn, chat_id, _uuid(user_id, "userId"),
                                     _uuid(workspace_id, "workspaceId"), binding_epoch):
@@ -512,6 +610,14 @@ class TelegramRepository:
                 UPDATE telegram.settings s
                    SET delivery_mode = COALESCE(%s, s.delivery_mode),
                        scenario = COALESCE(%s, s.scenario),
+                       min_severity = COALESCE(%s, s.min_severity),
+                       quiet_start = CASE WHEN %s THEN NULL
+                                          ELSE COALESCE(%s, s.quiet_start) END,
+                       quiet_end = CASE WHEN %s THEN NULL
+                                        ELSE COALESCE(%s, s.quiet_end) END,
+                       quiet_timezone = COALESCE(%s, s.quiet_timezone),
+                       project_filter = COALESCE(%s, s.project_filter),
+                       branch_filter = COALESCE(%s, s.branch_filter),
                        updated_at = now()
                   FROM telegram.bindings b
                       JOIN account.users u ON u.user_id = b.user_id
@@ -523,7 +629,10 @@ class TelegramRepository:
                    AND b.binding_epoch = %s
                 RETURNING s.*
                 """,
-                (delivery_mode, scenario, int(chat_id), _uuid(user_id, "userId"),
+                (delivery_mode, scenario, min_severity,
+                 clear_quiet_hours, quiet_start, clear_quiet_hours, quiet_end,
+                 quiet_timezone, project_filter, branch_filter,
+                 int(chat_id), _uuid(user_id, "userId"),
                  _uuid(workspace_id, "workspaceId"), int(binding_epoch)),
             ).fetchone()
         if row is None:
@@ -1076,6 +1185,166 @@ class TelegramRepository:
                  binding_epoch, binding_epoch),
             ).fetchone()
         return row is not None
+
+    def defer_outbox(
+        self,
+        outbox_id: int,
+        next_attempt_at: datetime,
+        *,
+        reason: str,
+        user_id: str,
+        workspace_id: str,
+        binding_epoch: int,
+    ) -> bool:
+        """Move a claimed row back to pending at an absolute moment.
+
+        Quiet hours are not a delivery failure: the claim's ``attempts``
+        increment is compensated (``GREATEST(attempts - 1, 0)``), so any number
+        of deferrals can never push a row to the failure limit, while
+        ``next_attempt_at`` points past the window instead of a bounded delay.
+        """
+        target = next_attempt_at
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if target <= now:
+            target = now + timedelta(seconds=1)
+        if target > now + timedelta(days=2):
+            target = now + timedelta(days=2)
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE telegram.outbox
+                   SET status = 'pending',
+                       attempts = GREATEST(attempts - 1, 0),
+                       last_error = %s,
+                       next_attempt_at = %s,
+                       updated_at = now()
+                 WHERE id = %s
+                   AND status IN ('sending', 'pending')
+                   AND user_id = %s
+                   AND workspace_id = %s
+                   AND binding_epoch = %s
+                RETURNING id
+                """,
+                (reason[:500], target, int(outbox_id),
+                 _uuid(user_id, "userId"), _uuid(workspace_id, "workspaceId"),
+                 int(binding_epoch)),
+            ).fetchone()
+        return row is not None
+
+    # --- delivery intents (durable retry marker) -----------------------
+    def record_delivery_intent(self, run_id: str, workspace_id: str) -> bool:
+        """Record that a completed run still needs its outbox rows.
+
+        Written *before* the outbox enqueue; ``ON CONFLICT DO NOTHING`` keeps
+        it idempotent for repeated completions of the same run. Returns True
+        when a new pending marker was created.
+        """
+        run = str(run_id).strip()
+        workspace = _uuid(workspace_id, "workspaceId")
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO telegram.run_delivery_intents (run_id, workspace_id)
+                VALUES (%s, %s)
+                ON CONFLICT (run_id) DO NOTHING
+                RETURNING run_id
+                """,
+                (run, workspace),
+            ).fetchone()
+        return row is not None
+
+    def pending_delivery_intents(self, limit: int = 20) -> List[DeliveryIntent]:
+        """Oldest unfinished intents; processing is idempotent, so no locking."""
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT run_id, workspace_id, attempts, last_error,
+                       created_at, updated_at
+                  FROM telegram.run_delivery_intents
+                 WHERE status = 'pending'
+                 ORDER BY created_at, run_id
+                 LIMIT %s
+                """,
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        return [_delivery_intent(row) for row in rows]
+
+    def touch_delivery_intent(self, run_id: str, *, error: Optional[str] = None) -> None:
+        """Bump the retry counter and keep the last sanitized error."""
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE telegram.run_delivery_intents
+                   SET attempts = attempts + 1,
+                       last_error = %s,
+                       updated_at = now()
+                 WHERE run_id = %s AND status = 'pending'
+                """,
+                ((error or "")[:500] or None, str(run_id)),
+            )
+
+    def finish_delivery_intent(self, run_id: str) -> bool:
+        """Close the marker: outbox rows exist (or nothing is deliverable)."""
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE telegram.run_delivery_intents
+                   SET status = 'done', last_error = NULL,
+                       completed_at = now(), updated_at = now()
+                 WHERE run_id = %s AND status = 'pending'
+                RETURNING run_id
+                """,
+                (str(run_id),),
+            ).fetchone()
+        return row is not None
+
+    def purge_delivery_intents(self, older_than_days: int = 7) -> int:
+        """Drop finished markers after a week; pending rows are never purged."""
+        days = max(1, min(int(older_than_days), 90))
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                DELETE FROM telegram.run_delivery_intents
+                 WHERE status = 'done'
+                   AND completed_at < now() - make_interval(days => %s)
+                RETURNING run_id
+                """,
+                (days,),
+            ).fetchall()
+        return len(row)
+
+    def recent_runs_without_intent(
+        self, since_hours: int = 24, limit: int = 50,
+    ) -> List[DeliveryIntent]:
+        """Bounded safety net for completions whose marker write was refused.
+
+        A crash between a failed marker write and process recovery leaves a
+        terminal run with no intent row; this scan adopts it again — only
+        within ``since_hours`` of ``finished_at`` and only runs that reached a
+        deliverable terminal status, so a long-stopped instance never replays
+        ancient history.
+        """
+        hours = max(1, min(int(since_hours), 168))
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id AS run_id, r.workspace_id
+                  FROM runtime.runs r
+                 WHERE r.execution_status IN ('succeeded', 'failed', 'interrupted')
+                   AND r.finished_at IS NOT NULL
+                   AND r.finished_at >= now() - make_interval(hours => %s)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM telegram.run_delivery_intents i
+                        WHERE i.run_id = r.id
+                   )
+                 ORDER BY r.finished_at DESC
+                 LIMIT %s
+                """,
+                (hours, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [_delivery_intent(row) for row in rows]
 
     def get_cursor(self, key: str, default: int = 0) -> int:
         with get_pool().connection() as conn:

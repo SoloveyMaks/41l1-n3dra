@@ -68,6 +68,9 @@ sse_broker = SSEBroker(db_repo)
 executor = WorkflowExecutor(db_repo, sse_broker)
 scheduler = WorkflowScheduler(db_repo, executor)
 telegram_runtime = create_telegram_runtime(db_repo, executor, import_repository)
+# One delivery path for every completed run (manual, scheduled, repository,
+# bot): the executor fires the hook after any terminal outcome.
+executor.add_run_completion_hook(telegram_runtime.on_run_completed)
 validator = WorkflowValidator()
 ai_service = AiService()
 intake = SafeArtifactIntake()
