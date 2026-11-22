@@ -264,6 +264,24 @@ export function computeTreeLayout(
       firstRow.set(row.node.id, { parentId: row.parentId, depth: row.depth });
     }
   }
+  const kindOrder: Record<string, number> = {
+    actor: 0,
+    matcher: 1,
+    security_chain: 2,
+    guard: 3,
+    route: 4,
+    function: 5,
+    source: 6,
+    sink: 7,
+    data: 8,
+  };
+  const compareNodes = (left: string, right: string): number => {
+    const a = byId.get(left);
+    const b = byId.get(right);
+    const kindDelta = (kindOrder[a?.kind ?? ""] ?? 50) - (kindOrder[b?.kind ?? ""] ?? 50);
+    if (kindDelta !== 0) return kindDelta;
+    return (a?.label ?? left).localeCompare(b?.label ?? right);
+  };
   const children = new Map<string, string[]>();
   for (const id of firstRow.keys()) children.set(id, []);
   const roots: string[] = [];
@@ -274,8 +292,8 @@ export function computeTreeLayout(
       roots.push(id);
     }
   }
-  for (const list of children.values()) list.sort();
-  roots.sort();
+  for (const list of children.values()) list.sort(compareNodes);
+  roots.sort(compareNodes);
 
   const widths = new Map<string, number>();
   const measure = (id: string, path: Set<string>): number => {
