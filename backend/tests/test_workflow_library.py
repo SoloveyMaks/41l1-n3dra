@@ -26,7 +26,7 @@ DRAFT = {
             "kind": "manual_trigger",
             "version": 1,
             "title": "Start",
-            "config": {"webhookSecret": "hook-secret"},
+            "config": {"webhookSecret": "hook-secret", "webhookUrl": "https://hooks.example/secret", "enabled": True},
             "position": {"x": 0, "y": 120},
         },
     ],
@@ -38,6 +38,7 @@ def test_sanitize_strips_node_secrets_recursively():
     cleaned = sanitize_template_draft(DRAFT)
     assert "secretToken" not in cleaned["nodes"][0]["config"]
     assert "webhookSecret" not in cleaned["nodes"][1]["config"]
+    assert "webhookUrl" not in cleaned["nodes"][1]["config"]
 
 
 def test_copy_clears_project_artifact_reference():
