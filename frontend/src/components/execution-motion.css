@@ -36,13 +36,19 @@
   box-shadow: 0 0 0 1px rgb(225 29 72 / 30%), 0 18px 40px -20px rgb(225 29 72 / 55%);
 }
 
+.exec-node[data-status='cancelled'] {
+  border-color: #e11d48;
+  box-shadow: 0 0 0 1px rgb(225 29 72 / 25%), 0 18px 40px -20px rgb(225 29 72 / 45%);
+}
+
 .exec-node[data-status='skipped'] {
   opacity: 0.5;
 }
 
 .exec-node[data-current='true'] {
-  outline: 1px solid rgb(96 165 250 / 55%);
+  outline: 2px solid rgb(96 165 250 / 75%);
   outline-offset: 3px;
+  animation: exec-node-current 1.6s ease-in-out infinite;
 }
 
 .exec-node__clock {
@@ -136,6 +142,16 @@
   }
 }
 
+@keyframes exec-node-current {
+  0%,
+  100% {
+    outline-color: rgb(96 165 250 / 35%);
+  }
+  50% {
+    outline-color: rgb(96 165 250 / 95%);
+  }
+}
+
 @keyframes exec-edge-dash {
   from {
     stroke-dashoffset: 0;
@@ -148,6 +164,10 @@
 @media (prefers-reduced-motion: reduce) {
   .exec-node[data-status='running']::after,
   .exec-edge--flowing .exec-edge__base {
+    animation: none;
+  }
+
+  .exec-node[data-current='true'] {
     animation: none;
   }
 

@@ -58,6 +58,7 @@ import {
 import { apiClient, ApiError, AuthRequiredError } from './api/client';
 import { buildRunTelemetry } from './execution/runTelemetry';
 import type { RunTelemetry } from './execution/runTelemetry';
+import { buildEditorRunProgress } from './execution/editorProgress';
 import { artifactLabel, artifactRepository, shortCommit } from './repository';
 
 type Notice = { kind: 'ok' | 'error'; text: string };
@@ -1285,6 +1286,18 @@ export const App: React.FC = () => {
   const runPlanKnown = runRevisionDraft !== null;
   const runGraphBound = runPlanKnown && sameRunGraph(runRevisionDraft, draft);
   const canvasTelemetry = runGraphBound ? runTelemetry : EMPTY_RUN_TELEMETRY;
+
+  // Editor-side view of the same facts: how far the run got and which block it
+  // is on right now, so the canvas can show progress without leaving the tab.
+  const editorRunProgress = useMemo(
+    () => buildEditorRunProgress({
+      nodes: draft.nodes,
+      telemetry: canvasTelemetry,
+      runStatus: currentRun?.execution_status,
+      isRunning,
+    }),
+    [draft.nodes, canvasTelemetry, currentRun?.execution_status, isRunning],
+  );
   const runGraphNotice =
     !currentRun || currentRun.id !== currentRunId || runGraphBound
       ? null
@@ -1362,7 +1375,7 @@ export const App: React.FC = () => {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           onOpenUpload={() => setIsUploadOpen(true)}
-          onTriggerRun={() => void handleTriggerRun(false, true)}
+          onTriggerRun={() => void handleTriggerRun(false, activeTab !== 'editor')}
           onOpenAiTest={() => setIsAiTestOpen(true)}
           onOpenLibrary={() => setIsLibraryOpen(true)}
           isRunning={isRunning}
@@ -1406,6 +1419,9 @@ export const App: React.FC = () => {
                 onSelectArtifact={handleUserSelectArtifact}
                 runId={canvasRunId}
                 onOpenMap={() => setActiveTab('map')}
+                progress={editorRunProgress}
+                runVerdict={currentRun?.security_verdict ?? null}
+                onOpenRun={() => setActiveTab('live')}
               />
               {selectedNode && (
                 <div ref={inspectorPanelRef} className="flex min-h-0 w-full shrink-0 scroll-mt-2 flex-col border-t border-slate-800 shadow-2xl xl:w-auto xl:border-t-0">
@@ -1614,7 +1630,7 @@ export const App: React.FC = () => {
                 ZIP или репозиторий
               </button>
               <button
-                onClick={() => void handleTriggerRun()}
+                onClick={() => void handleTriggerRun(false, false)}
                 disabled={isRunning}
                 className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400"
               >
@@ -1659,6 +1675,9 @@ export const App: React.FC = () => {
                 onSelectArtifact={handleSelectArtifact}
                 runId={canvasRunId}
                 onOpenMap={() => setAdminSection('map')}
+                progress={editorRunProgress}
+                runVerdict={currentRun?.security_verdict ?? null}
+                onOpenRun={() => setAdminSection('live')}
               />
               {selectedNode && (
                 <InspectorPanel

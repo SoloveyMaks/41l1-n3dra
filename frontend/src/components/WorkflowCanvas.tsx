@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useCallback } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -10,14 +10,16 @@ import {
   Edge,
   Node,
   BackgroundVariant,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 import { CustomNode } from './CustomNode';
 import { ExecutionEdge, ExecutionEdgeData } from './ExecutionEdge';
-import type { ArtifactManifest, WorkflowDraft, WorkflowEdge } from '../types';
+import type { ArtifactManifest, SecurityVerdict, WorkflowDraft, WorkflowEdge } from '../types';
 import type { RunTelemetry } from '../execution/runTelemetry';
 import { IDLE_EDGE_STATE, selectActiveEdges } from '../execution/activeEdges';
+import { formatEditorRunProgress, type EditorRunProgress } from '../execution/editorProgress';
 import { AlertCircle, CheckCircle2, Plus, RotateCcw, Save, Sparkles } from 'lucide-react';
 import { RepositorySourceView } from './RepositorySourceView';
 import { artifactChoiceLabel, artifactRepository } from '../repository';
@@ -49,6 +51,15 @@ interface WorkflowCanvasProps {
    */
   runId?: string | null;
   onOpenMap?: () => void;
+  /**
+   * Run progress for this draft: counts, the block executing right now and the
+   * final verdict. null/absent hides the bar (no run, or a foreign graph).
+   */
+  progress?: EditorRunProgress | null;
+  /** Security verdict of that run, shown next to the result once it settles. */
+  runVerdict?: SecurityVerdict | null;
+  /** Opens «Ход проверки»; the editor itself never leaves its tab. */
+  onOpenRun?: () => void;
 }
 
 export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
@@ -73,6 +84,9 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   onSelectArtifact,
   runId = null,
   onOpenMap,
+  progress = null,
+  runVerdict = null,
+  onOpenRun,
 }) => {
   const nodeTypes = useMemo(() => ({ customNode: CustomNode }), []);
   const edgeTypes = useMemo(() => ({ executionEdge: ExecutionEdge }), []);
@@ -216,6 +230,68 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     onSelectNode(null);
   }, [onSelectNode]);
 
+  // Auto-focus follows the block the run works on, but only when that block
+  // changes and sits outside the viewport. Repeated telemetry for the same
+  // block never moves the camera; a manual pan/zoom or a block drag wins for
+  // the rest of the run, so the viewport never fights the user. Programmatic
+  // moves (ours, fitView) report a null event and are not "manual".
+  const activeNodeId = progress?.activeNodeId ?? null;
+  const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const lastFocusedNodeRef = useRef<string | null>(null);
+  const manualViewportRef = useRef(false);
+  const wasLiveRef = useRef(false);
+
+  useEffect(() => {
+    if (telemetry.live && !wasLiveRef.current) {
+      manualViewportRef.current = false;
+      lastFocusedNodeRef.current = null;
+    }
+    wasLiveRef.current = telemetry.live;
+  }, [telemetry.live]);
+
+  useEffect(() => {
+    if (!activeNodeId || activeNodeId === lastFocusedNodeRef.current) return;
+    lastFocusedNodeRef.current = activeNodeId;
+    if (manualViewportRef.current) return;
+    const instance = flowInstanceRef.current;
+    const container = canvasRef.current;
+    if (!instance || !container) return;
+    const node = nodes.find((item) => item.id === activeNodeId);
+    if (!node?.position) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const width = node.measured?.width ?? node.width ?? 0;
+    const height = node.measured?.height ?? node.height ?? 0;
+    const { x, y, zoom } = instance.getViewport();
+    const left = node.position.x * zoom + x;
+    const top = node.position.y * zoom + y;
+    // Margins keep the overlay toolbar and the canvas edges from hiding the block.
+    const margin = { top: 150, right: 32, bottom: 40, left: 32 };
+    const fullyVisible =
+      left >= margin.left &&
+      left + width * zoom <= rect.width - margin.right &&
+      top >= margin.top &&
+      top + height * zoom <= rect.height - margin.bottom;
+    if (fullyVisible) return;
+    void instance.setCenter(node.position.x + width / 2, node.position.y + height / 2, {
+      zoom,
+      duration: 600,
+    });
+  }, [activeNodeId, nodes]);
+
+  const handleInit = useCallback((instance: ReactFlowInstance) => {
+    flowInstanceRef.current = instance;
+  }, []);
+
+  const handleMoveStart = useCallback((event: MouseEvent | TouchEvent | null) => {
+    if (event) manualViewportRef.current = true;
+  }, []);
+
+  const handleNodeDragStart = useCallback(() => {
+    manualViewportRef.current = true;
+  }, []);
+
   const onBeforeDelete = useCallback(async ({ nodes: removedNodes, edges: removedEdges }: { nodes: Node[]; edges: Edge[] }) => {
     const nodeIds = new Set(removedNodes.map((node) => node.id));
     const edgeIds = new Set(removedEdges.map((edge) => edge.id));
@@ -229,6 +305,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
   }, [draft, onDraftChange, onSelectNode, selectedNodeId]);
 
   const errorCount = validationIssues.filter((issue) => issue.level === 'error').length;
+  const progressLabel = progress ? formatEditorRunProgress(progress) : null;
   const hasErrors = validationState === 'ready' && errorCount > 0;
   const validationPending = validationState === 'checking';
   const validationUnavailable = validationState === 'unavailable';
@@ -241,7 +318,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         : 'Граф валиден';
 
   return (
-    <div className="relative min-h-[420px] w-full min-w-0 bg-slate-950 xl:h-full xl:min-h-0 xl:flex-1">
+    <div ref={canvasRef} className="relative min-h-[420px] w-full min-w-0 bg-slate-950 xl:h-full xl:min-h-0 xl:flex-1">
       {/* Top Bar on Canvas */}
       <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-col gap-2 min-[1760px]:flex-row min-[1760px]:items-start">
         <div className="pointer-events-auto grid w-full min-w-0 gap-2 rounded-xl border border-slate-800 bg-slate-900/95 p-2 shadow-lg backdrop-blur-md min-[1760px]:w-[460px] min-[1760px]:shrink-0">
@@ -348,6 +425,59 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
               <span>{executionNotice}</span>
             </div>
           )}
+
+          {progress && progressLabel && (
+            <div
+              className="flex h-9 min-w-0 max-w-full items-center gap-2 rounded-xl border border-indigo-900/70 bg-slate-900/95 px-3 shadow-lg backdrop-blur-md"
+              data-run-progress={progress.phase}
+              data-run-progress-label={progressLabel}
+              role="status"
+              aria-live="polite"
+            >
+              <span
+                className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-800 sm:w-20"
+                aria-hidden="true"
+              >
+                <span
+                  className="block h-full rounded-full transition-[width] duration-500 ease-out"
+                  style={{
+                    width: `${progress.percent}%`,
+                    backgroundColor:
+                      progress.phase === 'done'
+                        ? progress.verdict === 'succeeded'
+                          ? '#10b981'
+                          : '#f43f5e'
+                        : '#6366f1',
+                  }}
+                />
+              </span>
+              <span className="min-w-0 truncate text-[11px] font-medium text-slate-100">{progressLabel}</span>
+              {progress.phase === 'done' && runVerdict && runVerdict !== 'pending' && (
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                    runVerdict === 'pass'
+                      ? 'bg-emerald-950/80 text-emerald-200'
+                      : runVerdict === 'fail'
+                        ? 'bg-rose-950/80 text-rose-200'
+                        : 'bg-amber-950/80 text-amber-200'
+                  }`}
+                  data-run-verdict={runVerdict}
+                >
+                  Итог: {runVerdict}
+                </span>
+              )}
+              {onOpenRun && (
+                <button
+                  type="button"
+                  onClick={onOpenRun}
+                  className="shrink-0 rounded-lg border border-indigo-700 bg-indigo-600/90 px-2 py-1 text-[10px] font-semibold text-white transition hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+                  title="Открыть подробный ход проверки"
+                >
+                  Открыть ход проверки
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="pointer-events-auto grid w-full grid-cols-2 gap-2 min-[1760px]:ml-auto min-[1760px]:flex min-[1760px]:w-auto min-[1760px]:flex-wrap min-[1760px]:justify-end">
@@ -409,9 +539,12 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDragStop={onNodeDragStop}
+        onNodeDragStart={handleNodeDragStart}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         onBeforeDelete={onBeforeDelete}
+        onInit={handleInit}
+        onMoveStart={handleMoveStart}
         deleteKeyCode={['Backspace', 'Delete']}
         fitView
         className="bg-slate-950"
