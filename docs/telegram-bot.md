@@ -15,6 +15,7 @@ Bot API is blocked in this environment; an existing HTTP proxy on
 | `db/migrations/012_telegram_job_recovery.up.sql` | job leases and crash recovery |
 | `db/migrations/016_telegram_binding_generation.up.sql` | binding generation sequence fencing |
 | `db/migrations/017_telegram_delivery_filters.up.sql` | delivery filters: `min_severity`, quiet hours + timezone, project/branch scope |
+| `db/migrations/018_telegram_delivery_intents.up.sql` | durable per-run delivery marker replayed by the background sweep |
 | `backend/app/storage/telegram.py` | PostgreSQL repository; no transport, no token |
 | `backend/app/telegram/delivery_policy.py` | pure delivery decisions: severity threshold, project/branch match, quiet-hours deferral |
 | `backend/app/telegram/bot_api.py` | httpx Bot API client; token from env/0600 file; `TELEGRAM_PROXY_URL` or UNIX-socket proxy; redacted errors; messages, callbacks, commands, menu button |
@@ -25,7 +26,7 @@ Bot API is blocked in this environment; an existing HTTP proxy on
 | `backend/app/telegram/router.py` | DI router factory for binding/settings endpoints |
 | `backend/app/telegram/workspace.py` | delegates to auth-owner `workspace_scope`; no copied auth/context |
 | `backend/tests/test_telegram_buttons.py` | disposable-DB/fake-transport regression checks for buttons, callbacks, URLs and epoch guards |
-| `backend/tests/test_telegram_delivery.py` | fake Bot API/outbox checks: completion delivery, severity threshold, quiet-hours deferral, idempotency, JSONC findings |
+| `backend/tests/test_telegram_delivery.py` | fake Bot API/outbox checks: completion delivery, severity threshold, quiet-hours deferral (incl. DST), idempotency, JSONC findings, transient-DB recovery, deferral budget |
 
 Not touched: frontend, `main.py`, `session.py`, auth storage, `database.py`,
 reports, AI engine/contracts, `backend/app/notifications/**`. `api/router.py`,
@@ -292,14 +293,30 @@ Delivery decision per claim (`telegram/delivery_policy.py`, evaluated in
   reason in `last_error`;
 - project/branch filters match against the artifact's repository URL, filename
   and branch; unresolvable metadata fails closed (no delivery);
-- quiet hours defer the claim to the window end in `quiet_timezone`
-  (overnight windows and DST included); a deferral keeps `attempts` untouched
-  and is re-evaluated on every claim.
+- quiet hours defer the claim to the window end in `quiet_timezone`; both DST
+  fold variants of the window are evaluated in UTC, so the deferral is always
+  the nearest real end strictly after now. A deferral compensates its claim
+  increment (`GREATEST(attempts - 1, 0)`), so any number of deferrals can
+  never exhaust the retry budget, and it is re-evaluated on every claim.
+
+Delivery durability (no completion can silently lose its delivery):
+
+- `on_run_completed` first writes a `telegram.run_delivery_intents` row (3
+  bounded retries), then creates the outbox rows and marks the intent done;
+- a transient failure between those steps leaves the intent `pending`; the
+  recovery loop sweeps it every 5 s and replays the idempotent enqueue; if
+  even the marker write is refused, the run is kept in an in-memory list the
+  same sweep replays while the process lives;
+- writing is independent of transport state: a run finishing while the bot is
+  stopping still records intent + rows, and the next started transport drains
+  them; pending intents survive restarts, done intents are purged after a week.
 
 Idempotency:
 
 - completion hooks are idempotent: repeated `on_run_completed`/re-dispatch
   hits `telegram.outbox (chat_id, run_id, kind)` and inserts nothing;
+- `telegram.run_delivery_intents (run_id)` primary key: a rerun of the hook
+  or sweep never doubles the marker or the rows;
 - `telegram.updates.update_id` claim: one handler execution; failed/stale
   processing claims may retry.
 - `telegram.jobs.source_update_id` unique: Telegram redelivery cannot create a

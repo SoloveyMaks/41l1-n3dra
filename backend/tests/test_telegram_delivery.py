@@ -37,7 +37,13 @@ from backend.app.contracts.schemas import (  # noqa: E402
     WorkflowNode,
 )
 from backend.app.engine.executor import WorkflowExecutor  # noqa: E402
-from backend.app.storage.telegram import Binding, OutboxItem, Settings  # noqa: E402
+from backend.app.storage.telegram import (  # noqa: E402
+    Binding,
+    DeliveryIntent,
+    OutboxItem,
+    Settings,
+)
+from backend.app.telegram import runtime as runtime_module  # noqa: E402
 from backend.app.telegram.delivery_policy import (  # noqa: E402
     DeliveryFacts,
     evaluate_delivery,
@@ -70,10 +76,69 @@ class FakeDeliveryRepo:
         self.rows: Dict[int, Dict[str, Any]] = {}
         self.enqueued: List[tuple] = []
         self.claim_count = 0
+        self.intents: Dict[str, Dict[str, Any]] = {}
+        # Transient-failure switches the tests flip to simulate a DB outage.
+        self.fail_bindings = False
+        self.fail_record_times = 0
         self._next_id = 1
+
+    # --- delivery intents (durable retry marker) -----------------------
+    def record_delivery_intent(self, run_id: str, workspace_id: str) -> bool:
+        if self.fail_record_times > 0:
+            self.fail_record_times -= 1
+            raise RuntimeError("transient database failure (intent write)")
+        if run_id in self.intents:
+            return False
+        self.intents[run_id] = {
+            "run_id": run_id,
+            "workspace_id": workspace_id,
+            "status": "pending",
+            "attempts": 0,
+            "last_error": None,
+        }
+        return True
+
+    def pending_delivery_intents(self, limit: int = 20) -> List[DeliveryIntent]:
+        rows = [
+            row for row in self.intents.values() if row["status"] == "pending"
+        ]
+        rows.sort(key=lambda row: row["run_id"])
+        return [
+            DeliveryIntent(
+                run_id=row["run_id"], workspace_id=row["workspace_id"],
+                attempts=row["attempts"], last_error=row["last_error"],
+            )
+            for row in rows[: max(1, min(int(limit), 100))]
+        ]
+
+    def touch_delivery_intent(self, run_id: str, *, error: Optional[str] = None) -> None:
+        row = self.intents.get(run_id)
+        if row is None or row["status"] != "pending":
+            return
+        row["attempts"] += 1
+        row["last_error"] = (error or "")[:500] or None
+
+    def finish_delivery_intent(self, run_id: str) -> bool:
+        row = self.intents.get(run_id)
+        if row is None or row["status"] != "pending":
+            return False
+        row["status"] = "done"
+        row["last_error"] = None
+        return True
+
+    def purge_delivery_intents(self, older_than_days: int = 7) -> int:
+        stale = [
+            run_id for run_id, row in self.intents.items()
+            if row["status"] == "done"
+        ]
+        for run_id in stale:
+            del self.intents[run_id]
+        return len(stale)
 
     # --- enqueue -------------------------------------------------------
     def list_workspace_bindings(self, workspace_id: str) -> List[Binding]:
+        if self.fail_bindings:
+            raise RuntimeError("transient database failure (bindings read)")
         if str(workspace_id) == str(self.binding.workspace_id):
             return [self.binding]
         return []
@@ -167,6 +232,8 @@ class FakeDeliveryRepo:
         ):
             return False
         row["status"] = "pending"
+        # Mirrors GREATEST(attempts - 1, 0): the claim attempt is undone.
+        row["attempts"] = max(int(row["attempts"]) - 1, 0)
         row["last_error"] = reason
         row["next_attempt_at"] = next_attempt_at
         return True
@@ -463,8 +530,9 @@ def test_quiet_hours_defer_delivery() -> None:
         window_end = now + timedelta(hours=2)
         for row in rows:
             assert window_end - timedelta(minutes=5) <= row["next_attempt_at"] <= window_end + timedelta(minutes=5)
-            # A deferral is not a failure: the claim attempt stays single.
-            assert row["attempts"] == 1
+            # A deferral is not a failure: the claim increment is compensated
+            # (GREATEST(attempts - 1, 0)), so deferrals never eat the budget.
+            assert row["attempts"] == 0
             assert "тихие часы" in (row["last_error"] or "")
 
         # A repeat claim during the window neither sends nor duplicates.
@@ -610,3 +678,155 @@ def test_filter_without_artifact_fails_closed() -> None:
         assert repo.statuses() == ["cancelled", "cancelled"]
 
     asyncio.run(scenario())
+
+
+def _force_rows_due(repo: FakeDeliveryRepo) -> None:
+    for row in repo.rows_for(RUN_ID):
+        row["next_attempt_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+
+# --- 7. durable retry after a transient DB failure ----------------------
+
+def test_transient_outbox_failure_recovers_via_sweep() -> None:
+    async def scenario() -> None:
+        runtime, repo, api, db = make_runtime()
+        db.add_run(
+            RUN_ID, status="failed", verdict="fail", counts={"total": 1, "medium": 1},
+        )
+        # Completion lands while the database refuses the outbox writes.
+        repo.fail_bindings = True
+        await runtime.on_run_completed(RUN_ID)
+        assert repo.rows_for(RUN_ID) == []
+        # The completion fact survived as a pending durable marker.
+        assert repo.intents[RUN_ID]["status"] == "pending"
+        assert repo.intents[RUN_ID]["attempts"] == 1  # touch recorded the failure
+
+        await runtime.process_outbox_once()
+        assert api.messages == [] and api.documents == []
+
+        # Recovery: the background sweep replays the intent idempotently.
+        repo.fail_bindings = False
+        assert await runtime._sweep_delivery_intents() == 1
+        rows = repo.rows_for(RUN_ID)
+        assert sorted(row["kind"] for row in rows) == ["alert", "jsonc"]
+        assert repo.intents[RUN_ID]["status"] == "done"
+
+        assert await runtime.process_outbox_once() == 2
+        assert len(api.messages) == 1 and len(api.documents) == 1
+
+        # A second sweep finds nothing and never duplicates the delivery.
+        assert await runtime._sweep_delivery_intents() == 0
+        assert len(repo.rows_for(RUN_ID)) == 2
+
+    asyncio.run(scenario())
+
+
+def test_transient_intent_write_failure_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_module, "DELIVERY_INTENT_RECORD_DELAY_SECONDS", 0.0)
+
+    async def scenario() -> None:
+        runtime, repo, api, db = make_runtime()
+        db.add_run(RUN_ID, status="succeeded", verdict="pass", counts={"total": 1, "low": 1})
+        # The marker write itself fails once, then the database recovers.
+        repo.fail_record_times = 1
+        await runtime.on_run_completed(RUN_ID)
+        assert len(repo.rows_for(RUN_ID)) == 2
+        assert repo.intents[RUN_ID]["status"] == "done"
+
+        assert await runtime.process_outbox_once() == 2
+        assert len(api.messages) == 1 and len(api.documents) == 1
+
+    asyncio.run(scenario())
+
+
+def test_completion_during_stop_still_enqueues() -> None:
+    async def scenario() -> None:
+        runtime, repo, api, db = make_runtime()
+        # stop() flipped the transport state while the run was finishing.
+        runtime._started = False
+        db.add_run(
+            RUN_ID, status="interrupted", verdict="inconclusive",
+            counts={"total": 1, "low": 1},
+        )
+        await runtime.on_run_completed(RUN_ID)
+
+        rows = repo.rows_for(RUN_ID)
+        assert sorted(row["kind"] for row in rows) == ["alert", "jsonc"]
+        assert repo.intents[RUN_ID]["status"] == "done"
+        assert api.messages == [] and api.documents == []
+
+        # Rows are durable: the next started transport drains them.
+        await runtime.process_outbox_once()
+        assert len(api.messages) == 1 and len(api.documents) == 1
+
+    asyncio.run(scenario())
+
+
+# --- 8. deferrals never exhaust the retry budget ------------------------
+
+def test_defer_never_eats_attempts() -> None:
+    async def scenario() -> None:
+        now = datetime.now(timezone.utc)
+        settings = _settings(
+            quiet_start=(now - timedelta(hours=1)).time(),
+            quiet_end=(now + timedelta(hours=2)).time(),
+            quiet_timezone="UTC",
+        )
+        runtime, repo, api, db = make_runtime(settings=settings)
+        db.add_run(RUN_ID, status="succeeded", verdict="pass", counts={"total": 1, "low": 1})
+        await runtime.on_run_completed(RUN_ID)
+
+        # Four claims during the window: every deferral compensates its claim.
+        for _cycle in range(4):
+            _force_rows_due(repo)
+            await runtime.process_outbox_once()
+            for row in repo.rows_for(RUN_ID):
+                assert row["status"] == "pending"
+                assert row["attempts"] == 0
+            assert api.messages == [] and api.documents == []
+
+        # Window over; the first transport error must not exhaust the budget.
+        runtime.repo.settings = _settings()
+        _force_rows_due(repo)
+        api.send_error = RuntimeError("boom")
+        await runtime.process_outbox_once()
+        for row in repo.rows_for(RUN_ID):
+            assert row["status"] == "pending"  # not 'failed' after 4 deferrals
+            assert row["attempts"] == 1
+
+        # Transient error resolved: the same rows deliver exactly once.
+        api.send_error = None
+        _force_rows_due(repo)
+        await runtime.process_outbox_once()
+        assert repo.statuses() == ["sent", "sent"]
+        assert len(api.messages) == 1 and len(api.documents) == 1
+
+    asyncio.run(scenario())
+
+
+# --- 9. DST transitions -------------------------------------------------
+
+def test_quiet_deferral_dst_fallback_end() -> None:
+    tz = "America/New_York"
+    # 2026-11-01 06:00 UTC: 02:00 EDT falls back to 01:00 EST, so 01:30 local
+    # happens twice (05:30 and 06:30 UTC).
+    window = (time(0, 0), time(1, 30))
+    # 06:15 UTC = 01:15 EST (second pass): the end must be the *next real*
+    # end, 06:30 UTC — not the fold=0 05:30 UTC already in the past.
+    assert quiet_deferral(
+        datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc), *window, tz
+    ) == datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+    # First pass (05:15 UTC = 01:15 EDT) defers to the first 01:30 = 05:30 UTC.
+    assert quiet_deferral(
+        datetime(2026, 11, 1, 5, 15, tzinfo=timezone.utc), *window, tz
+    ) == datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)
+    # After the last 01:30 the window is over: no deferral to the past.
+    assert quiet_deferral(
+        datetime(2026, 11, 1, 6, 45, tzinfo=timezone.utc), *window, tz
+    ) is None
+    # Before the window starts: nothing to defer to.
+    assert quiet_deferral(
+        datetime(2026, 11, 1, 3, 30, tzinfo=timezone.utc), *window, tz
+    ) is None

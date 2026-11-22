@@ -16,7 +16,7 @@ runtime, поэтому причина отказа всегда попадае�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any, Mapping, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -123,6 +123,11 @@ def run_max_severity(run: Mapping[str, Any]) -> str:
     return DEFAULT_SEVERITY
 
 
+def _wall_clock_instant(day: date, value: time, tz: ZoneInfo, fold: int) -> datetime:
+    """Absolute UTC instant of one fold of a wall-clock time on ``day``."""
+    return datetime.combine(day, value).replace(tzinfo=tz, fold=fold).astimezone(timezone.utc)
+
+
 def quiet_deferral(
     now_utc: datetime,
     start: Optional[time],
@@ -132,28 +137,49 @@ def quiet_deferral(
     """UTC moment when the quiet window containing ``now_utc`` ends.
 
     Windows are wall-clock in ``tz_name``; ``start > end`` spans midnight.
-    Returns None when no window is active (or the timezone is unusable — a
-    broken timezone must never block delivery).
+    DST transitions make an end (or start) either repeated or missing locally,
+    so both fold variants are evaluated and every comparison happens in UTC:
+    the deferral is the nearest *real* end strictly after the current moment,
+    and a window whose last end already passed never defers. Returns None when
+    no window is active (or the timezone is unusable — a broken timezone must
+    never block delivery).
     """
     if start is None or end is None or start == end:
         return None
     if now_utc.tzinfo is None:
         now_utc = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now_utc.astimezone(timezone.utc)
     try:
         tz = ZoneInfo(str(tz_name or "UTC"))
     except (ZoneInfoNotFoundError, ValueError, OSError):
         return None
-    local = now_utc.astimezone(tz)
-    local_day = local.date()
+
+    local_day = now_utc.astimezone(tz).date()
+    overnight = end <= start
+    # A same-day window ends on its own day; an overnight window continues into
+    # the next day (fall-back can repeat the end wall time on either day).
+    end_offsets = (0, 1) if overnight else (0,)
+    best: Optional[datetime] = None
     for offset in (-1, 0, 1):
         day = date.fromordinal(local_day.toordinal() + offset)
-        window_start = datetime.combine(day, start).replace(tzinfo=tz)
-        window_end = datetime.combine(day, end).replace(tzinfo=tz)
-        if window_end <= window_start:
-            window_end += timedelta(days=1)
-        if window_start <= local < window_end:
-            return window_end.astimezone(timezone.utc)
-    return None
+        for start_fold in (0, 1):
+            window_start = _wall_clock_instant(day, start, tz, start_fold)
+            if window_start > now_utc:
+                continue
+            end_instants = set()
+            for end_offset in end_offsets:
+                end_day = date.fromordinal(day.toordinal() + end_offset)
+                for end_fold in (0, 1):
+                    instant = _wall_clock_instant(end_day, end, tz, end_fold)
+                    if instant > window_start:
+                        end_instants.add(instant)
+            ends = sorted(end_instants)
+            if not ends or now_utc >= ends[-1]:
+                continue  # every real end of this window already passed
+            candidate = next(e for e in ends if e > now_utc)
+            best = candidate if best is None else min(best, candidate)
+    return best
 
 
 def matches_project(project_text: str, pattern: str) -> bool:

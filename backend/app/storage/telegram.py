@@ -101,6 +101,18 @@ class OutboxItem:
     updated_at: Any = None
 
 
+@dataclass(frozen=True)
+class DeliveryIntent:
+    """Durable "this completed run still needs its outbox rows" marker."""
+
+    run_id: str
+    workspace_id: str
+    attempts: int = 0
+    last_error: Optional[str] = None
+    created_at: Any = None
+    updated_at: Any = None
+
+
 def _uuid(value: Any, field: str) -> uuid.UUID:
     try:
         return uuid.UUID(str(value))
@@ -187,6 +199,17 @@ def _outbox(row: Dict[str, Any]) -> OutboxItem:
         user_id=str(row.get("user_id") or ""),
         workspace_id=str(row.get("workspace_id") or ""),
         binding_epoch=int(row.get("binding_epoch") or 1),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+    )
+
+
+def _delivery_intent(row: Dict[str, Any]) -> DeliveryIntent:
+    return DeliveryIntent(
+        run_id=str(row["run_id"]),
+        workspace_id=str(row["workspace_id"]),
+        attempts=int(row.get("attempts") or 0),
+        last_error=row.get("last_error"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -1175,8 +1198,9 @@ class TelegramRepository:
     ) -> bool:
         """Move a claimed row back to pending at an absolute moment.
 
-        Quiet hours are not a delivery failure: ``attempts`` stays untouched
-        so a deferred delivery can never exhaust the retry budget, while
+        Quiet hours are not a delivery failure: the claim's ``attempts``
+        increment is compensated (``GREATEST(attempts - 1, 0)``), so any number
+        of deferrals can never push a row to the failure limit, while
         ``next_attempt_at`` points past the window instead of a bounded delay.
         """
         target = next_attempt_at
@@ -1192,6 +1216,7 @@ class TelegramRepository:
                 """
                 UPDATE telegram.outbox
                    SET status = 'pending',
+                       attempts = GREATEST(attempts - 1, 0),
                        last_error = %s,
                        next_attempt_at = %s,
                        updated_at = now()
@@ -1207,6 +1232,88 @@ class TelegramRepository:
                  int(binding_epoch)),
             ).fetchone()
         return row is not None
+
+    # --- delivery intents (durable retry marker) -----------------------
+    def record_delivery_intent(self, run_id: str, workspace_id: str) -> bool:
+        """Record that a completed run still needs its outbox rows.
+
+        Written *before* the outbox enqueue; ``ON CONFLICT DO NOTHING`` keeps
+        it idempotent for repeated completions of the same run. Returns True
+        when a new pending marker was created.
+        """
+        run = str(run_id).strip()
+        workspace = _uuid(workspace_id, "workspaceId")
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO telegram.run_delivery_intents (run_id, workspace_id)
+                VALUES (%s, %s)
+                ON CONFLICT (run_id) DO NOTHING
+                RETURNING run_id
+                """,
+                (run, workspace),
+            ).fetchone()
+        return row is not None
+
+    def pending_delivery_intents(self, limit: int = 20) -> List[DeliveryIntent]:
+        """Oldest unfinished intents; processing is idempotent, so no locking."""
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT run_id, workspace_id, attempts, last_error,
+                       created_at, updated_at
+                  FROM telegram.run_delivery_intents
+                 WHERE status = 'pending'
+                 ORDER BY created_at, run_id
+                 LIMIT %s
+                """,
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        return [_delivery_intent(row) for row in rows]
+
+    def touch_delivery_intent(self, run_id: str, *, error: Optional[str] = None) -> None:
+        """Bump the retry counter and keep the last sanitized error."""
+        with get_pool().connection() as conn:
+            conn.execute(
+                """
+                UPDATE telegram.run_delivery_intents
+                   SET attempts = attempts + 1,
+                       last_error = %s,
+                       updated_at = now()
+                 WHERE run_id = %s AND status = 'pending'
+                """,
+                ((error or "")[:500] or None, str(run_id)),
+            )
+
+    def finish_delivery_intent(self, run_id: str) -> bool:
+        """Close the marker: outbox rows exist (or nothing is deliverable)."""
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                UPDATE telegram.run_delivery_intents
+                   SET status = 'done', last_error = NULL,
+                       completed_at = now(), updated_at = now()
+                 WHERE run_id = %s AND status = 'pending'
+                RETURNING run_id
+                """,
+                (str(run_id),),
+            ).fetchone()
+        return row is not None
+
+    def purge_delivery_intents(self, older_than_days: int = 7) -> int:
+        """Drop finished markers after a week; pending rows are never purged."""
+        days = max(1, min(int(older_than_days), 90))
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                DELETE FROM telegram.run_delivery_intents
+                 WHERE status = 'done'
+                   AND completed_at < now() - make_interval(days => %s)
+                RETURNING run_id
+                """,
+                (days,),
+            ).fetchall()
+        return len(row)
 
     def get_cursor(self, key: str, default: int = 0) -> int:
         with get_pool().connection() as conn:
