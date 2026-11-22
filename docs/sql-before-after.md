@@ -160,15 +160,17 @@ nodes/edges. Для demo coverage считается complete только дл�
 - у каждого edge `resolution=resolved`;
 - scopes построены по реально прочитанным source paths.
 
-Остаётся отдельная граница adapter/А: `CanonicalMapBuilder._build_coverage`
-добавляет в `skippedScopes` `runtime-configuration`, `runtime-guards` и
-`binaries-and-archives`. Если публиковать это как полный graph coverage,
-comparison обязан остаться `inconclusive` по graph completeness, даже когда
-SQL scope checked. Demo явно ограничивает codeFacts coverage source graph и не
-объявляет runtime scopes проверенными. Adapter backend (`ctx_1848d3d60de4`)
-должен либо согласовать source-graph-only applicability, либо сохранить
-runtime gaps видимыми и блокировать только зависимые выводы. Это не влияет на
-сам факт per-file SQL observation.
+Остаётся отдельная граница adapter/А: до этапа замены заглушек
+`CanonicalMapBuilder._build_coverage` добавлял в `skippedScopes`
+`runtime-configuration`, `runtime-guards` и `binaries-and-archives` руками.
+Сейчас эти три строки не вписываются: `runtime-configuration` и
+`runtime-guards` проверяются статически (`config_static`, `guards_static`),
+`binaries-and-archives` — чтением архивов (`archives_static`), а
+`skippedScopes` собирается только по фактическим причинам (encrypted /
+too-large / unsupported archive, unresolved security-relevant placeholder).
+Если такой причины нет, graph coverage может стать `complete`; comparison
+проверяет это по scopes, а не по наличию трёх строк. Это не влияет на сам
+факт per-file SQL observation.
 
 `expectedScopesVerified=true` в envelope — attestation demo-сборки: ожидаемый
 SQL scope (файл с `@RequestParam`) совпал с `checked` наблюдением, manifest

@@ -303,7 +303,7 @@ export function productionModel(
         ...data.coverage.unresolvedSymbols,
         ...data.coverage.limitsReached,
         ...data.coverage.scopes
-          .filter((s) => s.status !== "checked")
+          .filter((s) => s.status !== "checked" && s.status !== "not_applicable")
           .map((s) => `${s.path} · ${s.ruleId}: ${s.status} — ${s.reason}`),
         ...data.coverage.parserErrors.map((id) => `Ошибка parser: ${id}`),
       ],

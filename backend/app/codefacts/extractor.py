@@ -59,6 +59,84 @@ RULE_DEFINITIONS = [
         "family": "object-authorization",
         "title": "Проверка владельца объекта не доказана",
     },
+    {
+        "id": "CF-CONFIG-STATIC",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Статическая проверка конфигурации приложения",
+    },
+    {
+        "id": "CF-CONFIG-ACTUATOR-EXPOSED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Открыт опасный actuator-эндпоинт",
+    },
+    {
+        "id": "CF-CONFIG-DEBUG-ENABLED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Включён debug/trace в конфигурации",
+    },
+    {
+        "id": "CF-CONFIG-SSL-DISABLED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Отключена проверка TLS",
+    },
+    {
+        "id": "CF-CONFIG-SECURITY-DISABLED",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Отключена проверка доступа в конфигурации",
+    },
+    {
+        "id": "CF-CONFIG-DEFAULT-CREDS",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Дефолтные или placeholder-креды в конфигурации",
+    },
+    {
+        "id": "CF-CONFIG-CORS-WILDCARD",
+        "version": "1.0.0",
+        "family": "runtime-configuration",
+        "title": "Wildcard CORS в конфигурации",
+    },
+    {
+        "id": "CF-GUARD-STATIC",
+        "version": "1.0.0",
+        "family": "runtime-guards",
+        "title": "Статическая проверка method security",
+    },
+    {
+        "id": "CF-GUARD-NOT-ENABLED",
+        "version": "1.0.0",
+        "family": "runtime-guards",
+        "title": "Проверка метода объявлена, но не включена",
+    },
+    {
+        "id": "CF-ARCHIVE-STATIC",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Статическое чтение архива без исполнения",
+    },
+    {
+        "id": "CF-ARCHIVE-SECRET",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Секрет в текстовом entry архива",
+    },
+    {
+        "id": "CF-BINARY-STATIC",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Бинарный файл: правила неприменимы",
+    },
+    {
+        "id": "CF-FILE-STATIC",
+        "version": "1.0.0",
+        "family": "binaries-and-archives",
+        "title": "Файл вне проверяемых областей",
+    },
 ]
 RULE_BY_ID = {rule["id"]: rule for rule in RULE_DEFINITIONS}
 
@@ -217,6 +295,14 @@ class ExtractionResult:
     limits: List[str] = field(default_factory=list)
     rules: List[SecurityRule] = field(default_factory=list)
     routes: List[RouteInfo] = field(default_factory=list)
+    # Статически проверенные конфиги и причины, которые нельзя разрешить.
+    config_paths: List[str] = field(default_factory=list)
+    config_skipped: List[str] = field(default_factory=list)
+    # Scope-записи method security (CF-GUARD-STATIC) по файлам.
+    guard_scopes: List[Dict[str, Any]] = field(default_factory=list)
+    # Scope архивов/бинарников и причины, по которым архив не прочитан.
+    archive_scopes: List[Dict[str, Any]] = field(default_factory=list)
+    archive_skipped: List[str] = field(default_factory=list)
 
     def node(self, symbol: str, kind: str, label: str, evidence: List[Dict[str, Any]]) -> None:
         existing = self.nodes.get(symbol)
@@ -491,6 +577,8 @@ class SpringFactExtractor:
         self._emit_method_sinks()
         self._emit_sql_findings()
         self._emit_route_findings()
+        self._scan_runtime_configs()
+        self._scan_method_security()
 
         if not self.rules:
             self.result.diag(
@@ -499,11 +587,35 @@ class SpringFactExtractor:
             )
         self.result.diag(
             "CF-STATIC-ONLY",
-            "Статический анализ исходников: код не исполнялся, runtime-конфигурация и внешние фильтры не проверялись.",
+            "Статический анализ: код не исполнялся. Конфигурация, method security "
+            "и архивы проверены по тексту; значения окружения и runtime-поведение "
+            "не подставлялись.",
         )
         return self.result
 
     # --- parsing ---------------------------------------------------------
+    def _scan_runtime_configs(self) -> None:
+        """Статическая проверка конфигурации: находки + честные skipped-причины."""
+        from backend.app.codefacts.config_static import scan_configs
+
+        findings, paths, skipped = scan_configs(self.sources)
+        for path in paths:
+            if path not in self.result.files_read:
+                self.result.files_read.append(path)
+        self.result.config_paths.extend(paths)
+        self.result.config_skipped.extend(skipped)
+        for finding in findings:
+            self.result.findings.append(finding)
+
+    def _scan_method_security(self) -> None:
+        """Проверка method security: аннотации против объявления включения."""
+        from backend.app.codefacts.guards_static import scan_guards
+
+        findings, scopes = scan_guards(self.sources)
+        self.result.guard_scopes.extend(scopes)
+        for finding in findings:
+            self.result.findings.append(finding)
+
     def _parse_schemas(self) -> None:
         for path, source in sorted(self.sources.items()):
             if not path.endswith(".sql"):
@@ -1203,7 +1315,25 @@ class SpringFactExtractor:
                     ]
 
 
-def extract_facts(sources: Dict[str, SourceFile], files_total: int) -> ExtractionResult:
+def extract_facts(sources: Dict[str, SourceFile], files_total: int,
+                  root: Optional[Path] = None,
+                  manifest_paths: Optional[List[str]] = None) -> ExtractionResult:
     extractor = SpringFactExtractor(sources, files_total)
     extractor.parse_security()
-    return extractor.run()
+    result = extractor.run()
+    if root is not None and manifest_paths:
+        # Архивы/бинарники лежат вне sources (не текст), поэтому их читаем
+        # отдельно, строго по манифесту snapshot.
+        from backend.app.codefacts.archives_static import scan_archives_and_binaries
+
+        findings, scopes, skipped = scan_archives_and_binaries(
+            root, manifest_paths, result.files_read,
+        )
+        result.archive_scopes.extend(scopes)
+        result.archive_skipped.extend(skipped)
+        result.findings.extend(findings)
+        for scope in scopes:
+            path = scope.get("path")
+            if path and path not in result.files_read:
+                result.files_read.append(str(path))
+    return result
