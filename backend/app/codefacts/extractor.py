@@ -101,6 +101,18 @@ RULE_DEFINITIONS = [
         "family": "runtime-configuration",
         "title": "Wildcard CORS в конфигурации",
     },
+    {
+        "id": "CF-GUARD-STATIC",
+        "version": "1.0.0",
+        "family": "runtime-guards",
+        "title": "Статическая проверка method security",
+    },
+    {
+        "id": "CF-GUARD-NOT-ENABLED",
+        "version": "1.0.0",
+        "family": "runtime-guards",
+        "title": "Проверка метода объявлена, но не включена",
+    },
 ]
 RULE_BY_ID = {rule["id"]: rule for rule in RULE_DEFINITIONS}
 
@@ -262,6 +274,8 @@ class ExtractionResult:
     # Статически проверенные конфиги и причины, которые нельзя разрешить.
     config_paths: List[str] = field(default_factory=list)
     config_skipped: List[str] = field(default_factory=list)
+    # Scope-записи method security (CF-GUARD-STATIC) по файлам.
+    guard_scopes: List[Dict[str, Any]] = field(default_factory=list)
 
     def node(self, symbol: str, kind: str, label: str, evidence: List[Dict[str, Any]]) -> None:
         existing = self.nodes.get(symbol)
@@ -537,6 +551,7 @@ class SpringFactExtractor:
         self._emit_sql_findings()
         self._emit_route_findings()
         self._scan_runtime_configs()
+        self._scan_method_security()
 
         if not self.rules:
             self.result.diag(
@@ -560,6 +575,15 @@ class SpringFactExtractor:
                 self.result.files_read.append(path)
         self.result.config_paths.extend(paths)
         self.result.config_skipped.extend(skipped)
+        for finding in findings:
+            self.result.findings.append(finding)
+
+    def _scan_method_security(self) -> None:
+        """Проверка method security: аннотации против объявления включения."""
+        from backend.app.codefacts.guards_static import scan_guards
+
+        findings, scopes = scan_guards(self.sources)
+        self.result.guard_scopes.extend(scopes)
         for finding in findings:
             self.result.findings.append(finding)
 

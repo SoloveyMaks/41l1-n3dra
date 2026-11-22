@@ -89,6 +89,8 @@ RULE_FAMILY = {
     "CF-CONFIG-SECURITY-DISABLED": "runtime-configuration",
     "CF-CONFIG-DEFAULT-CREDS": "runtime-configuration",
     "CF-CONFIG-CORS-WILDCARD": "runtime-configuration",
+    "CF-GUARD-STATIC": "runtime-guards",
+    "CF-GUARD-NOT-ENABLED": "runtime-guards",
 }
 
 
@@ -670,6 +672,21 @@ class CanonicalMapBuilder:
             diag["id"] for diag in self.diagnostics
             if diag["code"] in {"CF-DECODE-ERROR", "CF-NODE-WITHOUT-EVIDENCE"}
         ]
+        # Scope method security: применяется только к файлам, где аннотации
+        # есть; без enablement остаётся finding, а scope называет причину.
+        for item in getattr(self.facts, "guard_scopes", []):
+            path = str(item.get("path", ""))
+            if not path or not is_safe_source_path(path):
+                continue
+            if any(s["path"] == path and s["ruleId"] == item["ruleId"] for s in scopes):
+                continue
+            scopes.append({
+                "path": path,
+                "ruleId": str(item["ruleId"]),
+                "category": str(item.get("category", "SAST")),
+                "status": str(item.get("status", "checked")),
+                "reason": str(item.get("reason") or "Проверено статически."),
+            })
         # skippedScopes считается только по фактическим причинам: что-то
         # непроверенное появляется здесь с конкретным путём и причиной.
         skipped: List[str] = list(dict.fromkeys(getattr(self.facts, "config_skipped", [])))
