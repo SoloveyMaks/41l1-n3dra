@@ -511,10 +511,13 @@ http_req GET "${BASE}/api/runs/${RUN_ID}/report/export.jsonc" "$OUT"
 expect_code 200 "GET /report/export.jsonc"
 python3 -c '
 import json, sys
-d = json.load(open(sys.argv[1]))
+raw = open(sys.argv[1], encoding="utf-8").read()
+body = "\n".join(line for line in raw.splitlines() if not line.lstrip().startswith("//"))
+d = json.loads(body)
 assert d.get("schemaVersion") == "nedra-report-export/1", d.get("schemaVersion")
 assert d.get("reportAvailable") is True, "reportAvailable != true"
 assert d.get("run", {}).get("id") == sys.argv[2], "run.id не совпадает"
+assert raw.lstrip().startswith("//"), "у JSONC нет пояснительной шапки"
 ' "$OUT" "$RUN_ID" || die "export.jsonc: неверная структура"
 say "export.jsonc: 200, schemaVersion nedra-report-export/1"
 step_done
