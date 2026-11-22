@@ -23,7 +23,7 @@
 | P3-2 | низкое (до split) | открыто (до split) | Runtime-таблицы читаются из одного env-workspace, session workspace учитывается только для canonical/local файлов | `backend/app/api/session.py:227-229`; `backend/app/storage/database.py:292-296` |
 | P3-3 | низкое | открыто | `raw_secrets_checked=True` — константа; `ai_explanations` и `remediation_examples` нигде не пишутся приложением | `backend/app/ai/service.py:62`, `227`, `385`; `backend/app/contracts/schemas.py:240` |
 | A-1 | среднее | открыто | Нет server-side отзыва сессии: logout удаляет cookie, admin-токен жив до TTL | `backend/app/api/router.py:168-170`; `backend/app/api/session.py:155-188`; `docs/admin-access.md` |
-| A-2 | низкое | открыто | `POST /api/webhook-test` не admin-гард; в local mode вообще без сессии | `backend/app/main.py:31`; `backend/app/api/router.py:688-715` |
+| A-2 | низкое | исправлено | `POST /api/webhook-test` был без admin-гарда; guard — `require_admin` первой строкой handler'а: admin 200, user 403, без сессии 401 | `backend/app/api/router.py:1023-1026`; `backend/tests/test_webhook_test_guard.py` |
 
 Полного «safe/fixed» нет: часть инвариантов SQL сильна, но прикладной слой обходит их или не публикует факты.
 
@@ -281,7 +281,7 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 ### Остаточные риски admin-слоя
 
 - **A-1 (среднее): нет server-side отзыва сессии.** Logout удаляет cookie, но подписанный admin-токен жив до `SESSION_TTL_SECONDS` (по умолчанию 12 ч). `docs/admin-access.md` это признаёт. Для реального admin до split нужен session store/rotation/revocation, иначе утёкшая cookie = admin до истечения TTL.
-- **A-2 (низкое): `POST /api/webhook-test` не закрыт admin-гардом.** В local mode путь входит в `_LOCAL_SESSION_EXEMPT` (`main.py:31`, `125-150`), в public mode доступен любому залогиненному user. Список ограничен 200 записями и 64 KiB (`router.py:688-715`), но это log injection/спам, а не admin-действие. Логи читает только admin.
+- ~~**A-2 (низкое): `POST /api/webhook-test` не закрыт admin-гардом.**~~ Закрыто: `require_admin` первой строкой handler'а (`router.py:1023-1026`). В local mode `_LOCAL_SESSION_EXEMPT` (`main.py:31`) больше не даёт анонимной записи — handler отвечает 401; в public mode обычный залогиненный user получает 403, как и на `GET /webhook-test/logs`. Список по-прежнему ограничен 200 записями и 64 KiB (`router.py:688-715`).
 - **A-3 (информация): роль не изолирует данные.** user видит все runs/findings/map/report общего workspace — это заявленный контракт, не баг. Но до user/admin split нельзя трактовать `role` как tenant boundary: данные общие, роль закрывает только мутации и overview.
 - **A-4 (информация): overview шире примера в docs.** Отдаёт `vector.embeddingModel/dimension/metric` и `migrations.latestAppliedAt`; это не секреты, но при ужесточении контракта их стоит либо оставить явно разрешёнными, либо убрать.
 - **A-5 (низкое): local mode с эфемерным `CG_SESSION_SECRET`.** Это допустимо для локального demo (`main.py:57-61`), но при `CG_PUBLIC_DEMO=1` `public_config_error` требует секрет и код (`session.py:99-109`).
@@ -317,7 +317,7 @@ JWT                       -> eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do
 10. Скоупить runtime-чтения по `request_workspace` до появления разных workspace (P3-2).
 11. Подключить `ai_explanations`/`RemediationStore` к API или убрать их из заявлений о продукте (P3-3).
 12. До реального admin добавить server-side session store/revocation: logout сейчас не отзывает подписанный admin-токен до TTL (A-1).
-13. Закрыть `POST /api/webhook-test` admin-гардом или явно описать его как публичный тестовый приёмник; не считать `role` tenant-изоляцией (A-2, A-3).
+13. `POST /api/webhook-test` закрыт admin-гардом (A-2); `role` по-прежнему не tenant-изоляция (A-3).
 14. Запускать backend под least-privilege ролью без DDL/TRUNCATE и явно документировать, что DB owner/superuser может обойти guards; аудит это не покрывает.
 
 ## 8. Что не подтверждено

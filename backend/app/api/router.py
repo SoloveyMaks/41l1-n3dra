@@ -1022,6 +1022,8 @@ def update_schedule(schedule_id: str, payload: Dict[str, Any], request: Request)
 # --- Webhook Test Receiver ---
 @api_router.post("/webhook-test")
 async def webhook_test_receiver(request: Request):
+    # Приёмник пишет в общий лог, который читает только admin: guard до чтения тела.
+    require_admin(request)
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_WEBHOOK_BYTES:
         raise HTTPException(status_code=413, detail="Слишком большой webhook payload")
